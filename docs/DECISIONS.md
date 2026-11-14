@@ -7648,3 +7648,24 @@ Validation covers cumulative allocations/caps, failed writes, capacity retries,
 exact-policy qualification and excluded histories, disabled modes, single-flight
 reviews, cadence, closed-trade wakeups and durable failure recovery. The dashboard
 shows the current automatic-review status, last success, failure and next due time.
+
+## 262. Judge retirement with the current execution evidence (14 November 2026)
+
+The promotion audit found zero full promotions but 28 paper-copy candidates. Raw
+shadow results were still used for non-restoration performance retirement: old
+losses could retire a positive new policy, and old wins could conceal current
+losses. Retirement now uses the same exact-policy evidence boundary, including
+negative forward results from incomplete restorations. Missing runtime policy
+cannot establish performance; offline historical research remains explicit.
+
+Activity-based expiry keeps its existing clock and observations. Copy, promotion,
+restoration, sizing, entry and risk rules are unchanged. No historical positions,
+policies or enrollment records are rewritten. The Incubator separates paper-copy
+eligibility from promotion and shows the gate's sample instead of mixed history.
+Viewing copy status is read-only.
+
+The seven-day replay found 24 premature failed-screen retirements among 26 cases
+with current-policy observations; eight had positive current results. Their small
+samples do not establish future profit or authorize promotion. Prior retirements
+return only through fresh screening and available shadow capacity. See
+`research/paper-qualification-audit-2026-11-14.md` for scope and evidence.

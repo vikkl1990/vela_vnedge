@@ -69,6 +69,18 @@ test('timely forward collection requires a current enrolled shadow policy and ne
  f.store.move(cell,'live','test');assert.equal(f.store.forwardCollectionKeys(T+DAY).size,0);
  assert.deepEqual(f.db.all('SELECT * FROM evidence_restorations'),frozen);
 });
+
+test('copy status on the dashboard is read-only and uses the same qualification boundary',t=>{
+ const f=setup(t),m=f.cfg.incubator.mirror;
+ assert.match(f.store.copyRefusal(cell,m,1e8,T,{readOnly:true})!,/0\/5 shadow closes/);
+ assert.equal(f.db.get<any>('SELECT count(*) n FROM evidence_restorations').n,0,'view cannot enroll a test');
+ f.enroll();const frozen=f.db.all('SELECT * FROM evidence_restorations');
+ assert.equal(f.store.copyRefusal(cell,m,1e8,T+DAY,{readOnly:true}),f.store.copyRefusal(cell,m,1e8,T+DAY));
+ f.forward();
+ assert.equal(f.store.copyRefusal(cell,m,1e8,T+15*DAY,{readOnly:true}),null);
+ assert.equal(f.store.copyRefusal(cell,m,1e8,T+15*DAY),null);
+ assert.deepEqual(f.db.all('SELECT * FROM evidence_restorations'),frozen);
+});
 test('restored forward collection is not retired by incompatible historical losses or an old failed screen',t=>{
  t.mock.timers.enable({apis:['Date'],now:T+DAY});
  const f=setup(t);f.cfg.incubator.maxShadow=100;f.cfg.incubator.admit.rotation!.enabled=false;

@@ -299,13 +299,13 @@ export class IncubatorStore {
     const row=this.db.get<{started_at:number}>('SELECT started_at FROM evidence_restorations WHERE strategy_id=? AND started_at<=?',this.policyFor(cell).strategyId,at);
     return Math.max(cell.since,row?.started_at??cell.since);
   }
-  /** Retirement can see negative forward evidence even while qualification is held.
-   * This never supplies promotion, copying or leverage with unqualified trades. */
+  /** Retirement judges the current execution policy, including losses while restoration
+   * qualification is held. Old policies and tracker observations cannot decide its performance. */
   shadowEvaluation(cell:{scannerId:string;symbol:string;tf:string;since:number},at=Date.now()) {
     const restoration=this.restoration(cell,at),since=this.evaluationSince(cell,at);
-    const trades=restoration && this.policyFor
+    const trades=this.policyFor
       ? readEvidence(this.db,cell,this.policyFor(cell),{at})
-      : this.trades(cell.scannerId,cell.symbol,cell.tf,2);
+      : this.historicalResearch ? this.trades(cell.scannerId,cell.symbol,cell.tf,2) : [];
     return {restoration,since,trades:trades.filter(t=>t.entryAt>=since&&t.exitAt<at)};
   }
   restorationRefusal(cell:{scannerId:string;symbol:string;tf:string},at=Date.now()):string|null {
@@ -314,7 +314,12 @@ export class IncubatorStore {
     const r=this.restoration(cell,at);
     return r&&!r.passed?`restored cell in forward shadow evaluation: ${r.reasons.join('; ')}`:null;
   }
-  copyRefusal(cell:{scannerId:string;symbol:string;tf:string},mirror:AppConfig['incubator']['mirror'],turnover:number|null,at=Date.now()) {
+  copyRefusal(cell:{scannerId:string;symbol:string;tf:string},mirror:AppConfig['incubator']['mirror'],turnover:number|null,at=Date.now(),{readOnly=false}={}) {
+    if(readOnly){
+      const r=this.restoration(cell,at);
+      if(r&&!r.passed)return `restored cell in forward shadow evaluation: ${r.reasons.join('; ')}`;
+      return mirrorRefusal(mirror,qualifiedEvidence(this.db,cell,this.policyFor?.(cell),{at}),turnover);
+    }
     return this.restorationRefusal(cell,at)??mirrorRefusal(mirror,this.qualifiedTrades(cell.scannerId,cell.symbol,cell.tf,2,at),turnover);
   }
   policyEvidence(cell:{scannerId:string;symbol:string;tf:string},at=Date.now()) {
