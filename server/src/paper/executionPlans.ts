@@ -1,3 +1,4 @@
+import {MARKITTICK_NATIVE} from '../scanners/markitTick.ts';
 import {plotLifecycle} from '../scanners/plotLifecycle.ts';
 import {BASKET_SCANNER,BASKET_ACCOUNTING_VERSION} from './basket.ts';
 /** Versioned, explicit research plans. One source event feeds every plan in a cell. */
@@ -15,8 +16,9 @@ import { exitConfigFor } from './logic.ts';
 import { scannerExitPolicy, entryPolicy } from './policy.ts';
 import { adaptPlan } from './planStudy.ts';
 
-// Decision 256: one reviewed basket added to 36 existing experiments; account/risk capacity is separate.
-export const MAX_RESEARCH_PLANS = 37;
+// Bounded research capacity: 37 existing plans plus up to 18 paired exit studies.
+// This does not change account positions, allocation or risk limits.
+export const MAX_RESEARCH_PLANS = 73;
 /** Explicit TP experiment; original stop and sizing stay fixed. Trail changes are opt-in and labeled. */
 export interface TakeProfitPlan {
   mode: 'native' | 'r';
@@ -31,11 +33,13 @@ export interface ProfitCapturePlan {
   floorAtR: number;
   floorKeepR: number;
 }
-export interface PlanComparison { group: string; role: 'control' | 'candidate' }
+export interface PlanComparison { group: string; role: 'control' | 'candidate'; kind?: 'exit-policy' }
 /** Interpretation only: changing Pine inputs or trading rules requires a different experiment. */
 export type ReadingOverride = {version:number} & Pick<Partial<ScannerConfig>,'reader'|'sources'|'labels'|'sides'|'labelStyles'|'invert'|'edge'>;
 export interface ExecutionPlan {
   basket?: 'rsi-volume-ladder-v1';
+  /** Same native initial stop/entry; replace author TP with account R ladder, trail and floor. */
+  exitPolicy?: 'account-ladder';
   id: string; revision: number; enabled: boolean;
   scannerId: string; symbol: string; tf: string;
   variant: 'current' | 'native' | 'atr';
@@ -53,6 +57,7 @@ export interface ExecutionPlan {
 }
 export interface ExecutionPlanSnapshot {
   basket?: ExecutionPlan['basket'];
+  exitPolicy?: ExecutionPlan['exitPolicy'];
   /** Absent on legacy basket cohorts; never reinterpret their recorded R. */
   basketAccountingVersion?:2;
   id: string; revision: number; signature: string; sourceScannerId: string;
@@ -70,7 +75,7 @@ export interface ExecutionPlanSnapshot {
   /** Causal close-then-open reversal; scoped to newly validated author profiles. */
   reversalEntryVersion?: 1;
 }
-export function takeProfitLabel(p: Pick<ExecutionPlanSnapshot,'paper'|'takeProfit'|'basket'> & Partial<Pick<ExecutionPlanSnapshot,'sourceScannerId'>>): string {
+export function takeProfitLabel(p: Pick<ExecutionPlanSnapshot,'paper'|'takeProfit'|'basket'> & Partial<Pick<ExecutionPlanSnapshot,'sourceScannerId'|'exitPolicy'>>): string {
   if(plotLifecycle(p.sourceScannerId))return p.sourceScannerId?.startsWith('machine-learning')?'Native Supertrend stop and flip exit · no fixed TP':'Native stop and TP1/TP2 milestones · closes at TP3';
   if(p.basket)return 'Basket: up to 3 entries · $150 total margin · 4% shared target · 3% below lowest fill stop';
   const c=p.paper, ladder=c.fallbackRR.join('/'), allocation=c.tpSplit.map(x=>`${Math.round(x*100)}%`).join('/');
@@ -85,9 +90,12 @@ export function planSnapshot(cfg: AppConfig, p: ExecutionPlan, sourceHash: strin
   const override={...p.readingOverride};delete override.version;
   const sc=p.readingOverride?{...original,...override}:original;
   const exitMode = p.variant === 'current' ? sc?.exitMode ?? 'both' : 'levels';
-  const base = p.variant === 'current' ? scannerExitPolicy(cfg,p.scannerId) : sc?.exit;
+  const base = p.exitPolicy==='account-ladder' ? undefined : p.variant === 'current' ? scannerExitPolicy(cfg,p.scannerId) : sc?.exit;
   const entry = entryPolicy(cfg,p.tf,'account',{scannerId:p.scannerId});
   const paper = structuredClone(withProductFees(scannerEntryConfig(exitConfigFor(cfg.paper,p.symbol,base,p.tf),original,p.tf),fees,p.symbol));
+  // The control tests the configured account R ladder rather than silently retaining
+  // the source's one target. Native SL and every entry/risk setting stay identical.
+  if(p.exitPolicy==='account-ladder')paper.scriptTargets='ignore';
   // Resolved settings must not be layered a second time in the backtester.
   delete paper.exitBySymbol;delete paper.exitByTf;
   Object.assign(paper, { initialEquity:p.referenceEquity, sizingMode:'margin', maxOpenPositions:100_000,
@@ -101,7 +109,7 @@ export function planSnapshot(cfg: AppConfig, p: ExecutionPlan, sourceHash: strin
   if(p.trailing)Object.assign(paper,{trailAfterR:p.trailing.afterR,trailGiveBackPct:p.trailing.giveBackPct,
     floorAtR:p.trailing.floorAtR,floorKeepR:p.trailing.floorKeepR,trailAtrMult:0,trailDistanceR:0,trailSteps:[],trailStall:undefined});
   if(p.maxStopLossPct!==undefined)paper.maxStopLossPct=paper.maxStopLossPct>0?Math.min(paper.maxStopLossPct,p.maxStopLossPct):p.maxStopLossPct;
-  const result = {...(p.basket?{basket:p.basket,basketAccountingVersion:BASKET_ACCOUNTING_VERSION as 2}:{}),id:p.id,revision:p.revision,executionVersion:CAUSAL_EXIT_VERSION,sourceHash,reading:sc?structuredClone(sc):null,sourceScannerId:p.scannerId,variant:p.variant,symbol:p.symbol,tf:p.tf,
+  const result = {...(p.exitPolicy?{exitPolicy:p.exitPolicy}:{}),...(p.basket?{basket:p.basket,basketAccountingVersion:BASKET_ACCOUNTING_VERSION as 2}:{}),id:p.id,revision:p.revision,executionVersion:CAUSAL_EXIT_VERSION,sourceHash,reading:sc?structuredClone(sc):null,sourceScannerId:p.scannerId,variant:p.variant,symbol:p.symbol,tf:p.tf,
     paper,exitMode,requireAtrStop:Boolean(paper.skipScriptStops),referenceEquity:p.referenceEquity,maxHoldMinutes:p.maxHoldMinutes,
     ...(p.takeProfit?{takeProfit:structuredClone(p.takeProfit)}:{}),...(p.label?{label:p.label}:{}),
     ...(p.comparison?{comparison:structuredClone(p.comparison)}:{})};
@@ -141,6 +149,11 @@ export function validateExecutionPlans(plans: ExecutionPlan[] | undefined, tfs: 
     if(p.basket&&cfg){
       try{planSnapshot(cfg,p);}catch(error){errors.push(`executionPlans.${p.id}: ${error instanceof Error?error.message:'invalid effective basket policy'}`);}
     }
+    if(p.exitPolicy!==undefined&&(p.exitPolicy!=='account-ladder'||p.comparison?.kind!=='exit-policy'||p.comparison.role!=='control'))errors.push(`executionPlans.${p.id}: account ladder requires an explicit exit-policy control`);
+    if(p.comparison?.kind==='exit-policy'){
+      const sc=cfg?.scanners[p.scannerId];
+      if(!MARKITTICK_NATIVE[p.scannerId]||p.variant!=='current'||!p.readingOverride||p.takeProfit||p.trailing||p.basket||p.maxHoldMinutes!==undefined||p.readingOverride.invert||p.readingOverride.reader!==2||Object.keys(p.readingOverride).some(k=>!['version','reader'].includes(k))||cfg&&(sc?.reader!==2||sc?.entryProtection!=='native'||sc?.exitMode!=='levels'))errors.push(`executionPlans.${p.id}: exit comparison requires a validated native MarkitTick bracket and unmodified entry policy`);
+    }
     if(p.basket!==undefined&&(p.basket!=='rsi-volume-ladder-v1'||p.scannerId!==BASKET_SCANNER||p.variant!=='current'||!p.readingOverride||p.takeProfit||p.trailing||p.comparison))errors.push(`executionPlans.${p.id}: basket requires its versioned source and unmodified native bracket`);
     if(plotLifecycle(p.scannerId)&&(p.variant!=='current'||!p.readingOverride||p.trailing||p.takeProfit||p.basket||p.readingOverride.invert||p.readingOverride.reader!==undefined&&p.readingOverride.reader!==2))errors.push(`executionPlans.${p.id}: native plot lifecycle requires its versioned current reading and native exit policy`);
     if(p.scannerId===BASKET_SCANNER&&!p.basket)errors.push(`executionPlans.${p.id}: basket source requires its execution adapter`);
@@ -167,7 +180,7 @@ export function validateExecutionPlans(plans: ExecutionPlan[] | undefined, tfs: 
       if(!t||![t.afterR,t.giveBackPct,t.floorAtR,t.floorKeepR].every(Number.isFinite)||t.afterR<=0||t.afterR>10||t.giveBackPct<=0||t.giveBackPct>=100||t.floorAtR<0||t.floorAtR>10||t.floorKeepR<0||(t.floorAtR===0?t.floorKeepR!==0:t.floorKeepR>=t.floorAtR))errors.push(`executionPlans.${p.id}: invalid profit-capture trail or floor`);
       if(p.takeProfit?.trailAfterR!==undefined)errors.push(`executionPlans.${p.id}: specify trail activation in only one place`);
     }
-    if(p.comparison!==undefined&&(!p.comparison||!/^[a-z0-9][a-z0-9-]{0,79}$/.test(p.comparison.group??'')||!['control','candidate'].includes(p.comparison.role)))errors.push(`executionPlans.${p.id}: invalid comparison group or role`);
+    if(p.comparison!==undefined&&(!p.comparison||!/^[a-z0-9][a-z0-9-]{0,79}$/.test(p.comparison.group??'')||!['control','candidate'].includes(p.comparison.role)||p.comparison.kind!==undefined&&p.comparison.kind!=='exit-policy'))errors.push(`executionPlans.${p.id}: invalid comparison group or role`);
     if(p.takeProfit!==undefined){
       const tp=p.takeProfit;
       if(!tp||!['native','r'].includes(tp.mode)||p.variant==='current')errors.push(`executionPlans.${p.id}: target experiments require a native/ATR level-exit plan`);
@@ -179,6 +192,11 @@ export function validateExecutionPlans(plans: ExecutionPlan[] | undefined, tfs: 
   }
   for(const group of new Set(plans.filter(p=>p?.comparison).map(p=>p.comparison!.group))){
     const pair=plans.filter(p=>p?.comparison?.group===group);
+    if(pair.some(p=>p.comparison?.kind==='exit-policy')){
+      const control=pair.find(p=>p.comparison?.role==='control'),candidate=pair.find(p=>p.comparison?.role==='candidate');
+      const identity=(p:ExecutionPlan)=>Object.fromEntries(Object.entries(p).filter(([k])=>!['id','label','comparison','exitPolicy'].includes(k)));
+      if(pair.length!==2||!control||!candidate||pair.some(p=>p.comparison?.kind!=='exit-policy')||control.exitPolicy!=='account-ladder'||candidate.exitPolicy!==undefined||stable(identity(control))!==stable(identity(candidate)))errors.push(`executionPlans comparison ${group}: exit policies must share exactly the same source, reading, entry and risk settings`);
+    }
     const comparable=(p:ExecutionPlan)=>[p.scannerId,p.symbol,p.tf,p.variant,p.referenceEquity,p.maxStopLossPct,p.maxHoldMinutes,p.enabled,p.takeProfit];
     if(pair.length!==2||new Set(pair.map(p=>p.comparison!.role)).size!==2||stable(comparable(pair[0]))!==stable(comparable(pair[1])))errors.push(`executionPlans comparison ${group}: control and candidate must share source, entry/target policy, sizing and enabled state`);
   }

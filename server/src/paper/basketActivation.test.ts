@@ -34,7 +34,7 @@ test('activation refuses wrong capital, edited plans, edited readers and a genui
   if(kind==='cap')raw.paper.maxStopLossPct=4;
   if(kind==='reader')raw.scanners[BASKET_SCANNER]={enabled:false,symbols:null,timeframes:null,exitMode:'levels',inputs:{rsiLength:2}};
   if(kind==='plan')raw.executionPlans!.push({...BASKET_SHADOW_PLAN,symbol:'BTCUSD'});
-  if(kind==='full')raw.executionPlans!.push({...raw.executionPlans![0],id:'last-existing-slot'});
+  if(kind==='full')while(raw.executionPlans!.length<MAX_RESEARCH_PLANS)raw.executionPlans!.push({...raw.executionPlans![0],id:`existing-slot-${raw.executionPlans!.length}`});
   fs.writeFileSync(file,JSON.stringify(raw));const bytes=fs.readFileSync(file,'utf8');
   if(kind==='full')assert.throws(()=>enableBasketShadow(file),new RegExp(String(MAX_RESEARCH_PLANS)));else assert.throws(()=>enableBasketShadow(file));
   assert.equal(fs.readFileSync(file,'utf8'),bytes);
