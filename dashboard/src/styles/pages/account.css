@@ -1,0 +1,16 @@
+/* Profile and Users: account pages share a two-column grid that stacks on a phone. */
+.account-page .account-stat-text { font-family: var(--font-ui); font-size: var(--fs-lg); font-weight: 700; display: block; overflow: hidden; text-overflow: ellipsis; }
+.account-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--gap-page); align-items: start; }
+.account-grid .account-wide { grid-column: 1 / -1; }
+.account-lead { margin: 0 0 12px; line-height: 1.55; }
+.account-page .form-narrow { max-width: 440px; }
+.account-page .callout { margin-top: 10px; }
+@media (max-width: 860px) { .account-grid { grid-template-columns: minmax(0, 1fr); } }
+
+/* Users */
+.users-page .user-new { align-items: end; }
+.users-page .row-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.users-page .share-form { display: flex; align-items: flex-end; gap: 12px; flex-wrap: wrap; margin: 12px 0; }
+.users-page .share-form label { display: flex; flex-direction: column; gap: 4px; font-size: var(--fs-sm); color: var(--muted); }
+.users-page .share-url { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+.users-page .share-url code { word-break: break-all; }

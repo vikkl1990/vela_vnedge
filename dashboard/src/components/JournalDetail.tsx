@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react'
 import { Link } from 'react-router-dom'
 import { useJournalDetail } from '../api/queries'
 import { Panel, Pill, Pnl, QueryState, Time } from './ui'
+import { Callout } from './kit'
 import { fmtMoney, fmtRecordedPrice as price, fmtR } from '../lib/format'
 
 const money = (n: number | null) => n == null || !Number.isFinite(n) ? 'Unknown' : fmtMoney(n)
@@ -10,13 +11,13 @@ export function JournalDetailPanel({ book, id, onClose }: {book: string; id: num
   const q = useJournalDetail(book, id)
   const ref = useRef<HTMLElement>(null)
   useEffect(() => { ref.current?.scrollIntoView({block:'start'}); ref.current?.focus({preventScroll:true}) }, [book,id])
-  return <section id="journal-detail" ref={ref} tabIndex={-1}><Panel title={`Trade #${id} · ${book} journal`} right={<button className="btn btn-sm" onClick={onClose}>Close detail</button>}>
+  return <section id="journal-detail" className="journal-detail" ref={ref} tabIndex={-1} aria-label={`Trade ${id} detail`}><Panel title={`Trade #${id} · ${book} journal`} right={<button className="btn btn-sm" onClick={onClose}>Close detail</button>}>
     <QueryState {...q} data={q.data} onRetry={() => q.refetch()}>{d => {
       const r = d.row
       return <>
         <p><b>{r.symbol} · {r.tf} · {r.side ?? 'Direction unknown'}</b> <Pill>{r.status}</Pill> {r.archived&&<Pill tone="warn">Before account reset</Pill>} <Link to={`/scanners/${encodeURIComponent(r.scannerId)}`}>{r.scannerName}</Link></p>
-        {r.missingPosition && <p className="banner banner-warn">This pending order was deleted. Its cancellation event survives, but prices, size and placement time cannot be reconstructed.</p>}
-        {r.accountingPending && <p className="banner banner-warn">Exchange accounting is incomplete. Reported P&amp;L is provisional.</p>}
+        {r.missingPosition && <Callout tone="warn" title="Order deleted">This pending order was deleted. Its cancellation event survives, but prices, size and placement time cannot be reconstructed.</Callout>}
+        {r.accountingPending && <Callout tone="warn" title="Provisional result">Exchange accounting is incomplete, so the reported P&amp;L may change.</Callout>}
         <div className="grid-2">
           <dl className="kv-list">
             <div><dt>{r.status === 'pending' ? 'Placed' : 'Entry'}</dt><dd>{r.entryAt === null ? 'Unknown' : <Time t={r.entryAt} mode="datetime" />}</dd></div>

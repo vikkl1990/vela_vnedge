@@ -1,95 +1,29 @@
-import { useMediaQuery } from '../lib/useMediaQuery'
-import { QueryFreshness } from './QueryFreshness'
-import { WorkflowGuide } from './WorkflowGuide'
-import { BrandMark } from './Brand'
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react'
+import { useQuery } from '@tanstack/react-query'
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
-import { useBackendOnline, useHealth, useKill, usePositions, useResetPaper, useResume, useRisk, useScannerIndex, useStats } from '../api/queries'
-import { RiskBanner } from './RiskBanner'
-import { ContextBar } from './ContextBar'
+import { api } from '../api/client'
+import { useBackendOnline, useHealth, usePositions, useKill, useResetPaper, useResume, useRisk, useScannerIndex, useStats } from '../api/queries'
 import { useAuth } from '../auth/AuthGate'
 import { useDensity } from '../lib/density'
-import { fmtAge, fmtMoney, fmtPnl, LOCAL_TZ, pnlClass } from '../lib/format'
+import type { PaletteItem } from '../lib/commandSearch'
+import { fmtAge } from '../lib/format'
 import { useHotkeys, type Hotkey } from '../lib/hotkeys'
+import { useMediaQuery } from '../lib/useMediaQuery'
+import { useNow } from '../lib/useNow'
 import { useTheme } from '../lib/theme'
 import { useToast } from '../lib/toast'
-import { useNow } from '../lib/useNow'
 import { useSSE } from '../sse/SSEProvider'
+import { ContextBar } from './ContextBar'
 import { RouteErrorBoundary } from './ErrorBoundary'
-import {
-  IconActivity,
-  IconBars,
-  IconBell,
-  IconBook,
-  IconBookmark,
-  IconCalendar,
-  IconCandles,
-  IconExchange,
-  IconFlask,
-  IconGraduation,
-  IconMenu,
-  IconMoon,
-  IconPanelLeft,
-  IconRows,
-  IconScan,
-  IconSettings,
-  IconShield,
-  IconSun,
-  IconTarget,
-  IconTerminal,
-  IconTrades,
-  IconUser,
-  IconUsers,
-  IconGrid,
-} from './Icons'
-import { BookBadge, ConfirmDialog, StatusDot } from './ui'
+import { QueryFreshness } from './QueryFreshness'
+import { RiskBanner } from './RiskBanner'
+import { Loading, StatusDot, ConfirmDialog } from './ui'
+import { WorkflowGuide } from './WorkflowGuide'
+import { CommandPalette } from './shell/CommandPalette'
+import { ACCOUNT_PAGES, PHONE_TABS, routeMeta, visibleGroups } from './shell/nav'
+import { Sidebar, type Connection } from './shell/Sidebar'
+import { Topbar } from './shell/Topbar'
 
-type NavItem = { to: string; label: string; icon: (p: { size?: number }) => ReactElement; key: string; end?: boolean; adminOnly?: boolean }
-
-/** Decision 169: the twenty pages in four groups, read down a sidebar instead of across a row of pills. */
-const GROUPS: Array<{ label: string; items: NavItem[] }> = [
-  {
-    label: 'Trade',
-    items: [
-      { to: '/', label: 'Trading workspace', icon: IconCandles, end: true, key: 'o' },
-      { to: '/overview', label: 'Operations', icon: IconActivity, key: 'v' },
-      { to: '/signals', label: 'Signals', icon: IconBell, key: 'i' },
-      { to: '/radar', label: 'Radar', icon: IconGrid, key: 'w' },
-      { to: '/monitor', label: 'Trade health', icon: IconActivity, key: 'h' },
-      { to: '/trades', label: 'Journals', icon: IconTrades, key: 't' },
-      { to: '/chart', label: 'Chart', icon: IconCandles, key: 'c' },
-    ],
-  },
-  {
-    label: 'Research',
-    items: [
-      { to: '/scanners', label: 'Scanners', icon: IconScan, key: 's' },
-      { to: '/library', label: 'Library', icon: IconBook, key: 'b' },
-      { to: '/incubator', label: 'Incubator', icon: IconFlask, key: 'n' },
-      { to: '/trackers', label: 'Trackers', icon: IconTarget, key: 'r' },
-      { to: '/analytics', label: 'Performance', icon: IconBars, key: 'a' },
-      { to: '/daily', label: 'Daily', icon: IconCalendar, key: 'y' },
-      { to: '/learn', label: 'Learn', icon: IconGraduation, key: 'l' },
-      { to: '/decisions', label: 'Decisions', icon: IconBookmark, key: 'd' },
-    ],
-  },
-  {
-    label: 'Control',
-    items: [
-      { to: '/gates', label: 'Gates', icon: IconShield, key: 'k' },
-      { to: '/exchange', label: 'Exchange', icon: IconExchange, key: 'x' },
-      { to: '/settings', label: 'Settings', icon: IconSettings, key: 'e' },
-      { to: '/logs', label: 'Logs', icon: IconTerminal, key: 'g' },
-    ],
-  },
-  {
-    label: 'Account',
-    items: [
-      { to: '/profile', label: 'Profile', icon: IconUser, key: 'p' },
-      { to: '/users', label: 'Users', icon: IconUsers, key: 'u', adminOnly: true },
-    ],
-  },
-]
 const STALE_AFTER_MS = 60_000
 const SIDE_KEY = 'vnedge.sidebar'
 
@@ -101,26 +35,7 @@ function readSidebar(): boolean {
   }
 }
 
-/** Route → { title, section, crumb } (scanner detail resolves the scanner's name when loaded). */
-function routeMeta(pathname: string, scannerName?: string): { title: string; section: string | null; parent?: { label: string; to: string } } {
-  const m = /^\/scanners\/([^/]+)/.exec(pathname)
-  if (m) return { title: scannerName ?? decodeURIComponent(m[1]), section: 'Research', parent: { label: 'Scanners', to: '/scanners' } }
-  const r = /^\/trades\/(\d+)\/replay/.exec(pathname)
-  if (r) return { title: `Trade #${r[1]} replay`, section: 'Trade', parent: { label: 'Journals', to: '/trades' } }
-  const seg = pathname === '/' ? '/' : `/${pathname.replace(/^\//, '').split('/')[0]}`
-  const group = GROUPS.find((g) => g.items.some((n) => n.to === seg))
-  const nav = group?.items.find((n) => n.to === seg)
-  return nav ? { title: nav.label, section: group!.label } : { title: 'Not found', section: null }
-}
-
-/** Header tick age. Owns the 1 s clock so only this text re-renders. */
-function TickAge({ lastTick }: { lastTick: number | null }) {
-  const now = useNow(1000)
-  // the 1 s clock can lag a tick that has just arrived: clamp so the age never reads as missing
-  return <span className="tick-age mono">{fmtAge(lastTick ? Math.max(0, now - lastTick) : null)}</span>
-}
-
-/** Stale-stream banner. Owns its own clock for the same reason as TickAge. */
+/** Stale-stream banner. Owns its own clock so only this banner re-renders each second. */
 function StaleBanner({ getLastEventAt, enabled }: { getLastEventAt: () => number | null; enabled: boolean }) {
   const now = useNow(1000)
   if (!enabled) return null
@@ -149,6 +64,7 @@ export function Layout() {
   const [confirmReset, setConfirmReset] = useState(false)
   const [confirmResume, setConfirmResume] = useState(false)
   const [confirmPause, setConfirmPause] = useState(false)
+  const [showPalette, setShowPalette] = useState(false)
   const risk = useRisk()
   const kill = useKill()
   const resume = useResume()
@@ -157,8 +73,8 @@ export function Layout() {
   const [showKeys, setShowKeys] = useState(false)
   const loc = useLocation()
   const auth = useAuth()
-  const groups = useMemo(() => GROUPS.map((g) => ({ ...g, items: g.items.filter((n) => !n.adminOnly || auth.isAdmin) })), [auth.isAdmin])
-  const nav = useMemo(() => groups.flatMap((g) => g.items), [groups])
+  const groups = useMemo(() => visibleGroups(auth.isAdmin), [auth.isAdmin])
+  const nav = useMemo(() => [...groups.flatMap((g) => g.items), ...ACCOUNT_PAGES.filter((p) => !p.adminOnly || auth.isAdmin)], [groups, auth.isAdmin])
 
   // ---- sidebar: collapsed to icons on a desktop (remembered), a drawer on a phone ----
   const [collapsed, setCollapsed] = useState(readSidebar)
@@ -185,7 +101,7 @@ export function Layout() {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') setDrawer(false)
       if (e.key !== 'Tab') return
-      const items = Array.from(sidebarRef.current?.querySelectorAll<HTMLElement>('a[href], button:not(:disabled), input:not(:disabled)') ?? []).filter(el => el.getClientRects().length > 0)
+      const items = Array.from(sidebarRef.current?.querySelectorAll<HTMLElement>('a[href], button:not(:disabled), input:not(:disabled)') ?? []).filter((el) => el.getClientRects().length > 0)
       const first = items[0], last = items[items.length - 1]
       if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last?.focus() }
       else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first?.focus() }
@@ -200,7 +116,7 @@ export function Layout() {
   const feedConnected = h?.feed.connected ?? false
   const lastTick = sse.lastTickAt ?? h?.feed.lastTickAt ?? null
   const s = stats.data
-  const openCount = positions.data?.length ?? s?.openPositions ?? 0
+  const openCount = positions.data?.length ?? s?.openPositions
 
   // ---- route meta: document.title + breadcrumb ----
   const scannerId = /^\/scanners\/([^/]+)/.exec(loc.pathname)?.[1]
@@ -211,20 +127,71 @@ export function Layout() {
   }, [meta.title])
 
   // ---- connection state ----
-  const sseTone = sse.status === 'connected' ? 'ok' : sse.status === 'offline' ? 'danger' : 'warn'
-  const sseLabel =
-    sse.status === 'connected' ? 'Stream live' : sse.status === 'connecting' ? 'Stream connecting' : sse.status === 'reconnecting' ? `Stream reconnecting (${sse.attempts})` : 'Stream offline'
+  const stream: Connection = {
+    tone: sse.status === 'connected' ? 'ok' : sse.status === 'offline' ? 'danger' : 'warn',
+    label: sse.status === 'connected' ? 'Stream live' : sse.status === 'connecting' ? 'Stream connecting' : sse.status === 'reconnecting' ? `Stream reconnecting (${sse.attempts})` : 'Stream offline',
+  }
   const backendDown = checked && !online
   const streamInterrupted = sse.status === 'offline' || sse.status === 'reconnecting'
   // Freshness is time-derived, so it lives in leaf components with their own 1 s clock.
-  // Keeping that clock in Layout re-rendered <Outlet/> — the whole active page — every second.
   const live = sse.status === 'connected' && feedConnected
-  const feedTone: 'ok' | 'warn' | 'neutral' = !feedKnown ? 'neutral' : live ? 'ok' : 'warn'
-  const feedLabel = !feedKnown ? 'Feed connecting' : live ? 'Feed connected' : 'Feed unavailable'
+  const feed: Connection = { tone: !feedKnown ? 'neutral' : live ? 'ok' : 'warn', label: !feedKnown ? 'Feed connecting' : live ? 'Feed connected' : 'Feed unavailable' }
+
+  // ---- what waits for a decision: a small count on the Decisions link (the same cached query the page uses) ----
+  const incubator = useQuery({ queryKey: ['incubator'], queryFn: api.incubator, refetchInterval: 60_000, staleTime: 20_000 })
+  const proposals = incubator.data?.pairs.filter((p) => p.stage === 'proposed' || p.stage === 'demote_proposed').length ?? 0
+  const badges = useMemo(
+    () => ({ '/decisions': proposals > 0 ? { n: proposals, tone: 'warn' as const, title: `${proposals} proposal${proposals === 1 ? '' : 's'} waiting` } : undefined }),
+    [proposals],
+  )
+
+  // ---- command palette: pages, actions, then scanners once someone types ----
+  const palette = useMemo<PaletteItem[]>(() => {
+    const pages: PaletteItem[] = nav.map((n) => ({ id: `page:${n.to}`, kind: 'page', title: n.label, subtitle: n.blurb, keywords: n.keywords, to: n.to, hint: `g ${n.key}` }))
+    const acts: PaletteItem[] = [
+      { id: 'act:theme', kind: 'action', title: theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme', keywords: 'appearance colour mode', hint: 't' },
+      { id: 'act:density', kind: 'action', title: density === 'compact' ? 'Switch to comfortable density' : 'Switch to compact density', keywords: 'rows tight spacing', hint: 'd' },
+      { id: 'act:sidebar', kind: 'action', title: collapsed ? 'Expand the sidebar' : 'Collapse the sidebar', keywords: 'navigation menu', hint: '[' },
+      { id: 'act:keys', kind: 'action', title: 'Show keyboard shortcuts', hint: '?' },
+    ]
+    if (auth.canTrade) {
+      acts.push(paused
+        ? { id: 'act:resume', kind: 'action', title: 'Resume entries…', subtitle: 'Asks for confirmation', keywords: 'kill switch halt' }
+        : { id: 'act:pause', kind: 'action', title: 'Pause entries…', subtitle: 'Asks for confirmation', keywords: 'kill switch halt stop' })
+      if (h?.mode === 'paper') acts.push({ id: 'act:reset', kind: 'action', title: 'Reset paper account…', subtitle: 'Asks for confirmation', keywords: 'restart equity' })
+    }
+    acts.push({ id: 'act:signout', kind: 'action', title: 'Sign out' })
+    const sc: PaletteItem[] = (scanners.data ?? []).filter((x) => !x.hidden).map((x) => ({ id: `scanner:${x.id}`, kind: 'scanner', title: x.name, subtitle: x.enabled ? 'enabled' : x.status === 'ok' ? 'scanner' : x.status, keywords: `${x.id} ${x.category ?? ''}`, to: `/scanners/${x.id}` }))
+    return [...pages, ...acts, ...sc]
+  }, [nav, theme, density, collapsed, auth.canTrade, paused, h?.mode, scanners.data])
+  const paletteActions = useMemo<Record<string, () => void>>(
+    () => ({
+      'act:theme': toggle,
+      'act:density': toggleDensity,
+      'act:sidebar': toggleSidebar,
+      'act:keys': () => setShowKeys(true),
+      'act:resume': () => setConfirmResume(true),
+      'act:pause': () => setConfirmPause(true),
+      'act:reset': () => setConfirmReset(true),
+      'act:signout': auth.signOut,
+    }),
+    [toggle, toggleDensity, toggleSidebar, auth.signOut],
+  )
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === 'k') {
+        e.preventDefault()
+        setShowPalette((v) => !v)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
 
   // ---- hotkeys ----
   const hotkeys = useMemo<Hotkey[]>(
     () => [
+      { keys: '/', label: 'Search pages, scanners and actions (also ⌘K / Ctrl+K)', run: () => setShowPalette(true) },
       ...nav.map((n) => ({ keys: `g ${n.key}`, label: `Go to ${n.label}`, run: () => navigate(n.to) })),
       { keys: '[', label: 'Collapse / expand the sidebar', run: toggleSidebar },
       { keys: 't', label: 'Toggle light / dark theme', run: toggle },
@@ -235,131 +202,60 @@ export function Layout() {
   )
   useHotkeys(hotkeys)
 
-  const bookLabel = !h ? 'loading' : h.mode === 'paper' ? 'paper account' : h.mode
-
   return (
     <div className={`app ${collapsed ? 'sidebar-collapsed' : ''} ${drawer ? 'sidebar-open' : ''}`}>
       <a href="#main" className="skip-link">
         Skip to content
       </a>
       <div className="sidebar-backdrop" onClick={() => setDrawer(false)} aria-hidden />
-      <aside ref={sidebarRef} className="sidebar" id="primary-sidebar" aria-label="Sections" inert={mobile && !drawer}>
-        <div className="sidebar-brand">
-          <BrandMark />
-          <span className="brand-name _lbl">VN EDGE</span>
-          <button className="iconbtn sidebar-close" aria-label="Close navigation" onClick={() => setDrawer(false)}>×</button>
-          <button className="iconbtn sidebar-collapse" onClick={toggleSidebar} aria-label={collapsed ? 'Expand the sidebar' : 'Collapse the sidebar'} title={`${collapsed ? 'Expand' : 'Collapse'} ( [ )`} aria-expanded={!collapsed}>
-            <IconPanelLeft />
-          </button>
-        </div>
-        <nav className="sidebar-nav" aria-label="Primary">
-          {groups.map((g) => (
-            <div key={g.label} className="sidebar-group">
-              <div className="sidebar-group-label _lbl">{g.label}</div>
-              {g.items.map((n) => {
-                const Icon = n.icon
-                return (
-                  <NavLink key={n.to} aria-label={n.label} to={n.to} end={n.end} className={({ isActive }) => `sidebar-link ${isActive ? 'on' : ''}`} title={collapsed ? `${n.label} (g ${n.key})` : undefined} onClick={() => setDrawer(false)}>
-                    <Icon size={17} />
-                    <span className="_lbl">{n.label}</span>
-                    <kbd className="sidebar-key _lbl" aria-hidden>g {n.key}</kbd>
-                  </NavLink>
-                )
-              })}
-            </div>
-          ))}
-        </nav>
-        <div className="sidebar-foot">
-          <div className="sidebar-conn" title={`${sseLabel} · ${feedLabel} · last tick`}>
-            <span className="conn"><StatusDot tone={sseTone} /> <span className="_lbl">{sseLabel}</span></span>
-            <span className="conn"><StatusDot tone={feedTone} /> <span className="_lbl">{feedLabel}</span></span>
-            <span className="conn _lbl muted">tick <TickAge lastTick={lastTick} /></span>
-          </div>
-          <div className="sidebar-tools">
-            <button className={`iconbtn ${density === 'compact' ? 'iconbtn-on' : ''}`} onClick={toggleDensity} aria-label={`Density: ${density}. Switch to ${density === 'compact' ? 'comfortable' : 'compact'}`} title={`Density: ${density} (d)`} aria-pressed={density === 'compact'}>
-              <IconRows />
-            </button>
-            <button className="iconbtn" onClick={toggle} aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`} title="Toggle light/dark (t)">
-              {theme === 'dark' ? <IconSun /> : <IconMoon />}
-            </button>
-            <button className="iconbtn" onClick={() => setShowKeys(true)} aria-label="Keyboard shortcuts" title="Keyboard shortcuts (?)">
-              <span aria-hidden>?</span>
-            </button>
-          </div>
-        </div>
-      </aside>
+      <Sidebar
+        sidebarRef={sidebarRef}
+        inert={mobile && !drawer}
+        groups={groups}
+        collapsed={collapsed}
+        onToggleCollapsed={toggleSidebar}
+        onNavigate={() => setDrawer(false)}
+        onClose={() => setDrawer(false)}
+        badges={badges}
+        stream={stream}
+        feed={feed}
+        lastTick={lastTick}
+        density={density}
+        onToggleDensity={toggleDensity}
+        theme={theme}
+        onToggleTheme={toggle}
+        onShowKeys={() => setShowKeys(true)}
+      />
 
       <div className="frame" inert={mobile && drawer}>
-        <header className="topbar">
-          <button ref={menuRef} aria-controls="primary-sidebar" className="iconbtn topbar-menu" onClick={() => setDrawer(true)} aria-label="Open the menu" aria-expanded={drawer}>
-            <IconMenu />
-          </button>
-          <span className="mobile-brand" aria-label="VN EDGE"><BrandMark /></span>
-          <nav className="crumb" aria-label="Breadcrumb">
-            {meta.section && <span className="muted">{meta.section}</span>}
-            {meta.section && <span className="crumb-sep" aria-hidden>›</span>}
-            {meta.parent && (
-              <>
-                <NavLink to={meta.parent.to} className="muted">{meta.parent.label}</NavLink>
-                <span className="crumb-sep" aria-hidden>›</span>
-              </>
-            )}
-            <b>{meta.title}</b>
-            <span className="pill pill-muted hide-mid" title="Times are shown in your local zone; hover any time for UTC">{LOCAL_TZ}</span>
-          </nav>
-
-          <div className="topbar-status">
-            {!h ? <span className="pill pill-muted">Account: loading</span> : <BookBadge book="account" mode={h.mode} />}
-            <span className="topstat topstat-eq" title={`Equity (USD) · ${bookLabel}`}>
-              <span className="topstat-label">Equity</span>
-              <span className="mono">{s ? fmtMoney(s.equity, 0) : '–'}</span>
-            </span>
-            <span className="topstat topstat-day" title="Equity change since 00:00 UTC, open positions included: the figure the daily kill switch watches">
-              <span className="topstat-label">Day · UTC</span>
-              <span className={`mono ${pnlClass(risk.data?.day?.pnl)}`}>{risk.data?.day ? fmtPnl(risk.data.day.pnl) : '–'}</span>
-            </span>
-            <span className="topstat" title="Open positions">
-              <span className="topstat-label">Open</span>
-              <span className="mono">{s ? openCount : '–'}</span>
-            </span>
-            {risk.data && risk.data.leverageMult !== undefined && risk.data.leverageMult < 1 && (
-              <span className="topstat" title={risk.data.sizing?.from === 'peak'
-                ? `New positions are sized at ${Math.round(risk.data.leverageMult * 100)}% while the account is ${risk.data.drawdownPct.toFixed(1)}% below its peak equity. Full size returns once the drawdown recovers below the threshold (risk.ddScale).`
-                : `New positions are sized at ${Math.round(risk.data.leverageMult * 100)}% while equity is ${(risk.data.sizing?.drawdownPct ?? 0).toFixed(1)}% below the starting capital of ${fmtMoney(risk.data.sizing?.startEquity ?? 0, 0)}. Full size returns once equity is back above it (risk.ddScale, risk.ddFrom).`}>
-                <span className="topstat-label">Size</span>
-                <span className="mono">{Math.round(risk.data.leverageMult * 100)}%</span>
-              </span>
-            )}
-            <span className="topstat hide-mid" title="Worker queue (queued / busy / size)">
-              <span className="topstat-label">Queue</span>
-              <span className="mono">{h ? `${h.worker.queued}/${h.worker.busy}/${h.worker.size}` : '–'}</span>
-            </span>
-          </div>
-
-          <div className="topbar-actions">
-            {auth.canTrade && (paused ? (
-              <button className="btn btn-sm btn-entries" title={`Entries halted — ${risk.data?.haltReason ?? 'risk limit'}. Resuming clears the halt and restarts the day and week windows from the current equity. Open positions keep running their exits.`} onClick={() => setConfirmResume(true)} disabled={!online || !risk.data || risk.isError || resume.isPending}>
-                {resume.isPending ? 'Resuming…' : '▶ Resume entries'}
-              </button>
-            ) : (
-              <button className="btn btn-sm btn-danger-outline btn-entries" title="Kill switch: no new entries until resumed. Open positions keep running their exits." onClick={() => setConfirmPause(true)} disabled={!online || !risk.data || risk.isError || kill.isPending}>
-                Pause entries
-              </button>
-            ))}
-            {auth.canTrade && h?.mode === 'paper' && (
-              <button className="btn btn-sm btn-danger-outline hide-narrow" onClick={() => setConfirmReset(true)} disabled={!online || reset.isPending}>
-                Reset paper account
-              </button>
-            )}
-            <span className="account-chip">
-              <NavLink to="/profile" className="account-name" title={`${auth.user.username} · ${auth.user.roleLabel}`}>
-                <span className="account-avatar" aria-hidden>{(auth.user.displayName || auth.user.username).slice(0, 1).toUpperCase()}</span>
-                <span className="hide-narrow">{auth.user.displayName || auth.user.username}</span>
-              </NavLink>
-              <button className="btn btn-sm" onClick={auth.signOut}>Sign out</button>
-            </span>
-          </div>
-        </header>
+        <Topbar
+          meta={meta}
+          menuRef={menuRef}
+          drawerOpen={drawer}
+          onOpenDrawer={() => setDrawer(true)}
+          onOpenPalette={() => setShowPalette(true)}
+          mode={h?.mode}
+          equity={s?.equity}
+          openCount={openCount}
+          risk={risk.data}
+          riskReady={Boolean(risk.data) && !risk.isError}
+          queue={h ? `${h.worker.queued}/${h.worker.busy}/${h.worker.size}` : null}
+          online={online}
+          canTrade={auth.canTrade}
+          paused={paused}
+          pending={paused ? resume.isPending : kill.isPending}
+          onPause={() => setConfirmPause(true)}
+          onResume={() => setConfirmResume(true)}
+          user={auth.user}
+          isAdmin={auth.isAdmin}
+          theme={theme}
+          onToggleTheme={toggle}
+          density={density}
+          onToggleDensity={toggleDensity}
+          onShowKeys={() => setShowKeys(true)}
+          onResetPaper={auth.canTrade && h?.mode === 'paper' ? () => setConfirmReset(true) : undefined}
+          onSignOut={auth.signOut}
+        />
         <ContextBar />
 
         {backendDown && (
@@ -382,17 +278,22 @@ export function Layout() {
           <RiskBanner />
           {loc.pathname !== '/' && <WorkflowGuide />}
           <RouteErrorBoundary>
-            <Outlet />
+            <Suspense fallback={<Loading kind="cards" label="Loading the page" />}>
+              <div className="route" key={loc.pathname}>
+                <Outlet />
+              </div>
+            </Suspense>
           </RouteErrorBoundary>
         </main>
         {/* decision 121: on a phone the four views an operator checks in on sit in a bar at the bottom */}
         <nav className="bottombar" aria-label="Phone">
-          <NavLink to="/" end className={({ isActive }) => `bottombar-item ${isActive ? 'on' : ''}`}>Workspace</NavLink>
-          <NavLink to="/decisions" className={({ isActive }) => `bottombar-item ${isActive ? 'on' : ''}`}>Decisions</NavLink>
-          <NavLink to="/trades" className={({ isActive }) => `bottombar-item ${isActive ? 'on' : ''}`}>Journals</NavLink>
-          <NavLink to="/signals" className={({ isActive }) => `bottombar-item ${isActive ? 'on' : ''}`}>Signals</NavLink>
+          {PHONE_TABS.map((t) => (
+            <NavLink key={t.to} to={t.to} end={t.end} className={({ isActive }) => `bottombar-item ${isActive ? 'on' : ''}`}>{t.label}</NavLink>
+          ))}
         </nav>
       </div>
+
+      <CommandPalette open={showPalette} onClose={() => setShowPalette(false)} items={palette} actions={paletteActions} />
 
       <ConfirmDialog
         open={confirmResume}
@@ -401,7 +302,7 @@ export function Layout() {
         confirmLabel="Resume entries"
         busy={resume.isPending}
         onCancel={() => setConfirmResume(false)}
-        onConfirm={() => resume.mutate(undefined, { onSuccess: () => setConfirmResume(false), onError: e => toast.error('Could not resume entries', e.message) })}
+        onConfirm={() => resume.mutate(undefined, { onSuccess: () => setConfirmResume(false), onError: (e) => toast.error('Could not resume entries', e.message) })}
       />
       <ConfirmDialog
         open={confirmPause}
@@ -462,6 +363,13 @@ function HotkeysDialog({ open, onClose, hotkeys }: { open: boolean; onClose: () 
               <dd>{k.label}</dd>
             </div>
           ))}
+          <div className="keys-row">
+            <dt>
+              <kbd>⌘</kbd>
+              <kbd>K</kbd>
+            </dt>
+            <dd>Open the command palette from anywhere</dd>
+          </div>
           <div className="keys-row">
             <dt>
               <kbd>Esc</kbd>

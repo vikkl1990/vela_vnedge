@@ -5,13 +5,18 @@ import { DataTable, type Column } from './DataTable'
 import { JournalDetailPanel } from './JournalDetail'
 import { JournalExport } from './JournalExport'
 import { Panel, Pill, Pnl, QueryState, Time } from './ui'
+import { Callout, EmptyState, Stat, StatGrid, TabPanel, Tabs, Toolbar } from './kit'
+import '../styles/pages/trades.css'
 import { fmtMoney, fmtRecordedPrice as price, fmtR } from '../lib/format'
 import { JOURNAL_PAGE_SIZE, JOURNAL_PERIODS, journalFilters, updateJournalFilters } from '../lib/journalFilters'
 import { DELTA_TIMEFRAMES } from '../lib/timeframes'
 import { useNow } from '../lib/useNow'
 
 const money = (n: number | null) => n === null ? 'Unknown' : fmtMoney(n)
-export function TradeJournal() {
+type Book = 'paper' | 'shadow'
+
+/** The journal: a book switch, filters, the totals for every match, and the rows. `exportOpen` is owned by the page so its header can open it. */
+export function TradeJournal({ exportOpen = false, onExportClose }: { exportOpen?: boolean; onExportClose?: () => void }) {
   const [params, setParams] = useSearchParams(), f = journalFilters(params, useNow(60_000))
   const book = params.get('book') ?? 'paper', status = params.get('status') ?? 'closed', scope = params.get('scope') ?? 'all'
   const history = params.get('history') ?? 'current'
@@ -35,47 +40,70 @@ export function TradeJournal() {
     {key:'r',header:'Net R / peak R',numeric:true,render:r=><span>{r.r===null?'—':fmtR(r.r)}<div className="small muted">{r.peakR===null?'Unknown':fmtR(r.peakR)}</div></span>},
     {key:'exitReason',header:'Exit / ML',render:r=><span>{r.exitReason??'—'}<div className="small muted">ML {r.mlProbability===null?'not recorded':`${(r.mlProbability*100).toFixed(1)}%`}</div></span>},
   ]
+  const advancedActive = history !== 'current' || !!f.reason || scope !== 'all' || dateBy !== (['open', 'pending', 'all'].includes(status) ? 'entry' : 'exit')
+  const filtersActive = [...params.keys()].some((k) => !['book', 'trade'].includes(k))
+  const bookItems: Array<{ id: Book; label: string }> = [{ id: 'paper', label: 'Paper journal' }, { id: 'shadow', label: 'Shadow journal' }]
+  const bookId: Book = book === 'shadow' ? 'shadow' : 'paper'
   return <>
-    <div className="row gap" aria-label="Journal books">
-      <button className={`btn ${book==='paper'?'btn-cta':''}`} aria-pressed={book==='paper'} onClick={()=>update({book:'paper'})}>Paper journal</button>
-      <button className={`btn ${book==='shadow'?'btn-cta':''}`} aria-pressed={book==='shadow'} onClick={()=>update({book:'shadow'})}>Shadow journal</button>
-    </div>
-    <JournalExport key={book} query={query} total={q.data?.total} filterError={f.error} />
+    <Tabs value={bookId} onChange={(b) => update({ book: b })} items={bookItems} label="Journal books" idPrefix="journal" />
+    <TabPanel id={bookId} value={bookId} idPrefix="journal">
+    <div className="stack">
+    {exportOpen && (
+      <div className="journal-export-wrap">
+        <JournalExport key={book} query={query} total={q.data?.total} filterError={f.error} />
+        {onExportClose && <button className="btn btn-sm journal-export-close" onClick={onExportClose}>Close export</button>}
+      </div>
+    )}
     <Panel className="trade-journal" title={`${book === 'shadow' ? 'Shadow' : 'Paper'} journal`} pad={false} right={<div className="page-actions">
       <button className="btn btn-sm" onClick={()=>update({period:'today',status:'closed',reason:'sl',dateBy:'exit'})}>Today's stops</button>
-      <button className="btn btn-sm" onClick={()=>setParams({book})}>Clear filters</button>
+      <button className="btn btn-sm" onClick={()=>setParams({book})} disabled={!filtersActive}>Clear filters</button>
     </div>}>
-      <div className="journal-filters">
-        <label>History<select className="select" aria-label="Journal history" value={history} onChange={e=>update({history:e.target.value})}><option value="current">Current account period</option><option value="archived">Before account resets</option><option value="all">Current + archived</option></select></label>
-        <label>Status<select className="select" aria-label="Journal status" value={status} onChange={e=>update({status:e.target.value,dateBy:['open','pending','all'].includes(e.target.value)?'entry':'exit'})}>{['closed','all','open','pending','cancelled','voided'].map(s=><option key={s}>{s}</option>)}</select></label>
-        <label>Market<select className="select" aria-label="Journal market" value={f.symbol} onChange={e=>update({symbol:e.target.value})}><option value="">All markets</option>{symbols.map(s=><option key={s}>{s}</option>)}</select></label>
-        <label>Timeframe<select className="select" aria-label="Journal timeframe" value={f.tf} onChange={e=>update({tf:e.target.value})}><option value="">All timeframes</option>{[...new Set([...DELTA_TIMEFRAMES,...(f.tf?[f.tf]:[])])].map(s=><option key={s}>{s}</option>)}</select></label>
-        <label>Direction<select className="select" aria-label="Journal direction" value={f.side} onChange={e=>update({side:e.target.value})}><option value="">All directions</option><option value="long">Long</option><option value="short">Short</option></select></label>
-        <label>Exit reason<select className="select" aria-label="Journal exit reason" value={f.reason} onChange={e=>update({reason:e.target.value})}><option value="">All reasons</option>{[...new Set(['sl','trail','be','tp1','tp2','tp3','script_exit','script_flip','reversal','manual','liquidation','funding',...(f.reason?[f.reason]:[])])].map(s=><option key={s}>{s}</option>)}</select></label>
-        <label>Evidence<select className="select" aria-label="Journal evidence scope" value={scope} onChange={e=>update({scope:e.target.value})}><option value="all">All retained records</option><option value="evidence">Performance / incubator evidence</option><option value="watch">Watch-only</option><option value="plans">Plan comparisons</option></select></label>
-        <label>Date basis<select className="select" aria-label="Journal date basis" value={dateBy} onChange={e=>update({dateBy:e.target.value})}><option value="exit">Exit / cancellation</option><option value="entry">Entry / placement</option></select></label>
-        <label>Period<select className="select" aria-label="Closing period" value={f.period} onChange={e=>update({period:e.target.value})}>{JOURNAL_PERIODS.map(([v,l])=><option key={v} value={v}>{l}</option>)}</select></label>
-        <label>Sort all matches<select className="select" aria-label="Journal sort" value={sort} onChange={e=>update({sort:e.target.value})}><option value="newest">Newest first</option><option value="oldest">Oldest first</option><option value="worst">Largest losses first</option><option value="best">Largest profits first</option></select></label>
-        <label>Scanner<input className="input" aria-label="Journal scanner" list="journal-scanners" value={f.scanner} onChange={e=>update({scanner:e.target.value})} placeholder="All scanners; search name / ID"/><datalist id="journal-scanners">{scanners.data?.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}</datalist></label>
-        {f.period==='custom'&&<><label>From (UTC)<input className="input" type="date" value={f.start} onChange={e=>update({start:e.target.value})}/></label><label>Through (UTC)<input className="input" type="date" value={f.end} onChange={e=>update({end:e.target.value})}/></label></>}
+      <div className="jf">
+        <Toolbar>
+          <label>Status<select className="select" aria-label="Journal status" value={status} onChange={e=>update({status:e.target.value,dateBy:['open','pending','all'].includes(e.target.value)?'entry':'exit'})}>{['closed','all','open','pending','cancelled','voided'].map(s=><option key={s}>{s}</option>)}</select></label>
+          <label>Market<select className="select" aria-label="Journal market" value={f.symbol} onChange={e=>update({symbol:e.target.value})}><option value="">All markets</option>{symbols.map(s=><option key={s}>{s}</option>)}</select></label>
+          <label>Timeframe<select className="select" aria-label="Journal timeframe" value={f.tf} onChange={e=>update({tf:e.target.value})}><option value="">All timeframes</option>{[...new Set([...DELTA_TIMEFRAMES,...(f.tf?[f.tf]:[])])].map(s=><option key={s}>{s}</option>)}</select></label>
+          <label>Direction<select className="select" aria-label="Journal direction" value={f.side} onChange={e=>update({side:e.target.value})}><option value="">All directions</option><option value="long">Long</option><option value="short">Short</option></select></label>
+          <label>Period<select className="select" aria-label="Closing period" value={f.period} onChange={e=>update({period:e.target.value})}>{JOURNAL_PERIODS.map(([v,l])=><option key={v} value={v}>{l}</option>)}</select></label>
+          <label>Sort all matches<select className="select" aria-label="Journal sort" value={sort} onChange={e=>update({sort:e.target.value})}><option value="newest">Newest first</option><option value="oldest">Oldest first</option><option value="worst">Largest losses first</option><option value="best">Largest profits first</option></select></label>
+          <label className="jf-wide">Scanner<input className="input" aria-label="Journal scanner" list="journal-scanners" value={f.scanner} onChange={e=>update({scanner:e.target.value})} placeholder="All scanners; search name / ID"/><datalist id="journal-scanners">{scanners.data?.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}</datalist></label>
+          {f.period==='custom'&&<><label>From (UTC)<input className="input" type="date" value={f.start} onChange={e=>update({start:e.target.value})}/></label><label>Through (UTC)<input className="input" type="date" value={f.end} onChange={e=>update({end:e.target.value})}/></label></>}
+        </Toolbar>
+        <details className="jf-more" open={advancedActive || undefined}>
+          <summary>More filters{advancedActive ? ' (in use)' : ''}</summary>
+          <Toolbar>
+            <label>History<select className="select" aria-label="Journal history" value={history} onChange={e=>update({history:e.target.value})}><option value="current">Current account period</option><option value="archived">Before account resets</option><option value="all">Current + archived</option></select></label>
+            <label>Exit reason<select className="select" aria-label="Journal exit reason" value={f.reason} onChange={e=>update({reason:e.target.value})}><option value="">All reasons</option>{[...new Set(['sl','trail','be','tp1','tp2','tp3','script_exit','script_flip','reversal','manual','liquidation','funding',...(f.reason?[f.reason]:[])])].map(s=><option key={s}>{s}</option>)}</select></label>
+            <label>Evidence<select className="select" aria-label="Journal evidence scope" value={scope} onChange={e=>update({scope:e.target.value})}><option value="all">All retained records</option><option value="evidence">Performance / incubator evidence</option><option value="watch">Watch-only</option><option value="plans">Plan comparisons</option></select></label>
+            <label>Date basis<select className="select" aria-label="Journal date basis" value={dateBy} onChange={e=>update({dateBy:e.target.value})}><option value="exit">Exit / cancellation</option><option value="entry">Entry / placement</option></select></label>
+          </Toolbar>
+        </details>
       </div>
-      <p className="journal-scope small muted">Every retained record in the selected history is available across pages. Archived open / pending records describe the pre-reset state, not current exposure. Date ranges use UTC; displayed timestamps use your local zone. {book==='shadow'?'Shadow dollars are synthetic and do not represent account profit. All-record totals include watch-only and plan comparisons; choose Performance / incubator evidence to match performance scope.':'Paper and shadow totals are kept separate.'} Open and pending records do not count as closed profit.</p>
-      {f.error?<p className="banner banner-warn" role="alert">{f.error}</p>:<QueryState {...q} data={q.data} onRetry={()=>q.refetch()}>{d=>{
+      {f.error?<div className="jf-pad"><Callout tone="warn" title="Fix the filter">{f.error}</Callout></div>:<QueryState {...q} data={q.data} onRetry={()=>q.refetch()}>{d=>{
         const s=d.summary, pages=Math.max(1,Math.ceil(d.total/JOURNAL_PAGE_SIZE))
         return <>
-          <div className="journal-totals" aria-label="Filtered journal totals">
-            <div><span>Matching records / archived</span><strong>{d.total} / {s.archived}</strong></div><div><span>Closed / open / pending</span><strong>{s.closed} / {s.open} / {s.pending}</strong></div>
-            <div><span>Closed net · {book==='shadow'?'synthetic ':''}USD</span><strong><Pnl value={s.net}/></strong></div><div><span>Commission · closed</span><strong>{money(s.commission)}</strong></div>
-            <div><span>Recorded funding · closed</span><strong>{s.unknownFunding?'Incomplete':money(s.funding)}</strong></div>
-            <div><span>Win rate / profit factor</span><strong>{s.winRate===null?'—':`${s.winRate.toFixed(1)}%`} / {s.profitFactor===null?s.noLosses?'No losses':'—':s.profitFactor.toFixed(2)}</strong></div>
-            <div><span>Sum R / average R</span><strong>{s.sumR===null?'—':fmtR(s.sumR)} / {s.avgR===null?'—':fmtR(s.avgR)}</strong></div>
+          <div className="jf-pad">
+            <StatGrid min={190}>
+              <Stat label="Matching records" value={d.total.toLocaleString()} sub={`${s.closed} closed · ${s.open} open · ${s.pending} pending · ${s.archived} archived`} />
+              <Stat label={`Closed net · ${book==='shadow'?'synthetic ':''}USD`} value={<Pnl value={s.net}/>} sub={`commission ${money(s.commission)} · funding ${s.unknownFunding?'incomplete':money(s.funding)}`} />
+              <Stat label="Win rate" value={s.winRate===null?'—':`${s.winRate.toFixed(1)}%`} sub={`profit factor ${s.profitFactor===null?s.noLosses?'no losses':'—':s.profitFactor.toFixed(2)}`} />
+              <Stat label="Average R" value={s.avgR===null?'—':fmtR(s.avgR)} sub={`sum ${s.sumR===null?'—':fmtR(s.sumR)}`} />
+            </StatGrid>
           </div>
-          <p className="journal-scope small muted">Totals and sorting cover all matching records, not just this page. Gross trading − commission + recorded funding = realized net. Missing risk: {s.unknownRisk}; missing funding detail: {s.unknownFunding}; missing net: {s.unknownNet}; provisional exchange accounting: {s.accountingPending}. Exports include all matches.</p>
+          <details className="jf-notes jf-pad">
+            <summary>How these totals are counted</summary>
+            <p className="small muted">Totals and sorting cover all matching records, not just this page. Gross trading − commission + recorded funding = realized net. Missing risk: {s.unknownRisk}; missing funding detail: {s.unknownFunding}; missing net: {s.unknownNet}; provisional exchange accounting: {s.accountingPending}. Exports include all matches.</p>
+            <p className="small muted">Every retained record in the selected history is available across pages. Archived open / pending records describe the pre-reset state, not current exposure. Date ranges use UTC; displayed timestamps use your local zone. {book==='shadow'?'Shadow dollars are synthetic and do not represent account profit. All-record totals include watch-only and plan comparisons; choose Performance / incubator evidence to match performance scope.':'Paper and shadow totals are kept separate.'} Open and pending records do not count as closed profit.</p>
+          </details>
           <div className="journal-pagination"><span>{d.total?`${Math.min(d.offset+1,d.total)}–${Math.min(d.offset+d.rows.length,d.total)} of ${d.total}`:'No matching records'} · Page {f.page+1} / {pages}</span><div className="row gap"><button className="btn btn-sm" disabled={f.page===0} onClick={()=>update({page:String(f.page-1)})}>Previous</button><button className="btn btn-sm" disabled={f.page>=pages-1} onClick={()=>update({page:String(f.page+1)})}>Next</button>{f.page>=pages&&<button className="btn btn-sm" onClick={()=>update({page:''})}>First page</button>}</div></div>
-          <DataTable columns={cols} rows={d.rows} rowKey={r=>r.id} onRowClick={show} emptyLabel="No records match these filters." caption={`${book} journal`} />
+          {d.rows.length===0
+            ? <EmptyState title="No records match these filters" hint="Widen the period or status, or clear the filters to see every record in this book." action={<button className="btn btn-sm" onClick={()=>setParams({book})}>Clear filters</button>} />
+            : <DataTable columns={cols} rows={d.rows} rowKey={r=>r.id} onRowClick={show} emptyLabel="No records match these filters." caption={`${book} journal`} />}
         </>
       }}</QueryState>}
     </Panel>
     {id!==null&&<JournalDetailPanel book={book} id={id} onClose={()=>{const next=new URLSearchParams(params);next.delete('trade');setParams(next)}}/>}
+    </div>
+    </TabPanel>
   </>
 }

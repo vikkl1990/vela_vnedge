@@ -1,0 +1,80 @@
+/* Scanners list and detail. Tokens only. */
+
+/* ---------- list page ---------- */
+.sc-page { display: flex; flex-direction: column; gap: var(--gap-page); min-width: 0; }
+.sc-filters { display: flex; flex-direction: column; gap: 10px; }
+.sc-search { flex: 1 1 240px; min-width: 0; max-width: 360px; width: 100%; }
+.sc-field { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-sm); color: var(--muted); }
+.sc-field .select { max-width: 200px; }
+.sc-check { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-sm); color: var(--muted); cursor: pointer; white-space: nowrap; }
+.sc-check input { accent-color: var(--accent-2); }
+.sc-count { font-size: var(--fs-sm); color: var(--muted); white-space: nowrap; }
+.sc-chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.sc-chip {
+  display: inline-flex; align-items: center; gap: 6px; min-height: 28px; padding: 0 12px; border-radius: var(--pill);
+  border: 1px solid var(--border-strong); background: transparent; color: var(--muted); font: inherit; font-size: var(--fs-sm); font-weight: 600; cursor: pointer;
+  transition: background var(--dur-1) var(--ease), color var(--dur-1) var(--ease), border-color var(--dur-1) var(--ease);
+}
+.sc-chip:hover { color: var(--text); background: color-mix(in srgb, var(--text) 5%, transparent); }
+.sc-chip[aria-pressed='true'] { color: var(--text); background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent-2) 55%, transparent); }
+.sc-chip-n { font-size: 11px; color: var(--muted-2); }
+
+/* worth acting on */
+.sc-todo-title { display: flex; align-items: center; gap: 10px; }
+.sc-todo-actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.sc-todo-tone { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--warn); }
+.sc-todo-tone.danger { background: var(--loss); }
+.needs-list .sc-todo-item { gap: 10px 12px; }
+.sc-todo-item .needs-text { display: flex; align-items: baseline; gap: 8px; }
+
+/* list view */
+.sc-list .table td, .sc-list .table th { vertical-align: middle; }
+.sc-name { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.sc-name-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.sc-name-line { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.sc-name-line .strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 210px; }
+.sc-sub { font-size: var(--fs-xs); color: var(--muted-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 190px; display: block; }
+.sc-cell { display: flex; flex-direction: column; gap: 2px; align-items: flex-start; }
+.sc-cell.end { align-items: flex-end; }
+.sc-share { display: inline-flex; align-items: center; gap: 8px; min-width: 100px; }
+.sc-share-track { flex: 1 1 56px; min-width: 56px; height: 6px; border-radius: var(--pill); background: var(--surface-3); overflow: hidden; }
+.sc-share-fill { display: block; height: 100%; border-radius: var(--pill); background: var(--gradient-accent); }
+.sc-share .mono { min-width: 34px; text-align: right; }
+.sc-actions { display: inline-flex; align-items: center; gap: 6px; justify-content: flex-end; }
+
+.sc-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 380px), 1fr)); gap: 12px; }
+
+/* ---------- detail page ---------- */
+.sd-facts { display: flex; flex-wrap: wrap; gap: 6px 8px; align-items: center; }
+.sd-fact {
+  display: inline-flex; align-items: baseline; gap: 6px; padding: 3px 10px; border-radius: var(--pill);
+  background: var(--surface-2); border: 1px solid var(--border); font-size: var(--fs-xs); color: var(--muted);
+}
+.sd-fact b { color: var(--text); font-weight: 600; }
+.sd-chart-bar { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; }
+.sd-cols { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--gap-page); }
+.sd-lastrun { display: flex; flex-direction: column; gap: 4px; font-size: var(--fs-sm); color: var(--muted); line-height: 1.5; }
+.sd-lastrun code, .sd-lastrun .mono { color: var(--text); }
+.sd-read-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); gap: 20px; align-items: start; }
+.sd-read-grid > div { min-width: 0; }
+.sd-profile-wrap { overflow-x: auto; max-width: 100%; }
+
+@media (max-width: 700px) {
+  .sc-search { max-width: none; }
+  .sc-field .select { max-width: none; }
+  .sc-name-line .strong { max-width: 200px; }
+  .sc-chip, .sc-actions .btn { min-height: 36px; }
+}
+
+.sc-books { display: inline-flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; }
+.sc-books .sc-sub { min-width: 0; }
+.sd-read-grid .row { flex-wrap: wrap; }
+.sd-read-grid .field { min-width: 0; max-width: 100%; }
+.sd-read-grid .select, .sd-read-grid .input { max-width: 100%; min-width: 0; }
+
+/* eight headline numbers read as two even rows, never a lone tile */
+.sd-stats .stat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+@media (min-width: 900px) {
+  .sd-stats .stat-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .sd-stats-3 .stat-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}

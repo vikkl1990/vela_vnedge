@@ -1,0 +1,103 @@
+/* Reset, document defaults, focus, motion and utility classes. */
+* { box-sizing: border-box; }
+:focus-visible {
+  outline: 2px solid var(--accent-2);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+:focus:not(:focus-visible) { outline: none; }
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+}
+.skip-link {
+  position: absolute; left: 8px; top: -48px; z-index: var(--z-toast);
+  padding: 8px 12px; background: var(--action); color: #fff; border-radius: var(--radius-sm);
+  font-weight: 700; transition: top var(--dur-1) var(--ease);
+}
+.skip-link:focus { top: 8px; }
+/* one quiet ambient glow behind the page, fixed so it never scrolls with the content */
+body {
+  background:
+    radial-gradient(900px 420px at 12% -8%, color-mix(in srgb, var(--accent) 9%, transparent), transparent 70%),
+    radial-gradient(700px 380px at 96% 0%, color-mix(in srgb, var(--accent-2) 5%, transparent), transparent 70%),
+    var(--bg);
+  background-attachment: fixed;
+}
+/* thin, theme-aware scrollbars everywhere */
+* { scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
+/* numbers align in columns wherever they appear */
+table, .kpi-value, .topstat, .num, .mono { font-variant-numeric: tabular-nums; }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; transition-duration: 0.001ms !important; scroll-behavior: auto !important; }
+}
+html,
+body,
+#root {
+  /* min-height, not height: `height:100%` capped body at the viewport while its content
+     overflowed, making BOTH html and body scrollable (two scrollbars that fight each other). */
+  min-height: 100%;
+}
+html { overflow-y: auto; }
+body { overflow-y: visible; }
+body {
+  margin: 0;
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: 13px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+  font-feature-settings: 'ss01', 'cv11';
+}
+a {
+  color: inherit;
+  text-decoration: none;
+}
+code,
+pre,
+.mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+h1,
+h2,
+h3 {
+  margin: 0;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+button,
+input,
+select {
+  font: inherit;
+  color: inherit;
+}
+::selection {
+  background: var(--accent-soft);
+}
+
+/* ---------- utilities ---------- */
+.muted { color: var(--muted); }
+.small { font-size: 11.5px; }
+.strong { font-weight: 700; }
+.center { text-align: center; }
+.gain { color: var(--gain); }
+.loss { color: var(--loss); }
+.warn { color: var(--warn); }
+.accent { color: var(--accent-3); }
+.neutral { color: var(--text); }
+.row { display: flex; align-items: center; }
+.gap { gap: 8px; }
+.grow { flex: 1; }
+.mt { margin-top: 8px; }
+.mb { margin-bottom: 8px; }
+.ml { margin-left: 6px; }
+.pad { padding: 12px; }
+.link { color: var(--accent-3); }
+.link:hover { text-decoration: underline; }
+.ta-r { text-align: right; }
+.ta-c { text-align: center; }
+.num { text-align: right; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.empty-hint { display: block; font-size: 11.5px; color: var(--muted-2); margin-top: 2px; font-weight: 400; }
+.hide-narrow { display: inline; }
+

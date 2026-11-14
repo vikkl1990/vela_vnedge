@@ -1,0 +1,18 @@
+/* Signals page: only what the shared kit does not cover. */
+.signals-page .sig-stack { display: flex; flex-direction: column; gap: var(--gap-page); min-width: 0; }
+.signals-page .sig-note { margin: 0; }
+.signals-page .sig-tf { width: 130px; }
+.signals-page .section > .chips { align-items: center; }
+@media (max-width: 640px) {
+  .signals-page .sig-tf { width: 100%; }
+  .signals-page .toolbar-main > .select, .signals-page .toolbar-main > .input { flex: 1 1 140px; min-width: 0; }
+}
+/* the flow summary is context for the table, so its tiles stay compact */
+.signals-page .stat-grid .stat { padding: 9px 14px; gap: 2px; }
+.signals-page .stat-grid .stat-value { font-size: var(--fs-xl); }
+.signals-page .toolbar-main > .select { max-width: 220px; }
+@media (max-width: 640px) {
+  .signals-page .stat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .signals-page .stat-grid .stat { padding: 8px 10px; }
+  .signals-page .stat-grid .stat-sub { display: none; }
+}

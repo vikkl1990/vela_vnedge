@@ -1,0 +1,11 @@
+/* Trade monitor: layout glue for the toolbar fields and stacked sections. */
+.monitor-page .mon-stack { display: flex; flex-direction: column; gap: var(--gap-page); min-width: 0; }
+.monitor-page .mon-field { display: flex; flex-direction: column; gap: 4px; font-size: var(--fs-xs); color: var(--muted); }
+.monitor-page .mon-check { flex-direction: row; align-items: center; gap: 6px; padding-bottom: 6px; align-self: flex-end; }
+.monitor-page .mon-legend { margin: 12px 0 0; }
+.monitor-page .toolbar-main { align-items: flex-end; }
+@media (max-width: 600px) {
+  .monitor-page .toolbar-main { align-items: stretch; }
+  .monitor-page .mon-field { flex: 1 1 100%; }
+  .monitor-page .mon-field .input, .monitor-page .mon-field .select { width: 100%; }
+}

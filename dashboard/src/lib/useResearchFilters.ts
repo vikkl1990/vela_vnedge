@@ -1,5 +1,5 @@
 import { useLocation, useNavigate } from 'react-router-dom'
-import { patchSearch } from './researchNavigation'
+import { patchSearch, sectionLocation } from './researchNavigation'
 
 export function useResearchFilters() {
   const location = useLocation()
@@ -9,5 +9,8 @@ export function useResearchFilters() {
     const search = patchSearch(params, changes).toString()
     void navigate({ pathname: location.pathname, search: search ? `?${search}` : '', hash: location.hash }, { replace, preventScrollReset: true })
   }
-  return { params, set, hash: location.hash }
+  const setSection = (section: string | null) => {
+    void navigate(sectionLocation(location.pathname, params, section), { preventScrollReset: true })
+  }
+  return { params, set, setSection, hash: location.hash }
 }

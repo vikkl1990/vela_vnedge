@@ -2,7 +2,9 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState, type UIEvent }
 import { useLogs } from '../api/queries'
 import type { LogEntry, LogLevel } from '../api/types'
 import { WindowedList } from '../components/WindowedList'
-import { Empty, ErrorState, Loading, PageTitle, Panel, Segmented } from '../components/ui'
+import { ErrorState, Loading, Panel, Segmented } from '../components/ui'
+import { EmptyState, PageHeader, Toolbar } from '../components/kit'
+import '../styles/pages/logs.css'
 import { fmtTime, fmtUtc } from '../lib/format'
 
 const LEVELS: ('all' | LogLevel)[] = ['all', 'debug', 'info', 'warn', 'error']
@@ -68,34 +70,29 @@ export function Logs() {
     boxRef.current = el
   }, [])
 
+  const filtered = level !== 'all' || scope !== '' || text.trim() !== ''
+  const clearFilters = () => { setLevel('all'); setScope(''); setText('') }
+
   return (
-    <div className="page">
-      <PageTitle pre="Every line," accent="traced." sub="Tail of /api/logs plus live `log` events. Click a line to expand its payload." />
-      <Panel
-        title={
-          <span>
-            Logs <span className="muted small">({rows.length})</span>
-          </span>
-        }
-        right={
-          <div className="row gap filters">
-            <Segmented ariaLabel="Level" value={level} onChange={setLevel} options={LEVELS} />
-            <select className="select select-sm" value={scope} onChange={(e) => setScope(e.target.value)} aria-label="Scope">
-              <option value="">all scopes</option>
-              {scopes.map((s) => (
-                <option key={s} value={s}>
-                  {s}
-                </option>
-              ))}
-            </select>
-            <input className="input input-sm" placeholder="search…" value={text} onChange={(e) => setText(e.target.value)} aria-label="Search logs" />
-            <label className="check">
-              <input type="checkbox" checked={auto} onChange={(e) => setAuto(e.target.checked)} /> auto-scroll
-            </label>
-          </div>
-        }
-        pad={false}
-      >
+    <div className="page logs-page">
+      <PageHeader title="Logs" subtitle="The newest 400 lines, plus live events as they arrive. Click a line to open its details." />
+      <Toolbar end={<span className="muted small mono" role="status">{rows.length} line{rows.length === 1 ? '' : 's'}{filtered ? ' match' : ''}</span>}>
+        <Segmented ariaLabel="Level" value={level} onChange={setLevel} options={LEVELS} />
+        <select className="select select-sm" value={scope} onChange={(e) => setScope(e.target.value)} aria-label="Scope">
+          <option value="">all scopes</option>
+          {scopes.map((s) => (
+            <option key={s} value={s}>
+              {s}
+            </option>
+          ))}
+        </select>
+        <input className="input input-sm logs-search" type="search" placeholder="Search messages and data" value={text} onChange={(e) => setText(e.target.value)} aria-label="Search logs" />
+        <label className="check">
+          <input type="checkbox" checked={auto} onChange={(e) => setAuto(e.target.checked)} /> Follow newest
+        </label>
+        {filtered && <button className="btn btn-sm" onClick={clearFilters}>Clear filters</button>}
+      </Toolbar>
+      <Panel title="Log tail" pad={false}>
         {logs.isLoading && !logs.data && (
           <div className="logbox">
             <Loading rows={12} />
@@ -105,13 +102,19 @@ export function Logs() {
         {logs.data && (
           <WindowedList
             className="logbox"
-            height="calc(100vh - 290px)"
+            height="max(320px, calc(100vh - 330px))"
             items={rows}
             itemKey={keyOf}
             itemHeight={itemHeight}
             scrollRef={setBox}
             onScroll={onScroll}
-            empty={<Empty label="No log lines match." hint="Clear the filters or wait for new events." />}
+            empty={
+              <EmptyState
+                title={filtered ? 'No log lines match' : 'No log lines yet'}
+                hint={filtered ? 'Loosen the level, scope or search, or wait for new events.' : 'Lines appear here as the server writes them.'}
+                action={filtered ? <button className="btn btn-sm" onClick={clearFilters}>Clear filters</button> : undefined}
+              />
+            }
             render={(l, i) => {
               const k = keyOf(l, i)
               return <LogLine l={l} open={open.has(k)} onToggle={() => toggle(k)} />

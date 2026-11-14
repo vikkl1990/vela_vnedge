@@ -1,17 +1,18 @@
-import { ResearchSections } from '../components/ResearchSections'
-import { choice, sectionFromUrl } from '../lib/researchNavigation'
-import { useResearchFilters } from '../lib/useResearchFilters'
-import { summarizeOutcomes, gateOf } from '../lib/signalOutcomes'
-import { DELTA_TIMEFRAMES } from '../lib/timeframes'
 import {CostAudit} from '../components/ExecutionPlans'
 import { DecisionTrace } from '../components/DecisionTrace'
 import { ScannerPipelinePanel } from '../components/ScannerPipeline'
 import { Fragment, useCallback, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
+import { choice, signalSectionFromUrl } from '../lib/researchNavigation'
+import { useResearchFilters } from '../lib/useResearchFilters'
+import { summarizeOutcomes, gateOf } from '../lib/signalOutcomes'
+import { DELTA_TIMEFRAMES } from '../lib/timeframes'
 import { useHealth, useMarkets, useScannerIndex, useSignalActivity, useSignals } from '../api/queries'
 import type { Signal } from '../api/types'
 import { DataTable, type Column } from '../components/DataTable'
 import { ActionPill, ErrorState, Loading, PageTitle, Panel, Pill, ScoreBadge, Segmented, SidePill, StatusDot, Time } from '../components/ui'
+import { Callout, EmptyState, Section, Stat, StatGrid, TabPanel, Tabs, Toolbar } from '../components/kit'
+import '../styles/pages/signals.css'
 import { fmtPrice, truncate } from '../lib/format'
 import { useNow } from '../lib/useNow'
 import { useSSEEvent } from '../sse/SSEProvider'
@@ -134,7 +135,7 @@ export function SignalsTable({ signals, hideScanner = false, maxHeight }: { sign
       emptyLabel={
         <span>
           No signals
-          <span className="empty-hint">No events match this selection. Check filters, scanner scheduling and the decision trace below.</span>
+          <span className="empty-hint">No events match this selection. Check the filters and scanner scheduling.</span>
         </span>
       }
       maxHeight={maxHeight}
@@ -145,99 +146,178 @@ export function SignalsTable({ signals, hideScanner = false, maxHeight }: { sign
   )
 }
 
+type SignalTab = 'signals' | 'outcomes' | 'recovery' | 'trace' | 'costs'
+
 export function Signals() {
   const activity = useSignalActivity()
   const flow = activity.data
-  const health=useHealth()
-  const recovery=health.data?.signalRecovery
+  const health = useHealth()
+  const recovery = health.data?.signalRecovery
   const scanners = useScannerIndex()
   const markets = useMarkets()
-  const { params, set, hash } = useResearchFilters()
+  // filters live in the URL so a link, Back and Forward keep them; defaults stay out of it
+  const { params, set, setSection, hash } = useResearchFilters()
   const scanner = params.get('scanner') ?? '', symbol = params.get('symbol') ?? '', tf = params.get('tf') ?? ''
   const kind = choice(params.get('kind'), ['', 'entry', 'exit', 'info'], '')
   const side = choice(params.get('side'), ['', 'long', 'short'], '')
   const view = choice(params.get('view'), ['grouped', 'flat'], 'grouped')
-  const section = sectionFromUrl(params, hash, ['events', 'diagnostics', 'costs'], 'events', { '#signal-diagnostics': 'diagnostics', '#execution-costs': 'costs' })
-  const clear = () => set({ scanner: null, symbol: null, tf: null, kind: null, side: null })
+  const tab = signalSectionFromUrl(params, hash)
+  const setTab = (value: SignalTab) => setSection(value === 'signals' ? null : value)
   const q = useMemo(() => ({ limit: 500, scanner: scanner || undefined, symbol: symbol || undefined, kind: kind || undefined, tf: tf || undefined }), [scanner, symbol, kind, tf])
   const signals = useSignals(q)
 
   const rows = useMemo(() => (signals.data ?? []).filter((s) => !side || s.side === side), [signals.data, side])
   const symbolOptions = useMemo(() => {
-    const set = new Set<string>((markets.data ?? []).map((m) => m.symbol))
-    for (const s of signals.data ?? []) set.add(s.symbol)
-    if (symbol) set.add(symbol)
-    return Array.from(set).sort()
+    const names = new Set<string>((markets.data ?? []).map((m) => m.symbol))
+    for (const s of signals.data ?? []) names.add(s.symbol)
+    if (symbol) names.add(symbol)
+    return Array.from(names).sort()
   }, [markets.data, signals.data, symbol])
 
   const outcomes = useMemo(() => summarizeOutcomes(rows), [rows])
+  const filtered = Boolean(scanner || symbol || tf || kind || side)
+  const clearFilters = () => set({ scanner: null, symbol: null, tf: null, kind: null, side: null })
+  const pending = recovery?.pending ?? 0
 
   return (
-    <div className="page">
-      <PageTitle pre="Signals" sub="Account alerts, entry decisions and pending orders. Follow a signal through to its fill; review shadow evidence in Incubator." />
-      <ResearchSections label="Signal views" value={section} options={[{ value: 'events', label: 'Account events' }, { value: 'diagnostics', label: 'Diagnostics' }, { value: 'costs', label: 'Fees & execution' }]} />
-      {section === 'events' && <>
-      <Panel title="Entry signal flow · last 24 hours" right={<span className="muted small">All scanners and markets · independent of table filters</span>}>
-        {activity.isError ? <ErrorState error={activity.error} onRetry={()=>activity.refetch()}/> : !flow ? <Loading/> : <>
-          <div className="chips">
-            <Pill tone="accent">{flow.candidates} candidates observed</Pill>
-            <Pill tone={flow.copyHeld?'warn':'muted'}>{flow.copyHeld} held before account admission</Pill>
-            <Pill tone="accent">{flow.entries} reached account admission</Pill>
-            <Pill tone="ok">{flow.paperFilled} paper entries filled</Pill>
-            <Pill tone="muted">{flow.shadowFilled} regular shadow entries filled</Pill>
-          </div>
-          <details className="small scope-note"><summary>Count scope and copy holds</summary><p className="muted">Candidates include account entry signals and shadow signals held from copying. A copy hold is a detected signal, not a scanner failure. Tracker-only signals are outside this count. Filled entries use fill time, so they can originate from earlier signals.</p>
-          {flow.held.length>0&&<div className="chips">{flow.held.map(r=><Pill key={r.reason} tone="warn">{r.reason}: {r.n}</Pill>)}</div>}
-          <p className="small muted"><Link to="/incubator">Review cell evidence in the Incubator</Link>. Held signals remain diagnostic observations and never count toward promotion.</p>
-          {(flow.copyRecordedSince===null||flow.copyRecordedSince>flow.since)&&<p className="small muted">Copy-hold history does not cover this entire window; observed candidates are a lower bound.</p>}
-          </details>
-        </>}
-      </Panel>
-      {recovery && recovery.pending > 0 && <Panel title="Signal recovery" right={<Pill tone={recovery.pending?'warn':'ok'}>{recovery.pending?`${recovery.pending} awaiting decision`:'No pending decisions'}</Pill>}>
-        <p className="small muted">Interrupted paper decisions resume from their saved receipt. Completed decisions are not repeated. Entries expire after at most 60 seconds and recheck current admission rules; exits stay tied to their original position and wait for a fresh price.</p>
-        {recovery.pending>0&&<div className="table-wrap"><table className="table small"><thead><tr><th>Signal</th><th>Market</th><th>Received</th><th>Attempts</th><th>Waiting on</th></tr></thead><tbody>{recovery.recent.map(r=><tr key={r.signal_id}><td>#{r.signal_id} · {r.kind}</td><td>{r.symbol} · {r.tf}</td><td><Time t={r.received_at}/></td><td>{r.attempts}</td><td>{r.last_error??'Decision in progress'}</td></tr>)}</tbody></table></div>}
-      </Panel>}
-      <Panel
-        title={
-          <span>
-            Signals <span className="muted small">({rows.length})</span>
-          </span>
-        }
-        right={<Segmented ariaLabel="Signal layout" value={view} onChange={v => set({ view: v })} options={[{ value: 'grouped', label: 'By cell' }, { value: 'flat', label: 'All events' }]} />}
-        pad={false}
-      >
-        <div className="research-filters">
-          <label>Scanner<select className="select" value={scanner} onChange={e => set({ scanner: e.target.value })}>
-            <option value="">All scanners</option>
-            {scanner && !scanners.data?.some(s => s.id === scanner) && <option value={scanner}>{scanner}</option>}
-            {(scanners.data ?? []).map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-          </select></label>
-          <label>Market<select className="select" value={symbol} onChange={e => set({ symbol: e.target.value })}><option value="">All markets</option>{symbolOptions.map(s => <option key={s}>{s}</option>)}</select></label>
-          <label>Timeframe<select className="select" value={tf} onChange={e => set({ tf: e.target.value })}><option value="">All timeframes</option>{[...new Set([...DELTA_TIMEFRAMES, ...(tf ? [tf] : [])])].map(t => <option key={t}>{t}</option>)}</select></label>
-          <label>Event<select className="select" value={kind} onChange={e => set({ kind: e.target.value })}><option value="">All events</option><option value="entry">Entry</option><option value="exit">Exit</option><option value="info">Information</option></select></label>
-          <label>Side<select className="select" value={side} onChange={e => set({ side: e.target.value })}><option value="">Both sides</option><option value="long">Long</option><option value="short">Short</option></select></label>
-          <button className="btn btn-sm" disabled={!scanner && !symbol && !tf && !kind && !side} onClick={clear}>Clear filters</button>
-        </div>
-        <p className="research-result-count muted small" role="status">{rows.length} matching events from the latest {signals.data?.length ?? 0} receipts (up to 500). Side filters apply to this loaded window.</p>
-      {outcomes.total > 0 && (
-        <Panel title={`Outcomes · ${outcomes.total} matching events`} right={<span className="muted small">{outcomes.entries} entry signals · {outcomes.opened} opened ({outcomes.entries ? Math.round(outcomes.opened / outcomes.entries * 100) : 0}%)</span>}>
-          <div className="chips">
-            {outcomes.buckets.map((b) => (
-              <Pill key={b.key} tone={b.tone} title={b.hint}>{b.label} <span className="mono">{b.n}</span></Pill>
-            ))}
-          </div>
-        </Panel>
+    <div className="page signals-page">
+      <PageTitle
+        sub="Every alert the account's scanners raised, and what the account did with it. View only: nothing here can open a trade. Shadow-book runs are judged in the Incubator."
+        actions={<><Link to="/gates" className="btn btn-sm">Gate Center</Link><Link to="/incubator" className="btn btn-sm">Incubator</Link></>}
+      />
+
+      {pending > 0 && (
+        <Callout tone="warn" title={`${pending} ${pending === 1 ? 'decision is' : 'decisions are'} waiting`} actions={<button type="button" className="btn btn-sm" onClick={() => setTab('recovery')}>See which</button>}>
+          An interrupted decision stays pending until recovery finishes.
+        </Callout>
       )}
-        {signals.isLoading && !signals.data && <Loading kind="table" rows={10} cols={9} />}
-        {signals.isError && !signals.data && <ErrorState error={signals.error} onRetry={() => signals.refetch()} />}
-        {signals.data && (view === 'flat' ? <SignalsTable signals={rows} maxHeight="calc(100vh - 300px)" /> : <GroupedSignals signals={rows} />)}
-      </Panel>
-      </>}
-      {section === 'diagnostics' && <section id="signal-diagnostics" className="research-view">
-      <div className="banner small" role="note"><b>Account log · read only.</b> Signals record received alerts and their decisions. An interrupted decision stays pending until recovery completes; nothing here can open a trade. Each refusal names its gate, and the <Link to="/gates">Gate Center</Link> explains every gate and its current state.</div>
-        <DecisionTrace/><ScannerPipelinePanel/>
-      </section>}
-      {section === 'costs' && <section id="execution-costs"><CostAudit/></section>}
+
+      <Section title="Entry signals · last 24 hours" hint="All scanners and markets. The filters below do not change these numbers.">
+        {activity.isError ? <ErrorState error={activity.error} onRetry={() => activity.refetch()} /> : !flow ? <Loading kind="kpi" rows={1} /> : (
+          <>
+            <StatGrid min={170}>
+              <Stat label="Candidates seen" value={flow.candidates} tone="accent" title="Account entry signals plus shadow signals held from copying. Tracker-only signals are not counted." sub="account + held shadow" />
+              <Stat label="Held back" value={flow.copyHeld} tone={flow.copyHeld ? 'warn' : 'muted'} title="A copy hold is a detected signal, not a scanner failure." sub="before account admission" />
+              <Stat label="Reached admission" value={flow.entries} tone="accent" sub="account entry signals" />
+              <Stat label="Paper entries filled" value={flow.paperFilled} tone={flow.paperFilled ? 'gain' : 'muted'} title="Filled entries use fill time, so they can come from earlier signals." sub="by fill time" />
+              <Stat label="Shadow entries filled" value={flow.shadowFilled} tone="muted" sub="regular shadow book" />
+            </StatGrid>
+            {flow.held.length > 0 && (
+              <div className="chips" role="group" aria-label="Why signals were held">
+                <span className="muted small">Held because</span>
+                {flow.held.map((r) => <Pill key={r.reason} tone="warn">{r.reason}: {r.n}</Pill>)}
+              </div>
+            )}
+            <p className="small muted sig-note">
+              Held signals are diagnostic only and never count toward promotion. <Link to="/incubator">Review the evidence in the Incubator</Link>.
+              {(flow.copyRecordedSince === null || flow.copyRecordedSince > flow.since) && ' Hold history does not cover this whole window, so the candidate count is a lower bound.'}
+            </p>
+          </>
+        )}
+      </Section>
+
+      <Tabs
+        label="Signals views"
+        idPrefix="sig"
+        value={tab}
+        onChange={setTab}
+        items={[
+          { id: 'signals', label: 'Signals', count: signals.data ? rows.length : undefined },
+          { id: 'outcomes', label: 'What became of them', count: outcomes.total || undefined },
+          { id: 'recovery', label: 'Recovery', count: recovery ? pending : undefined, attention: pending > 0 },
+          { id: 'trace', label: 'Decision trace' },
+          { id: 'costs', label: 'Fees and costs' },
+        ]}
+      />
+
+      <TabPanel id="signals" value={tab} idPrefix="sig">
+        <div className="sig-stack">
+          <Toolbar
+            end={<Segmented ariaLabel="View" value={view} onChange={(v) => set({ view: v })} options={[{ value: 'grouped', label: 'By cell' }, { value: 'flat', label: 'Flat' }]} />}
+          >
+            <select className="select select-sm" value={scanner} onChange={(e) => set({ scanner: e.target.value })} aria-label="Scanner">
+              <option value="">All scanners</option>
+              {scanner && !scanners.data?.some((x) => x.id === scanner) && <option value={scanner}>{scanner}</option>}
+              {(scanners.data ?? []).map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+            </select>
+            <select className="select select-sm" value={symbol} onChange={(e) => set({ symbol: e.target.value })} aria-label="Symbol">
+              <option value="">All symbols</option>
+              {symbolOptions.map((s) => <option key={s} value={s}>{s}</option>)}
+            </select>
+            <select className="select select-sm" value={tf} onChange={(e) => set({ tf: e.target.value })} aria-label="Timeframe">
+              <option value="">All timeframes</option>
+              {[...new Set([...DELTA_TIMEFRAMES, ...(tf ? [tf] : [])])].map((t) => <option key={t} value={t}>{t}</option>)}
+            </select>
+            <select className="select select-sm" value={kind} onChange={(e) => set({ kind: e.target.value })} aria-label="Kind">
+              <option value="">All kinds</option>
+              <option value="entry">entry</option>
+              <option value="exit">exit</option>
+              <option value="info">info</option>
+            </select>
+            <select className="select select-sm" value={side} onChange={(e) => set({ side: e.target.value })} aria-label="Side">
+              <option value="">Both sides</option>
+              <option value="long">long</option>
+              <option value="short">short</option>
+            </select>
+            {filtered && <button type="button" className="btn btn-sm" onClick={clearFilters}>Clear filters</button>}
+          </Toolbar>
+          <Panel pad={false}>
+            {signals.isLoading && !signals.data && <Loading kind="table" rows={10} cols={9} />}
+            {signals.isError && !signals.data && <ErrorState error={signals.error} onRetry={() => signals.refetch()} />}
+            {signals.data && rows.length === 0 && (
+              <EmptyState
+                title="No signals match"
+                hint={filtered ? 'Nothing fits these filters. Clear them to see everything the account received.' : 'The account has received no alerts yet. Check scanner scheduling and the decision trace.'}
+                action={filtered ? <button type="button" className="btn btn-sm" onClick={clearFilters}>Clear filters</button> : <button type="button" className="btn btn-sm" onClick={() => setTab('trace')}>Open decision trace</button>}
+              />
+            )}
+            {signals.data && rows.length > 0 && (view === 'flat' ? <SignalsTable signals={rows} maxHeight="calc(100vh - 300px)" /> : <GroupedSignals signals={rows} />)}
+          </Panel>
+        </div>
+      </TabPanel>
+
+      <TabPanel id="outcomes" value={tab} idPrefix="sig">
+        {outcomes.total === 0 ? (
+          <EmptyState title="No signals to summarise" hint="Outcomes appear once the account has received signals that match the filters on the Signals tab." />
+        ) : (
+          <Section title={`What became of the last ${outcomes.total} signals`} hint={`${outcomes.entries} entry signals, ${outcomes.opened} opened (${outcomes.entries ? Math.round((outcomes.opened / outcomes.entries) * 100) : 0}%). Follows the filters on the Signals tab.`}>
+            <Panel>
+              <div className="chips">
+                {outcomes.buckets.map((b) => <Pill key={b.key} tone={b.tone} title={b.hint}>{b.label} <span className="mono">{b.n}</span></Pill>)}
+              </div>
+              <p className="small muted sig-note">Hover a label to see what it means.</p>
+            </Panel>
+          </Section>
+        )}
+      </TabPanel>
+
+      <TabPanel id="recovery" value={tab} idPrefix="sig">
+        {!recovery ? (
+          <EmptyState title="Recovery status is not available" hint="It loads with the health check. Try again in a moment." />
+        ) : (
+          <Section
+            title="Signal recovery"
+            hint="Interrupted paper decisions resume from their saved receipt and are never repeated. Entries expire after at most 60 seconds and recheck current rules. Exits stay tied to their position and wait for a fresh price."
+            actions={<Pill tone={pending ? 'warn' : 'ok'}>{pending ? `${pending} awaiting decision` : 'No pending decisions'}</Pill>}
+          >
+            {pending > 0 ? (
+              <Panel pad={false}>
+                <div className="table-wrap"><table className="table small"><thead><tr><th>Signal</th><th>Market</th><th>Received</th><th>Attempts</th><th>Waiting on</th></tr></thead><tbody>{recovery.recent.map((r) => <tr key={r.signal_id}><td>#{r.signal_id} · {r.kind}</td><td>{r.symbol} · {r.tf}</td><td><Time t={r.received_at} /></td><td>{r.attempts}</td><td>{r.last_error ?? 'Decision in progress'}</td></tr>)}</tbody></table></div>
+              </Panel>
+            ) : (
+              <Callout tone="ok">Every received signal has a decision. Nothing is waiting on recovery.</Callout>
+            )}
+          </Section>
+        )}
+      </TabPanel>
+
+      <TabPanel id="trace" value={tab} idPrefix="sig">
+        <div className="sig-stack" id="signal-diagnostics"><DecisionTrace /><ScannerPipelinePanel /></div>
+      </TabPanel>
+
+      <TabPanel id="costs" value={tab} idPrefix="sig">
+        <div id="execution-costs"><CostAudit /></div>
+      </TabPanel>
     </div>
   )
 }
@@ -264,7 +344,7 @@ function GroupedSignals({ signals }: { signals: Signal[] }) {
   }, [signals])
   const tick = (sym: string) => markets?.find((m) => m.symbol === sym)?.tickSize
   const toggle = (k: string) => setOpen((o) => { const n = new Set(o); if (n.has(k)) n.delete(k); else n.add(k); return n })
-  if (!groups.length) return <div className="empty"><span>No signals<span className="empty-hint">No events match this selection. Check filters, scanner scheduling and the decision trace below.</span></span></div>
+  if (!groups.length) return <EmptyState title="No signals match" hint="Nothing fits these filters. Clear them to see everything the account received." />
   return (
     <div className="table-wrap">
       <div className="row gap" style={{ padding: '8px 12px' }}>

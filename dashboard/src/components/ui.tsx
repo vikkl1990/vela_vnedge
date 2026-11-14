@@ -1,5 +1,8 @@
 /* eslint-disable react-refresh/only-export-components -- this file deliberately exports hooks and constants beside its components */
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
+import { useLocation } from 'react-router-dom'
+import { PageHeader } from './kit'
+import { routeMeta } from './shell/navModel'
 import type { ApiError } from '../api/client'
 import type { ScannerStatus, Side } from '../api/types'
 import { clamp, fmtDateTime, fmtFullDateTime, fmtPnl, fmtTime, fmtUtc, gradeTone, isNum, pnlClass, scoreGrade, timeAgo } from '../lib/format'
@@ -427,16 +430,16 @@ export function BookBadge({ book, mode = 'paper', short = false, generic = false
   return <span className={`pill pill-${m.tone} ${className}`} title={m.hint}>{short ? m.label.replace(' account', '') : m.label}</span>
 }
 
-export function PageTitle({ pre, accent, post, sub }: { pre: string; accent?: string; post?: string; sub?: ReactNode }) {
-  return (
-    <div className="page-title">
-      <h1>
-        {pre}{accent && <> <em>{accent}</em></>}
-        {post ? ` ${post}` : ''}
-      </h1>
-      {sub && <p className="page-sub">{sub}</p>}
-    </div>
-  )
+/**
+ * The page's heading. The title comes from the route (so the sidebar, the breadcrumb, the browser tab and this heading
+ * always agree); `sub` is the one plain sentence under it. `pre`, `accent` and `post` are the older tagline words,
+ * kept only as the fallback for a route the navigation does not know.
+ */
+export function PageTitle({ pre, accent, post, sub, title, actions }: { pre?: string; accent?: string; post?: string; sub?: ReactNode; title?: ReactNode; actions?: ReactNode }) {
+  const loc = useLocation()
+  const known = routeMeta(loc.pathname)
+  const text = title ?? (known.section ? known.title : [pre, accent, post].filter(Boolean).join(' '))
+  return <PageHeader title={text} subtitle={sub} actions={actions} />
 }
 
 // ---------- Symbol picker (selected chips + searchable add) ----------

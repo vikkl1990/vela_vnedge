@@ -1,11 +1,12 @@
-import { Disclosure } from '../components/Disclosure'
 import { choice, researchHref } from '../lib/researchNavigation'
 import { useResearchFilters } from '../lib/useResearchFilters'
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useRadar } from '../api/queries'
 import type { RadarCell, RadarMarket } from '../api/types'
 import { PageTitle, Panel, QueryState } from '../components/ui'
+import { EmptyState, Stat, StatGrid, TabPanel, Tabs, Toolbar } from '../components/kit'
+import '../styles/pages/radar.css'
 import { PairAgentsPanel } from '../components/PairAgentsPanel'
 
 /**
@@ -50,11 +51,13 @@ function Cell({ c, symbol, tf, maxDensity }: { c: RadarCell | null; symbol: stri
 }
 
 export default function Radar() {
+  // the filters live in the URL so a link, Back and Forward all keep them (defaults stay out of it)
   const { params, set } = useResearchFilters()
   const hours = Number(choice(params.get('hours'), ['6', '24', '72', '168'], '24'))
   const group = choice(params.get('group'), ['all', 'majors', 'alts'], 'all')
   const sort = choice(params.get('sort'), ['turnover', 'signals', 'netR', 'pairs'], 'turnover')
   const onlyActive = params.get('active') !== '0'
+  const [tab, setTab] = useState<'radar' | 'agents'>('radar')
   const q = useRadar(hours)
   const view = useMemo(() => {
     const v = q.data
@@ -69,51 +72,75 @@ export default function Radar() {
   }, [q.data, group, sort, onlyActive])
   const reserved = (tf: string) => (q.data?.reserve ?? []).filter((r) => !r.tfs?.length || r.tfs.includes(tf)).reduce((a, r) => a + r.slots, 0)
   return (
-    <>
-      <PageTitle pre="Signal" accent="radar" sub={<>Where the scanners sit and what they produce, market × timeframe, last {hours} h. A cell's shade is entries per pair; bars are entries up and stops down; a quiet cell names what silenced it. Filled activity combines account and ordinary shadow trades; experimental plans and unfilled orders are excluded.</>} />
-      <QueryState {...q} data={view ?? undefined} empty="No markets in the book." onRetry={() => q.refetch()}>
-        {(v) => (
-          <>
-            <div className="radar-strip">
-              {v.tfs.map((tf) => { const t = v.totals[tf]; const res = reserved(tf); return (
-                <div key={tf} className="radar-tf">
-                  <div className="muted small">{tf}</div>
-                  <div><b className="radar-big">{t.live + t.shadow}</b> <span className="muted small">pairs · {t.live} live · {t.candidate} waiting{t.tracked ? ` · ${t.tracked} tracked` : ''}{res ? ` · ${res} reserved` : ''}</span></div>
-                  <div className="small mono">{t.signals} account · {v.shadowHistoryCapped ? '≥' : ''}{t.shadowSignals} shadow signals · {t.opened} entries · {t.stops} stops · <span className={t.netR > 0 ? 'gain' : t.netR < 0 ? 'loss' : ''}>{r1(t.netR)}R</span></div>
-                </div>
-              ) })}
-            </div>
-            <Panel title={`${v.markets.length} markets`} pad={false} right={
-              <span className="row gap small research-inline-filters">
-                <select className="select select-sm" value={hours} onChange={(e) => set({ hours: e.target.value })} aria-label="Window">{[6, 24, 72, 168].map((h) => <option key={h} value={h}>{h < 48 ? `${h} h` : `${h / 24} d`}</option>)}</select>
+    <div className="page radar-page">
+      <PageTitle
+        sub="Where the scanners sit and what they produce, for every market and timeframe. Counts combine account and ordinary shadow trades; experimental plans and unfilled orders are left out."
+        actions={
+          <label className="radar-window small muted">
+            Window
+            <select className="select select-sm" value={hours} onChange={(e) => set({ hours: e.target.value })} aria-label="Window">{[6, 24, 72, 168].map((h) => <option key={h} value={h}>{h < 48 ? `last ${h} h` : `last ${h / 24} d`}</option>)}</select>
+          </label>
+        }
+      />
+      <Tabs label="Radar views" idPrefix="radar" value={tab} onChange={setTab} items={[{ id: 'radar', label: 'Radar' }, { id: 'agents', label: 'Pair agents' }]} />
+      <TabPanel id="agents" value={tab} idPrefix="radar"><PairAgentsPanel /></TabPanel>
+      <TabPanel id="radar" value={tab} idPrefix="radar">
+        <QueryState {...q} data={view ?? undefined} empty="No markets in the book." onRetry={() => q.refetch()}>
+          {(v) => (
+            <div className="radar-stack">
+              <StatGrid min={230}>
+                {v.tfs.map((tf) => {
+                  const t = v.totals[tf]
+                  const res = reserved(tf)
+                  return (
+                    <Stat
+                      key={tf}
+                      label={`${tf} timeframe`}
+                      value={`${t.live + t.shadow} pairs`}
+                      sub={
+                        <>
+                          <span>{t.live} live · {t.candidate} waiting{t.tracked ? ` · ${t.tracked} tracked` : ''}{res ? ` · ${res} reserved` : ''}</span>
+                          <br />
+                          <span className="mono">{t.signals} account · {v.shadowHistoryCapped ? '≥' : ''}{t.shadowSignals} shadow signals · {t.opened} entries · {t.stops} stops · <span className={t.netR > 0 ? 'gain' : t.netR < 0 ? 'loss' : ''}>{r1(t.netR)}R</span></span>
+                        </>
+                      }
+                    />
+                  )
+                })}
+              </StatGrid>
+              <Toolbar end={<span className="muted small">{v.markets.length} markets</span>}>
                 <select className="select select-sm" value={group} onChange={(e) => set({ group: e.target.value })} aria-label="Markets"><option value="all">All markets</option><option value="majors">Majors</option><option value="alts">Alts</option></select>
                 <select className="select select-sm" value={sort} onChange={(e) => set({ sort: e.target.value })} aria-label="Sort"><option value="turnover">By turnover</option><option value="signals">By signals</option><option value="netR">By net R</option><option value="pairs">By pairs</option></select>
-                <label className="small muted"><input type="checkbox" checked={onlyActive} onChange={(e) => set({ active: e.target.checked ? null : '0' })} /> active only</label>
-              </span>
-            }>
-              <div className="table-wrap"><table className="table small radar-table"><caption className="sr-only">Market coverage by timeframe; signals are separate from fills</caption>
-                <thead><tr><th>Market</th>{v.tfs.map((tf) => <th key={tf}>{tf}</th>)}</tr></thead>
-                <tbody>{v.markets.map((m) => (
-                  <tr key={m.symbol}>
-                    <td className="radar-market"><b>{m.symbol.replace(/USD$/, '')}</b><div className="muted small mono">{money(m.turnoverUsd)}{m.atrPct !== null ? ` · ATR ${m.atrPct.toFixed(2)}%` : ''}{m.allowed === false ? ' · gate off' : ''}</div></td>
-                    {v.tfs.map((tf) => <Cell key={tf} c={m.cells[tf]} symbol={m.symbol} tf={tf} maxDensity={v.maxDensity} />)}
-                  </tr>
-                ))}</tbody>
-              </table></div>
-              {v.markets.length === 0 && <p className="empty">No markets match. Try All markets or turn off active only.</p>}
-            </Panel>
-            <div className="radar-legend small muted">
-              <span><span className="radar-chip radar-live">live</span> the account trades it</span>
-              <span><span className="radar-chip radar-shadow">shadow</span> evidence</span>
-              <span><span className="radar-chip radar-cand">candidate</span> passed the screen, waiting for a slot</span>
-              <span><span className="radar-chip radar-trk">tracked</span> watch-only</span>
-              <span>Signals are shown by book; a copied signal can appear in both. ≥ means retained history is capped.</span>
-              <span>bars: {v.bins} slices of {v.hours} h, <span className="gain">entries</span> up, <span className="loss">stops</span> down</span>
+                <label className="small muted radar-check"><input type="checkbox" checked={onlyActive} onChange={(e) => set({ active: e.target.checked ? null : '0' })} /> Active only</label>
+              </Toolbar>
+              <Panel pad={false}>
+                {v.markets.length === 0 ? (
+                  <EmptyState title="No markets match" hint="Nothing is active in this window. Untick Active only or choose a longer window." action={<button type="button" className="btn btn-sm" onClick={() => set({ active: '0' })}>Show inactive markets</button>} />
+                ) : (
+                  <div className="table-wrap"><table className="table small radar-table" style={{ minWidth: 140 + v.tfs.length * 220 }}><caption className="sr-only">Market coverage by timeframe; signals are separate from fills</caption>
+                    <thead><tr><th>Market</th>{v.tfs.map((tf) => <th key={tf}>{tf}</th>)}</tr></thead>
+                    <tbody>{v.markets.map((m) => (
+                      <tr key={m.symbol}>
+                        <td className="radar-market"><b>{m.symbol.replace(/USD$/, '')}</b><div className="muted small mono">{money(m.turnoverUsd)}{m.atrPct !== null ? ` · ATR ${m.atrPct.toFixed(2)}%` : ''}{m.allowed === false ? ' · gate off' : ''}</div></td>
+                        {v.tfs.map((tf) => <Cell key={tf} c={m.cells[tf]} symbol={m.symbol} tf={tf} maxDensity={v.maxDensity} />)}
+                      </tr>
+                    ))}</tbody>
+                  </table></div>
+                )}
+              </Panel>
+              <div className="radar-legend small muted" role="note">
+                <span><span className="radar-chip radar-live">live</span> the account trades it</span>
+                <span><span className="radar-chip radar-shadow">shadow</span> evidence</span>
+                <span><span className="radar-chip radar-cand">candidate</span> passed the screen, waiting for a slot</span>
+                <span><span className="radar-chip radar-trk">tracked</span> watch-only</span>
+                <span>A cell's shade is entries per pair. A quiet cell names what silenced it.</span>
+                <span>Bars: {v.bins} slices of {v.hours} h, <span className="gain">entries</span> up, <span className="loss">stops</span> down.</span>
+                <span>A copied signal can appear in both books. ≥ means retained history is capped.</span>
+              </div>
             </div>
-          </>
-        )}
-      </QueryState>
-      <Disclosure id="pair-agents" title="Pair coverage agents" hint="Inspect pair coverage and advisory allocation work"><PairAgentsPanel /></Disclosure>
-    </>
+          )}
+        </QueryState>
+      </TabPanel>
+    </div>
   )
 }
