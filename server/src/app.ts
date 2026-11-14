@@ -1,3 +1,4 @@
+import {candleReplayBlock} from './paper/basket.ts';
 import {bindScalperConnection} from './connections/scalperOffer.ts';
 import {productFees,withProductFees} from './paper/productFees.ts';
 import {currentPolicyIds,policyHealth} from './analytics/policyHealth.ts';
@@ -841,7 +842,8 @@ export class App {
   screenNow(body: { ids?: string[]; author?: string; family?: string; tf?: string; markets?: string[] }, actor: string) {
     const tf = String(body.tf ?? '15m');
     if (!(tf in TF_SECONDS)) throw Object.assign(new Error(`unknown timeframe ${tf}`), { status: 400 });
-    const all = this.registry.all().filter(s => s.status === 'ok');
+    for(const id of body.ids??[]){const blocked=candleReplayBlock(id);if(blocked)throw Object.assign(Error(blocked),{status:400});}
+    const all = this.registry.all().filter(s => s.status === 'ok' && !candleReplayBlock(s.id));
     let ids: string[] = [], label = '';
     if (body.ids?.length) { ids = all.filter(s => body.ids!.includes(s.id)).map(s => s.id); label = ids.length === 1 ? (all.find(s => s.id === ids[0])?.name ?? ids[0]) : `${ids.length} scripts`; }
     else if (body.author) { ids = all.filter(s => s.author === body.author).map(s => s.id); label = `everything by ${body.author}`; }

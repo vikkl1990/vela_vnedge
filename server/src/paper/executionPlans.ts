@@ -1,5 +1,5 @@
 import {plotLifecycle} from '../scanners/plotLifecycle.ts';
-import {BASKET_SCANNER} from './basket.ts';
+import {BASKET_SCANNER,BASKET_ACCOUNTING_VERSION} from './basket.ts';
 /** Versioned, explicit research plans. One source event feeds every plan in a cell. */
 import {withProductFees,type ProductFees} from './productFees.ts';
 import { createHash } from 'node:crypto';
@@ -53,6 +53,8 @@ export interface ExecutionPlan {
 }
 export interface ExecutionPlanSnapshot {
   basket?: ExecutionPlan['basket'];
+  /** Absent on legacy basket cohorts; never reinterpret their recorded R. */
+  basketAccountingVersion?:2;
   id: string; revision: number; signature: string; sourceScannerId: string;
   variant: ExecutionPlan['variant']; symbol: string; tf: string;
   sourceHash:string|null; reading:AppConfig['scanners'][string]|null;
@@ -99,7 +101,7 @@ export function planSnapshot(cfg: AppConfig, p: ExecutionPlan, sourceHash: strin
   if(p.trailing)Object.assign(paper,{trailAfterR:p.trailing.afterR,trailGiveBackPct:p.trailing.giveBackPct,
     floorAtR:p.trailing.floorAtR,floorKeepR:p.trailing.floorKeepR,trailAtrMult:0,trailDistanceR:0,trailSteps:[],trailStall:undefined});
   if(p.maxStopLossPct!==undefined)paper.maxStopLossPct=paper.maxStopLossPct>0?Math.min(paper.maxStopLossPct,p.maxStopLossPct):p.maxStopLossPct;
-  const result = {...(p.basket?{basket:p.basket}:{}),id:p.id,revision:p.revision,executionVersion:CAUSAL_EXIT_VERSION,sourceHash,reading:sc?structuredClone(sc):null,sourceScannerId:p.scannerId,variant:p.variant,symbol:p.symbol,tf:p.tf,
+  const result = {...(p.basket?{basket:p.basket,basketAccountingVersion:BASKET_ACCOUNTING_VERSION as 2}:{}),id:p.id,revision:p.revision,executionVersion:CAUSAL_EXIT_VERSION,sourceHash,reading:sc?structuredClone(sc):null,sourceScannerId:p.scannerId,variant:p.variant,symbol:p.symbol,tf:p.tf,
     paper,exitMode,requireAtrStop:Boolean(paper.skipScriptStops),referenceEquity:p.referenceEquity,maxHoldMinutes:p.maxHoldMinutes,
     ...(p.takeProfit?{takeProfit:structuredClone(p.takeProfit)}:{}),...(p.label?{label:p.label}:{}),
     ...(p.comparison?{comparison:structuredClone(p.comparison)}:{})};

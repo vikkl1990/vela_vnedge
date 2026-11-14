@@ -70,3 +70,10 @@ test('agent bounds reject malformed and excessive workloads',()=>{
   const cfg=structuredClone(DEFAULT_CONFIG);cfg.incubator.agents={...AGENT_DEFAULTS,marketsPerJob:300,maxJobsPerDay:0};
   const errors=validateConfig(cfg);assert.ok(errors.some(e=>e.includes('marketsPerJob')));assert.ok(errors.some(e=>e.includes('maxJobsPerDay')));
 });
+
+test('coverage ignores stateful baskets without recording a negative screen or blocking ordinary scanners',async t=>{
+ const f=fixture(t);f.scanners.push({id:'rsi-volume-ladder-basket',name:'Basket',patched:'indicator("Basket")'});
+ const v=await f.agent.view();assert.ok(v.markets.every(m=>m.cells===2));
+ await f.agent.tick();assert.equal(f.jobs.length,1);assert.deepEqual(f.jobs[0].ids,['a','b']);
+ assert.equal(f.db.get<any>('SELECT count(*) n FROM pair_screen_evidence')!.n,0);
+});

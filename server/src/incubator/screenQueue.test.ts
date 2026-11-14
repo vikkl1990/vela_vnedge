@@ -68,3 +68,10 @@ test('decision 174: nothing starts while the nightly runs; a cancelled job is ki
   assert.equal(q2.list().running, null);
   assert.equal(q2.list().history[0].status, 'failed'); assert.match(q2.list().history[0].error ?? '', /interrupted by a restart/);
 });
+
+test('basket requests are rejected before a worker or coverage job is created',t=>{
+ const {q,children,db}=setup(t);
+ assert.throws(()=>q.enqueue({label:'basket',ids:['rsi-volume-ladder-basket'],tf:'15m',actor:'test'}),/requires stateful shadow replay/);
+ assert.equal(children.length,0);assert.equal(q.list().queued.length,0);assert.equal(q.list().history.length,0);
+ assert.equal(db.kvGet('incubator.screenQueue'),undefined);
+});
