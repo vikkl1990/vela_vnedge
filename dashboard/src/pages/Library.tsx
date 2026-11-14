@@ -4,9 +4,11 @@ import { useLibrary, useLibraryDetail, useLibraryFavorite } from '../api/queries
 import type { LibraryEntry, LibraryFamily, LibraryList } from '../api/types'
 import { useAuth } from '../auth/AuthGate'
 import { IconChart, IconExternal, IconX } from '../components/Icons'
-import { Pill, QueryState } from '../components/ui'
+import { PageTitle, Pill, QueryState } from '../components/ui'
+import { Callout, EmptyState, Section, TabPanel, Tabs, Toolbar } from '../components/kit'
 import { ScreenNow } from '../components/ScreenNow'
 import { AuthorReview } from '../components/AuthorReview'
+import '../styles/pages/library.css'
 
 /**
  * Decision 153: the Library. Every script the bot holds, browsed the way a chart platform's indicator library is
@@ -33,6 +35,7 @@ export function Library() {
   const q = useLibrary()
   return (
     <div className="page lib-page">
+      <PageTitle sub="Every script the bot holds, with what it has measured: whether it runs, where its pairs sit, and its shadow and paper record." />
       <QueryState {...q} data={q.data} skeleton="cards" empty="The library is empty." onRetry={() => q.refetch()}>
         {(d) => <LibraryBody data={d} />}
       </QueryState>
@@ -142,43 +145,49 @@ function LibraryBody({ data }: { data: LibraryList }) {
       </nav>
 
       <section className="lib-main" aria-label={title}>
-        <div className="lib-search">
-          <input ref={search} className="input lib-search-input" type="search" placeholder="Search scripts, authors or families" value={text} onChange={(e) => setText(e.target.value)} aria-label="Search the library" />
-          <span className="lib-kbd" aria-hidden>/</span>
+        <Toolbar end={<span className="muted small mono" role="status">{(showDiscover ? counts.all : list.length).toLocaleString()} script{(showDiscover ? counts.all : list.length) === 1 ? '' : 's'}</span>}>
+          <div className="lib-find">
+            <input ref={search} className="input lib-find-input" type="search" placeholder="Search scripts, authors or families" value={text} onChange={(e) => setText(e.target.value)} aria-label="Search the library" />
+            {!text && <span className="lib-kbd" aria-hidden>/</span>}
+          </div>
           {!showDiscover && (
-            <select className="select" value={sort} onChange={(e) => setSort(e.target.value as Sort)} aria-label="Sort">
-              <option value="relevant">Relevant</option>
-              <option value="newest">Newest</option>
-              <option value="shadow">Shadow R, 30 days</option>
-              <option value="name">Name</option>
-            </select>
+            <label className="lib-sort"><span className="sr-only">Sort by</span>
+              <select className="select" value={sort} onChange={(e) => setSort(e.target.value as Sort)} aria-label="Sort">
+                <option value="relevant">Most relevant</option>
+                <option value="newest">Newest</option>
+                <option value="shadow">Shadow R, 30 days</option>
+                <option value="name">Name</option>
+              </select>
+            </label>
           )}
-        </div>
+        </Toolbar>
 
         {showDiscover ? (
           <>
-            <Shelf title="New releases" action={<button className="linkish" onClick={() => { go('all'); setSort('newest') }}>See all</button>}>{newest.map(card)}</Shelf>
+            <Shelf title="New releases" action={<button className="btn btn-xs" onClick={() => { go('all'); setSort('newest') }}>See all</button>}>{newest.map(card)}</Shelf>
             {earning.length > 0 && <Shelf title="Earning in the shadow book" sub="Last 30 days, ten trades or more">{earning.map(card)}</Shelf>}
             {trading.length > 0 && <Shelf title="Trading in paper" sub="Scripts with a live pair">{trading.map(card)}</Shelf>}
-            <Shelf title="More to explore" sub="Runnable scripts with no pair in use" action={<button className="linkish" onClick={() => setSeed((s) => s + 1)}>Shuffle</button>}>{explore.map(card)}</Shelf>
+            <Shelf title="More to explore" sub="Runnable scripts with no pair in use" action={<button className="btn btn-xs" onClick={() => setSeed((s) => s + 1)}>Shuffle</button>}>{explore.map(card)}</Shelf>
           </>
         ) : (
           <>
-            <div className="lib-head">
-              <h2>{needle ? `“${text.trim()}”` : title}</h2>
-              <span className="muted small">{list.length.toLocaleString()} script{list.length === 1 ? '' : 's'}{needle && view !== 'discover' ? ` in ${title}` : ''}</span>
-            </div>
-            {list.length === 0 ? (
-              <p className="muted lib-empty">{view === 'favorites' && !needle ? (canFav ? 'No favorites yet. Star a script to keep it here.' : 'Favorites need an account that can run backtests.') : 'No script matches.'}</p>
-            ) : (
-              <div className="lib-grid">{list.slice(0, limit).map(card)}</div>
-            )}
+            <Section title={needle ? `“${text.trim()}”` : title} hint={`${list.length.toLocaleString()} script${list.length === 1 ? '' : 's'}${needle && view !== 'discover' ? ` in ${title}` : ''}`}>
+              {list.length === 0 ? (
+                view === 'favorites' && !needle ? (
+                  <EmptyState title="No favorites yet" hint={canFav ? 'Open a script and choose Favorite to keep it here.' : 'Favorites need an account that can run backtests.'} />
+                ) : (
+                  <EmptyState title="No script matches" hint={needle ? `Nothing in ${title} matches “${text.trim()}”. Check the spelling or search all scripts.` : 'Nothing is in this list yet.'} action={<>{needle && <button className="btn btn-sm" onClick={() => setText('')}>Clear search</button>}{view !== 'all' && <button className="btn btn-sm" onClick={() => go('all')}>Browse all scripts</button>}</>} />
+                )
+              ) : (
+                <div className="lib-grid">{list.slice(0, limit).map(card)}</div>
+              )}
+            </Section>
             {list.length > limit && <div className="lib-more"><button className="btn" onClick={() => setLimit((l) => l + PAGE)}>Show {Math.min(PAGE, list.length - limit)} more</button></div>}
           </>
         )}
       </section>
 
-      {selected && <Detail id={selected} family={familyLabel} fav={favs.has(selected)} canFav={canFav} onFav={() => toggleFav(selected)} onClose={() => set({ s: null })} />}
+      {selected && <Detail key={selected} id={selected} family={familyLabel} fav={favs.has(selected)} canFav={canFav} onFav={() => toggleFav(selected)} onClose={() => set({ s: null })} />}
     </div>
   )
 }
@@ -193,10 +202,9 @@ function NavItem({ label, n, on, onClick, title }: { label: string; n?: number; 
 
 function Shelf({ title, sub, action, children }: { title: string; sub?: string; action?: React.ReactNode; children: React.ReactNode }) {
   return (
-    <div className="lib-shelf">
-      <div className="lib-head"><h2>{title}</h2>{sub && <span className="muted small">{sub}</span>}<span className="grow" />{action}</div>
+    <Section title={title} hint={sub} actions={action}>
       <div className="lib-grid">{children}</div>
-    </div>
+    </Section>
   )
 }
 
@@ -261,78 +269,97 @@ function ScriptCard({ e, family, on, fav, canFav, onOpen, onFav }: { e: LibraryE
 function Detail({ id, family, fav, canFav, onFav, onClose }: { id: string; family: (k: string) => string; fav: boolean; canFav: boolean; onFav: () => void; onClose: () => void }) {
   const q = useLibraryDetail(id)
   const nav = useNavigate()
+  const [tab, setTab] = useState<'record' | 'review'>('record')
   return (
     <aside className="lib-detail" aria-label="Script detail">
-      <button className="lib-detail-close btn btn-xs" onClick={onClose} aria-label="Close"><IconX /></button>
+      <button className="lib-detail-close btn btn-xs" onClick={onClose} aria-label="Close script detail"><IconX /></button>
       <QueryState {...q} data={q.data} empty="Unknown script." onRetry={() => q.refetch()}>
         {(d) => {
           const stages = d.pairs.reduce<Record<string, number>>((a, p) => ((a[p.stage] = (a[p.stage] ?? 0) + 1), a), {})
+          const why = d.health?.reason ?? d.health?.lastError ?? d.reason ?? 'no reason recorded'
           return (
             <div className="lib-detail-body">
-              <Spark points={d.shadow?.spark} big />
-              <div className="lib-detail-meta">{family(d.family)}{d.updated ? ` · ${fmtDay(d.updated)}` : ''}</div>
-              <h2 className="lib-detail-title">{d.name}</h2>
-              <div className="muted small">
-                {d.authorReview?.publication?.author ?? d.author} · {d.scriptType ?? 'script'} · Pine v{d.pineVersion ?? '?'}{d.lines ? ` · ${d.lines.toLocaleString()} lines` : ''}{d.overlay ? ' · on the price pane' : ' · own pane'}
+              <div className="lib-detail-head">
+                <div className="lib-detail-meta">{family(d.family)}{d.updated ? ` · ${fmtDay(d.updated)}` : ''}</div>
+                <h2 className="lib-detail-title">{d.name}</h2>
+                <div className="muted small">
+                  {d.authorReview?.publication?.author ?? d.author} · {d.scriptType ?? 'script'} · Pine v{d.pineVersion ?? '?'}{d.lines ? ` · ${d.lines.toLocaleString()} lines` : ''}{d.overlay ? ' · on the price pane' : ' · own pane'}
+                </div>
+                <StageChips e={d} />
               </div>
-              <StageChips e={d} />
-              {d.status !== 'runs' && <p className="lib-error small">{d.status === 'quarantined' ? 'Quarantined: ' : "Doesn't run: "}{d.health?.reason ?? d.health?.lastError ?? d.reason ?? 'no reason recorded'}</p>}
+              {d.status !== 'runs' && <Callout tone={d.status === 'quarantined' ? 'warn' : 'danger'} title={d.status === 'quarantined' ? 'Quarantined' : "Doesn't run"}><span className="lib-why">{why}</span></Callout>}
 
               <div className="lib-actions">
                 <button className="btn btn-primary" disabled={d.status === 'fails'} onClick={() => nav(`/chart?add=${encodeURIComponent(d.id)}`)} title={d.status === 'fails' ? "The engine can't run this script" : 'Run it on the chart, on the market and timeframe the chart shows'}><IconChart /> Add to chart</button>
-                <button className={`btn ${fav ? 'btn-on' : ''}`} disabled={!canFav} onClick={onFav} aria-pressed={fav}>{fav ? 'Favorited' : 'Favorite'}</button>
+                <button className={`btn ${fav ? 'btn-on' : ''}`} disabled={!canFav} onClick={onFav} aria-pressed={fav} title={canFav ? undefined : 'Favorites need an account that can run backtests'}>{fav ? 'Favorited' : 'Favorite'}</button>
                 <Link className="btn" to={`/scanners/${encodeURIComponent(d.id)}`}>Scanner page</Link>
-                {d.status !== 'fails' && <ScreenNow ids={[d.id]} label={d.name} />}
-                {d.status !== 'fails' && <ScreenNow author={d.author} label={d.authorReview?.publication?.author && d.authorReview.publication.author !== d.author ? `import group ${d.author}` : `everything by ${d.author}`} compact />}
                 {d.url && <a className="btn" href={d.url} target="_blank" rel="noreferrer">{d.origin === 'luxalgo' ? 'LuxAlgo Library' : d.origin === 'tradingview' ? 'TradingView' : 'Source'} <IconExternal /></a>}
               </div>
+              {d.status !== 'fails' && (
+                <div className="lib-screens">
+                  <ScreenNow ids={[d.id]} label={d.name} />
+                  <ScreenNow author={d.author} label={d.authorReview?.publication?.author && d.authorReview.publication.author !== d.author ? `import group ${d.author}` : `everything by ${d.author}`} compact />
+                </div>
+              )}
 
+              <Spark points={d.shadow?.spark} big />
               <div className="lib-facts">
                 <Fact k="Shadow, 30 days" v={d.shadow ? fmtR(d.shadow.r) : '–'} tone={d.shadow ? (d.shadow.r >= 0 ? 'gain' : 'loss') : ''} sub={d.shadow ? `${d.shadow.n} trades · ${Math.round(d.shadow.win * 100)}% won` : 'no trades'} />
                 <Fact k="Paper, all time" v={d.paper ? fmtUsd(d.paper.net) : '–'} tone={d.paper ? (d.paper.net >= 0 ? 'gain' : 'loss') : ''} sub={d.paper ? `${d.paper.n} trades · ${fmtR(d.paper.r)}` : 'never traded'} />
                 <Fact k="Pairs" v={String(d.pairs.length)} sub={Object.entries(stages).map(([k, n]) => `${n} ${k.replace('_', ' ')}`).join(' · ') || 'none'} />
               </div>
 
-              {d.authorReview && <AuthorReview review={d.authorReview} />}
-
-              {d.pairs.length > 0 && (
-                <div className="lib-sub">
-                  <h3>Pairs</h3>
-                  <div className="scroll-x">
-                    <table className="lib-table">
-                      <colgroup><col className="c-mkt" /><col className="c-stage" /><col className="c-screen" /><col className="c-30" /></colgroup>
-                      <thead><tr><th>Market</th><th>Stage</th><th>Screen</th><th className="num">30d</th></tr></thead>
-                      <tbody>
-                        {d.pairs.slice(0, 40).map((p) => (
-                          <tr key={`${p.symbol}-${p.tf}`}>
-                            <td className="mono">{p.symbol.replace(/USD$/, '')} <span className="muted">{p.tf}</span></td>
-                            <td>{p.stage.replace('_', ' ')}</td>
-                            <td className="small lib-screen">{p.screen ? <span className={p.screen.expired ? 'muted' : p.screen.pass ? 'gain' : 'loss'} title={p.screen.expired ? 'Screened on the previous engine; waits for a fresh screen' : undefined}>{p.screen.expired ? 'expired' : p.screen.pass ? 'pass' : 'fail'}{p.screen.trades != null ? ` · ${p.screen.trades}` : ''}{p.screen.avgR != null ? ` · ${p.screen.avgR >= 0 ? '+' : ''}${p.screen.avgR.toFixed(2)}R` : ''}</span> : '–'}</td>
-                            <td className={`num small ${p.shadow30 ? (p.shadow30.r >= 0 ? 'gain' : 'loss') : 'muted'}`}>{p.shadow30 ? `${p.shadow30.n} · ${fmtR(p.shadow30.r)}` : '–'}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                  {d.pairs.length > 40 && <p className="muted small">and {d.pairs.length - 40} more on the scanner page</p>}
-                </div>
+              {d.authorReview && (
+                <Tabs idPrefix="libd" label="Script detail" value={tab} onChange={setTab} items={[{ id: 'record', label: 'Record' }, { id: 'review', label: 'Author review' }]} />
               )}
+              <TabPanel idPrefix="libd" id="record" value={d.authorReview ? tab : 'record'}>
+                <div className="lib-record">
+                  {d.pairs.length === 0 && d.recent.length === 0 && <EmptyState title="No pairs or trades yet" hint="This script has not been scheduled on any market. Use Add to chart to try it, or Screen now to test it on the books." />}
+                  {d.pairs.length > 0 && (
+                    <div className="lib-sub">
+                      <h3>Pairs</h3>
+                      <div className="scroll-x">
+                        <table className="lib-table">
+                          <colgroup><col className="c-mkt" /><col className="c-stage" /><col className="c-screen" /><col className="c-30" /></colgroup>
+                          <thead><tr><th>Market</th><th>Stage</th><th>Screen</th><th className="num">30d</th></tr></thead>
+                          <tbody>
+                            {d.pairs.slice(0, 40).map((p) => (
+                              <tr key={`${p.symbol}-${p.tf}`}>
+                                <td className="mono">{p.symbol.replace(/USD$/, '')} <span className="muted">{p.tf}</span></td>
+                                <td>{p.stage.replace('_', ' ')}</td>
+                                <td className="small lib-screen">{p.screen ? <span className={p.screen.expired ? 'muted' : p.screen.pass ? 'gain' : 'loss'} title={p.screen.expired ? 'Screened on the previous engine; waits for a fresh screen' : undefined}>{p.screen.expired ? 'expired' : p.screen.pass ? 'pass' : 'fail'}{p.screen.trades != null ? ` · ${p.screen.trades}` : ''}{p.screen.avgR != null ? ` · ${p.screen.avgR >= 0 ? '+' : ''}${p.screen.avgR.toFixed(2)}R` : ''}</span> : '–'}</td>
+                                <td className={`num small ${p.shadow30 ? (p.shadow30.r >= 0 ? 'gain' : 'loss') : 'muted'}`}>{p.shadow30 ? `${p.shadow30.n} · ${fmtR(p.shadow30.r)}` : '–'}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                      {d.pairs.length > 40 && <p className="muted small">and {d.pairs.length - 40} more on the scanner page</p>}
+                    </div>
+                  )}
 
-              {d.recent.length > 0 && (
-                <div className="lib-sub">
-                  <h3>Recent trades</h3>
-                  <ul className="lib-trades">
-                    {d.recent.map((t, i) => (
-                      <li key={i}>
-                        <span className="muted small">{t.book}</span>
-                        <span className="mono small">{t.symbol.replace(/USD$/, '')} {t.tf}</span>
-                        <span className={`small side-${t.side}`}>{t.side}</span>
-                        <span className="muted small">{t.exitReason}</span>
-                        <span className={`mono small ${t.r >= 0 ? 'gain' : 'loss'}`}>{fmtR(t.r)}{t.net != null ? ` · ${fmtUsd(t.net)}` : ''}</span>
-                      </li>
-                    ))}
-                  </ul>
+                  {d.recent.length > 0 && (
+                    <div className="lib-sub">
+                      <h3>Recent trades</h3>
+                      <ul className="lib-trades">
+                        {d.recent.map((t, i) => (
+                          <li key={i}>
+                            <span className="muted small">{t.book}</span>
+                            <span className="mono small">{t.symbol.replace(/USD$/, '')} {t.tf}</span>
+                            <span className={`small side-${t.side}`}>{t.side}</span>
+                            <span className="muted small">{t.exitReason}</span>
+                            <span className={`mono small ${t.r >= 0 ? 'gain' : 'loss'}`}>{fmtR(t.r)}{t.net != null ? ` · ${fmtUsd(t.net)}` : ''}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
                 </div>
+              </TabPanel>
+              {d.authorReview && (
+                <TabPanel idPrefix="libd" id="review" value={tab}>
+                  <AuthorReview review={d.authorReview} />
+                </TabPanel>
               )}
               {d.license && <p className="muted small">Licence: {d.license}</p>}
             </div>

@@ -10,11 +10,13 @@ import { AllocationAuditPanel } from '../components/AllocationAudit'
 import { DataTable, type Column } from '../components/DataTable'
 import { LearningSection } from '../components/Learning'
 import { ErrorState, Loading, PageTitle, Panel, Time } from '../components/ui'
+import { Callout, EmptyState, Section, TabPanel, Tabs, Toolbar } from '../components/kit'
 import { fmtInt, fmtMoney, fmtPct, fmtPnl, fmtR } from '../lib/format'
 import { JOURNAL_PERIODS, journalFilters, updateJournalFilters } from '../lib/journalFilters'
 import { DELTA_TIMEFRAMES } from '../lib/timeframes'
 import { useMediaQuery } from '../lib/useMediaQuery'
 import { useNow } from '../lib/useNow'
+import '../styles/pages/analytics.css'
 
 const GROUPS = [['byTf', 'Timeframe', 'tf'], ['bySymbol', 'Market', 'symbol'], ['byScanner', 'Scanner', 'scanner'], ['byExit', 'Exit reason', 'reason']] as const
 const EXITS: Record<string, string> = { sl: 'Stop loss', trail: 'Trailing stop', be: 'Break-even', tp1: 'Take profit 1', tp2: 'Take profit 2', tp3: 'Take profit 3', manual: 'Manual', reversal: 'Reversal', script_exit: 'Script exit', 'funding-avoid': 'Funding avoidance', 'time-exit': 'Time exit' }
@@ -60,7 +62,7 @@ function ComparisonRows({ rows, group, onChoose }: { rows: PerformanceGroup[]; g
       ]
     }),
   ]
-  if (!rows.length) return <div className="state muted">No closed trades match this selection.</div>
+  if (!rows.length) return <EmptyState title="No closed trades match this selection" hint="Widen the period or clear a filter above, or clear the group search." />
   if (!mobile) return <DataTable key={group} columns={cols} rows={rows} rowKey={r => r.key} defaultSort={{key:'paper-trades',dir:'desc'}} caption="Paper and shadow performance by group" maxHeight={580} />
   return <div className="performance-groups">{[...rows].sort((a,b) => b.paper.trades - a.paper.trades || b.shadow.trades - a.shadow.trades).map(r => <article key={r.key} className="performance-group-card">
     <button className="link performance-group-link" onClick={() => onChoose(r.key)}>{label(r)} →</button>
@@ -86,31 +88,37 @@ export function Analytics() {
   const [group, setGroup] = useState<typeof GROUPS[number][0]>('byTf')
   const [search, setSearch] = useState('')
   const [chartMetric, setChartMetric] = useState<'avgR'|'trades'>('avgR')
-  const [advanced, setAdvanced] = useState(false)
+  const [tab, setTab] = useState<'breakdown' | 'daily' | 'advanced'>('breakdown')
   const symbols = [...new Set([...(markets.data ?? []).map(m => m.symbol), ...(d?.bySymbol ?? []).map(r => r.key), ...(f.symbol ? [f.symbol] : [])])].sort()
   const rows = (d?.[group] ?? []).filter(r => r.label.toLowerCase().includes(search.toLowerCase()))
   const journalParams = new URLSearchParams(effective)
   journalParams.delete('page')
   const includesToday = d && (from === undefined || from <= d.at) && (to === undefined || to > d.at)
   const periodText = d ? `${from === undefined ? 'All available history' : day(from)} → ${day((to ?? d.to) - 1)} UTC${includesToday ? ' · today partial' : ''}` : ''
+  const resetFilters = () => { setParams({period:'7d'}); setScannerSearch(''); setSearch('') }
+  const filtered = Boolean(f.symbol || f.tf || f.side || f.reason || f.scanner || f.period !== '7d')
   return <div className="page performance-page">
-    <PageTitle pre="Paper & shadow," accent="in perspective." sub="One closing period. Two books. Compare results after costs, then find which markets, timeframes and scanners contribute." />
-    <Panel title="Compare performance" right={<div className="row gap"><Link className="btn btn-sm" to="/daily">Daily report</Link><button className="btn btn-sm" onClick={() => { setParams({period:'7d'}); setScannerSearch(''); setSearch('') }}>Reset filters</button></div>}>
-      <div className="performance-filters">
-        <label>Closed in<select className="select" aria-label="Performance period" value={f.period} onChange={e => update({period:e.target.value})}>{JOURNAL_PERIODS.map(([v,label]) => <option key={v} value={v}>{label}</option>)}</select></label>
-        <label>Market<select className="select" aria-label="Performance market" value={f.symbol} onChange={e => update({symbol:e.target.value})}><option value="">All markets</option>{symbols.map(s => <option key={s}>{s}</option>)}</select></label>
-        <label>Timeframe<select className="select" aria-label="Performance timeframe" value={f.tf} onChange={e => update({tf:e.target.value})}><option value="">All timeframes</option>{f.tf && !DELTA_TIMEFRAMES.some(t => t === f.tf) && <option>{f.tf}</option>}{DELTA_TIMEFRAMES.map(t => <option key={t}>{t}</option>)}</select></label>
-        <label>Direction<select className="select" aria-label="Performance direction" value={f.side} onChange={e => update({side:e.target.value})}><option value="">All directions</option><option value="long">Long</option><option value="short">Short</option></select></label>
-        <label>Exit<select className="select" aria-label="Performance exit" value={f.reason} onChange={e => update({reason:e.target.value})}><option value="">All exits</option>{[...new Set([...Object.keys(EXITS), ...(d?.byExit ?? []).map(r => r.key), ...(f.reason ? [f.reason] : [])])].map(r => <option key={r} value={r}>{EXITS[r] ?? r}</option>)}</select></label>
-        <details className="performance-scanner"><summary>Scanner: {f.scanner ? scanners.data?.find(s => s.id === f.scanner)?.name ?? f.scanner : 'All scanners'}</summary>
-          <label>Find scanner<input className="input" type="search" value={scannerSearch} placeholder="Search scanner names…" onChange={e => setScannerSearch(e.target.value)} /></label>
-          <label>Scanner<select className="select" aria-label="Performance scanner" value={f.scanner} onChange={e => update({scanner:e.target.value})}><option value="">All scanners</option>{f.scanner && !scanners.data?.some(s => s.id === f.scanner) && <option value={f.scanner}>{f.scanner}</option>}{(scanners.data ?? []).filter(s => s.id === f.scanner || `${s.name} ${s.id}`.toLowerCase().includes(scannerSearch.toLowerCase())).map(s => <option key={s.id} value={s.id}>{s.name}</option>)}</select></label>
-        </details>
-        {f.period === 'custom' && <div className="performance-dates"><label>From (UTC)<input className="input" type="date" aria-label="Performance start date" value={f.start} onChange={e => update({start:e.target.value})} /></label><label>Through (UTC)<input className="input" type="date" aria-label="Performance end date" value={f.end} min={f.start || undefined} onChange={e => update({end:e.target.value})} /></label></div>}
-      </div>
-      <div className="performance-scope small muted" role="status">{d ? <><b>{periodText}</b><span>Updated <Time t={d.at} />{q.isFetching ? ' · refreshing…' : ''}</span></> : 'Both books use the same filters. Closing dates are UTC.'}</div>
-    </Panel>
-    {f.error && <div className="banner banner-warn" role="alert">{f.error}</div>}
+    <PageTitle
+      sub="Paper account and shadow research over one closing period, after costs. Then see which markets, timeframes and scanners add to it."
+      actions={<><Link className="btn btn-sm" to="/daily">Daily report</Link><button className="btn btn-sm" onClick={resetFilters} disabled={!filtered}>Reset filters</button></>}
+    />
+    <div className="perf-filterbar">
+      <Toolbar end={<div className="perf-scope small muted" role="status">{d ? <><b>{periodText}</b><span>Updated <Time t={d.at} />{q.isFetching ? ' · refreshing…' : ''}</span></> : 'Both books use the same filters. Closing dates are UTC.'}</div>}>
+        <label className="perf-field">Closed in<select className="select" aria-label="Performance period" value={f.period} onChange={e => update({period:e.target.value})}>{JOURNAL_PERIODS.map(([v,label]) => <option key={v} value={v}>{label}</option>)}</select></label>
+        <label className="perf-field">Market<select className="select" aria-label="Performance market" value={f.symbol} onChange={e => update({symbol:e.target.value})}><option value="">All markets</option>{symbols.map(s => <option key={s}>{s}</option>)}</select></label>
+        <label className="perf-field">Timeframe<select className="select" aria-label="Performance timeframe" value={f.tf} onChange={e => update({tf:e.target.value})}><option value="">All timeframes</option>{f.tf && !DELTA_TIMEFRAMES.some(t => t === f.tf) && <option>{f.tf}</option>}{DELTA_TIMEFRAMES.map(t => <option key={t}>{t}</option>)}</select></label>
+        <label className="perf-field">Direction<select className="select" aria-label="Performance direction" value={f.side} onChange={e => update({side:e.target.value})}><option value="">All directions</option><option value="long">Long</option><option value="short">Short</option></select></label>
+        <label className="perf-field">Exit<select className="select" aria-label="Performance exit" value={f.reason} onChange={e => update({reason:e.target.value})}><option value="">All exits</option>{[...new Set([...Object.keys(EXITS), ...(d?.byExit ?? []).map(r => r.key), ...(f.reason ? [f.reason] : [])])].map(r => <option key={r} value={r}>{EXITS[r] ?? r}</option>)}</select></label>
+      </Toolbar>
+      <details className="performance-scanner"><summary>Scanner: {f.scanner ? scanners.data?.find(s => s.id === f.scanner)?.name ?? f.scanner : 'All scanners'}</summary>
+        <div className="perf-scanner-fields">
+          <label className="perf-field">Find scanner<input className="input" type="search" value={scannerSearch} placeholder="Search scanner names…" onChange={e => setScannerSearch(e.target.value)} /></label>
+          <label className="perf-field">Scanner<select className="select" aria-label="Performance scanner" value={f.scanner} onChange={e => update({scanner:e.target.value})}><option value="">All scanners</option>{f.scanner && !scanners.data?.some(s => s.id === f.scanner) && <option value={f.scanner}>{f.scanner}</option>}{(scanners.data ?? []).filter(s => s.id === f.scanner || `${s.name} ${s.id}`.toLowerCase().includes(scannerSearch.toLowerCase())).map(s => <option key={s.id} value={s.id}>{s.name}</option>)}</select></label>
+        </div>
+      </details>
+      {f.period === 'custom' && <div className="performance-dates"><label className="perf-field">From (UTC)<input className="input" type="date" aria-label="Performance start date" value={f.start} onChange={e => update({start:e.target.value})} /></label><label className="perf-field">Through (UTC)<input className="input" type="date" aria-label="Performance end date" value={f.end} min={f.start || undefined} onChange={e => update({end:e.target.value})} /></label></div>}
+    </div>
+    {f.error && <Callout tone="warn" title="Check the filters">{f.error}</Callout>}
     {!f.error && q.isLoading && <Loading kind="table" rows={4} cols={2} />}
     {!f.error && q.isError && <ErrorState error={q.error} onRetry={() => q.refetch()} />}
     {d && <>
@@ -118,29 +126,54 @@ export function Analytics() {
         <BookCard title="Paper account" sub="Account trades · recorded position sizes" stats={d.paper} />
         <BookCard title="Shadow research" sub="Incubator trades · independent simulated sizes" stats={d.shadow} shadow />
       </div>
-      <p className="performance-note muted small">R = net P&L ÷ initial stop-risk budget. Net = trading P&L − commission + signed funding. These books trade different opportunities and sizes; shadow dollars are not account returns. Commission / trade uses each trade’s initial risk, averaged over trades with valid risk. Open positions, backtests, watch-only orders and experimental plans are excluded. Each order keeps its reporting category even if its scanner later moves. Older categories were inferred once at the 31 October migration.</p>
-      <Panel title="Day by day" right={<select className="select" aria-label="Daily chart metric" value={chartMetric} onChange={e => setChartMetric(e.target.value as typeof chartMetric)}><option value="avgR">Net R / trade</option><option value="trades">Closed trade count</option></select>}>
-        <p className="small muted performance-chart-note">UTC closing days with trades. {chartMetric === 'avgR' ? 'Each bar is that day’s average net R; days without closes in a book have no bar.' : 'Closed trades per book, including stops and other exits.'}{includesToday ? ' Today is partial.' : ''}</p>
-        {!d.daily.length ? <div className="state muted">No closed trades to chart.</div> : <>
-          <div className="performance-chart" role="img" aria-label={`Daily paper versus shadow ${chartMetric === 'avgR' ? 'net R per trade' : 'closed trade counts'}. Exact values are in the daily values table below.`}>
-            <ResponsiveContainer width="100%" height={260}><BarChart data={d.daily} margin={{top:12,right:12,left:0,bottom:0}}>
-              <CartesianGrid stroke="var(--border)" vertical={false} /><XAxis dataKey="key" tickFormatter={v => String(v).slice(5)} minTickGap={30} fontSize={11} stroke="var(--muted)" tickLine={false} axisLine={false} />
-              <YAxis width={58} fontSize={11} stroke="var(--muted)" tickLine={false} axisLine={false} allowDecimals={chartMetric === 'avgR'} tickFormatter={v => chartMetric === 'avgR' ? `${Number(v).toLocaleString(undefined, {maximumSignificantDigits: 3})}R` : fmtInt(Number(v))} />
-              <ReferenceLine y={0} stroke="var(--muted-2)" /><Legend />
-              <Tooltip contentStyle={{background:'var(--surface)',border:'1px solid var(--border)',borderRadius:8,color:'var(--text)'}} labelFormatter={v => `${v} · UTC`} formatter={(value,name) => [chartMetric === 'avgR' ? avgR(Number(value)) : fmtInt(Number(value)), String(name)]} />
-              <Bar dataKey={`paper.${chartMetric}`} name="Paper" fill="var(--accent)" maxBarSize={28} isAnimationActive={false} />
-              <Bar dataKey={`shadow.${chartMetric}`} name="Shadow" fill="var(--performance-shadow)" maxBarSize={28} isAnimationActive={false} />
-            </BarChart></ResponsiveContainer>
-          </div>
-          <details className="performance-daily-values"><summary>View daily values</summary><div className="table-wrap"><table className="table"><caption className="sr-only">Daily paper and shadow values, UTC</caption><thead><tr><th>UTC day</th><th>Paper trades</th><th>Paper R / trade</th><th>Paper net $</th><th>Shadow trades</th><th>Shadow R / trade</th><th>Shadow net $</th></tr></thead><tbody>{[...d.daily].reverse().map(r => <tr key={r.key}><td>{r.key}{r.key === day(d.at) ? ' · partial' : ''}</td><td>{r.paper.trades}</td><td>{avgR(r.paper.avgR)}</td><td>{fmtPnl(r.paper.net)}</td><td>{r.shadow.trades}</td><td>{avgR(r.shadow.avgR)}</td><td>{fmtPnl(r.shadow.net)}</td></tr>)}</tbody></table></div></details>
-        </>}
-      </Panel>
-      <Panel title="Where results come from" pad={false} right={<Link className="btn btn-sm" to={`/trades?${journalParams}`}>Paper journal →</Link>}>
-        <div className="performance-breakdown-controls"><label>Compare by<select className="select" value={group} onChange={e => { setGroup(e.target.value as typeof group); setSearch('') }}>{GROUPS.map(([v,label]) => <option value={v} key={v}>{label}</option>)}</select></label><label>Find group<input className="input" type="search" value={search} placeholder="Filter these rows…" onChange={e => setSearch(e.target.value)} /></label><span className="small muted">{rows.length} groups · same filters as above</span></div>
-        <ComparisonRows rows={rows} group={group} onChoose={key => { update({[GROUPS.find(g => g[0] === group)![2]]:key}); setSearch('') }} />
-        <p className="small muted performance-note">SL % counts exits labelled stop loss. Trailing stops and break-even exits are separate. Small samples can be noisy; a positive average is not a promotion recommendation.</p>
-      </Panel>
+      <Callout tone="info" title="How to read this">
+        R is net P&L divided by the initial stop-risk budget. Net is trading P&L minus commission plus signed funding. The books trade different opportunities and sizes, so shadow dollars are not account returns.
+      </Callout>
+      <details className="perf-more small muted"><summary>What is counted</summary><p>Commission per trade uses each trade’s initial risk, averaged over trades with valid risk. Open positions, backtests, watch-only orders and experimental plans are excluded. Each order keeps its reporting category even if its scanner later moves. Older categories were inferred once at the 31 October migration.</p></details>
     </>}
-    <section className="performance-advanced"><button className="btn" aria-expanded={advanced} aria-controls="performance-advanced" onClick={() => setAdvanced(!advanced)}>{advanced ? 'Hide' : 'Open'} advanced diagnostics</button><p className="muted small">Separate research views with their own windows; the comparison filters above do not apply.</p>{advanced && <div id="performance-advanced"><p className="banner small">Learning uses up to 5,000 paper closes and up to 20,000 shadow closes from the last 30 days. Allocation uses its own evidence windows.</p><PolicyHealthPanel /><AllocationAuditPanel /><LearningSection /></div>}</section>
+    <Tabs
+      idPrefix="perf"
+      label="Performance views"
+      value={tab}
+      onChange={setTab}
+      items={[
+        { id: 'breakdown', label: 'Where results come from', count: d ? rows.length : undefined },
+        { id: 'daily', label: 'Day by day', count: d ? d.daily.length : undefined },
+        { id: 'advanced', label: 'Advanced diagnostics' },
+      ]}
+    />
+    {d && <>
+      <TabPanel idPrefix="perf" id="breakdown" value={tab}>
+        <Panel title="Where results come from" pad={false} right={<Link className="btn btn-sm" to={`/trades?${journalParams}`}>Paper journal →</Link>}>
+          <div className="performance-breakdown-controls"><label>Compare by<select className="select" value={group} onChange={e => { setGroup(e.target.value as typeof group); setSearch('') }}>{GROUPS.map(([v,label]) => <option value={v} key={v}>{label}</option>)}</select></label><label>Find group<input className="input" type="search" value={search} placeholder="Filter these rows…" onChange={e => setSearch(e.target.value)} /></label><span className="small muted">{rows.length} groups · same filters as above</span></div>
+          <ComparisonRows rows={rows} group={group} onChoose={key => { update({[GROUPS.find(g => g[0] === group)![2]]:key}); setSearch('') }} />
+          <p className="small muted performance-note">SL % counts exits labelled stop loss. Trailing stops and break-even exits are separate. Small samples can be noisy; a positive average is not a promotion recommendation.</p>
+        </Panel>
+      </TabPanel>
+      <TabPanel idPrefix="perf" id="daily" value={tab}>
+        <Panel title="Day by day" right={<select className="select" aria-label="Daily chart metric" value={chartMetric} onChange={e => setChartMetric(e.target.value as typeof chartMetric)}><option value="avgR">Net R / trade</option><option value="trades">Closed trade count</option></select>}>
+          <p className="small muted performance-chart-note">UTC closing days with trades. {chartMetric === 'avgR' ? 'Each bar is that day’s average net R; days without closes in a book have no bar.' : 'Closed trades per book, including stops and other exits.'}{includesToday ? ' Today is partial.' : ''}</p>
+          {!d.daily.length ? <EmptyState title="No closed trades to chart" hint="Pick a longer period or clear a filter." /> : <>
+            <div className="performance-chart" role="img" aria-label={`Daily paper versus shadow ${chartMetric === 'avgR' ? 'net R per trade' : 'closed trade counts'}. Exact values are in the daily values table below.`}>
+              <ResponsiveContainer width="100%" height={260}><BarChart data={d.daily} margin={{top:12,right:12,left:0,bottom:0}}>
+                <CartesianGrid stroke="var(--border)" vertical={false} /><XAxis dataKey="key" tickFormatter={v => String(v).slice(5)} minTickGap={30} fontSize={11} stroke="var(--muted)" tickLine={false} axisLine={false} />
+                <YAxis width={58} fontSize={11} stroke="var(--muted)" tickLine={false} axisLine={false} allowDecimals={chartMetric === 'avgR'} tickFormatter={v => chartMetric === 'avgR' ? `${Number(v).toLocaleString(undefined, {maximumSignificantDigits: 3})}R` : fmtInt(Number(v))} />
+                <ReferenceLine y={0} stroke="var(--muted-2)" /><Legend />
+                <Tooltip contentStyle={{background:'var(--surface)',border:'1px solid var(--border)',borderRadius:8,color:'var(--text)'}} labelFormatter={v => `${v} · UTC`} formatter={(value,name) => [chartMetric === 'avgR' ? avgR(Number(value)) : fmtInt(Number(value)), String(name)]} />
+                <Bar dataKey={`paper.${chartMetric}`} name="Paper" fill="var(--accent)" maxBarSize={28} isAnimationActive={false} />
+                <Bar dataKey={`shadow.${chartMetric}`} name="Shadow" fill="var(--performance-shadow)" maxBarSize={28} isAnimationActive={false} />
+              </BarChart></ResponsiveContainer>
+            </div>
+            <details className="performance-daily-values"><summary>View daily values</summary><div className="table-wrap"><table className="table"><caption className="sr-only">Daily paper and shadow values, UTC</caption><thead><tr><th>UTC day</th><th>Paper trades</th><th>Paper R / trade</th><th>Paper net $</th><th>Shadow trades</th><th>Shadow R / trade</th><th>Shadow net $</th></tr></thead><tbody>{[...d.daily].reverse().map(r => <tr key={r.key}><td>{r.key}{r.key === day(d.at) ? ' · partial' : ''}</td><td>{r.paper.trades}</td><td>{avgR(r.paper.avgR)}</td><td>{fmtPnl(r.paper.net)}</td><td>{r.shadow.trades}</td><td>{avgR(r.shadow.avgR)}</td><td>{fmtPnl(r.shadow.net)}</td></tr>)}</tbody></table></div></details>
+          </>}
+        </Panel>
+      </TabPanel>
+    </>}
+      <TabPanel idPrefix="perf" id="advanced" value={tab}>
+        <Section title="Advanced diagnostics" hint="Separate research views with their own windows; the filters above do not apply.">
+          <Callout tone="info">Learning uses up to 5,000 paper closes and up to 20,000 shadow closes from the last 30 days. Allocation uses its own evidence windows.</Callout>
+          <div className="stack"><PolicyHealthPanel /><AllocationAuditPanel /><LearningSection /></div>
+        </Section>
+      </TabPanel>
   </div>
 }

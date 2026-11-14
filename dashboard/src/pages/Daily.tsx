@@ -1,11 +1,14 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../api/client'
 import { useConfig } from '../api/queries'
 import { LockStudyPanel } from '../components/LockStudyPanel'
 import type { DailyRow } from '../api/types'
 import { PageTitle, Panel, QueryState } from '../components/ui'
+import { Callout, Stat, StatGrid, TabPanel, Tabs } from '../components/kit'
 import { fmtPnl } from '../lib/format'
+import '../styles/pages/daily.css'
 
 /**
  * Decision 136: the day-by-day record. One row per UTC day, newest first, today marked partial; trades count on the
@@ -25,6 +28,7 @@ export function Daily() {
   const q = useQuery({ queryKey: ['daily'], queryFn: () => api.dailyReport(30), refetchInterval: 60_000, staleTime: 30_000 })
   const cfg = useConfig()
   const sizing = cfg.data?.paper?.sizingMode
+  const [tab, setTab] = useState<'account' | 'shadow' | 'lock'>('account')
   // decision 196: the margin re-weighting over a rolling 14 days (the newest first, today partial), not a trial window
   // fixed to a date: a counterfactual statistic on closed trades, not a replay of the portfolio
   const since = useMemo(() => {
@@ -38,18 +42,56 @@ export function Daily() {
   }, [q.data])
   return (
     <div className="page">
-      <PageTitle pre="Every day," accent="as it happened." sub="One row per UTC day, newest first; today is partial. Trades count on the day they closed, R is net of fees, and the trail column is the share of the peak a trail exit kept. The realized balance is starting capital plus closed trades; the equity in the top bar also counts open positions." />
-      <p className="muted small">Shadow excludes watch-only orders and experimental plans. Categories stay fixed when scanners move; older categories were inferred once at the 31 October migration.</p>
+      <PageTitle
+        sub="One row per UTC day, newest first. Trades count on the day they closed and R is net of fees. Today is partial."
+        actions={<Link to="/analytics" className="btn btn-sm">Compare periods →</Link>}
+      />
       <QueryState {...q} data={q.data} empty="No trades yet." onRetry={() => q.refetch()}>
         {(rows) => (
           <>
-            <div className="stat-strip" role="list">
-              <span role="listitem"><span className="stat-k">Account, last 7 days</span> <span className={`mono ${tone(weeks.last.sr)}`}>{r(weeks.last.avg, 3)}R</span> <span className="muted">a trade over {weeks.last.n}, net {fmtPnl(weeks.last.net)}</span></span>
-              <span role="listitem"><span className="stat-k">7 days before</span> <span className={`mono ${tone(weeks.prior.sr)}`}>{r(weeks.prior.avg, 3)}R</span> <span className="muted">over {weeks.prior.n}, net {fmtPnl(weeks.prior.net)}</span></span>
-              <span role="listitem"><span className="stat-k">Shadow, last 7 days</span> <span className={`mono ${tone(weeks.last.ssr)}`}>{r(weeks.last.savg, 3)}R</span> <span className="muted">over {weeks.last.sn}</span></span>
-              <span role="listitem"><span className="stat-k">7 days before</span> <span className={`mono ${tone(weeks.prior.ssr)}`}>{r(weeks.prior.savg, 3)}R</span> <span className="muted">over {weeks.prior.sn}</span></span>
-              <span role="listitem" title={`A counterfactual on closed trades, not a replay: the same trades' R re-weighted as if each had posted the same margin at the same average risk, beside their R as risk-sized. Sizing in force now: ${sizing ?? 'unknown'}.${since.partial ? ' Today is partial.' : ''}`}><span className="stat-k">Margin re-weighting, last {since.days} days</span> <span className="muted">shadow</span> <span className={`mono ${tone(since.s)}`}>{r(since.s, 1)}R</span> <span className="muted">now vs</span> <span className={`mono ${tone(since.sm)}`}>{r(since.sm, 1)}R</span> <span className="muted">by margin · account</span> <span className={`mono ${tone(since.a)}`}>{r(since.a, 1)}</span> <span className="muted">vs</span> <span className={`mono ${tone(since.am)}`}>{r(since.am, 1)}</span> <span className="muted">· sizing now {sizing ?? '–'}</span></span>
-            </div>
+            <StatGrid min={230}>
+              <Stat
+                label="Account, last 7 days"
+                value={`${r(weeks.last.avg, 3)}R`}
+                tone={weeks.last.n ? (weeks.last.sr > 0 ? 'gain' : weeks.last.sr < 0 ? 'loss' : undefined) : 'muted'}
+                sub={`a trade, over ${weeks.last.n} trades · net ${fmtPnl(weeks.last.net)}`}
+              />
+              <Stat
+                label="Account, 7 days before"
+                value={`${r(weeks.prior.avg, 3)}R`}
+                tone={weeks.prior.n ? (weeks.prior.sr > 0 ? 'gain' : weeks.prior.sr < 0 ? 'loss' : undefined) : 'muted'}
+                sub={`a trade, over ${weeks.prior.n} trades · net ${fmtPnl(weeks.prior.net)}`}
+              />
+              <Stat
+                label="Shadow, last 7 days"
+                value={`${r(weeks.last.savg, 3)}R`}
+                tone={weeks.last.sn ? (weeks.last.ssr > 0 ? 'gain' : weeks.last.ssr < 0 ? 'loss' : undefined) : 'muted'}
+                sub={`a trade, over ${weeks.last.sn} trades`}
+              />
+              <Stat
+                label="Shadow, 7 days before"
+                value={`${r(weeks.prior.savg, 3)}R`}
+                tone={weeks.prior.sn ? (weeks.prior.ssr > 0 ? 'gain' : weeks.prior.ssr < 0 ? 'loss' : undefined) : 'muted'}
+                sub={`a trade, over ${weeks.prior.sn} trades`}
+              />
+            </StatGrid>
+            <Callout tone="info" title={`If trades were sized by margin (last ${since.days} days)`}>
+              <span title={`A what-if on closed trades, not a replay: the same trades' R re-weighted as if each had posted the same margin at the same average risk, beside their R as risk-sized. Sizing in force now: ${sizing ?? 'unknown'}.${since.partial ? ' Today is partial.' : ''}`}>
+                Shadow <span className={`mono ${tone(since.s)}`}>{r(since.s, 1)}R</span> as sized now, <span className={`mono ${tone(since.sm)}`}>{r(since.sm, 1)}R</span> by margin. Account <span className={`mono ${tone(since.a)}`}>{r(since.a, 1)}R</span> as sized, <span className={`mono ${tone(since.am)}`}>{r(since.am, 1)}R</span> by margin. Sizing now: {sizing ?? '–'}.
+              </span>
+            </Callout>
+            <Tabs
+              idPrefix="daily"
+              label="Daily record"
+              value={tab}
+              onChange={setTab}
+              items={[
+                { id: 'account', label: 'Account', count: rows.length },
+                { id: 'shadow', label: 'Shadow book and incubator' },
+                { id: 'lock', label: 'Lock study' },
+              ]}
+            />
+            <TabPanel idPrefix="daily" id="account" value={tab}>
             <Panel title="Account" pad={false}>
               <div className="table-wrap"><table className="table small daily-table">
                 <thead><tr><th>Day</th><th>Trades</th><th>Net</th><th>Fees</th><th>R a trade</th><th>Sum R</th><th>If sized by margin</th><th>Stopped</th><th>Trailed</th><th>Trail kept</th><th title="Starting capital plus every closed trade to the end of the day. The top bar's equity also counts open positions.">Realized balance</th><th>Best · worst scanner</th></tr></thead>
@@ -70,7 +112,12 @@ export function Daily() {
                   </tr>))}</tbody>
               </table></div>
             </Panel>
-            <LockStudyPanel />
+            <p className="muted small daily-note">Realized balance is starting capital plus closed trades; the equity in the top bar also counts open positions. Trail kept is the share of the peak a trailing exit kept.</p>
+            </TabPanel>
+            <TabPanel idPrefix="daily" id="lock" value={tab}>
+              <LockStudyPanel />
+            </TabPanel>
+            <TabPanel idPrefix="daily" id="shadow" value={tab}>
             <Panel title="Shadow book and incubator" pad={false}>
               <div className="table-wrap"><table className="table small daily-table">
                 <thead><tr><th>Day</th><th>Trades</th><th>R a trade</th><th>Sum R</th><th>If sized by margin</th><th>15m</th><th>1h</th><th>4h</th><th>Trail kept</th><th>Admitted</th><th>Proposed</th><th>Promoted</th><th>Retired</th><th>Demoted</th></tr></thead>
@@ -91,6 +138,8 @@ export function Daily() {
                   </tr>))}</tbody>
               </table></div>
             </Panel>
+            <p className="muted small daily-note">Shadow excludes watch-only orders and experimental plans. Categories stay fixed when scanners move; older ones were inferred once at the 31 October migration.</p>
+            </TabPanel>
           </>
         )}
       </QueryState>

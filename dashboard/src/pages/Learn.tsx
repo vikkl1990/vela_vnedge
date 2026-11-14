@@ -5,9 +5,11 @@ import { api } from '../api/client'
 import { useMl, useMlYardstick } from '../api/queries'
 import type { MlRule, MlScannerInsight, YardBook } from '../api/types'
 import { DataTable, type Column } from '../components/DataTable'
-import { Empty, ErrorState, KpiTile, Loading, PageTitle, Panel, Pill, Segmented, Time } from '../components/ui'
+import { Empty, ErrorState, Loading, PageTitle, Panel, Pill, Segmented, Time } from '../components/ui'
+import { Callout, EmptyState, Stat, StatGrid, TabPanel, Tabs } from '../components/kit'
 import { fmtPct } from '../lib/format'
 import { useToast } from '../lib/toast'
+import '../styles/pages/learn.css'
 
 /** Model probabilities are 0–1; show as a percentage with 1 decimal. */
 const pct = (v: number | null | undefined) => (v == null || !Number.isFinite(v) ? '–' : fmtPct(v * 100))
@@ -18,6 +20,7 @@ export function Learn() {
   const qc = useQueryClient()
   const toast = useToast()
   const [sel, setSel] = useState<string>('')
+  const [tab, setTab] = useState<'scanners' | 'gate' | 'global' | 'tf'>('scanners')
   const train = useMutation({
     mutationFn: () => api.mlTrain(),
     onSuccess: (s) => {
@@ -67,112 +70,127 @@ export function Learn() {
 
   return (
     <div className="page">
-      <div className="banner banner-warn small" role="note">
-        {d?.config && d.config.minProb > 0 ? (
-          <>The gate is on at <span className="mono">{pct(d.config.minProb)}</span>: entries the model rates below it are refused. The yardstick is exploratory; it does not certify that setting.</>
-        ) : (
-          <>Advisory only: the model gates nothing (<span className="mono">ml.minProb 0</span>). Threshold comparisons use saved entry predictions on eligible executed trades. Later rescoring is separate. A threshold selected here needs a frozen forward evaluation before use.</>
-        )}
-      </div>
-      <PageTitle pre="Every trade," accent="learned" post="from." sub="Entry-time features of every backtest and account trade train a win-probability model per scanner; bucket analysis turns the data into concrete rules." />
+      <PageTitle
+        sub="A win-probability model per scanner, trained on the entry features of every backtest and account trade. The buckets turn that data into plain rules."
+        actions={d ? (
+          <button className="btn btn-cta" onClick={() => train.mutate()} disabled={train.isPending || (d.counts?.total ?? d.samples) < 30} title="Models also retrain by themselves within two minutes after new samples arrive">
+            {train.isPending ? 'Training…' : 'Train now'}
+          </button>
+        ) : undefined}
+      />
+      {d?.config && d.config.minProb > 0 ? (
+        <Callout tone="warn" title={<>The gate is on at <span className="mono">{pct(d.config.minProb)}</span></>}>
+          Entries the model rates below it are refused. The yardstick is exploratory; it does not certify that setting.
+        </Callout>
+      ) : (
+        <Callout tone="info" title="Advisory only">
+          The model gates nothing (<span className="mono">ml.minProb 0</span>). Threshold comparisons use saved entry predictions on trades that were eligible and executed. A threshold picked here needs a frozen forward test before use. Gate and score settings are in Settings, Machine learning.
+        </Callout>
+      )}
       {ml.isLoading && !d && (
         <>
           <Loading kind="kpi" rows={5} />
-          <div className="grid-2">
-            <Panel title="Global feature weights">
-              <Loading rows={6} />
-            </Panel>
-            <Panel title="Global rules">
-              <Loading rows={3} />
-            </Panel>
-          </div>
+          <Panel title="Scanners">
+            <Loading rows={6} />
+          </Panel>
         </>
       )}
       {ml.isError && !d && <ErrorState error={ml.error} onRetry={() => ml.refetch()} />}
       {d && (
         <>
-          {d.eligibility && <p className="small muted">Training eligibility: {d.eligibility.eligible} of {d.eligibility.stored} stored samples; {d.eligibility.excluded} excluded or outside the training limit. Outcomes need a recorded resolution time.</p>}
-          {!!d.timeframeModels?.length && <Panel title="Timeframe models used for entry scoring">
-            <p className="small muted">Each horizon uses its own model. The fixed 55% cutoff below is diagnostic only. Net R comes from untouched test trades; it does not model portfolio reuse. Positive probability skill beats a constant training-period win rate.</p>
-            <div className="table-scroll"><table><thead><tr><th>Scanner</th><th>TF</th><th>Test trades</th><th>AUC</th><th>Probability skill</th><th>All net R</th><th>55% kept</th><th>Kept net R</th><th>Rejected net R</th></tr></thead><tbody>{d.timeframeModels.map(m => <tr key={`${m.scannerId}:${m.tf}`}><td>{m.scannerId ? scanners.find(s => s.scannerId === m.scannerId)?.scannerName ?? m.scannerId : 'Timeframe fallback'}</td><td>{m.tf}</td><td>{m.model.holdout}</td><td>{m.model.auc.toFixed(2)}</td><td>{pct(m.model.economic?.calibratedBrierSkill)}</td><td>{r(m.model.economic?.testNetR)}</td><td>{m.model.economic?.selectedN ?? '–'}</td><td>{r(m.model.economic?.selectedNetR)}</td><td>{r(m.model.economic?.rejectedNetR)}</td></tr>)}</tbody></table></div>
-          </Panel>}
-          <div className="kpi-grid">
-            <KpiTile label="Samples" value={String(d.samples)} sub={`${d.liveSinceReset} account since the reset · ${d.liveSamples - d.liveSinceReset} from earlier accounts · ${d.samples - d.liveSamples} backtest`} />
-            <KpiTile label="Scanner models" value={String(d.scannersWithModel)} sub="≥ 40 trades each" />
-            <KpiTile label="Global accuracy" value={pct(d.global?.model?.accuracy)} sub={`holdout ${d.global?.model?.holdout ?? 0} · base ${pct(d.global?.model?.baseWinRate)}`} tone={(d.global?.model?.accuracy ?? 0) > (d.global?.model?.baseWinRate ?? 0) ? 'gain' : undefined} />
-            <KpiTile label="Global AUC" value={d.global?.model ? d.global.model.auc.toFixed(2) : '–'} sub="0.5 = coin flip" tone={(d.global?.model?.auc ?? 0) > 0.58 ? 'gain' : (d.global?.model?.auc ?? 1) < 0.52 ? 'loss' : undefined} />
-            <KpiTile label="Trained" value={d.trainedAt ? <Time t={d.trainedAt} mode="datetime" /> : 'never'} sub={d.config ? `gate ${d.config.minProb > 0 ? pct(d.config.minProb) : 'off'} · as score ${d.config.useAsScore ? 'on' : 'off'}` : ''} />
-          </div>
-          <div className="row gap">
-            <button className="btn btn-cta" onClick={() => train.mutate()} disabled={train.isPending || (d.counts?.total ?? d.samples) < 30}>
-              {train.isPending ? 'Training…' : 'Train now'}
-            </button>
-            <span className="muted small">Models retrain automatically within two minutes after new samples arrive. Gate and score usage live in Settings → Machine learning.</span>
-          </div>
+          <StatGrid min={200}>
+            <Stat label="Samples" value={String(d.samples)} sub={`${d.liveSinceReset} account since the reset · ${d.liveSamples - d.liveSinceReset} from earlier accounts · ${d.samples - d.liveSamples} backtest`} />
+            <Stat label="Scanner models" value={String(d.scannersWithModel)} sub="Scanners with 40 or more trades" />
+            <Stat label="Global accuracy" value={pct(d.global?.model?.accuracy)} sub={`holdout ${d.global?.model?.holdout ?? 0} · base ${pct(d.global?.model?.baseWinRate)}`} tone={(d.global?.model?.accuracy ?? 0) > (d.global?.model?.baseWinRate ?? 0) ? 'gain' : undefined} />
+            <Stat label="Global AUC" value={d.global?.model ? d.global.model.auc.toFixed(2) : '–'} sub="0.5 is a coin flip" tone={(d.global?.model?.auc ?? 0) > 0.58 ? 'gain' : (d.global?.model?.auc ?? 1) < 0.52 ? 'loss' : undefined} />
+            <Stat label="Trained" title={d.trainedAt ? new Date(d.trainedAt).toISOString() : undefined} value={d.trainedAt ? <Time t={d.trainedAt} mode="ago" /> : 'never'} sub={d.config ? `gate ${d.config.minProb > 0 ? pct(d.config.minProb) : 'off'} · as score ${d.config.useAsScore ? 'on' : 'off'}` : ''} />
+          </StatGrid>
+          {d.eligibility && <p className="small muted learn-note">Training eligibility: {d.eligibility.eligible} of {d.eligibility.stored} stored samples; {d.eligibility.excluded} excluded or outside the training limit. Outcomes need a recorded resolution time.</p>}
 
-          <Yardstick />
+          <Tabs
+            idPrefix="learn"
+            label="Learning views"
+            value={tab}
+            onChange={setTab}
+            items={[
+              { id: 'scanners', label: 'By scanner', count: scanners.length },
+              { id: 'gate', label: 'Would the gate have paid?' },
+              { id: 'global', label: 'Global model' },
+              ...(d.timeframeModels?.length ? [{ id: 'tf' as const, label: 'Timeframe models', count: d.timeframeModels.length }] : []),
+            ]}
+          />
 
-          <div className="grid-2">
-            <Panel title="Global feature weights">
-              {d.global ? (
-                <WeightBars items={d.global.importance.slice(0, 12)} />
-              ) : (
-                <Empty label="Not enough samples yet (need 30+)." hint="Backtests fill this in during warm-up." />
-              )}
-            </Panel>
-            <Panel title="Global rules">
-              <RuleList rules={d.global?.rules ?? []} baseline={d.global?.baseline} />
-            </Panel>
-          </div>
-
-          <Panel
-            title={
-              <span>
-                Per-scanner insights <span className="muted small">({scanners.length} with data)</span>
-              </span>
-            }
-            right={<span className="muted small">click a row to inspect</span>}
-            pad={false}
-          >
-            <DataTable
-              columns={cols}
-              rows={scanners}
-              rowKey={(s) => s.scannerId}
-              defaultSort={{ key: 'samples', dir: 'desc' }}
-              onRowClick={(s) => setSel(s.scannerId)}
-              rowClass={(s) => (current?.scannerId === s.scannerId ? 'row-active' : undefined)}
-              maxHeight={520}
-              caption="Per-scanner model insights"
-              emptyLabel={
-                <span>
-                  No scanner has samples yet<span className="empty-hint">Run a backtest or let live scanners trade to collect samples.</span>
-                </span>
-              }
-            />
-          </Panel>
-
-          {current && (
-            <Panel
-              title={
-                <span>
-                  How to improve <span className="accent">{current.scannerName}</span>
-                </span>
-              }
-            >
-              <div className="grid-2">
-                <div>
-                  <div className="muted small mb">
-                    Baseline: {current.baseline.n} trades · win {pct(current.baseline.winRate)} · avg {r(current.baseline.avgR)}
-                    {current.model ? ` · model AUC ${current.model.auc.toFixed(2)} on ${current.model.holdout} holdout trades` : ' · fewer than 40 trades, no model yet'}
+          <TabPanel idPrefix="learn" id="scanners" value={tab}>
+            <div className="stack">
+              <Panel
+                title={<span>Per-scanner insights <span className="muted small">({scanners.length} with data)</span></span>}
+                right={<span className="muted small">Click a row to inspect</span>}
+                pad={false}
+              >
+                <DataTable
+                  columns={cols}
+                  rows={scanners}
+                  rowKey={(s) => s.scannerId}
+                  defaultSort={{ key: 'samples', dir: 'desc' }}
+                  onRowClick={(s) => setSel(s.scannerId)}
+                  rowClass={(s) => (current?.scannerId === s.scannerId ? 'row-active' : undefined)}
+                  maxHeight={520}
+                  caption="Per-scanner model insights"
+                  emptyLabel={
+                    <span>
+                      No scanner has samples yet<span className="empty-hint">Run a backtest or let live scanners trade to collect samples.</span>
+                    </span>
+                  }
+                />
+              </Panel>
+              {current ? (
+                <Panel title={<span>How to improve <span className="accent">{current.scannerName}</span></span>}>
+                  <div className="grid-2">
+                    <div>
+                      <div className="muted small mb">
+                        Baseline: {current.baseline.n} trades · win {pct(current.baseline.winRate)} · avg {r(current.baseline.avgR)}
+                        {current.model ? ` · model AUC ${current.model.auc.toFixed(2)} on ${current.model.holdout} holdout trades` : ' · fewer than 40 trades, no model yet'}
+                      </div>
+                      <RuleList rules={current.rules} baseline={current.baseline} />
+                    </div>
+                    <div>
+                      <div className="muted small mb">Feature weights (standardised; positive pushes toward a win)</div>
+                      {current.importance.length ? <WeightBars items={current.importance} /> : <Empty label="No model for this scanner yet." hint="Needs 40+ trades." />}
+                    </div>
                   </div>
-                  <RuleList rules={current.rules} baseline={current.baseline} />
-                </div>
-                <div>
-                  <div className="muted small mb">Feature weights (standardised; positive pushes toward a win)</div>
-                  {current.importance.length ? <WeightBars items={current.importance} /> : <Empty label="No model for this scanner yet." hint="Needs 40+ trades." />}
-                </div>
-              </div>
-            </Panel>
+                </Panel>
+              ) : (
+                <EmptyState title="No scanner has samples yet" hint="Run a backtest or let live scanners trade. Samples appear here as trades close." />
+              )}
+            </div>
+          </TabPanel>
+
+          <TabPanel idPrefix="learn" id="gate" value={tab}>
+            <Yardstick />
+          </TabPanel>
+
+          <TabPanel idPrefix="learn" id="global" value={tab}>
+            <div className="grid-2">
+              <Panel title="Global feature weights">
+                {d.global ? (
+                  <WeightBars items={d.global.importance.slice(0, 12)} />
+                ) : (
+                  <Empty label="Not enough samples yet (need 30+)." hint="Backtests fill this in during warm-up." />
+                )}
+              </Panel>
+              <Panel title="Global rules">
+                <RuleList rules={d.global?.rules ?? []} baseline={d.global?.baseline} />
+              </Panel>
+            </div>
+          </TabPanel>
+
+          {!!d.timeframeModels?.length && (
+            <TabPanel idPrefix="learn" id="tf" value={tab}>
+              <Panel title="Timeframe models used for entry scoring" pad={false}>
+                <p className="small muted learn-note-in">Each horizon uses its own model. The fixed 55% cutoff below is for diagnosis only. Net R comes from untouched test trades and does not model portfolio reuse. Positive probability skill beats a constant training-period win rate.</p>
+                <div className="table-wrap"><table className="table small"><thead><tr><th>Scanner</th><th>TF</th><th>Test trades</th><th>AUC</th><th>Probability skill</th><th>All net R</th><th>55% kept</th><th>Kept net R</th><th>Rejected net R</th></tr></thead><tbody>{d.timeframeModels.map(m => <tr key={`${m.scannerId}:${m.tf}`}><td>{m.scannerId ? scanners.find(s => s.scannerId === m.scannerId)?.scannerName ?? m.scannerId : 'Timeframe fallback'}</td><td>{m.tf}</td><td>{m.model.holdout}</td><td>{m.model.auc.toFixed(2)}</td><td>{pct(m.model.economic?.calibratedBrierSkill)}</td><td>{r(m.model.economic?.testNetR)}</td><td>{m.model.economic?.selectedN ?? '–'}</td><td>{r(m.model.economic?.selectedNetR)}</td><td>{r(m.model.economic?.rejectedNetR)}</td></tr>)}</tbody></table></div>
+              </Panel>
+            </TabPanel>
           )}
         </>
       )}
