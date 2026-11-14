@@ -17,6 +17,11 @@ export interface PublicationReview {
   url: string; author: string | null; retrievedAt: string | null; updatedAt: string | null; version: number | null;
   reviewedAt: string | null; role: string | null; summary: string | null; requirements: string | null;
   reviewVersion: number | null; reviewUpdatedAt: string | null;
+  reviewBlocker?: { blocker: string; checkedAt: string | null };
+  reconciliation?: {
+    pageSha256: string; sourceChecked: boolean; sourceHashes: Record<string,string>; scope: string;
+    findings: Array<{kind:string;marker:string;evidence:string;sourceLine:number|null;action:string}>;
+  };
 }
 export interface AuthorReviewCatalog {
   schema: 1; generatedAt: string;
@@ -48,10 +53,18 @@ export function authorReview(s: Pick<LoadedScanner, 'id' | 'variantOf' | 'file' 
   const publicationChanged = Boolean(publication?.reviewedAt && (
     publication.version !== publication.reviewVersion || publication.updatedAt !== publication.reviewUpdatedAt));
   const descriptionStatus = !publication?.retrievedAt ? 'unavailable' : !publication.reviewedAt ? 'retrieved' : publicationChanged ? 'changed' : 'reviewed';
+  const reconciliation = publication?.reconciliation;
+  // Author prose can remain current while the installed Pine has changed. Never
+  // present a former source-specific finding as a checked fact about new bytes.
+  const reconciliationStatus = !reconciliation ? 'unreviewed' : publicationChanged ? 'publication changed'
+    : !reconciliation.sourceChecked ? 'description only'
+    : reconciliation.sourceHashes[s.file] === hash ? 'matches' : 'source changed or not inspected';
   return {
     asOf: catalog.generatedAt, sourceStatus, sourceHash: hash, reviewedSourceHash: historical?.sha256 ?? null,
     sourceReviewedAt: historical?.reviewedAt ?? null, contract,
     publication, descriptionStatus,
+    reconciliationStatus,
+    reconciliation: reconciliationStatus === 'matches' || reconciliationStatus === 'description only' ? reconciliation : null,
     // These are historical research claims, not assertions that today's configured reader still has the fault.
     claimMeaning: 'Prior source-study claims marked confirmed for this scanner or its base; recheck against the current reading. Refuted and unchecked claims are excluded.',
     integrationNotes: record?.integrationNotes ?? [],

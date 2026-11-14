@@ -9,8 +9,13 @@ export function AuthorReview({ review: r }: { review: Review }) {
     <p className="small">{source}{r.sourceReviewedAt ? ` · ${r.sourceReviewedAt}` : ''}<br />{description}</p>
     {p && <p className="small"><a href={p.url} target="_blank" rel="noreferrer">{p.author ?? 'Author publication'}</a>{p.role ? ` · ${p.role}` : ''}{p.version != null ? ` · publication v${p.version}` : ''}<br /><span className="muted">Page checked {p.retrievedAt ? new Date(p.retrievedAt).toLocaleString() : 'not verified'}</span></p>}
     {p?.summary && <p className="small">{p.summary}</p>}
+    {p?.reviewBlocker && <p className="small">Review blocked: {p.reviewBlocker.blocker}</p>}
     {r.integrationNotes.map((n, i) => <p key={i} className="small">{n}</p>)}
     {p?.requirements && <details><summary>Author guidance and integration requirements</summary><p className="small">{p.requirements}</p></details>}
+    {r.reconciliation ? <details><summary>Author and source reconciliation ({r.reconciliation.findings.length} findings)</summary>
+      <p className="small muted">{r.reconciliation.scope} Findings describe integration work; they do not certify readiness or profitability.</p>
+      {r.reconciliation.findings.length ? <ul className="small">{r.reconciliation.findings.map((f, i) => <li key={i}><strong>{f.marker}</strong>{f.sourceLine ? ` · source line ${f.sourceLine}` : ''}<br />{f.evidence}<br /><strong>Required treatment:</strong> {f.action}</li>)}</ul> : <p className="small">No discrepancy recorded within this review’s scope. Execution and promotion checks still apply.</p>}
+    </details> : r.reconciliationStatus && r.reconciliationStatus !== 'unreviewed' && <p className="small">Author/source findings need rechecking: {r.reconciliationStatus}.</p>}
     {c && <>
       <details><summary>Entry conditions ({c.entries.length})</summary>
         <p className="small">{c.idea}</p>

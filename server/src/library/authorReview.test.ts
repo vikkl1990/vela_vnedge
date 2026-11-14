@@ -49,6 +49,23 @@ test('reading inspection does not mutate scanner settings, capital, risk or evid
   assert.equal(JSON.stringify(config), before);
 });
 
+test('new author findings are pinned independently from the earlier full-source study', () => {
+  const c = fixture();
+  Object.assign(c.publications.pub, { reviewedAt: '2026-11-14', reviewVersion: 2, reviewUpdatedAt: '2026-11-13',
+    reconciliation: { pageSha256: sha256, sourceChecked: true, sourceHashes: { 'test.pine': sha256 }, scope: 'Entry branches', findings: [] } });
+  assert.equal(authorReview(script, {}, c).reconciliationStatus, 'matches');
+  assert.ok(authorReview(script, {}, c).reconciliation);
+  const changed = authorReview({ ...script, source: source + '\nplot(open)' }, {}, c);
+  assert.equal(changed.reconciliationStatus, 'source changed or not inspected');
+  assert.equal(changed.reconciliation, null);
+  c.publications.pub.version = 3;
+  assert.equal(authorReview(script, {}, c).reconciliation, null);
+  c.publications.pub.version = 2;
+  c.publications.pub.reconciliation!.sourceChecked = false;
+  c.publications.pub.reconciliation!.sourceHashes = {};
+  assert.equal(authorReview(script, {}, c).reconciliationStatus, 'description only');
+});
+
 test('claims for another scanner reading do not leak through shared source', () => {
   const c = fixture();
   c.sources['test.pine'].claims = ['test', 'other'].map(scannerId => ({ scannerId, marker: 'Buy', problem: 'role', line: 2, evidence: 'Historical fixture' }));
