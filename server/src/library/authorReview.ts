@@ -6,11 +6,11 @@ import { SCRIPTS_DIR, type ScannerConfig } from '../config.ts';
 import type { LoadedScanner } from '../scanners/registry.ts';
 
 export interface SourceContract {
-  sha256: string; reviewedAt: string; type: string; idea: string;
-  entries: Array<{ marker: string; channel: string; side: string; line: number; condition: string }>;
+  sha256: string; reviewedAt: string; type: string; idea: string; reviewScope?: string;
+  entries: Array<{ marker: string; channel: string; side: string; line: number | null; condition: string }>;
   notEntries: Array<{ marker: string; channel: string; role: string; line: number }>;
-  stop: { has: boolean; how: string }; targets: { has: boolean; how: string }; exit: { has: boolean; how: string };
-  timing: { knownAtClose: boolean; pivotLagBars: number; lookahead: string; repaints: boolean; note: string };
+  stop: { has: boolean | null; how: string }; targets: { has: boolean | null; how: string }; exit: { has: boolean | null; how: string };
+  timing: { knownAtClose: boolean | null; pivotLagBars: number | null; lookahead: string; repaints: boolean | null; note: string };
   claims: Array<{ scannerId: string | null; marker: string; problem: string; line: number; evidence: string }>;
 }
 export interface PublicationReview {
@@ -40,7 +40,7 @@ function validCatalog(x: unknown): x is AuthorReviewCatalog {
     (s.publication === null || typeof s.publication === 'string') && Array.isArray(s.integrationNotes) && s.integrationNotes.every((n: unknown) => typeof n === 'string')) &&
     Object.values(x.sources).every(s => object(s) && typeof s.sha256 === 'string' &&
       rows(s.entries) && rows(s.notEntries) && rows(s.claims) &&
-      ['stop', 'targets', 'exit'].every(k => object(s[k]) && typeof s[k].has === 'boolean') && object(s.timing)) &&
+      ['stop', 'targets', 'exit'].every(k => object(s[k]) && (s[k].has === null || typeof s[k].has === 'boolean')) && object(s.timing)) &&
     Object.values(x.publications).every(p => object(p) && (p.role == null || typeof p.role === 'string') &&
       (!p.reconciliation || object(p.reconciliation) && object(p.reconciliation.sourceHashes) && rows(p.reconciliation.findings)));
 }

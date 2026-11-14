@@ -6,6 +6,7 @@ import type {LoadedScanner} from './registry.ts';
 import {sourceFacts} from './sourceFacts.ts';
 import {readingOf} from './reading.ts';
 import {willyContract, willyNativeReady} from './willyContracts.ts';
+import {MARKITTICK_NATIVE,markitTickSourceError} from './markitTick.ts';
 import {readerContractError, labelStyleContractError} from './readerFixes.ts';
 import {takeProfitLabel, type ExecutionPlanSnapshot} from '../paper/executionPlans.ts';
 import type {ScannerRole, ScannerContractDetail} from '../../../shared/scannerContracts.ts';
@@ -35,9 +36,17 @@ export function scannerContract(s:LoadedScanner, sc:Partial<ScannerConfig>, plan
   if(review.descriptionStatus!=='reviewed')gaps.push(`Author publication: ${review.descriptionStatus}.`);
   const entryOff=Array.isArray(sc.sources)&&sc.sources.length===0;
   const native=willyContract(s.id),nativeReader=reader===3&&willyNativeReady(s.id)&&!sc.invert;
+  const markitNative=reader===2&&Boolean(MARKITTICK_NATIVE[s.id])&&!sc.invert&&!markitTickSourceError(s.id,s.source);
   const plotNative=plotLifecycle(s.id)&&reader===2&&s.patches.includes('native-lifecycle-observations-v1')&&!sc.invert;
   let adapter=reader===1?'Legacy reader':`Reader ${reader}`;
   if(plan?.basket){adapter='RSI basket adapter';capabilities.push('Up to three entries within one $150 basket','Shared stop and target','Durable partial exits');}
+  else if(markitNative){
+    adapter='MarkitTick native bracket v1';
+    capabilities.push('Confirmed JSON entry with validated source stop and one target','Source changes require reader revalidation');
+    const nativeTargets=plan?plan.paper.scriptTargets==='use'&&!plan.paper.skipScriptStops:sc.entryProtection==='native'&&sc.exit?.scriptTargets==='use';
+    if(!nativeTargets)gaps.push('This profile does not preserve the validated source stop and target.');
+    gaps.push('Offline mechanics validated; prospective profitability and paper evidence are not established.');
+  }
   else if(plotNative){
     adapter='Source-pinned lifecycle v1';capabilities.push('Confirmed source signals with validated native stop',s.id===ML_RSI_NATIVE?'Causal Supertrend amendments and opposite-side flip exit; no fixed target':'Native target milestones; full closure at farthest target');
     if(!plan)gaps.push('Validated in experimental shadow only; paper evidence is not established.');
@@ -53,8 +62,8 @@ export function scannerContract(s:LoadedScanner, sc:Partial<ScannerConfig>, plan
   const guard=readerContractError(s.id,sc.reader,sc.sides)??labelStyleContractError(sc.reader,sc.labelStyles);
   if(guard)gaps.push(guard);
   if((role==='context'||role==='manual'||role==='exit')&&!entryOff&&!nativeReader)gaps.push('Author role does not establish autonomous entries; audit the active reading.');
-  if(!plan?.basket&&!nativeReader&&!plotNative&&review.contract&&(review.contract.stop.has||review.contract.exit.has||review.contract.targets.has))gaps.push('Native lifecycle parity is not certified for this reading; inspect the configured exit policy.');
-  if(role==='entry')capabilities.push('Uses a separate bot exit policy');
+  if(!plan?.basket&&!nativeReader&&!plotNative&&!markitNative&&review.contract&&(review.contract.stop.has||review.contract.exit.has||review.contract.targets.has))gaps.push('Native lifecycle parity is not certified for this reading; inspect the configured exit policy.');
+  if(role==='entry'&&!markitNative)capabilities.push('Uses a separate bot exit policy');
   if(facts.dependencies.length)gaps.push('Requested external series need data-availability and causal replay checks.');
   if(review.contract?.timing.repaints)gaps.push('Source study reports repainting; require causal prefix evaluation.');
   const read=readingOf(sc,s.id,undefined,s.patched,s.variantOf);

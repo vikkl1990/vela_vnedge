@@ -1,0 +1,269 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © MarkitTick
+
+//@version=6
+indicator("Multi-Factor Regime Engine Pro [MarkitTick]", overlay=true, max_labels_count=500)
+
+if syminfo.type == "heikinashi" or syminfo.type == "renko" or syminfo.type == "linebreak" or syminfo.type == "kagi" or syminfo.type == "pointfigure"
+    runtime.error("Non-standard charts (Heikin Ashi, Renko, etc.) are strictly prohibited due to repainting risks.")
+
+// ════════════════════════════════════════════════════════════════════
+//  §1 — INPUTS
+// ════════════════════════════════════════════════════════════════════
+
+string G1 = '⚙️ Model Configuration'
+string G2 = '🎨 Visual Settings & Colors'
+
+// ── Model
+string modelMode = input.string('Auto', 'Strategic Cycle Mode', options = ['Auto', 'Custom'], group = G1, tooltip = 'Auto selects the optimal parameter profile based on the chart timeframe.\nCustom unlocks three manual hyperparameters below.')
+int i_lb = input.int(14, 'Strategic Cycle', minval = 5, maxval = 200, group = G1, tooltip = 'Controls the ATR lookback used for volatility measurement. Smaller = more reactive; larger = smoother.')
+float i_ct = input.float(2.0, 'Macro Trend Threshold', minval = 0.5, maxval = 6.0, step = 0.1, group = G1, tooltip = 'Scales the boundary width relative to the volatility reading. Higher = wider band, fewer flips.')
+float i_pw = input.float(0.5, 'Prediction Weight', minval = 0.1, maxval = 1.0, step = 0.05, group = G1, tooltip = 'Controls how strongly the Confidence Score compresses or expands the boundary. Higher = more responsive to confidence shifts.')
+
+
+bool i_confLbl      = input.bool(true, 'Show Confidence % at Signals', group = G2)
+bool i_table        = input.bool(true, 'Show Info Table',              group = G2)
+bool i_paintCandles = input.bool(true, 'Paint Heatmap Candles',        group = G2)
+
+
+string G3          = '🔔 Webhook Settings'
+string i_actLong   = input.string('long',        'Long Action',        group = G3, tooltip = 'Action string injected into the JSON payload on a long signal.')
+string i_actShort  = input.string('short',       'Short Action',       group = G3, tooltip = 'Action string injected into the JSON payload on a short signal.')
+string i_actClsLng = input.string('closelong',   'Close Long Action',  group = G3)
+string i_actClsShrt= input.string('closeshort',  'Close Short Action', group = G3)
+// ════════════════════════════════════════════════════════════════════
+//  §2 — DYNAMIC COLORS 
+// ════════════════════════════════════════════════════════════════════
+
+color c_bullBand     = input.color(#00BFFF, 'Bullish Band (Deep Sky Blue)', group = G2)
+color c_bearBand     = input.color(#FF3366, 'Bearish Band (Radical Red)', group = G2)
+color c_bullCloud    = input.color(#00BFFF, 'Bullish Cloud Base', group = G2)
+color c_bearCloud    = input.color(#FF3366, 'Bearish Cloud Base', group = G2)
+
+color c_tblBg        = input.color(#0B0E14, 'Table Background', group = G2)
+color c_tblBorder    = input.color(#151A25, 'Table Border', group = G2)
+color c_tblFrame     = input.color(#00BFFF, 'Table Frame Accent', group = G2)
+color c_tblTextMain  = input.color(#F1F5F9, 'Table Text Main', group = G2)
+color c_tblTextMuted = input.color(#475569, 'Table Text Muted', group = G2)
+
+color c_regimeAlert  = input.color(#FFA500, 'Regime Shift Alert', group = G2)
+color c_confHigh     = input.color(#00E676, 'Confidence High', group = G2)
+color c_confMid      = input.color(#FFEA00, 'Confidence Mid', group = G2)
+color c_confLow      = input.color(#FF3366, 'Confidence Low', group = G2)
+
+// ════════════════════════════════════════════════════════════════════
+//  §3 — AUTO MODEL PARAMETER SELECTION
+// ════════════════════════════════════════════════════════════════════
+
+int tfSec = timeframe.in_seconds()
+int lb = modelMode == 'Auto' ? tfSec <= 300 ? 10 : tfSec <= 3600 ? 14 : tfSec <= 14400 ? 20 : 30 : i_lb
+float ct = modelMode == 'Auto' ? tfSec <= 300 ? 1.5 : tfSec <= 3600 ? 2.0 : tfSec <= 14400 ? 2.5 : 3.0 : i_ct
+float pw = modelMode == 'Auto' ? tfSec <= 300 ? 0.70 : tfSec <= 3600 ? 0.50 : tfSec <= 14400 ? 0.40 : 0.30 : i_pw
+
+// ════════════════════════════════════════════════════════════════════
+//  §4 — MACHINE LEARNING FEATURE ENGINEERING
+// ════════════════════════════════════════════════════════════════════
+
+float atr = ta.atr(lb)
+float atrSlow = ta.atr(lb * 3) 
+
+float f1_rsi = (ta.rsi(close, lb) - 50.0) / 50.0
+
+[diP, diM, adxVal] = ta.dmi(lb, lb)
+float f2_adx = math.min(adxVal / 50.0, 1.0) * (diP >= diM ? 1.0 : -1.0)
+
+float emaFast = ta.sma(close, lb)      
+float emaSlow = ta.sma(close, lb * 2)
+float f3_ema = math.max(math.min((close - emaFast) / (atr * 2.0 + 1e-9), 1.0), -1.0)
+
+float f4_slope = math.max(math.min((emaFast - emaSlow) / (atr + 1e-9), 1.0), -1.0)
+
+float roc = ta.roc(close, lb)
+float rocStd = ta.stdev(ta.roc(close, lb * 2), lb)
+float f5_roc = math.max(math.min(roc / (rocStd * 2.0 + 1e-9), 1.0), -1.0)
+
+[bbMid, bbUp, bbDn] = ta.bb(close, lb, 2.0)
+float bbRng = bbUp - bbDn
+float f6_bbPos = bbRng > 0.0 ? (close - bbDn) / bbRng : 0.5
+
+float f7_bbWid = math.min(bbRng / (atr * 4.0 + 1e-9), 2.0) / 2.0
+float f8_volStb = math.min(atrSlow / (atr + 1e-9) / 1.5, 1.0)
+
+float volSma = ta.sma(volume, lb)
+float f9_vol = volSma > 0 ? math.min(volume / volSma / 2.0, 1.0) : 0.5
+
+// Vectorized bullish/bearish bar count (no loop)
+int bullC = 0
+for i = 1 to lb
+    if close[i] > close[i + 1]
+        bullC := bullC + 1
+int bearC = lb - bullC
+float f10_cons = float(bullC - bearC) / float(lb)
+
+// ════════════════════════════════════════════════════════════════════
+//  §5 — CONFIDENCE SCORE ASSEMBLY
+// ════════════════════════════════════════════════════════════════════
+
+float dirScore = f1_rsi * 0.22 + f2_adx * 0.22 + f3_ema * 0.18 + f4_slope * 0.15 + f5_roc * 0.13 + f10_cons * 0.10
+float dirNorm = (dirScore + 1.0) / 2.0
+float qualScore = f8_volStb * 0.35 + f9_vol * 0.25 + f7_bbWid * 0.25 + math.abs(f2_adx) * 0.15
+float bbExtreme = math.abs(f6_bbPos - 0.5) * 2.0
+
+float rawConf = dirNorm * 0.45 + qualScore * 0.35 + bbExtreme * 0.20
+int smoothLen = math.max(math.round(float(lb) * (1.0 - pw) * 0.5 + 2.0), 2)
+float confScore = ta.sma(rawConf, smoothLen)
+confScore := math.max(math.min(confScore, 1.0), 0.0)
+
+int mlBias = dirScore >= 0.0 ? 1 : -1
+
+// ════════════════════════════════════════════════════════════════════
+//  §6 — ADAPTIVE BAND CALCULATION
+// ════════════════════════════════════════════════════════════════════
+
+float adaptMult = ct * (1.40 - confScore * 0.80)
+float hl2_val = (high + low) / 2.0
+float halfBW = atr * adaptMult
+
+float rawU = hl2_val + halfBW
+float rawL = hl2_val - halfBW
+
+// ════════════════════════════════════════════════════════════════════
+//  §7 — RATCHETING SUPERTREND STATE MACHINE
+// ════════════════════════════════════════════════════════════════════
+
+var float stUpper = na
+var float stLower = na
+var int tDir = 1 
+var float stLine = na
+
+int prevDir = nz(tDir[1], 1)
+float prevU = nz(stUpper[1], rawU)
+float prevL = nz(stLower[1], rawL)
+
+stUpper := prevDir == -1 ? math.min(rawU, prevU) : rawU
+stLower := prevDir == 1 ? math.max(rawL, prevL) : rawL
+
+bool atrSpiked = atr > atrSlow * 1.5
+bool dirFlipped = math.sign(f1_rsi) != math.sign(nz(f1_rsi[1])) and math.abs(f1_rsi) > 0.40
+bool regimeShift = atrSpiked and dirFlipped
+
+float flipThresh = atr * 0.04 * (1.0 - confScore * 0.5)
+
+if prevDir == 1
+    if (close < stLower - flipThresh) or (regimeShift and mlBias == -1)
+        tDir := -1
+        stLine := stUpper
+    else
+        tDir := 1
+        stLine := stLower
+else
+    if (close > stUpper + flipThresh) or (regimeShift and mlBias == 1)
+        tDir := 1
+        stLine := stLower
+    else
+        tDir := -1
+        stLine := stUpper
+
+// ════════════════════════════════════════════════════════════════════
+//  §8 — SIGNAL DETECTION
+// ════════════════════════════════════════════════════════════════════
+
+bool longSig  = tDir[1] == 1  and tDir[2] == -1  
+bool shortSig = tDir[1] == -1 and tDir[2] == 1
+bool anyFlip = longSig or shortSig
+
+// ════════════════════════════════════════════════════════════════════
+//  §9 — VISUAL RENDERING 
+// ════════════════════════════════════════════════════════════════════
+
+color bandClr = tDir == 1 ? c_bullBand : c_bearBand
+
+
+float _confAlpha = math.round((1.0 - confScore) * 65.0 + 5.0)
+
+float _stress   = math.max(math.min((atr / (atrSlow + 1e-9) - 1.0) / 0.5, 1.0), 0.0)
+color _heatBase = color.from_gradient(_stress, 0.0, 1.0, bandClr, c_regimeAlert)   
+
+bool  _aligned     = (tDir == 1 and close >= open) or (tDir == -1 and close < open)
+float _bodyAlpha   = _aligned ? _confAlpha : math.min(_confAlpha + 35.0, 88.0)
+float _borderAlpha = math.max(_bodyAlpha - 20.0, 0.0)
+
+color bodyColor   = i_paintCandles ? color.new(_heatBase, int(_bodyAlpha))   : na
+color borderColor = i_paintCandles ? color.new(_heatBase, int(_borderAlpha)) : na
+
+plotcandle(open, high, low, close,
+ title       = "Heatmap Candles",
+ color       = bodyColor,
+ wickcolor   = borderColor,
+ bordercolor = borderColor)
+
+plot_st = plot(stLine, 'ML Supertrend Band', color = bandClr, linewidth = 2)
+plot_base = plot(hl2_val, 'Cloud Base', display = display.none)
+
+color cloudGradient = tDir == 1 ? color.from_gradient(confScore, 0.0, 1.0, color.new(c_bullCloud, 95), color.new(c_bullCloud, 60)) : color.from_gradient(confScore, 0.0, 1.0, color.new(c_bearCloud, 95), color.new(c_bearCloud, 60))
+
+fill(plot_st, plot_base, color = cloudGradient, title = 'Confidence Gradient Cloud')
+
+if i_confLbl and anyFlip
+    string confTxt = (tDir[1] == 1 ? '▲ ' : '▼ ') + str.tostring(math.round(confScore[1] * 100)) + '%'   
+    float yOffset  = tDir[1] == 1 ? low - (atr * 0.25) : high + (atr * 0.25)
+    
+    label.new(bar_index, yOffset, confTxt, color = color.new(tDir[1] == 1 ? c_bullBand : c_bearBand, 45), textcolor = color.white, style = tDir[1] == 1 ? label.style_label_up : label.style_label_down, size = size.small)
+
+// ════════════════════════════════════════════════════════════════════
+//  §10 — INFO TABLE
+// ════════════════════════════════════════════════════════════════════
+
+var table infoTbl = table.new(position.top_right, 2, 6, bgcolor = color.new(c_tblBg, 70), border_color = color.new(c_tblBorder, 40), border_width = 1, frame_color = color.new(c_tblFrame, 30), frame_width = 1)
+
+// Unconditional table population (self-cleaning pattern — no barstate.islast guard)
+table.cell(infoTbl, 0, 0, 'ML SUPERTREND', text_color = color.new(c_tblFrame, 0), text_size = size.small, bgcolor = color.new(c_tblBg, 50), text_halign = text.align_left)
+table.cell(infoTbl, 1, 0, '', text_color = color.new(c_tblTextMuted, 0), text_size = size.small, bgcolor = color.new(c_tblBg, 50), text_halign = text.align_right)
+
+string trendTxt = tDir == 1 ? '▲  BULLISH' : '▼  BEARISH'
+color trendClr = tDir == 1 ? color.new(c_bullBand, 0) : color.new(c_bearBand, 0)
+table.cell(infoTbl, 0, 1, 'Trend', text_color = color.new(c_tblTextMuted, 0), text_size = size.small, bgcolor = color.new(c_tblBg, 60), text_halign = text.align_left)
+table.cell(infoTbl, 1, 1, trendTxt, text_color = trendClr, text_size = size.small, bgcolor = color.new(c_tblBg, 60), text_halign = text.align_right)
+
+int confPct = math.round(confScore * 100)
+string confBar = confPct >= 75 ? '████' : confPct >= 50 ? '███░' : confPct >= 25 ? '██░░' : '█░░░'
+color confClr = confPct >= 70 ? c_confHigh : confPct >= 45 ? c_confMid : c_confLow
+table.cell(infoTbl, 0, 2, 'Confidence', text_color = color.new(c_tblTextMuted, 0), text_size = size.small, bgcolor = color.new(c_tblBg, 60), text_halign = text.align_left)
+table.cell(infoTbl, 1, 2, str.tostring(confPct) + '% ' + confBar, text_color = color.new(confClr, 0), text_size = size.small, bgcolor = color.new(c_tblBg, 60), text_halign = text.align_right)
+
+table.cell(infoTbl, 0, 3, 'Adaptive Mult', text_color = color.new(c_tblTextMuted, 0), text_size = size.small, bgcolor = color.new(c_tblBg, 60), text_halign = text.align_left)
+table.cell(infoTbl, 1, 3, '×' + str.tostring(math.round(adaptMult * 100) / 100), text_color = color.new(c_tblTextMain, 0), text_size = size.small, bgcolor = color.new(c_tblBg, 60), text_halign = text.align_right)
+
+string modelTxt = modelMode == 'Auto' ? 'Auto  (lb=' + str.tostring(lb) + ')' : 'Custom (lb=' + str.tostring(lb) + ')'
+table.cell(infoTbl, 0, 4, 'Model', text_color = color.new(c_tblTextMuted, 0), text_size = size.small, bgcolor = color.new(c_tblBg, 60), text_halign = text.align_left)
+table.cell(infoTbl, 1, 4, modelTxt, text_color = color.new(c_tblTextMain, 0), text_size = size.small, bgcolor = color.new(c_tblBg, 60), text_halign = text.align_right)
+
+string regimeTxt = regimeShift ? '⚠ SHIFT' : 'Normal'
+color regimeClr = regimeShift ? c_regimeAlert : color.new(c_tblTextMuted, 0)
+table.cell(infoTbl, 0, 5, 'Regime', text_color = color.new(c_tblTextMuted, 0), text_size = size.small, bgcolor = color.new(c_tblBg, 60), text_halign = text.align_left)
+table.cell(infoTbl, 1, 5, regimeTxt, text_color = color.new(regimeClr, 0), text_size = size.small, bgcolor = color.new(c_tblBg, 60), text_halign = text.align_right)
+
+// ════════════════════════════════════════════════════════════════════
+//  §11 — ALERTS
+// ════════════════════════════════════════════════════════════════════
+
+string _tpl      = '"action":"{0}","ticker":"{1}","tf":"{2}","entry":"{3}","tp":"{4}","sl":"{5}"'
+string _tplClose = '"action":"{0}","ticker":"{1}","tf":"{2}"'   
+if longSig and barstate.isconfirmed
+    float entryPrice  = close
+    float slPrice     = stLower
+    float tpPrice     = entryPrice + (entryPrice - slPrice) * 1.5
+    string alertMsg   = "{" + str.format(_tpl, i_actLong,    syminfo.tickerid, timeframe.period, str.tostring(entryPrice, format.mintick), str.tostring(tpPrice, format.mintick), str.tostring(slPrice, format.mintick)) + "}"
+    string closeMsg   = "{" + str.format(_tplClose, i_actClsLng, syminfo.tickerid, timeframe.period) + "}"
+    alert(alertMsg, alert.freq_once_per_bar_close)
+    alert(closeMsg,  alert.freq_once_per_bar_close)
+
+if shortSig and barstate.isconfirmed
+    float entryPrice  = close
+    float slPrice     = stUpper
+    float tpPrice     = entryPrice - (slPrice - entryPrice) * 1.5
+    string alertMsg   = "{" + str.format(_tpl, i_actShort,   syminfo.tickerid, timeframe.period, str.tostring(entryPrice, format.mintick), str.tostring(tpPrice, format.mintick), str.tostring(slPrice, format.mintick)) + "}"
+    string closeMsg   = "{" + str.format(_tplClose, i_actClsLng,  syminfo.tickerid, timeframe.period) + "}"
+    alert(alertMsg, alert.freq_once_per_bar_close)
+    alert(closeMsg,  alert.freq_once_per_bar_close)

@@ -1,0 +1,82 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © MarkitTick
+//@version=6
+indicator(title = 'Banker & Hot Money Flow Tracker [MarkitTick]', overlay = false)
+
+// ── INPUTS ──────────────────────────────────────────
+grp_banker = '⚙️ Bankers'
+banker_len = input.int(50, title = 'Banker RSI Period', minval = 1, group = grp_banker, tooltip = 'Length of the RSI behind the Bankers columns. Bankers shows nothing until this length and the smoothing period have both filled.')
+banker_mul = input.float(1.5, title = 'Banker Sensitivity Multiplier', minval = 0.1, step = 0.1, group = grp_banker, tooltip = 'Scales how far the Bankers RSI is above 50 before the value is capped and smoothed. Higher values lift the Bankers columns.')
+
+grp_hot = '⚙️ Hot Money'
+hot_len = input.int(40, title = 'Hot Money RSI Period', minval = 1, group = grp_hot, tooltip = 'Length of the RSI behind the Hot Money columns. Hot Money shows nothing until this length and the smoothing period have both filled.')
+hot_mul = input.float(0.7, title = 'Hot Money Sensitivity Multiplier', minval = 0.1, step = 0.1, group = grp_hot, tooltip = 'Scales how far the Hot Money RSI is above 30 before the value is capped and smoothed. Higher values lift the Hot Money columns.')
+
+grp_smooth = '⚙️ Smoothing & Scale'
+ma_len = input.int(10, title = 'Smoothing MA Period (SMA)', minval = 1, group = grp_smooth, tooltip = 'Length of the simple moving average that smooths both the Bankers and the Hot Money values.')
+max_scale = input.float(20.0, title = 'Maximum Scale Cap', minval = 0.1, group = grp_smooth, tooltip = 'Upper cap of the Bankers and Hot Money values and the height of the Retail columns. The 5, 10 and 15 guide lines and the candle thresholds stay fixed.')
+
+grp_vis = '🎨 Visuals'
+candle_on = input.bool(false, title = 'Signal Candles', group = grp_vis, tooltip = 'Draws price candles colored by the Bankers value: at or above 10 strong, from 5 to below 10 mid, below 5 weak. The value of the live bar can change until it closes.')
+
+grp_col = '🌈 Colors'
+col_strong = input.color(color.rgb(64, 192, 176), title = 'Candle Strong', group = grp_col, tooltip = 'Candles when Bankers is at or above 10.')
+col_mid = input.color(color.rgb(32, 144, 128), title = 'Candle Mid', group = grp_col, tooltip = 'Candles when Bankers is from 5 to below 10.')
+col_weak = input.color(color.rgb(176, 48, 80), title = 'Candle Weak', group = grp_col, tooltip = 'Candles when Bankers is below 5.')
+col_retail = input.color(color.new(color.rgb(16, 80, 80), 35), title = 'Retail Columns', group = grp_col, tooltip = 'Colour and transparency of the Retail columns.')
+col_hot = input.color(color.new(color.rgb(176, 48, 80), 35), title = 'Hot Money Columns', group = grp_col, tooltip = 'Colour and transparency of the Hot Money columns.')
+col_banker = input.color(color.new(color.rgb(64, 192, 176), 25), title = 'Bankers Columns', group = grp_col, tooltip = 'Colour and transparency of the Bankers columns.')
+col_line25 = input.color(color.new(color.rgb(32, 144, 128), 60), title = 'Guide 25%', group = grp_col, tooltip = 'Colour and transparency of the guide line at 5.')
+col_line50 = input.color(color.new(color.rgb(176, 48, 80), 45), title = 'Guide 50%', group = grp_col, tooltip = 'Colour and transparency of the guide line at 10.')
+col_line75 = input.color(color.new(color.rgb(32, 144, 128), 60), title = 'Guide 75%', group = grp_col, tooltip = 'Colour and transparency of the guide line at 15.')
+
+// ── CORE LOGIC ──────────────────────────────────────────
+src_close = chart.is_standard ? close : na
+
+rsi_banker = ta.rsi(src_close, banker_len)
+raw_banker = banker_mul * (rsi_banker - 50)
+clamped_banker = math.max(0.0, math.min(max_scale, raw_banker))
+banker = ta.sma(clamped_banker, ma_len)
+
+rsi_hot = ta.rsi(src_close, hot_len)
+raw_hot = hot_mul * (rsi_hot - 30)
+clamped_hot = math.max(0.0, math.min(max_scale, raw_hot))
+hot = ta.sma(clamped_hot, ma_len)
+
+retail = chart.is_standard ? max_scale : na
+
+// ── VISUALS ──────────────────────────────────────────
+plot(retail, title = 'Retail', color = col_retail, style = plot.style_columns, histbase = 0.0)
+
+plot(hot, title = 'Hot Money', color = col_hot, style = plot.style_columns, histbase = 0.0)
+
+plot(banker, title = 'Bankers', color = col_banker, style = plot.style_columns, histbase = 0.0)
+
+plot(chart.is_standard ? 5.0 : na, title = '25% - Alert Line, Liquidity Entry', color = col_line25, style = plot.style_line, linestyle = plot.linestyle_dotted)
+plot(chart.is_standard ? 10.0 : na, title = '50% - Control & Uptrend Line', color = col_line50, style = plot.style_line, linestyle = plot.linestyle_dashed, linewidth = 2)
+plot(chart.is_standard ? 15.0 : na, title = '75% - Institutional Momentum Peak', color = col_line75, style = plot.style_line, linestyle = plot.linestyle_dotted)
+
+var line ray_25 = na
+var line ray_50 = na
+var line ray_75 = na
+if barstate.islast and chart.is_standard
+    if na(ray_25)
+        ray_25 := line.new(bar_index, 5.0, bar_index + 1, 5.0, extend = extend.right, color = col_line25, style = line.style_dotted, width = 1)
+        ray_50 := line.new(bar_index, 10.0, bar_index + 1, 10.0, extend = extend.right, color = col_line50, style = line.style_dashed, width = 2)
+        ray_75 := line.new(bar_index, 15.0, bar_index + 1, 15.0, extend = extend.right, color = col_line75, style = line.style_dotted, width = 1)
+    else
+        line.set_xy1(ray_25, bar_index, 5.0)
+        line.set_xy2(ray_25, bar_index + 1, 5.0)
+        line.set_xy1(ray_50, bar_index, 10.0)
+        line.set_xy2(ray_50, bar_index + 1, 10.0)
+        line.set_xy1(ray_75, bar_index, 15.0)
+        line.set_xy2(ray_75, bar_index + 1, 15.0)
+
+color candle_col = not candle_on or na(banker) ? na : banker >= 10.0 ? col_strong : banker >= 5.0 ? col_mid : col_weak
+plotcandle(open, high, low, close, title = 'Signal Candles', color = candle_col, wickcolor = candle_col, bordercolor = candle_col, force_overlay = true)
+
+var table notice_tbl = table.new(position.middle_center, 1, 2, force_overlay = true)
+if barstate.islast and not chart.is_standard
+    table.cell(notice_tbl, 0, 0, 'This indicator runs only on standard charts.', text_color = #FF0000, text_size = size.large, bgcolor = #2A2E39, text_formatting = text.format_bold)
+    table.cell(notice_tbl, 0, 1, 'Heikin Ashi, Renko, Kagi, Point & Figure, Range and Line Break\nshow synthetic prices. Switch to Candles.', text_color = #FF0000, text_size = size.normal, bgcolor = #2A2E39, text_formatting = text.format_bold)

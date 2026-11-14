@@ -1,0 +1,681 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © MarkitTick
+//@version=6
+indicator("Elliott Wave Scanner [MarkitTick]", overlay=true, max_lines_count=500, max_labels_count=500, max_boxes_count=200, max_bars_back=1000)
+// Inputs
+string GRP_GEN  = "General"
+string GRP_PIV  = "Pivot"
+string GRP_EW   = "Elliott Rules"
+string GRP_COR  = "Correction"
+string GRP_FLT  = "Filters"
+string GRP_VIS  = "Vis"
+string GRP_DASH = "📊 Dash"
+string GRP_ALT  = "🔔 Alerts"
+piv_left        = input.int(5,    "Pivot Left",          minval=2,  maxval=50,  group=GRP_PIV)
+piv_right       = input.int(5,    "Pivot Right",         minval=2,  maxval=50,  group=GRP_PIV)
+max_piv         = input.int(500,   "Max Pivots",          minval=10, maxval=1000,group=GRP_PIV)
+cooldown        = input.int(5,     "Pattern Cooldown",    minval=1,  maxval=50,  group=GRP_GEN)
+max_patterns    = input.int(3,     "Max Patterns on Chart",minval=1, maxval=20,  group=GRP_GEN)
+fib_tol         = input.float(10.0,"Fib Tolerance (%)",   minval=1.0,maxval=30.0,step=0.5,group=GRP_EW) / 100.0
+min_size_atr    = input.float(0.8, "Min Size (ATR×)",     minval=0.1,maxval=10.0,step=0.1,group=GRP_EW)
+req_w3_ext      = input.bool(true,  "W3 Must Extend W1",              group=GRP_EW, tooltip="")
+req_w4_no_ol    = input.bool(true,  "W4 No Overlap W1",               group=GRP_EW, tooltip="")
+req_w3_not_short= input.bool(true,  "W3 Not Shortest",                group=GRP_EW, tooltip="")
+req_w5_fib      = input.bool(false, "W5 Fib Ratio (61.8%–161.8% W1)",group=GRP_EW, tooltip="")
+req_b_fib       = input.bool(false, "ABC: B Retracement Filter",      group=GRP_EW, tooltip="")
+show_impulse    = input.bool(true,  "Show Impulse (12345)",            group=GRP_VIS)
+show_correction = input.bool(true,  "Show Correction (ABC)",           group=GRP_VIS)
+show_labels     = input.bool(true,  "Show Wave Labels",                group=GRP_VIS)
+show_fib_lines  = input.bool(true,  "Show Fib Extension Lines",        group=GRP_VIS)
+show_prz        = input.bool(true,  "Show PRZ Zone",                   group=GRP_VIS)
+prz_transp      = input.int(88,     "PRZ Transparency",  minval=50,maxval=99,    group=GRP_VIS)
+show_targets    = input.bool(true,  "Show Trade Targets",              group=GRP_VIS)
+stop_atr_buf    = input.float(0.5,  "SL ATR Buffer",     minval=0.0,step=0.1,   group=GRP_VIS)
+min_rr          = input.float(1.5,  "Min R:R",           minval=0.1,step=0.1,   group=GRP_FLT)
+use_htf_bias    = input.bool(false, "HTF Bias Filter",                 group=GRP_FLT, tooltip="")
+htf_tf          = input.timeframe("240","HTF TF",                      group=GRP_FLT)
+use_ms_filter   = input.bool(false, "Market Structure Filter",         group=GRP_FLT, tooltip="")
+ms_len          = input.int(20,     "MS Length",         minval=5,maxval=100,   group=GRP_FLT)
+use_vol_confirm = input.bool(false, "Volume Confirmation W3",          group=GRP_FLT, tooltip="")
+vol_len         = input.int(20,     "Vol SMA Len",                     group=GRP_FLT)
+col_impulse     = input.color(color.rgb(0, 200, 255, 0),   "Impulse Bull Color",  group=GRP_VIS)
+col_imp_bear    = input.color(color.rgb(255, 80, 80, 0),   "Impulse Bear Color",  group=GRP_VIS)
+col_correction  = input.color(color.rgb(255, 160, 0, 0),   "Correction Color",    group=GRP_VIS)
+col_entry       = input.color(color.rgb(255, 220, 0, 0),   "Entry Color",      group=GRP_VIS)
+col_stop        = input.color(color.rgb(255, 50, 130, 0),  "Stop Color",       group=GRP_VIS)
+col_target      = input.color(color.rgb(0, 255, 160, 0),   "Target Color",     group=GRP_VIS)
+col_fib         = input.color(color.rgb(180, 100, 255, 0), "Fib Line Color",   group=GRP_VIS)
+color dash_bg_color  = input.color(color.rgb(10, 10, 18, 5),    "BG",   group=GRP_DASH)
+color dash_txt_color = input.color(color.rgb(220, 220, 235, 0), "Text", group=GRP_DASH)
+bool alert_impulse    = input.bool(true, "Alert: Impulse Detected",    group=GRP_ALT)
+bool alert_correction = input.bool(true, "Alert: Correction Detected", group=GRP_ALT)
+// Types
+type Pivot
+    float p
+    int   i
+
+type WaveResult
+    bool   detected
+    string name
+    bool   isBullish
+    float  w1_lo
+    float  w1_hi
+    int    w1_lo_i
+    int    w1_hi_i
+    float  w2_p
+    int    w2_i
+    float  w3_p
+    int    w3_i
+    float  w4_p
+    int    w4_i
+    float  w5_p
+    int    w5_i
+    float  wa_p
+    int    wa_i
+    float  wb_p
+    int    wb_i
+    float  wc_p
+    int    wc_i
+    float  entry_p
+    float  stop_p
+    float  target_p
+    float  tp2_p
+    float  tp3_p
+    float  prz_lo
+    float  prz_hi
+    int    start_i
+    int    end_i
+    float  w1_len
+    float  w3_len
+    float  w5_len
+    int    pattern_type
+    string corr_type
+
+type WaveDrawings
+    line[]  lns
+    label[] lbls
+    box[]   bxs
+    int     pattern_type
+    int     start_i
+    int     end_i
+
+// State
+var WaveResult EMPTY_W = WaveResult.new(false, "", false, na, na, na, na, na, na, na, na, na, na, na, na, na, na, na, na, na, na, na, na, na, na, na, na, na, na, na, na, na, na, 0, "")
+var array<Pivot>       pivotHighs   = array.new<Pivot>()
+var array<Pivot>       pivotLows    = array.new<Pivot>()
+var array<WaveDrawings> pat_history = array.new<WaveDrawings>()
+var string dash_name        = "—"
+var bool   dash_bull        = false
+var int    dash_last_bar    = 0
+var float  dash_entry       = na
+var float  dash_stop        = na
+var float  dash_target      = na
+var float  dash_w1_len      = na
+var float  dash_w3_len      = na
+var float  dash_w5_len      = na
+var float  dash_w3_ratio    = na
+var float  dash_w5_ratio    = na
+var float  dash_fib_a       = na
+var float  dash_fib_b       = na
+var float  dash_fib_c       = na
+var int    dash_pattern_type= 0
+var string dash_corr_type   = "—"
+var float  dash_tp2         = na
+var float  dash_tp3         = na
+var int    frozen_idx       = na
+var int    impulse_count    = 0
+var int    correction_count = 0
+// Calculations
+string clean_ticker = syminfo.prefix + ":" + syminfo.ticker
+float atr_val  = ta.atr(14)
+float vol_sma  = use_vol_confirm ? ta.sma(volume, math.max(1, math.min(vol_len, bar_index + 1))) : na
+[htf_close, htf_ema] = if use_htf_bias
+    request.security(syminfo.tickerid, htf_tf, [close[1], ta.sma(close, 50)[1]], lookahead=barmerge.lookahead_on)
+else
+    [na, na]
+bool  htf_bull = use_htf_bias ? htf_close > htf_ema : true
+bool  htf_bear = use_htf_bias ? htf_close < htf_ema : true
+float ms_hi    = use_ms_filter ? ta.highest(high, ms_len) : na
+float ms_lo    = use_ms_filter ? ta.lowest(low,  ms_len) : na
+float ms_mid   = (ms_hi + ms_lo) * 0.5
+bool  ms_bull  = use_ms_filter and close > ms_mid
+bool  ms_bear  = use_ms_filter and close < ms_mid
+int   dash_bars_since = bar_index - dash_last_bar
+float dash_rr_raw     = not na(dash_entry) and not na(dash_stop) and not na(dash_target) and math.abs(dash_entry - dash_stop) > 1e-10 ? math.abs(dash_target - dash_entry) / math.abs(dash_entry - dash_stop) : 0.0
+f_blockBar(float score) =>
+    int    n = math.min(math.max(math.round(score), 0), 10)
+    string s = ""
+    for i = 1 to 10
+        s += i <= n ? "█" : "░"
+    s + " " + str.tostring(math.round(score / 10.0 * 100.0), "##0") + "%"
+
+f_blockColor(float score) =>
+    score >= 7.0 ? color.rgb(0, 255, 120) : score >= 4.0 ? color.rgb(80, 255, 0) : score >= 1.5 ? color.rgb(200, 200, 0) : color.rgb(110, 110, 110)
+
+f_pivotHigh(series float src, simple int llen, simple int rlen) =>
+    float candidate = src[rlen]
+    bool  isValid   = true
+    for i = 1 to llen + rlen
+        if i != rlen and src[i] >= candidate
+            isValid := false
+    isValid ? candidate : na
+
+f_pivotLow(series float src, simple int llen, simple int rlen) =>
+    float candidate = src[rlen]
+    bool  isValid   = true
+    for i = 1 to llen + rlen
+        if i != rlen and src[i] <= candidate
+            isValid := false
+    isValid ? candidate : na
+
+f_inRange(float ratio, float lo, float hi, float tol) =>
+    ratio >= lo * (1.0 - tol) and ratio <= hi * (1.0 + tol)
+
+f_fibRatio(float leg1, float leg2) =>
+    math.abs(leg1) > 1e-10 ? math.abs(leg2) / math.abs(leg1) : na
+
+f_isValidSize(float h) =>
+    h > atr_val * min_size_atr
+
+f_sl(float anchor, bool isBull) =>
+    isBull ? anchor - atr_val * stop_atr_buf : anchor + atr_val * stop_atr_buf
+
+f_validate_rr(float entry_p, float stop_p, float target_p) =>
+    float risk   = math.abs(entry_p - stop_p)
+    float reward = math.abs(target_p - entry_p)
+    risk > 1e-10 and reward / risk >= min_rr
+
+f_ms_bias(bool isBull)  => not use_ms_filter or (isBull ? ms_bull : ms_bear)
+f_htf_bias(bool isBull) => not use_htf_bias  or (isBull ? htf_bull : htf_bear)
+f_manage_drawings(int max_items) =>
+    while array.size(pat_history) > max_items
+        WaveDrawings old = array.shift(pat_history)
+        int _ls = array.size(old.lns)
+        if _ls > 0
+            for i = 0 to _ls - 1
+                line _l = array.get(old.lns, i)
+                if not na(_l)
+                    line.delete(_l)
+        int _lb = array.size(old.lbls)
+        if _lb > 0
+            for i = 0 to _lb - 1
+                label _l = array.get(old.lbls, i)
+                if not na(_l)
+                    label.delete(_l)
+        int _bx = array.size(old.bxs)
+        if _bx > 0
+            for i = 0 to _bx - 1
+                box _b = array.get(old.bxs, i)
+                if not na(_b)
+                    box.delete(_b)
+
+f_deleteDrawing(WaveDrawings d) =>
+    int _ls = array.size(d.lns)
+    if _ls > 0
+        for i = 0 to _ls - 1
+            line _l = array.get(d.lns, i)
+            if not na(_l)
+                line.delete(_l)
+    int _lb = array.size(d.lbls)
+    if _lb > 0
+        for i = 0 to _lb - 1
+            label _l = array.get(d.lbls, i)
+            if not na(_l)
+                label.delete(_l)
+    int _bx = array.size(d.bxs)
+    if _bx > 0
+        for i = 0 to _bx - 1
+            box _b = array.get(d.bxs, i)
+            if not na(_b)
+                box.delete(_b)
+
+f_purgeOverlappingCorrections(int newStart, int newEnd) =>
+    int _n = array.size(pat_history)
+    if _n > 0
+        array<int> _toRemove = array.new<int>()
+        for i = 0 to _n - 1
+            WaveDrawings _d = array.get(pat_history, i)
+            bool _isCorrection = _d.pattern_type == 2
+            bool _overlap = _d.start_i <= newEnd and _d.end_i >= newStart
+            if _isCorrection and _overlap
+                array.push(_toRemove, i)
+        int _rn = array.size(_toRemove)
+        if _rn > 0
+            for j = _rn - 1 to 0
+                int _ri = array.get(_toRemove, j)
+                WaveDrawings _dd = array.get(pat_history, _ri)
+                f_deleteDrawing(_dd)
+                array.remove(pat_history, _ri)
+
+f_overlapsExistingImpulse(int newStart, int newEnd) =>
+    bool _found = false
+    int _n = array.size(pat_history)
+    if _n > 0
+        for i = 0 to _n - 1
+            WaveDrawings _d = array.get(pat_history, i)
+            bool _isImpulse = _d.pattern_type == 1
+            bool _overlap = _d.start_i <= newEnd and _d.end_i >= newStart
+            if _isImpulse and _overlap
+                _found := true
+    _found
+
+// Signals
+detectImpulseBull(array<Pivot> highs, array<Pivot> lows) =>
+    res = EMPTY_W
+    bool _has = highs.size() >= 3 and lows.size() >= 3
+    if not _has
+        res
+    else
+        _p0 = lows.get(2)
+        _p1 = highs.get(2)
+        _p2 = lows.get(1)
+        _p3 = highs.get(1)
+        _p4 = lows.get(0)
+        _p5 = highs.get(0)
+        bool _seq = _p0.i < _p1.i and _p1.i < _p2.i and _p2.i < _p3.i and _p3.i < _p4.i and _p4.i < _p5.i
+        bool _dir = _p1.p > _p0.p and _p2.p > _p0.p and _p3.p > _p1.p
+        bool _w2  = _p2.p > _p0.p
+        float _w1_len = _p1.p - _p0.p
+        float _w2_ret = _p1.p > _p0.p ? (_p1.p - _p2.p) / _w1_len : na
+        float _w3_len = _p3.p - _p2.p
+        float _w4_ret = _p3.p > _p2.p ? (_p3.p - _p4.p) / _w3_len : na
+        float _w5_len = _p5.p - _p4.p
+        bool _w4_no_ol = not req_w4_no_ol or (_p4.p > _p1.p)
+        bool _w3_not_s = not req_w3_not_short or (_w3_len >= _w1_len and _w3_len >= _w5_len)
+        bool _w3_ext   = not req_w3_ext or (_w3_len > _w1_len)
+        float _w5_rat  = _w1_len > 1e-10 ? _w5_len / _w1_len : na
+        bool _w5_fib   = not req_w5_fib or (not na(_w5_rat) and f_inRange(_w5_rat, 0.618, 1.618, fib_tol))
+        bool _w2_fib   = not na(_w2_ret) and f_inRange(_w2_ret, 0.382, 0.786, fib_tol)
+        bool _w4_fib   = not na(_w4_ret) and f_inRange(_w4_ret, 0.236, 0.500, fib_tol)
+        bool _w5_valid = f_isValidSize(_w5_len) and f_isValidSize(_w1_len) and f_isValidSize(_w3_len)
+        bool _vol_ok   = not use_vol_confirm or (not na(vol_sma) and volume > vol_sma)
+        if _seq and _dir and _w2 and _w2_fib and _w4_fib and _w4_no_ol and _w3_not_s and _w3_ext and _w5_fib and _w5_valid and _vol_ok
+            if f_ms_bias(true) and f_htf_bias(true)
+                float _w5_proj_161 = _p4.p + _w1_len * 1.618
+                float _w5_proj_100 = _p4.p + _w1_len * 1.000
+                float _prz_lo      = math.min(_w5_proj_100, _p5.p)
+                float _prz_hi      = math.max(_w5_proj_161, _p5.p)
+                float _entry_p     = _p5.p
+                float _stop_p      = f_sl(_p4.p, true)
+                float _target_p    = _p5.p + _w3_len * 0.618
+                bool  _rr_ok       = f_validate_rr(_entry_p, _stop_p, _target_p)
+                if _rr_ok
+                    res := WaveResult.new(true, "Impulse Bull", true, _p0.p, _p1.p, _p0.i, _p1.i, _p2.p, _p2.i, _p3.p, _p3.i, _p4.p, _p4.i, _p5.p, _p5.i, na, na, na, na, na, na, _entry_p, _stop_p, _target_p, na, na, _prz_lo, _prz_hi, _p0.i, _p5.i, _w1_len, _w3_len, _w5_len, 1, "")
+        res
+
+detectImpulseBear(array<Pivot> highs, array<Pivot> lows) =>
+    res = EMPTY_W
+    bool _has = highs.size() >= 3 and lows.size() >= 3
+    if not _has
+        res
+    else
+        _p0 = highs.get(2)
+        _p1 = lows.get(2)
+        _p2 = highs.get(1)
+        _p3 = lows.get(1)
+        _p4 = highs.get(0)
+        _p5 = lows.get(0)
+        bool _seq = _p0.i < _p1.i and _p1.i < _p2.i and _p2.i < _p3.i and _p3.i < _p4.i and _p4.i < _p5.i
+        bool _dir = _p1.p < _p0.p and _p2.p < _p0.p and _p3.p < _p1.p
+        bool _w2  = _p2.p < _p0.p
+        float _w1_len = _p0.p - _p1.p
+        float _w2_ret = _p0.p > _p1.p ? (_p2.p - _p1.p) / _w1_len : na
+        float _w3_len = _p2.p - _p3.p
+        float _w4_ret = _p2.p > _p3.p ? (_p4.p - _p3.p) / _w3_len : na
+        float _w5_len = _p4.p - _p5.p
+        bool _w4_no_ol = not req_w4_no_ol or (_p4.p < _p1.p)
+        bool _w3_not_s = not req_w3_not_short or (_w3_len >= _w1_len and _w3_len >= _w5_len)
+        bool _w3_ext   = not req_w3_ext or (_w3_len > _w1_len)
+        float _w5_rat  = _w1_len > 1e-10 ? _w5_len / _w1_len : na
+        bool _w5_fib   = not req_w5_fib or (not na(_w5_rat) and f_inRange(_w5_rat, 0.618, 1.618, fib_tol))
+        bool _w2_fib   = not na(_w2_ret) and f_inRange(_w2_ret, 0.382, 0.786, fib_tol)
+        bool _w4_fib   = not na(_w4_ret) and f_inRange(_w4_ret, 0.236, 0.500, fib_tol)
+        bool _w5_valid = f_isValidSize(_w5_len) and f_isValidSize(_w1_len) and f_isValidSize(_w3_len)
+        bool _vol_ok   = not use_vol_confirm or (not na(vol_sma) and volume > vol_sma)
+        if _seq and _dir and _w2 and _w2_fib and _w4_fib and _w4_no_ol and _w3_not_s and _w3_ext and _w5_fib and _w5_valid and _vol_ok
+            if f_ms_bias(false) and f_htf_bias(false)
+                float _w5_proj_161 = _p4.p - _w1_len * 1.618
+                float _w5_proj_100 = _p4.p - _w1_len * 1.000
+                float _prz_lo      = math.min(_w5_proj_161, _p5.p)
+                float _prz_hi      = math.max(_w5_proj_100, _p5.p)
+                float _entry_p     = _p5.p
+                float _stop_p      = f_sl(_p4.p, false)
+                float _target_p    = _p5.p - _w3_len * 0.618
+                bool  _rr_ok       = f_validate_rr(_entry_p, _stop_p, _target_p)
+                if _rr_ok
+                    res := WaveResult.new(true, "Impulse Bear", false, _p1.p, _p0.p, _p1.i, _p0.i, _p2.p, _p2.i, _p3.p, _p3.i, _p4.p, _p4.i, _p5.p, _p5.i, na, na, na, na, na, na, _entry_p, _stop_p, _target_p, na, na, _prz_lo, _prz_hi, _p0.i, _p5.i, _w1_len, _w3_len, _w5_len, 1, "")
+        res
+
+detectCorrectionBull(array<Pivot> highs, array<Pivot> lows) =>
+    res = EMPTY_W
+    bool _has = highs.size() >= 2 and lows.size() >= 2
+    if not _has
+        res
+    else
+        _wa = lows.get(1)
+        _wb = highs.get(1)
+        _wc = lows.get(0)
+        bool _seq  = _wa.i < _wb.i and _wb.i < _wc.i
+        float _a_len  = _wb.p - _wa.p
+        float _b_ret  = _a_len > 1e-10 ? (_wb.p - _wc.p) / _a_len : na
+        float _c_drop = _wb.p - _wc.p
+        float _c_ext  = _a_len > 1e-10 ? _c_drop / _a_len : na
+        float _b_ret_ab = _a_len > 1e-10 ? (_wb.p - _wa.p - (_wb.p - _wc.p)) / _a_len : na
+        float _b_from_a = _a_len > 1e-10 ? (_wb.p - _wc.p) / _a_len : na
+        bool _abc_ok  = f_isValidSize(_a_len) and f_isValidSize(_c_drop)
+        bool _c_ok    = not na(_c_ext) and f_inRange(_c_ext, 0.618, 1.618, fib_tol)
+        bool _c_below_a = _wc.p <= _wa.p
+        float _b_wave_ret = _a_len > 1e-10 ? (_wb.p - _wa.p) / _a_len : na
+        bool _b_ok    = not req_b_fib or (not na(_b_wave_ret) and _b_wave_ret >= 0.382 * (1.0 - fib_tol) and _b_wave_ret <= 1.382 * (1.0 + fib_tol))
+        string _ctype = "Zigzag"
+        if not na(_b_wave_ret) and not na(_c_ext)
+            if _b_wave_ret >= 0.9 * (1.0 - fib_tol) and _b_wave_ret <= 1.05 * (1.0 + fib_tol)
+                _ctype := _c_ext > 1.0 ? "Exp Flat" : "Flat"
+            else
+                _ctype := "Zigzag"
+        if _seq and _abc_ok and _c_ok and _c_below_a and _b_ok
+            if f_ms_bias(true) and f_htf_bias(true)
+                float _prz_lo   = _wb.p - _a_len * 1.618 * (1.0 + fib_tol)
+                float _prz_hi   = _wb.p - _a_len * 0.618 * (1.0 - fib_tol)
+                float _entry_p  = _wc.p
+                float _stop_p   = f_sl(_wc.p, true)
+                float _tp1      = _wc.p + _a_len * 1.000
+                float _tp2      = _wc.p + _a_len * 1.618
+                float _tp3      = _wc.p + _a_len * 2.618
+                bool  _rr_ok    = f_validate_rr(_entry_p, _stop_p, _tp2)
+                if _rr_ok
+                    res := WaveResult.new(true, "ABC Bull", true, na, na, na, na, na, na, na, na, na, na, na, na, _wa.p, _wa.i, _wb.p, _wb.i, _wc.p, _wc.i, _entry_p, _stop_p, _tp2, _tp2, _tp3, _prz_lo, _prz_hi, _wa.i, _wc.i, _a_len, na, na, 2, _ctype)
+        res
+
+detectCorrectionBear(array<Pivot> highs, array<Pivot> lows) =>
+    res = EMPTY_W
+    bool _has = highs.size() >= 2 and lows.size() >= 2
+    if not _has
+        res
+    else
+        _wa = highs.get(1)
+        _wb = lows.get(1)
+        _wc = highs.get(0)
+        bool _seq = _wa.i < _wb.i and _wb.i < _wc.i
+        float _a_len  = _wa.p - _wb.p
+        float _c_rise = _wc.p - _wb.p
+        float _c_ext  = _a_len > 1e-10 ? _c_rise / _a_len : na
+        bool _abc_ok  = f_isValidSize(_a_len) and f_isValidSize(_c_rise)
+        bool _c_ok    = not na(_c_ext) and f_inRange(_c_ext, 0.618, 1.618, fib_tol)
+        bool _c_above_a = _wc.p >= _wa.p
+        float _b_wave_ret = _a_len > 1e-10 ? (_wa.p - _wb.p) / _a_len : na
+        bool _b_ok    = not req_b_fib or (not na(_b_wave_ret) and _b_wave_ret >= 0.382 * (1.0 - fib_tol) and _b_wave_ret <= 1.382 * (1.0 + fib_tol))
+        string _ctype = "Zigzag"
+        if not na(_b_wave_ret) and not na(_c_ext)
+            if _b_wave_ret >= 0.9 * (1.0 - fib_tol) and _b_wave_ret <= 1.05 * (1.0 + fib_tol)
+                _ctype := _c_ext > 1.0 ? "Exp Flat" : "Flat"
+            else
+                _ctype := "Zigzag"
+        if _seq and _abc_ok and _c_ok and _c_above_a and _b_ok
+            if f_ms_bias(false) and f_htf_bias(false)
+                float _prz_lo   = _wb.p + _a_len * 0.618 * (1.0 - fib_tol)
+                float _prz_hi   = _wb.p + _a_len * 1.618 * (1.0 + fib_tol)
+                float _entry_p  = _wc.p
+                float _stop_p   = f_sl(_wc.p, false)
+                float _tp1      = _wc.p - _a_len * 1.000
+                float _tp2      = _wc.p - _a_len * 1.618
+                float _tp3      = _wc.p - _a_len * 2.618
+                bool  _rr_ok    = f_validate_rr(_entry_p, _stop_p, _tp2)
+                if _rr_ok
+                    res := WaveResult.new(true, "ABC Bear", false, na, na, na, na, na, na, na, na, na, na, na, na, _wa.p, _wa.i, _wb.p, _wb.i, _wc.p, _wc.i, _entry_p, _stop_p, _tp2, _tp2, _tp3, _prz_lo, _prz_hi, _wa.i, _wc.i, _a_len, na, na, 2, _ctype)
+        res
+
+float ph = f_pivotHigh(high, piv_left, piv_right)
+float pl = f_pivotLow(low,   piv_left, piv_right)
+if not na(ph)
+    pivotHighs.unshift(Pivot.new(ph, bar_index - piv_right))
+    if pivotHighs.size() > max_piv
+        pivotHighs.pop()
+if not na(pl)
+    pivotLows.unshift(Pivot.new(pl, bar_index - piv_right))
+    if pivotLows.size() > max_piv
+        pivotLows.pop()
+bool has_imp  = pivotHighs.size() >= 3 and pivotLows.size() >= 3
+bool has_cor  = pivotHighs.size() >= 2 and pivotLows.size() >= 2
+WaveResult _r_imp_bull = has_imp ? detectImpulseBull(pivotHighs, pivotLows) : EMPTY_W
+WaveResult _r_imp_bear = has_imp ? detectImpulseBear(pivotHighs, pivotLows) : EMPTY_W
+WaveResult _r_cor_bull = has_cor ? detectCorrectionBull(pivotHighs, pivotLows) : EMPTY_W
+WaveResult _r_cor_bear = has_cor ? detectCorrectionBear(pivotHighs, pivotLows) : EMPTY_W
+WaveResult res_w = EMPTY_W
+bool _gate = bar_index > (piv_left + piv_right) * 2
+if _gate
+    if show_impulse and not res_w.detected and _r_imp_bull.detected
+        res_w := _r_imp_bull
+    if show_impulse and not res_w.detected and _r_imp_bear.detected
+        res_w := _r_imp_bear
+    bool _cor_bull_clear = show_correction and not res_w.detected and _r_cor_bull.detected and not f_overlapsExistingImpulse(_r_cor_bull.start_i, _r_cor_bull.end_i)
+    bool _cor_bear_clear = show_correction and not res_w.detected and _r_cor_bear.detected and not f_overlapsExistingImpulse(_r_cor_bear.start_i, _r_cor_bear.end_i)
+    if _cor_bull_clear
+        res_w := _r_cor_bull
+    if not res_w.detected and _cor_bear_clear
+        res_w := _r_cor_bear
+bool _is_new = res_w.detected and barstate.isconfirmed and (na(frozen_idx) or math.abs(res_w.start_i - frozen_idx) > cooldown)
+if _is_new
+    WaveDrawings cur = WaveDrawings.new(array.new_line(), array.new_label(), array.new_box(), res_w.pattern_type, res_w.start_i, res_w.end_i)
+    frozen_idx       := res_w.start_i
+    dash_name        := res_w.name
+    dash_bull        := res_w.isBullish
+    dash_last_bar    := bar_index
+    dash_entry       := res_w.entry_p
+    dash_stop        := res_w.stop_p
+    dash_target      := res_w.target_p
+    dash_w1_len      := res_w.w1_len
+    dash_w3_len      := res_w.w3_len
+    dash_w5_len      := res_w.w5_len
+    dash_pattern_type:= res_w.pattern_type
+    dash_corr_type   := res_w.corr_type
+    dash_tp2         := res_w.tp2_p
+    dash_tp3         := res_w.tp3_p
+    dash_w5_ratio    := not na(res_w.w1_len) and res_w.w1_len > 1e-10 and not na(res_w.w5_len) ? res_w.w5_len / res_w.w1_len : na
+    if res_w.pattern_type == 1
+        impulse_count := impulse_count + 1
+    else
+        correction_count := correction_count + 1
+    color _col = res_w.pattern_type == 1 ? (res_w.isBullish ? col_impulse : col_imp_bear) : col_correction
+    bool  _is_impulse = res_w.pattern_type == 1
+    if _is_impulse
+        f_purgeOverlappingCorrections(res_w.start_i, res_w.end_i)
+    if _is_impulse and not na(res_w.w1_lo_i) and not na(res_w.w5_i)
+        int   _x0  = res_w.isBullish ? res_w.w1_lo_i : res_w.w1_hi_i
+        float _y0  = res_w.isBullish ? res_w.w1_lo   : res_w.w1_hi
+        int   _x1  = res_w.isBullish ? res_w.w1_hi_i : res_w.w1_lo_i
+        float _y1  = res_w.isBullish ? res_w.w1_hi   : res_w.w1_lo
+        int   _x2  = res_w.w2_i
+        float _y2  = res_w.w2_p
+        int   _x3  = res_w.w3_i
+        float _y3  = res_w.w3_p
+        int   _x4  = res_w.w4_i
+        float _y4  = res_w.w4_p
+        int   _x5  = res_w.w5_i
+        float _y5  = res_w.w5_p
+        line _l01 = line.new(_x0, _y0, _x1, _y1, color=_col, width=3)
+        line _l12 = line.new(_x1, _y1, _x2, _y2, color=color.new(_col, 40), width=3)
+        line _l23 = line.new(_x2, _y2, _x3, _y3, color=_col, width=3)
+        line _l34 = line.new(_x3, _y3, _x4, _y4, color=color.new(_col, 40), width=3)
+        line _l45 = line.new(_x4, _y4, _x5, _y5, color=_col, width=3)
+        array.push(cur.lns, _l01)
+        array.push(cur.lns, _l12)
+        array.push(cur.lns, _l23)
+        array.push(cur.lns, _l34)
+        array.push(cur.lns, _l45)
+        if show_fib_lines and not na(res_w.w1_len) and res_w.w1_len > 1e-10
+            float _fib_161 = res_w.isBullish ? _y4 + res_w.w1_len * 1.618 : _y4 - res_w.w1_len * 1.618
+            float _fib_100 = res_w.isBullish ? _y4 + res_w.w1_len * 1.000 : _y4 - res_w.w1_len * 1.000
+            float _fib_262 = res_w.isBullish ? _y4 + res_w.w1_len * 2.618 : _y4 - res_w.w1_len * 2.618
+            int   _fx1 = res_w.end_i
+            int   _fx2 = res_w.end_i + 50
+            int   _flx = _fx2 + 1
+            line _lf1 = line.new(_fx1, _fib_100, _fx2, _fib_100, color=color.new(col_fib, 60), style=line.style_dotted, width=2)
+            line _lf2 = line.new(_fx1, _fib_161, _fx2, _fib_161, color=color.new(col_fib, 40), style=line.style_dotted, width=2)
+            line _lf3 = line.new(_fx1, _fib_262, _fx2, _fib_262, color=color.new(col_fib, 70), style=line.style_dotted, width=2)
+            label _lf1l = label.new(_flx, _fib_100, "W5 1.0×", color=color.new(col_fib, 80), textcolor=col_fib, style=label.style_label_left, size=size.small)
+            label _lf2l = label.new(_flx, _fib_161, "W5 1.618×", color=color.new(col_fib, 80), textcolor=col_fib, style=label.style_label_left, size=size.small)
+            label _lf3l = label.new(_flx, _fib_262, "W5 2.618×", color=color.new(col_fib, 80), textcolor=col_fib, style=label.style_label_left, size=size.small)
+            array.push(cur.lns,  _lf1)
+            array.push(cur.lns,  _lf2)
+            array.push(cur.lns,  _lf3)
+            array.push(cur.lbls, _lf1l)
+            array.push(cur.lbls, _lf2l)
+            array.push(cur.lbls, _lf3l)
+        if show_labels
+            label _lb0 = label.new(_x1, _y1, "1", color=color.new(_col, 100), textcolor=_col, style=res_w.isBullish ? label.style_label_down : label.style_label_up, size=size.small)
+            label _lb1 = label.new(_x2, _y2, "2", color=color.new(_col, 100), textcolor=_col, style=res_w.isBullish ? label.style_label_up : label.style_label_down, size=size.small)
+            label _lb2 = label.new(_x3, _y3, "3", color=color.new(_col, 100), textcolor=_col, style=res_w.isBullish ? label.style_label_down : label.style_label_up, size=size.small)
+            label _lb3 = label.new(_x4, _y4, "4", color=color.new(_col, 100), textcolor=_col, style=res_w.isBullish ? label.style_label_up : label.style_label_down, size=size.small)
+            array.push(cur.lbls, _lb0)
+            array.push(cur.lbls, _lb1)
+            array.push(cur.lbls, _lb2)
+            array.push(cur.lbls, _lb3)
+        int   _cx  = (res_w.start_i + res_w.end_i) / 2
+        float _cy  = res_w.isBullish ? (nz(res_w.w3_p) + nz(res_w.w1_lo)) * 0.5 : (nz(res_w.w3_p) + nz(res_w.w1_hi)) * 0.5
+        label _lbl_name = label.new(_cx, _cy, res_w.name, color=color.rgb(0, 0, 0, 0), textcolor=_col, style=label.style_label_center, size=size.small)
+        array.push(cur.lbls, _lbl_name)
+    if not _is_impulse and not na(res_w.wa_i) and not na(res_w.wc_i)
+        line _la  = line.new(res_w.wa_i, res_w.wa_p, res_w.wb_i, res_w.wb_p, color=_col, width=2)
+        line _lb2 = line.new(res_w.wb_i, res_w.wb_p, res_w.wc_i, res_w.wc_p, color=color.new(_col, 30), width=1)
+        array.push(cur.lns, _la)
+        array.push(cur.lns, _lb2)
+        if show_labels
+            label _lwa = label.new(res_w.wa_i, res_w.wa_p, "A", color=color.new(_col, 20), textcolor=color.white, style=res_w.isBullish ? label.style_label_down : label.style_label_up, size=size.small)
+            label _lwb = label.new(res_w.wb_i, res_w.wb_p, "B", color=color.new(_col, 20), textcolor=color.white, style=res_w.isBullish ? label.style_label_up : label.style_label_down, size=size.small)
+            label _lwc = label.new(res_w.wc_i, res_w.wc_p, "C", color=color.new(_col, 20), textcolor=color.white, style=res_w.isBullish ? label.style_label_down : label.style_label_up, size=size.small)
+            array.push(cur.lbls, _lwa)
+            array.push(cur.lbls, _lwb)
+            array.push(cur.lbls, _lwc)
+        int   _cx2 = (res_w.wa_i + res_w.wc_i) / 2
+        float _cy2 = (res_w.wa_p + res_w.wc_p) * 0.5
+        string _abc_lbl_txt = res_w.name + (res_w.corr_type != "" ? " [" + res_w.corr_type + "]" : "")
+        label _lbl_n2 = label.new(_cx2, _cy2, _abc_lbl_txt, color=color.rgb(0, 0, 0, 0), textcolor=color.white, style=label.style_label_center, size=size.small)
+        array.push(cur.lbls, _lbl_n2)
+    if show_prz and not na(res_w.prz_lo) and not na(res_w.prz_hi)
+        int _prz_end = res_w.end_i
+        int _prz_x1  = _prz_end - 3
+        int _prz_x2  = _prz_end + 40
+        box _prz = box.new(_prz_x1, res_w.prz_hi, _prz_x2, res_w.prz_lo, bgcolor=color.new(_col, prz_transp), border_color=color.new(_col, 40), border_width=1)
+        array.push(cur.bxs, _prz)
+        label _prz_lbl = label.new(_prz_x2, (res_w.prz_hi + res_w.prz_lo) * 0.5, "PRZ", style=label.style_label_left, color=color.new(_col, 50), textcolor=_col, size=size.small)
+        array.push(cur.lbls, _prz_lbl)
+    if show_targets and not na(res_w.entry_p) and not na(res_w.stop_p) and not na(res_w.target_p)
+        int   _x1       = res_w.end_i
+        int   _x2       = res_w.end_i + 50
+        int   _lx       = _x2 + 1
+        float _ep       = res_w.entry_p
+        float risk_v    = math.abs(_ep - res_w.stop_p)
+        float reward_v  = math.abs(res_w.target_p - _ep)
+        float rr_v      = risk_v > 1e-10 ? reward_v / risk_v : 0.0
+        string _ep_s    = str.tostring(_ep,             format.mintick)
+        string _sp_s    = str.tostring(res_w.stop_p,   format.mintick)
+        string _tp_s    = str.tostring(res_w.target_p, format.mintick)
+        string _rr_s    = str.tostring(rr_v, "#.##")
+        line  ln_e = line.new(_x1, _ep,           _x2, _ep,           color=col_entry,  style=line.style_dashed, width=1)
+        line  ln_s = line.new(_x1, res_w.stop_p,  _x2, res_w.stop_p,  color=col_stop,   style=line.style_dashed, width=1)
+        line  ln_t = line.new(_x1, res_w.target_p,_x2, res_w.target_p,color=col_target, style=line.style_dashed, width=1)
+        label lb_e = label.new(_lx, _ep,            "▶ Entry  " + _ep_s,                      style=label.style_label_left, color=color.new(col_entry,  70), textcolor=col_entry,  size=size.small)
+        label lb_s = label.new(_lx, res_w.stop_p,   "▶ Stop   " + _sp_s,                      style=label.style_label_left, color=color.new(col_stop,   70), textcolor=col_stop,   size=size.small)
+        label lb_t = label.new(_lx, res_w.target_p, "▶ Target " + _tp_s + "  R:R " + _rr_s,   style=label.style_label_left, color=color.new(col_target, 70), textcolor=col_target, size=size.small)
+        array.push(cur.lns,  ln_e)
+        array.push(cur.lns,  ln_s)
+        array.push(cur.lns,  ln_t)
+        array.push(cur.lbls, lb_e)
+        array.push(cur.lbls, lb_s)
+        array.push(cur.lbls, lb_t)
+        if not _is_impulse and not na(res_w.tp2_p) and not na(res_w.tp3_p)
+            float _a_base = res_w.w1_len
+            float _tp1_p  = res_w.isBullish ? res_w.entry_p + _a_base * 1.000 : res_w.entry_p - _a_base * 1.000
+            line  ln_t1 = line.new(_x1, _tp1_p,      _x2, _tp1_p,      color=color.new(col_target, 60), style=line.style_dashed, width=1)
+            line  ln_t3 = line.new(_x1, res_w.tp3_p, _x2, res_w.tp3_p, color=color.new(col_target, 20), style=line.style_dashed, width=1)
+            label lb_t1 = label.new(_lx, _tp1_p,      "▶ TP1 A×1.0  " + str.tostring(_tp1_p, format.mintick),  style=label.style_label_left, color=color.new(col_target, 70), textcolor=color.new(col_target, 30), size=size.small)
+            label lb_t3 = label.new(_lx, res_w.tp3_p, "▶ TP3 A×2.618 " + str.tostring(res_w.tp3_p, format.mintick), style=label.style_label_left, color=color.new(col_target, 70), textcolor=color.new(col_target, 10), size=size.small)
+            array.push(cur.lns,  ln_t1)
+            array.push(cur.lns,  ln_t3)
+            array.push(cur.lbls, lb_t1)
+            array.push(cur.lbls, lb_t3)
+    array.push(pat_history, cur)
+    f_manage_drawings(max_patterns)
+    if alert_impulse and res_w.pattern_type == 1 and barstate.isconfirmed
+        alert(str.format("Elliott {0} — Entry: {1}  Stop: {2}  Target: {3}", res_w.name, str.tostring(res_w.entry_p, format.mintick), str.tostring(res_w.stop_p, format.mintick), str.tostring(res_w.target_p, format.mintick)), alert.freq_once_per_bar_close)
+    if alert_correction and res_w.pattern_type == 2 and barstate.isconfirmed
+        alert(str.format("Elliott {0} — Entry: {1}  Stop: {2}  Target: {3}", res_w.name, str.tostring(res_w.entry_p, format.mintick), str.tostring(res_w.stop_p, format.mintick), str.tostring(res_w.target_p, format.mintick)), alert.freq_once_per_bar_close)
+// Dashboard
+int   dash_piv_total  = array.size(pivotHighs) + array.size(pivotLows)
+float dash_rr_score   = math.min(dash_rr_raw * 2.0, 10.0)
+float dash_piv_score  = math.min(dash_piv_total * 0.005 * 10.0, 10.0)
+string dash_rr_str    = f_blockBar(dash_rr_score)
+string dash_piv_str   = f_blockBar(dash_piv_score)
+color  dash_rr_col    = f_blockColor(dash_rr_score)
+color  dash_piv_col   = f_blockColor(dash_piv_score)
+color  _bull_c        = color.rgb(0, 255, 120)
+color  _bear_c        = color.rgb(255, 60, 80)
+color  dash_bias_col  = dash_bull ? _bull_c : _bear_c
+color  dash_name_col  = dash_bull ? _bull_c : _bear_c
+string dash_bias_str  = dash_bull ? "▲ Bull" : "▼ Bear"
+string dash_type_str  = dash_pattern_type == 1 ? "📈 Impulse (12345)" : dash_pattern_type == 2 ? "🔄 Correction (ABC)" : "—"
+color  dash_type_col  = dash_pattern_type == 1 ? col_impulse : dash_pattern_type == 2 ? col_correction : color.rgb(110, 110, 110)
+string dash_w1_str    = not na(dash_w1_len) ? str.tostring(dash_w1_len, format.mintick) : "—"
+string dash_w3_str    = not na(dash_w3_len) ? str.tostring(dash_w3_len, format.mintick) : "—"
+string dash_w5_str    = not na(dash_w5_len) ? str.tostring(dash_w5_len, format.mintick) : "—"
+string dash_ratio_str = not na(dash_w1_len) and not na(dash_w3_len) and dash_w1_len > 1e-10 ? str.tostring(math.round(dash_w3_len / dash_w1_len, 3)) + "× W1" : "—"
+string dash_w5r_str   = not na(dash_w5_ratio) ? str.tostring(math.round(dash_w5_ratio, 3)) + "× W1" : "—"
+string dash_ctype_str = dash_corr_type != "" and dash_corr_type != "—" ? dash_corr_type : "—"
+string dash_entry_str = not na(dash_entry)  ? str.tostring(dash_entry,  format.mintick) : "—"
+string dash_stop_str  = not na(dash_stop)   ? str.tostring(dash_stop,   format.mintick) : "—"
+string dash_target_str= not na(dash_target) ? str.tostring(dash_target, format.mintick) : "—"
+string dash_atr_str   = str.tostring(atr_val, format.mintick)
+string dash_since_str = "⏳ " + str.tostring(dash_bars_since) + " Bars"
+string dash_cnt_str   = "📈 " + str.tostring(impulse_count) + "  🔄 " + str.tostring(correction_count)
+color hdrBg = color.rgb(30, 30, 45, 10)
+color altBg = color.rgb(20, 20, 25, 10)
+color oddBg = dash_bg_color
+var table dash = table.new(position.top_right, 2, 22,
+    border_width=1, border_color=color.rgb(50, 50, 70, 20),
+    frame_width=1,  frame_color=color.rgb(60, 60, 90, 10))
+table.cell(dash, 0, 0,  "  Elliott Wave Scanner",    bgcolor=hdrBg, text_color=dash_txt_color, text_halign=text.align_left,  text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 1, 0,  clean_ticker + " · " + timeframe.period, bgcolor=hdrBg, text_color=dash_txt_color, text_halign=text.align_right, text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 0, 1,  "  Bias",                bgcolor=altBg, text_color=dash_txt_color, text_halign=text.align_left,  text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 1, 1,  dash_bias_str,           bgcolor=altBg, text_color=dash_bias_col,  text_halign=text.align_right, text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 0, 2,  "  Pattern",             bgcolor=oddBg, text_color=dash_txt_color, text_halign=text.align_left,  text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 1, 2,  dash_name,               bgcolor=oddBg, text_color=dash_name_col,  text_halign=text.align_right, text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 0, 3,  "  Type",                bgcolor=altBg, text_color=dash_txt_color, text_halign=text.align_left,  text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 1, 3,  dash_type_str,           bgcolor=altBg, text_color=dash_type_col,  text_halign=text.align_right, text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 0, 4,  "  Entry",               bgcolor=oddBg, text_color=dash_txt_color, text_halign=text.align_left,  text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 1, 4,  dash_entry_str,          bgcolor=oddBg, text_color=color.rgb(255, 220, 0), text_halign=text.align_right, text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 0, 5,  "  Stop",                bgcolor=altBg, text_color=dash_txt_color, text_halign=text.align_left,  text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 1, 5,  dash_stop_str,           bgcolor=altBg, text_color=color.rgb(255, 60, 80),  text_halign=text.align_right, text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 0, 6,  "  Target",              bgcolor=oddBg, text_color=dash_txt_color, text_halign=text.align_left,  text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 1, 6,  dash_target_str,         bgcolor=oddBg, text_color=color.rgb(0, 255, 160),  text_halign=text.align_right, text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 0, 7,  "  R:R Quality",         bgcolor=altBg, text_color=dash_txt_color, text_halign=text.align_left,  text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 1, 7,  dash_rr_str,             bgcolor=altBg, text_color=dash_rr_col,    text_halign=text.align_right, text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 0, 8,  "  ─── Impulse ───",     bgcolor=hdrBg, text_color=color.new(col_impulse, 30), text_halign=text.align_left,  text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 1, 8,  "Waves 1·2·3·4·5",       bgcolor=hdrBg, text_color=color.new(col_impulse, 30), text_halign=text.align_right, text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 0, 9,  "  W1 Length",           bgcolor=oddBg, text_color=dash_txt_color, text_halign=text.align_left,  text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 1, 9,  dash_w1_str,             bgcolor=oddBg, text_color=color.rgb(100, 200, 255), text_halign=text.align_right, text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 0, 10, "  W3 Length",           bgcolor=altBg, text_color=dash_txt_color, text_halign=text.align_left,  text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 1, 10, dash_w3_str,             bgcolor=altBg, text_color=color.rgb(100, 200, 255), text_halign=text.align_right, text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 0, 11, "  W5 Length",           bgcolor=oddBg, text_color=dash_txt_color, text_halign=text.align_left,  text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 1, 11, dash_w5_str,             bgcolor=oddBg, text_color=color.rgb(100, 200, 255), text_halign=text.align_right, text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 0, 12, "  W3/W1 Ratio",         bgcolor=altBg, text_color=dash_txt_color, text_halign=text.align_left,  text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 1, 12, dash_ratio_str,          bgcolor=altBg, text_color=color.rgb(180, 255, 80),  text_halign=text.align_right, text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 0, 13, "  W5/W1 Ratio",         bgcolor=oddBg, text_color=dash_txt_color, text_halign=text.align_left,  text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 1, 13, dash_w5r_str,            bgcolor=oddBg, text_color=color.rgb(100, 200, 255), text_halign=text.align_right, text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 0, 14, "  Corr Type",           bgcolor=altBg, text_color=dash_txt_color, text_halign=text.align_left,  text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 1, 14, dash_ctype_str,          bgcolor=altBg, text_color=dash_pattern_type == 2 ? col_correction : color.rgb(110, 110, 110), text_halign=text.align_right, text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 0, 15, "  ─── System ───",      bgcolor=hdrBg, text_color=color.rgb(80, 80, 100), text_halign=text.align_left,  text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 1, 15, "",                      bgcolor=hdrBg, text_color=color.rgb(80, 80, 100), text_halign=text.align_right, text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 0, 16, "  Pivot Count",         bgcolor=oddBg, text_color=dash_txt_color, text_halign=text.align_left,  text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 1, 16, dash_piv_str,            bgcolor=oddBg, text_color=dash_piv_col,   text_halign=text.align_right, text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 0, 17, "  Bars Since",          bgcolor=altBg, text_color=dash_txt_color, text_halign=text.align_left,  text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 1, 17, dash_since_str,          bgcolor=altBg, text_color=color.rgb(140, 180, 255), text_halign=text.align_right, text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 0, 18, "  ATR (14)",            bgcolor=oddBg, text_color=dash_txt_color, text_halign=text.align_left,  text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 1, 18, dash_atr_str,            bgcolor=oddBg, text_color=color.rgb(200, 200, 60), text_halign=text.align_right, text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 0, 19, "  Pattern Count",       bgcolor=altBg, text_color=dash_txt_color, text_halign=text.align_left,  text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 1, 19, dash_cnt_str,            bgcolor=altBg, text_color=color.rgb(180, 180, 200), text_halign=text.align_right, text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 0, 20, use_htf_bias ? "  HTF Bias" : "", bgcolor=oddBg, text_color=dash_txt_color, text_halign=text.align_left,  text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 1, 20, use_htf_bias ? (htf_bull ? "▲ Bull" : "▼ Bear") : "", bgcolor=oddBg, text_color=use_htf_bias ? (htf_bull ? _bull_c : _bear_c) : color.rgb(110, 110, 110), text_halign=text.align_right, text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 0, 21, "  EWD v2.0",            bgcolor=hdrBg, text_color=color.rgb(60, 60, 80), text_halign=text.align_left,  text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 1, 21, "Pine v6",               bgcolor=hdrBg, text_color=color.rgb(60, 60, 80), text_halign=text.align_right, text_font_family=font.family_monospace, text_size=size.small)

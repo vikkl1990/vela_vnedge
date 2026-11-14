@@ -1,0 +1,641 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © MarkitTick
+//@version=6
+indicator("Momentum Confluence Engine [MarkitTick]", overlay = false, precision = 2, max_labels_count = 500)
+
+// ── INPUTS ──────────────────────────────────────────────────────
+const string GRP_CORE  = "⚙️ Core"
+const string GRP_FILT  = "🕯️ Filters"
+const string GRP_COMP  = "🌊 Components"
+const string GRP_TRADE = "📐 Trade Tools"
+const string GRP_VIS   = "🎨 Visuals"
+const string GRP_DASH  = "📊 Dashboard"
+const string GRP_WH    = "🔔 Alerts"
+const string GRP_COL   = "🌈 Colors"
+
+i_src       = input.source(close, "Source", group = GRP_CORE, tooltip = "Price series read by RSI, Stoch, CCI, MACD and ROC. MFI always reads the bar's high-low-close average.")
+i_smooth    = input.int(3,     "Smooth",   minval = 1,    maxval = 50,   group = GRP_CORE, tooltip = "EMA length that smooths the blended score. Higher is slower with fewer crossovers.")
+i_sigLen    = input.int(9,     "Signal Len", minval = 1,  maxval = 100,  group = GRP_CORE, tooltip = "EMA length of the signal line, taken from the smoothed score. A score crossing this line raises a raw signal.")
+i_thrBull   = input.int(20,    "Bull Thr", minval = 0,    maxval = 100,  group = GRP_CORE, tooltip = "Score at or above this level reads BULL on the Bias row of the dashboard.")
+i_thrBear   = input.int(-20,   "Bear Thr", minval = -100, maxval = 0,    group = GRP_CORE, tooltip = "Score at or below this level reads BEAR on the Bias row of the dashboard.")
+i_ob        = input.int(60,    "OB Lvl",   minval = 0,    maxval = 100,  group = GRP_CORE, tooltip = "Score at or above this level is overbought: it opens the upper zone and reads OVERBOUGHT on the Zone row.")
+i_os        = input.int(-60,   "OS Lvl",   minval = -100, maxval = 0,    group = GRP_CORE, tooltip = "Score at or below this level is oversold: it opens the lower zone and reads OVERSOLD on the Zone row.")
+i_normLen   = input.int(100,   "Norm Len", minval = 20,   maxval = 500,  group = GRP_CORE, tooltip = "Bars used to turn the MACD histogram and ROC into z-scores. Those two components give no reading until this window and their own lengths have filled.")
+i_satZ      = input.float(2.5, "Z Sat",    minval = 1.0,  maxval = 5.0, step = 0.1, group = GRP_CORE, tooltip = "Z-score at which a normalised component reaches 100 or -100. Lower saturates sooner.")
+
+i_minAgree  = input.int(60,   "Min Agree %", minval = 0, maxval = 100, group = GRP_FILT, tooltip = "Minimum share of the total component weight that must point the same way as the signal side (score above its signal line is the bull side, below it the bear side) for a signal to pass.")
+i_reqSlope  = input.bool(true, "Slope Align", group = GRP_FILT, tooltip = "A bull signal also needs the score rising, and a bear signal falling, over Slope Len bars.")
+i_slopeLen  = input.int(3, "Slope Len", minval = 1, maxval = 50, group = GRP_FILT, tooltip = "Bars over which the change in the score is measured for Slope Align and the Slope row.")
+i_htfOn     = input.bool(false, "Higher TF Confirm", group = GRP_FILT, tooltip = "A bull signal also needs the higher timeframe's Bias state to be BULL and a bear signal BEAR; NEUTRAL blocks both. The state is this indicator's own score against Bull Thr and Bear Thr, with the same settings, read on the last confirmed higher-timeframe bar. It reads once the higher timeframe's own score has a reading, with the same warm-up as the Score row on that timeframe, plus one confirmed higher-timeframe bar; until then every signal is blocked.")
+i_htfTf     = input.timeframe("D", "Higher TF", group = GRP_FILT, tooltip = "Timeframe whose Bias state confirms signals. A timeframe equal to the chart's is valid and reads the chart's own state. A timeframe lower than the chart's is skipped and passes every signal.")
+i_adxOn     = input.bool(false, "Strength Filter", group = GRP_FILT, tooltip = "A signal also needs ADX at or above ADX Threshold, read on the signal bar and acted on at its confirmed close.")
+i_adxThr    = input.float(20.0, "ADX Threshold", minval = 0.0, maxval = 100.0, group = GRP_FILT, tooltip = "Minimum ADX a signal needs while Strength Filter is on.")
+i_adxLen    = input.int(14, "ADX Length", minval = 1, group = GRP_FILT, tooltip = "Length of the directional movement and of the ADX average, in bars.")
+i_smMode    = input.string("None", "Smoothing", options = ["None", "SMA", "EMA", "RMA", "WMA", "HMA"], group = GRP_FILT, tooltip = "Method that smooths the blended score before the Smooth EMA and before any signal is derived from it. None leaves the score as it is.")
+i_smLen     = input.int(20, "Smoothing Length", minval = 1, group = GRP_FILT, tooltip = "Length of the Smoothing method in bars. The score has no reading until the method has filled this many bars after the first component reading. Not used while Smoothing is None.")
+
+i_useRsi    = input.bool(true,  "RSI",   inline = "R", group = GRP_COMP, tooltip = "Include RSI in the weighted blend.")
+i_rsiLen    = input.int(14,     "",   inline = "R", minval = 2, maxval = 500, group = GRP_COMP, tooltip = "RSI length in bars.")
+i_wRsi      = input.float(1.0,  "",     inline = "R", minval = 0.0, maxval = 10.0, step = 0.1, group = GRP_COMP, tooltip = "RSI row. The first box includes RSI in the weighted blend, Len is its length in bars and W its weight. RSI leaves the score when it is switched off, W is 0, the chart is not a standard chart, or until the RSI length has filled.")
+i_useSto    = input.bool(true,  "Stoch", inline = "S", group = GRP_COMP, tooltip = "Include the smoothed stochastic in the weighted blend.")
+i_stoLen    = input.int(14,     "",   inline = "S", minval = 2, maxval = 500, group = GRP_COMP, tooltip = "Stochastic lookback length in bars.")
+i_stoSm     = input.int(3,      "",    inline = "S", minval = 1, maxval = 50, group = GRP_COMP, tooltip = "SMA length that smooths the raw stochastic.")
+i_wSto      = input.float(1.0,  "",     inline = "S", minval = 0.0, maxval = 10.0, step = 0.1, group = GRP_COMP, tooltip = "Stoch row. The first box includes the smoothed stochastic in the weighted blend, Len is its lookback in bars, Sm the SMA length that smooths the raw stochastic and W its weight. The stochastic leaves the score when it is switched off, W is 0, the chart is not a standard chart, or until Len and then Sm have filled.")
+i_useCci    = input.bool(true,  "CCI",   inline = "C", group = GRP_COMP, tooltip = "Include CCI in the weighted blend.")
+i_cciLen    = input.int(20,     "",   inline = "C", minval = 2, maxval = 500, group = GRP_COMP, tooltip = "CCI length in bars.")
+i_cciSat    = input.float(200., "",   inline = "C", minval = 50.0, maxval = 500.0, step = 10.0, group = GRP_COMP, tooltip = "CCI value that maps to 100 or -100. Readings beyond it are clamped.")
+i_wCci      = input.float(1.0,  "",     inline = "C", minval = 0.0, maxval = 10.0, step = 0.1, group = GRP_COMP, tooltip = "CCI row. The first box includes CCI in the weighted blend, Len is its length in bars, Sat the CCI value that maps to 100 or -100 (readings beyond it are clamped) and W its weight. CCI leaves the score when it is switched off, W is 0, the chart is not a standard chart, or until the CCI length has filled.")
+i_useMacd   = input.bool(true,  "MACD",  inline = "M", group = GRP_COMP, tooltip = "Include the MACD histogram, normalised to a z-score over Norm Len bars, in the weighted blend.")
+i_wMacd     = input.float(1.0,  "",     inline = "M", minval = 0.0, maxval = 10.0, step = 0.1, group = GRP_COMP, tooltip = "MACD row. The first box includes the MACD histogram, normalised to a z-score over Norm Len bars, in the weighted blend and W is its weight. MACD leaves the score when it is switched off, W is 0, the chart is not a standard chart, its window is flat, or until the MACD lengths and then Norm Len bars have filled.")
+i_macdFast  = input.int(12,     "Fast",  inline = "N", minval = 1, maxval = 500, group = GRP_COMP, tooltip = "MACD fast EMA length. If it is above Slow, the two are swapped.")
+i_macdSlow  = input.int(26,     "",  inline = "N", minval = 2, maxval = 500, group = GRP_COMP, tooltip = "MACD slow EMA length.")
+i_macdSig   = input.int(9,      "",   inline = "N", minval = 1, maxval = 500, group = GRP_COMP, tooltip = "MACD lengths. Fast and Slow are the fast and slow EMA lengths (if Fast is above Slow, the two are swapped) and Sig is the signal EMA length. MACD leaves the score until these lengths and then Norm Len bars have filled, or while its window is flat.")
+i_useRoc    = input.bool(true,  "ROC",   inline = "O", group = GRP_COMP, tooltip = "Include rate of change, normalised to a z-score over Norm Len bars, in the weighted blend.")
+i_rocLen    = input.int(14,     "",   inline = "O", minval = 1, maxval = 500, group = GRP_COMP, tooltip = "ROC lookback in bars.")
+i_wRoc      = input.float(1.0,  "",     inline = "O", minval = 0.0, maxval = 10.0, step = 0.1, group = GRP_COMP, tooltip = "ROC row. The first box includes rate of change, normalised to a z-score over Norm Len bars, in the weighted blend, Len is its lookback in bars and W its weight. ROC leaves the score when it is switched off, W is 0, the chart is not a standard chart, its window is flat, or until the ROC length and then Norm Len bars have filled.")
+i_useMfi    = input.bool(true,  "MFI",   inline = "F", group = GRP_COMP, tooltip = "Include MFI in the weighted blend. MFI is volume-based.")
+i_mfiLen    = input.int(14,     "",   inline = "F", minval = 2, maxval = 500, group = GRP_COMP, tooltip = "MFI length in bars.")
+i_wMfi      = input.float(1.0,  "",     inline = "F", minval = 0.0, maxval = 10.0, step = 0.1, group = GRP_COMP, tooltip = "MFI row. The first box includes MFI in the weighted blend, Len is its length in bars and W its weight. MFI is volume-based. MFI leaves the score when it is switched off, W is 0, the chart is not a standard chart, or until the MFI length has filled.")
+
+i_lockSignal = input.bool(false, "Lock Signal", group = GRP_TRADE, tooltip = "Freeze current signal · block new ones")
+i_atrLen    = input.int(14,    "ATR Length", minval = 1,   maxval = 500, group = GRP_TRADE, tooltip = "Bars in the ATR that sets the stop distance. No trade is armed until the ATR has a value.")
+i_slMult    = input.float(1.5, "SL ATR x",   minval = 0.1, step = 0.1,   group = GRP_TRADE, tooltip = "Stop distance in ATR from the entry, which is the close of the signal bar.")
+i_tp1R      = input.float(1.0, "TP1 R",      minval = 0.1, step = 0.1,   group = GRP_TRADE, tooltip = "Target distance as a multiple of the stop distance. Targets set out of order are sorted nearest to farthest.")
+i_tp2R      = input.float(2.0, "TP2 R",      minval = 0.1, step = 0.1,   group = GRP_TRADE, tooltip = "Second target distance as a multiple of the stop distance.")
+i_tp3R      = input.float(3.0, "TP3 R",      minval = 0.1, step = 0.1,   group = GRP_TRADE, tooltip = "Third and final target distance as a multiple of the stop distance. Reaching it closes the trade.")
+
+i_showMark  = input.bool(true,  "Markers",      group = GRP_VIS, tooltip = "Draw BULL and BEAR markers on confirmed signals, in the pane and on the price chart.")
+i_showLevels = input.bool(true, "Trade Levels", group = GRP_VIS, tooltip = "Draws the stop, entry and target lines and labels for the current trade. Hit tracking and alerts run with it off.")
+i_showCdl   = input.bool(true,  "Candle Color", group = GRP_VIS, tooltip = "Colour the price candles by the score gradient.")
+i_showZone  = input.bool(true,  "OB/OS Zones", group = GRP_VIS, tooltip = "Fill the overbought and oversold zones.")
+i_showComp  = input.bool(false, "Components",  group = GRP_VIS, tooltip = "Plot the score of each component that has a reading as its own line.")
+
+i_showDash  = input.bool(true, "Show Dash", group = GRP_DASH, tooltip = "Show the dashboard table.")
+i_dashPos   = input.string("Top Right", "Position", options = ["Top Right", "Top Left", "Bottom Right", "Bottom Left"], group = GRP_DASH, tooltip = "Corner the dashboard sits in.")
+i_dashOnPrice = input.bool(true, "Show on Price Chart", group = GRP_DASH, tooltip = "On: the dashboard is drawn on the price chart. Off: it stays in this indicator's pane.")
+
+i_actionLong       = input.string("long",             "↑ Long Action",              group = GRP_WH, tooltip = "Action word sent in the alert payload when a long entry is signalled. Quotation marks and backslashes are escaped.")
+i_actionShort      = input.string("short",            "↓ Short Action",             group = GRP_WH, tooltip = "Action word sent in the alert payload when a short entry is signalled. Quotation marks and backslashes are escaped.")
+i_actionCloseLong  = input.string("closelong",        "✕ Close Long Action",        group = GRP_WH, tooltip = "Action word sent when a long trade closes: final target, stop, or replacement by a new signal. Quotation marks and backslashes are escaped.")
+i_actionCloseShort = input.string("closeshort",       "✕ Close Short Action",       group = GRP_WH, tooltip = "Action word sent when a short trade closes: final target, stop, or replacement by a new signal. Quotation marks and backslashes are escaped.")
+i_actionPartLong   = input.string("partialcloselong", "✕ Partial Close Long Action", group = GRP_WH, tooltip = "Action word sent when a long trade reaches TP1 or TP2, which leaves the trade open. Quotation marks and backslashes are escaped.")
+i_actionPartShort  = input.string("partialcloseshort","✕ Partial Close Short Action",group = GRP_WH, tooltip = "Action word sent when a short trade reaches TP1 or TP2, which leaves the trade open. Quotation marks and backslashes are escaped.")
+
+C_SUP      = input.color(#26a69a, "Bull",        group = GRP_COL, tooltip = "Bullish colour: top of the score gradient, BULL markers and bullish dashboard states.")
+C_RES      = input.color(#ef5350, "Bear",        group = GRP_COL, tooltip = "Bearish colour: bottom of the score gradient, BEAR markers and bearish dashboard states.")
+C_NEU      = input.color(#f9a825, "Neutral",     group = GRP_COL, tooltip = "Neutral colour: middle of the score gradient.")
+C_SIG      = input.color(#b388ff, "Signal Line", group = GRP_COL, tooltip = "Colour of the signal line.")
+C_MRK_TXT  = input.color(#ffffff, "Marker Txt",  group = GRP_COL, tooltip = "Text colour of the BULL and BEAR markers.")
+C_MID      = input.color(color.new(#787b86, 40), "Mid Line",    group = GRP_COL, tooltip = "Colour of the zero line.")
+C_LVL      = input.color(color.new(#787b86, 65), "Level Lines", group = GRP_COL, tooltip = "Colour of the overbought, oversold, threshold and maximum lines.")
+C_ZONE     = input.color(color.new(#787b86, 88), "Zone Fill",   group = GRP_COL, tooltip = "Fill colour of the overbought and oversold zones.")
+C_RSI      = input.color(#42a5f5, "RSI Line",   group = GRP_COL, tooltip = "Colour of the RSI component line.")
+C_STO      = input.color(#ab47bc, "Stoch Line", group = GRP_COL, tooltip = "Colour of the stochastic component line.")
+C_CCI      = input.color(#ffa726, "CCI Line",   group = GRP_COL, tooltip = "Colour of the CCI component line.")
+C_MACD     = input.color(#26c6da, "MACD Line",  group = GRP_COL, tooltip = "Colour of the MACD component line.")
+C_ROC      = input.color(#9ccc65, "ROC Line",   group = GRP_COL, tooltip = "Colour of the ROC component line.")
+C_MFI      = input.color(#ec407a, "MFI Line",   group = GRP_COL, tooltip = "Colour of the MFI component line.")
+C_DASH_HDR = input.color(color.new(#3a2a6d, 55), "Dash Hdr", group = GRP_COL, tooltip = "Fill colour of the dashboard header row.")
+C_DASH_BG  = input.color(color.new(#0a0f1a, 10), "Dash BG",  group = GRP_COL, tooltip = "Dashboard background. Alternate rows use a faded copy of it, at 40 transparency.")
+C_DASH_TXT = input.color(#ffffff, "Dash Txt", group = GRP_COL, tooltip = "Dashboard text colour. Label cells use a faded copy of it, at 25 transparency.")
+C_WARN     = input.color(color.new(#f9a825, 80), "Warn Fill", group = GRP_COL, tooltip = "Fill of dashboard rows that warn, such as a skipped setting. A row takes it only while it warns.")
+C_SL       = input.color(#ef5350, "SL",         group = GRP_COL, tooltip = "Stop line. The stop label uses the same colour at full opacity.")
+C_ENTRY    = input.color(#2196f3, "Entry",      group = GRP_COL, tooltip = "Entry line. The entry label uses the same colour at full opacity.")
+C_TP1      = input.color(color.new(#26a69a, 40), "TP1", group = GRP_COL, tooltip = "TP1 line. The TP1 label uses the same colour at full opacity.")
+C_TP2      = input.color(color.new(#26a69a, 20), "TP2", group = GRP_COL, tooltip = "TP2 line. The TP2 label uses the same colour at full opacity.")
+C_TP3      = input.color(color.new(#26a69a, 0),  "TP3", group = GRP_COL, tooltip = "TP3 line. The TP3 label uses the same colour at full opacity.")
+C_LBL_TXT  = input.color(#ffffff, "Label Text", group = GRP_COL, tooltip = "Text colour of the trade level labels.")
+
+// ── CORE LOGIC ──────────────────────────────────────────────────
+f_clamp(float v, float lim) =>
+    math.max(-lim, math.min(lim, v))
+
+f_bounded(float v) =>
+    (v - 50.0) * 2.0
+
+f_zScore(float v, int len, float sat) =>
+    float _m  = ta.sma(v, len)
+    float _sd = ta.stdev(v, len)
+    float _z  = na(v) or na(_sd) ? na : _sd > 0.0 ? (v - _m) / _sd : na
+    f_clamp(_z / sat * 100.0, 100.0)
+
+f_dir(float v) =>
+    v > 0.0 ? 1 : v < 0.0 ? -1 : 0
+
+f_agr(float s, float w, int d) =>
+    f_dir(s) == d ? w : 0.0
+
+float _rsiRaw  = ta.rsi(i_src, i_rsiLen)
+float _stoRaw  = ta.sma(ta.stoch(i_src, high, low, i_stoLen), i_stoSm)
+float _cciRaw  = ta.cci(i_src, i_cciLen)
+int _macdF = math.min(i_macdFast, i_macdSlow)
+int _macdS = math.max(i_macdFast, i_macdSlow)
+[_, _, _macdH] = ta.macd(i_src, _macdF, _macdS, i_macdSig)
+float _rocRaw  = ta.roc(i_src, i_rocLen)
+float _mfiRaw  = ta.mfi(hlc3, i_mfiLen)
+[_, _, _adx] = ta.dmi(i_adxLen, i_adxLen)
+
+float _sRsi  = f_clamp(f_bounded(_rsiRaw), 100.0)
+float _sSto  = f_clamp(f_bounded(_stoRaw), 100.0)
+float _sCci  = f_clamp(_cciRaw / i_cciSat * 100.0, 100.0)
+float _sMacd = f_zScore(_macdH, i_normLen, i_satZ)
+float _sRoc  = f_zScore(_rocRaw, i_normLen, i_satZ)
+float _sMfi  = f_clamp(f_bounded(_mfiRaw), 100.0)
+
+bool _std = chart.is_standard
+
+bool _okRsi  = _std and i_useRsi  and not na(_sRsi)
+bool _okSto  = _std and i_useSto  and not na(_sSto)
+bool _okCci  = _std and i_useCci  and not na(_sCci)
+bool _okMacd = _std and i_useMacd and not na(_sMacd)
+bool _okRoc  = _std and i_useRoc  and not na(_sRoc)
+bool _okMfi  = _std and i_useMfi  and not na(_sMfi)
+
+float nRsi  = _okRsi  ? _sRsi  : 0.0
+float nSto  = _okSto  ? _sSto  : 0.0
+float nCci  = _okCci  ? _sCci  : 0.0
+float nMacd = _okMacd ? _sMacd : 0.0
+float nRoc  = _okRoc  ? _sRoc  : 0.0
+float nMfi  = _okMfi  ? _sMfi  : 0.0
+
+float wRsi  = _okRsi  ? i_wRsi  : 0.0
+float wSto  = _okSto  ? i_wSto  : 0.0
+float wCci  = _okCci  ? i_wCci  : 0.0
+float wMacd = _okMacd ? i_wMacd : 0.0
+float wRoc  = _okRoc  ? i_wRoc  : 0.0
+float wMfi  = _okMfi  ? i_wMfi  : 0.0
+
+float _wSum = wRsi + wSto + wCci + wMacd + wRoc + wMfi
+float _sSum = wRsi * nRsi + wSto * nSto + wCci * nCci + wMacd * nMacd + wRoc * nRoc + wMfi * nMfi
+float _raw  = _wSum > 0.0 ? _sSum / _wSum : na
+float _smSma = ta.sma(_raw, i_smLen)
+float _smEma = ta.ema(_raw, i_smLen)
+float _smRma = ta.rma(_raw, i_smLen)
+float _smWma = ta.wma(_raw, i_smLen)
+float _smHma = ta.hma(_raw, i_smLen)
+float _blend = na(_raw) ? na : i_smMode == "SMA" ? _smSma : i_smMode == "EMA" ? _smEma : i_smMode == "RMA" ? _smRma : i_smMode == "WMA" ? _smWma : i_smMode == "HMA" ? _smHma : _raw
+float _scoreEma = ta.ema(_blend, i_smooth)
+float score = na(_blend) ? na : _scoreEma
+float _sigEma = ta.ema(score, i_sigLen)
+float signalLine = na(score) ? na : _sigEma
+
+int   _dir   = na(score) or na(signalLine) ? na : score > signalLine ? 1 : score < signalLine ? -1 : 0
+float _agrW  = f_agr(nRsi, wRsi, _dir) + f_agr(nSto, wSto, _dir) + f_agr(nCci, wCci, _dir) + f_agr(nMacd, wMacd, _dir) + f_agr(nRoc, wRoc, _dir) + f_agr(nMfi, wMfi, _dir)
+float agree  = na(_dir) or _wSum <= 0.0 ? na : _dir != 0 ? _agrW / _wSum * 100.0 : 0.0
+int   _active = (_okRsi ? 1 : 0) + (_okSto ? 1 : 0) + (_okCci ? 1 : 0) + (_okMacd ? 1 : 0) + (_okRoc ? 1 : 0) + (_okMfi ? 1 : 0)
+
+float _slopeRaw = ta.change(score, i_slopeLen)
+float _slope = nz(_slopeRaw)
+
+bool _agrOk     = not na(agree) and agree >= i_minAgree
+bool _xUp       = ta.crossover(score, signalLine)
+bool _xDn       = ta.crossunder(score, signalLine)
+bool _defNow    = not na(score) and not na(signalLine)
+bool _defPrev   = not na(score[1]) and not na(signalLine[1])
+bool _rawBull   = _xUp and _defNow and _defPrev
+bool _rawBear   = _xDn and _defNow and _defPrev
+int  _biasS     = na(score) ? na : score >= i_thrBull ? 1 : score <= i_thrBear ? -1 : 0
+int  _htfSec    = timeframe.in_seconds(i_htfTf)
+int  _chartSec  = timeframe.in_seconds()
+bool _htfSame   = _htfSec == _chartSec
+bool _htfSkip   = i_htfOn and _htfSec < _chartSec
+int  _htfReq    = i_htfOn and _std and not _htfSame and not _htfSkip ? request.security(syminfo.tickerid, i_htfTf, _biasS[1], lookahead = barmerge.lookahead_on) : na
+int  _htfSt     = _htfSame ? _biasS : _htfReq
+bool _htfBullOk = not i_htfOn or _htfSkip or _htfSt == 1
+bool _htfBearOk = not i_htfOn or _htfSkip or _htfSt == -1
+bool _adxOk     = not i_adxOn or (not na(_adx) and _adx >= i_adxThr)
+bool bullSignal = _std and _rawBull and _agrOk and (not i_reqSlope or _slope > 0.0) and _htfBullOk and _adxOk
+bool bearSignal = _std and _rawBear and _agrOk and (not i_reqSlope or _slope < 0.0) and _htfBearOk and _adxOk
+
+bool _fireBull = bullSignal and barstate.isconfirmed
+bool _fireBear = bearSignal and barstate.isconfirmed
+
+float _atr      = ta.atr(i_atrLen)
+float _rLo      = math.min(i_tp1R, math.min(i_tp2R, i_tp3R))
+float _rHi      = math.max(i_tp1R, math.max(i_tp2R, i_tp3R))
+float _rMid     = math.max(math.min(i_tp1R, i_tp2R), math.min(math.max(i_tp1R, i_tp2R), i_tp3R))
+bool  _tpReord  = not (i_tp1R <= i_tp2R and i_tp2R <= i_tp3R)
+float _entryPx  = close
+float _riskDist = _atr * i_slMult
+float _slL      = _entryPx - _riskDist
+float _tp1L     = _entryPx + _riskDist * _rLo
+float _tp2L     = _entryPx + _riskDist * _rMid
+float _tp3L     = _entryPx + _riskDist * _rHi
+float _slS      = _entryPx + _riskDist
+float _tp1S     = _entryPx - _riskDist * _rLo
+float _tp2S     = _entryPx - _riskDist * _rMid
+float _tp3S     = _entryPx - _riskDist * _rHi
+bool  _okL      = _riskDist > syminfo.mintick and _slL > 0.0
+bool  _okS      = _riskDist > syminfo.mintick and _tp3S > 0.0
+bool  _regBull  = _fireBull and _okL
+bool  _regBear  = _fireBear and _okS
+
+var int    tradeDir = 0
+var float  tEntry   = na
+var float  tSl      = na
+var float  tTp1     = na
+var float  tTp2     = na
+var float  tTp3     = na
+var int    sigBar   = int(na)
+var int    closeBar = int(na)
+var bool   tp1Hit   = false
+var bool   tp2Hit   = false
+var bool   tp3Hit   = false
+var bool   slHit    = false
+var int    ld1      = 1
+var int    ld2      = 2
+var int    ld3      = 3
+var string namesE   = "Entry"
+var string names1   = "TP1"
+var string names2   = "TP2"
+var string names3   = "TP3"
+var line   slLine    = na
+var line   entryLine = na
+var line   tp1Line   = na
+var line   tp2Line   = na
+var line   tp3Line   = na
+var label  slLbl     = na
+var label  entryLbl  = na
+var label  tp1Lbl    = na
+var label  tp2Lbl    = na
+var label  tp3Lbl    = na
+
+f_pctTxt(float lvl, float entry, bool isLong) =>
+    float _p = (isLong ? lvl - entry : entry - lvl) / entry * 100.0
+    (_p >= 0.0 ? "+" : "") + str.tostring(_p, "0.00") + "%"
+
+f_deleteLevels() =>
+    line.delete(slLine)
+    line.delete(entryLine)
+    line.delete(tp1Line)
+    line.delete(tp2Line)
+    line.delete(tp3Line)
+    label.delete(slLbl)
+    label.delete(entryLbl)
+    label.delete(tp1Lbl)
+    label.delete(tp2Lbl)
+    label.delete(tp3Lbl)
+
+f_ldLbl(int ld) =>
+    ld == 0 ? entryLbl : ld == 1 ? tp1Lbl : ld == 2 ? tp2Lbl : tp3Lbl
+
+f_ldNames(int ld) =>
+    ld == 0 ? namesE : ld == 1 ? names1 : ld == 2 ? names2 : names3
+
+bool _isLongT  = tradeDir == 1
+bool _liveT    = tradeDir != 0 and bar_index > sigBar
+bool _tp1Cross = _liveT and (_isLongT ? high >= tTp1 : low <= tTp1)
+bool _tp2Cross = _liveT and (_isLongT ? high >= tTp2 : low <= tTp2)
+bool _tp3Cross = _liveT and (_isLongT ? high >= tTp3 : low <= tTp3)
+bool _slCross  = _liveT and barstate.isconfirmed and (_isLongT ? close < tSl : close > tSl)
+bool tp1New = false
+bool tp2New = false
+bool tp3New = false
+bool slNew  = false
+if _tp1Cross and not tp1Hit and not slHit
+    tp1Hit := true
+    tp1New := true
+if _tp2Cross and not tp2Hit and not slHit
+    tp2Hit := true
+    tp2New := true
+if _tp3Cross and not tp3Hit and not slHit
+    tp3Hit := true
+    tp3New := true
+if _slCross and not slHit and not tp3Hit
+    slHit := true
+    slNew := true
+if tp1New and not na(f_ldLbl(ld1))
+    label.set_text(f_ldLbl(ld1), f_ldNames(ld1) + " ✓ HIT " + f_pctTxt(tTp1, tEntry, _isLongT))
+if tp2New and not na(f_ldLbl(ld2))
+    label.set_text(f_ldLbl(ld2), f_ldNames(ld2) + " ✓ HIT " + f_pctTxt(tTp2, tEntry, _isLongT))
+if tp3New and not na(f_ldLbl(ld3))
+    label.set_text(f_ldLbl(ld3), f_ldNames(ld3) + " ✓ HIT " + f_pctTxt(tTp3, tEntry, _isLongT))
+if slNew and not na(slLbl)
+    label.set_text(slLbl, "SL ✓ HIT " + f_pctTxt(close, tEntry, _isLongT))
+
+int   pDir = tradeDir
+float pSl  = tSl
+float pTp1 = tTp1
+float pTp2 = tTp2
+float pTp3 = tTp3
+bool _locked = i_lockSignal and barstate.islast
+bool _blkBull = (slNew or tp3New) and pDir == 1
+bool _blkBear = (slNew or tp3New) and pDir == -1
+bool evBull  = _regBull and not _blkBull and not _locked
+bool evBear  = _regBear and not _blkBear and not _locked
+bool evNew   = evBull or evBear
+bool openNow = tradeDir != 0 and not slHit and not tp3Hit
+bool closeOld = evNew and openNow
+bool sameDir  = (evBull and tradeDir == 1) or (evBear and tradeDir == -1)
+if evNew
+    f_deleteLevels()
+    slLine    := na
+    entryLine := na
+    tp1Line   := na
+    tp2Line   := na
+    tp3Line   := na
+    slLbl     := na
+    entryLbl  := na
+    tp1Lbl    := na
+    tp2Lbl    := na
+    tp3Lbl    := na
+    tradeDir := evBull ? 1 : -1
+    tEntry   := _entryPx
+    tSl      := evBull ? _slL : _slS
+    tTp1     := evBull ? _tp1L : _tp1S
+    tTp2     := evBull ? _tp2L : _tp2S
+    tTp3     := evBull ? _tp3L : _tp3S
+    sigBar   := bar_index
+    closeBar := int(na)
+    tp1Hit   := false
+    tp2Hit   := false
+    tp3Hit   := false
+    slHit    := false
+    string kE  = str.tostring(_entryPx, format.mintick)
+    string kT1 = str.tostring(tTp1, format.mintick)
+    string kT2 = str.tostring(tTp2, format.mintick)
+    string kT3 = str.tostring(tTp3, format.mintick)
+    bool m1  = kT1 == kE
+    bool m2e = kT2 == kE
+    bool m2a = not m2e and kT2 == kT1
+    bool m3e = kT3 == kE
+    bool m3a = not m3e and kT3 == kT1
+    bool m3b = not m3e and not m3a and kT3 == kT2
+    ld1 := m1 ? 0 : 1
+    ld2 := m2e ? 0 : m2a ? 1 : 2
+    ld3 := m3e ? 0 : m3a ? 1 : m3b ? 2 : 3
+    namesE := "Entry" + (m1 ? " / TP1" : "") + (m2e ? " / TP2" : "") + (m3e ? " / TP3" : "")
+    names1 := "TP1" + (m2a ? " / TP2" : "") + (m3a ? " / TP3" : "")
+    names2 := "TP2" + (m3b ? " / TP3" : "")
+    names3 := "TP3"
+    if i_showLevels
+        slLine    := line.new(bar_index, tSl,     bar_index, tSl,     color = C_SL,    style = line.style_solid,  width = 2, force_overlay = true)
+        entryLine := line.new(bar_index, _entryPx, bar_index, _entryPx, color = C_ENTRY, style = line.style_dashed, width = 1, force_overlay = true)
+        tp1Line   := line.new(bar_index, tTp1,    bar_index, tTp1,    color = C_TP1,   style = line.style_dashed, width = 1, force_overlay = true)
+        tp2Line   := line.new(bar_index, tTp2,    bar_index, tTp2,    color = C_TP2,   style = line.style_dashed, width = 1, force_overlay = true)
+        tp3Line   := line.new(bar_index, tTp3,    bar_index, tTp3,    color = C_TP3,   style = line.style_dashed, width = 1, force_overlay = true)
+        slLbl     := label.new(bar_index, tSl, "✕ SL " + str.tostring(tSl, format.mintick), style = label.style_label_left, color = color.new(C_SL, 0), textcolor = C_LBL_TXT, size = size.small, force_overlay = true)
+        entryLbl  := label.new(bar_index, _entryPx, "▶ " + namesE + " " + kE, style = label.style_label_left, color = color.new(C_ENTRY, 0), textcolor = C_LBL_TXT, size = size.small, force_overlay = true)
+        if not m1
+            tp1Lbl := label.new(bar_index, tTp1, "◆ " + names1 + " " + kT1, style = label.style_label_left, color = color.new(C_TP1, 0), textcolor = C_LBL_TXT, size = size.small, force_overlay = true)
+        if not m2e and not m2a
+            tp2Lbl := label.new(bar_index, tTp2, "✦ " + names2 + " " + kT2, style = label.style_label_left, color = color.new(C_TP2, 0), textcolor = C_LBL_TXT, size = size.small, force_overlay = true)
+        if not m3e and not m3a and not m3b
+            tp3Lbl := label.new(bar_index, tTp3, "◆ " + names3 + " " + kT3, style = label.style_label_left, color = color.new(C_TP3, 0), textcolor = C_LBL_TXT, size = size.small, force_overlay = true)
+
+bool _tradeClosed = slHit or tp3Hit
+if tradeDir != 0 and _tradeClosed and na(closeBar)
+    closeBar := bar_index
+bool _extUpdate = _tradeClosed ? closeBar == bar_index : barstate.islast
+if not na(slLine) and _extUpdate
+    int _extX = _tradeClosed ? closeBar + 10 : last_bar_index + 10
+    line.set_x2(slLine, _extX)
+    line.set_x2(entryLine, _extX)
+    line.set_x2(tp1Line, _extX)
+    line.set_x2(tp2Line, _extX)
+    line.set_x2(tp3Line, _extX)
+    label.set_x(slLbl, _extX)
+    label.set_x(entryLbl, _extX)
+    if not na(tp1Lbl)
+        label.set_x(tp1Lbl, _extX)
+    if not na(tp2Lbl)
+        label.set_x(tp2Lbl, _extX)
+    if not na(tp3Lbl)
+        label.set_x(tp3Lbl, _extX)
+
+var int _lastDir = 0
+if evBull
+    _lastDir := 1
+if evBear
+    _lastDir := -1
+
+// ── ALERTS ──────────────────────────────────────────────────────
+f_esc(string s) =>
+    str.replace_all(str.replace_all(s, "\\", "\\\\"), "\"", "\\\"")
+
+f_ctx() =>
+    string _sc = na(score) ? "null" : str.format('"{0}"', str.tostring(score, "#.00"))
+    string _ag = na(agree) ? "null" : str.format('"{0}"', str.tostring(agree, "#.0"))
+    str.format('"score":{0},"agreement":{1},"components":"{2}"', _sc, _ag, str.tostring(_active))
+
+f_entryPayload(string act, string dir, float sl, float t1, float t2, float t3) =>
+    string _tm = na(time_close) ? "null" : str.format('"{0}"', str.tostring(time_close))
+    string _in = str.format('"action":"{0}","ticker":"{1}","tf":"{2}","direction":"{3}","entry":"{4}","sl":"{5}","tp1":"{6}","tp2":"{7}","tp3":"{8}","time":{9},{10}', f_esc(act), f_esc(syminfo.tickerid), f_esc(timeframe.period), dir, str.tostring(close, format.mintick), str.tostring(sl, format.mintick), str.tostring(t1, format.mintick), str.tostring(t2, format.mintick), str.tostring(t3, format.mintick), _tm, f_ctx())
+    "{" + _in + "}"
+
+f_partialPayload(string act, string dir, int n, float px, float sl) =>
+    string _in = str.format('"action":"{0}","ticker":"{1}","tf":"{2}","direction":"{3}","tp":"{4}","price":"{5}","sl":"{6}"', f_esc(act), f_esc(syminfo.tickerid), f_esc(timeframe.period), dir, str.tostring(n), str.tostring(px, format.mintick), str.tostring(sl, format.mintick))
+    "{" + _in + "}"
+
+f_closePayload(string act, string dir, string reason, float px) =>
+    string _in = str.format('"action":"{0}","ticker":"{1}","tf":"{2}","direction":"{3}","reason":"{4}","price":"{5}"', f_esc(act), f_esc(syminfo.tickerid), f_esc(timeframe.period), dir, reason, str.tostring(px, format.mintick))
+    "{" + _in + "}"
+
+string pSide  = pDir == 1 ? "long" : "short"
+string pClose = pDir == 1 ? i_actionCloseLong : i_actionCloseShort
+string pPart  = pDir == 1 ? i_actionPartLong : i_actionPartShort
+bool evPartLong   = pDir == 1 and (tp1New or tp2New)
+bool evPartShort  = pDir == -1 and (tp1New or tp2New)
+bool evCloseLong  = pDir == 1 and (closeOld or tp3New or slNew)
+bool evCloseShort = pDir == -1 and (closeOld or tp3New or slNew)
+
+if tp1New
+    alert(f_partialPayload(pPart, pSide, 1, pTp1, pSl), alert.freq_once_per_bar)
+if tp2New
+    alert(f_partialPayload(pPart, pSide, 2, pTp2, pSl), alert.freq_once_per_bar)
+if tp3New
+    alert(f_closePayload(pClose, pSide, "target", pTp3), alert.freq_once_per_bar)
+if slNew and barstate.isconfirmed
+    alert(f_closePayload(pClose, pSide, "stop", close), alert.freq_once_per_bar_close)
+if closeOld and barstate.isconfirmed
+    alert(f_closePayload(pClose, pSide, sameDir ? "replaced" : "reverse", close), alert.freq_once_per_bar_close)
+if evBull and barstate.isconfirmed
+    alert(f_entryPayload(i_actionLong, "long", _slL, _tp1L, _tp2L, _tp3L), alert.freq_once_per_bar_close)
+if evBear and barstate.isconfirmed
+    alert(f_entryPayload(i_actionShort, "short", _slS, _tp1S, _tp2S, _tp3S), alert.freq_once_per_bar_close)
+
+alertcondition(evBull and barstate.isconfirmed, "BUY Signal", "MarkitTick — BUY Signal Fired")
+alertcondition(evBear and barstate.isconfirmed, "SELL Signal", "MarkitTick — SELL Signal Fired")
+alertcondition(evCloseLong, "Close Long Signal", "MarkitTick — Close Long")
+alertcondition(evCloseShort, "Close Short Signal", "MarkitTick — Close Short")
+alertcondition(evPartLong, "Partial Close Long", "MarkitTick — Partial Close Long")
+alertcondition(evPartShort, "Partial Close Short", "MarkitTick — Partial Close Short")
+alertcondition(slNew, "SL Hit", "MarkitTick — SL Hit")
+alertcondition(tp1New, "TP1 Hit", "MarkitTick — TP1 Hit")
+alertcondition(tp2New, "TP2 Hit", "MarkitTick — TP2 Hit")
+alertcondition(tp3New, "TP3 Hit", "MarkitTick — TP3 Hit")
+
+// ── VISUALS ─────────────────────────────────────────────────────
+color _scoreCol = na(score) ? na : score >= 0 ? color.from_gradient(score, 0, math.max(i_ob, 1), C_NEU, C_SUP) : color.from_gradient(score, math.min(i_os, -1), 0, C_RES, C_NEU)
+
+pOb   = plot(_std ? float(i_ob) : na, "OB Lvl",   color = C_LVL, linewidth = 1, linestyle = plot.linestyle_dotted)
+pOs   = plot(_std ? float(i_os) : na, "OS Lvl",   color = C_LVL, linewidth = 1, linestyle = plot.linestyle_dotted)
+pTop  = plot(_std ? 100.0 : na,       "Max",      color = C_LVL, linewidth = 1, linestyle = plot.linestyle_solid)
+pBot  = plot(_std ? -100.0 : na,      "Min",      color = C_LVL, linewidth = 1, linestyle = plot.linestyle_solid)
+plot(_std ? float(i_thrBull) : na,    "Bull Thr", color = C_LVL, linewidth = 1, linestyle = plot.linestyle_dashed)
+plot(_std ? float(i_thrBear) : na,    "Bear Thr", color = C_LVL, linewidth = 1, linestyle = plot.linestyle_dashed)
+plot(_std ? 0.0 : na,                 "Zero",     color = C_MID, linewidth = 1, linestyle = plot.linestyle_dotted)
+
+fill(pOb, pTop, color = C_ZONE, title = "OB Zone", display = i_showZone ? display.all : display.none)
+fill(pOs, pBot, color = C_ZONE, title = "OS Zone", display = i_showZone ? display.all : display.none)
+
+plot(_std ? score : na, "Momentum Score", color = _scoreCol, linewidth = 2)
+plot(_std ? signalLine : na, "Signal Line", color = C_SIG, linewidth = 1)
+plot(_okRsi  ? nRsi  : na, "RSI Comp",   color = C_RSI,  display = i_showComp ? display.all : display.none)
+plot(_okSto  ? nSto  : na, "Stoch Comp", color = C_STO,  display = i_showComp ? display.all : display.none)
+plot(_okCci  ? nCci  : na, "CCI Comp",   color = C_CCI,  display = i_showComp ? display.all : display.none)
+plot(_okMacd ? nMacd : na, "MACD Comp",  color = C_MACD, display = i_showComp ? display.all : display.none)
+plot(_okRoc  ? nRoc  : na, "ROC Comp",   color = C_ROC,  display = i_showComp ? display.all : display.none)
+plot(_okMfi  ? nMfi  : na, "MFI Comp",   color = C_MFI,  display = i_showComp ? display.all : display.none)
+
+if i_showMark and evBull
+    label.new(bar_index, score, "BULL", style = label.style_label_up, color = C_SUP, textcolor = C_MRK_TXT, size = size.small)
+    label.new(bar_index, low, "BULL", yloc = yloc.belowbar, style = label.style_label_up, color = C_SUP, textcolor = C_MRK_TXT, size = size.small, force_overlay = true)
+if i_showMark and evBear
+    label.new(bar_index, score, "BEAR", style = label.style_label_down, color = C_RES, textcolor = C_MRK_TXT, size = size.small)
+    label.new(bar_index, high, "BEAR", yloc = yloc.abovebar, style = label.style_label_down, color = C_RES, textcolor = C_MRK_TXT, size = size.small, force_overlay = true)
+
+color bodyColor   = _std and i_showCdl ? _scoreCol : na
+color borderColor = bodyColor
+
+plotcandle(open, high, low, close, title = "Heatmap Candles", color = bodyColor, wickcolor = borderColor, bordercolor = borderColor, force_overlay = true)
+
+// ── DASHBOARD ───────────────────────────────────────────────────
+f_tf() =>
+    int _m = timeframe.multiplier
+    string _r = timeframe.period
+    if timeframe.isseconds
+        _r := str.tostring(_m) + "s"
+    else if timeframe.isticks
+        _r := str.tostring(_m) + "t"
+    else if timeframe.isminutes
+        _r := _m % 60 == 0 ? str.tostring(int(_m / 60)) + "H" : str.tostring(_m) + "m"
+    else if timeframe.isdaily
+        _r := str.tostring(_m) + "D"
+    else if timeframe.isweekly
+        _r := str.tostring(_m) + "W"
+    else if timeframe.ismonthly
+        _r := str.tostring(_m) + "M"
+    _r
+
+f_sgn(float v) =>
+    int _n = math.round(v)
+    (_n > 0 ? "+" : "") + str.tostring(_n)
+
+f_sgnColor(float v) =>
+    int _n = math.round(v)
+    _n > 0 ? C_SUP : _n < 0 ? C_RES : C_DASH_TXT
+
+f_tip(string base, string add) =>
+    add == "" ? base : base == "" ? add : base + " " + add
+
+f_row(table t, int r, string lbl, string val, color vcol, color bg, string tip) =>
+    table.cell(t, 0, r, "  " + lbl, text_color = color.new(C_DASH_TXT, 25), text_halign = text.align_left,  text_size = size.small, bgcolor = bg, tooltip = tip)
+    table.cell(t, 1, r, val + "  ", text_color = vcol,                      text_halign = text.align_right, text_size = size.small, bgcolor = bg, tooltip = tip)
+
+_dashPos = i_dashPos == "Top Left" ? position.top_left : i_dashPos == "Bottom Right" ? position.bottom_right : i_dashPos == "Bottom Left" ? position.bottom_left : position.top_right
+
+const int DASH_ROWS = 30
+var table dash = i_dashOnPrice ? table.new(_dashPos, 2, DASH_ROWS, border_width = 1, border_color = color.new(#2a3040, 40), frame_width = 1, frame_color = color.new(#3a2a6d, 40), force_overlay = true) : table.new(_dashPos, 2, DASH_ROWS, border_width = 1, border_color = color.new(#2a3040, 40), frame_width = 1, frame_color = color.new(#3a2a6d, 40))
+var table stdNote = table.new(position.middle_center, 1, 2, force_overlay = true)
+
+if barstate.islast and i_showDash and _std
+    color _rA = C_DASH_BG
+    color _rB = color.new(C_DASH_BG, 40)
+    int   _bias = _biasS
+    bool  _isOb = not na(score) and score >= i_ob
+    bool  _isOs = not na(score) and score <= i_os
+    string _mfiTip = syminfo.volumetype == "tick" and _okMfi and i_wMfi > 0.0 ? "Includes MFI, built on tick volume, a count of trades." : ""
+    table.cell(dash, 0, 0, "MCE", text_color = C_DASH_TXT, text_halign = text.align_left,  text_size = size.small, bgcolor = C_DASH_HDR)
+    table.cell(dash, 1, 0, syminfo.ticker + "  ·  " + f_tf(), text_color = C_DASH_TXT, text_halign = text.align_right, text_size = size.small, bgcolor = C_DASH_HDR)
+    int   _r = 1
+    f_row(dash, _r, "Lock", i_lockSignal ? "ACTIVE" : "OFF", i_lockSignal ? C_RES : C_DASH_TXT, _r % 2 == 1 ? _rA : _rB, "")
+    _r += 1
+    f_row(dash, _r, "Bias",      na(_bias) ? "—" : _bias > 0 ? "BULL" : _bias < 0 ? "BEAR" : "NEUTRAL", _bias > 0 ? C_SUP : _bias < 0 ? C_RES : C_DASH_TXT, _r % 2 == 1 ? _rA : _rB, f_tip("", _mfiTip))
+    _r += 1
+    f_row(dash, _r, "Score",     na(score) ? "—" : f_sgn(score), na(score) ? C_DASH_TXT : f_sgnColor(score), _r % 2 == 1 ? _rA : _rB, f_tip("Weighted blend of the components that have a reading, as the signed score from -100 to +100. The row shows the em dash until at least one component has a reading. With Smoothing on, the row also waits Smoothing Length bars after the first component reading.", _mfiTip))
+    _r += 1
+    f_row(dash, _r, "Agreement", na(agree) ? "—" : str.tostring(math.round(agree)) + "%", na(agree) ? C_DASH_TXT : _agrOk ? C_SUP : C_RES, _r % 2 == 1 ? _rA : _rB, f_tip("Share of the total component weight pointing the same way as the signal side: bull when the score is above its signal line, bear when below.", _mfiTip))
+    _r += 1
+    f_row(dash, _r, "Slope",     na(_slopeRaw) ? "—" : _slopeRaw > 0.0 ? "RISING" : _slopeRaw < 0.0 ? "FALLING" : "FLAT", _slopeRaw > 0.0 ? C_SUP : _slopeRaw < 0.0 ? C_RES : C_DASH_TXT, _r % 2 == 1 ? _rA : _rB, "Change of the score over Slope Len bars. No reading until that many bars exist.")
+    if i_reqSlope
+        bool _saDef  = not na(_dir) and not na(_slopeRaw)
+        bool _saPass = _saDef and ((_dir > 0 and _slopeRaw > 0.0) or (_dir < 0 and _slopeRaw < 0.0))
+        _r += 1
+        f_row(dash, _r, "Slope Align", not _saDef ? "—" : _saPass ? "PASS" : "BLOCK", not _saDef ? C_DASH_TXT : _saPass ? C_SUP : C_RES, _r % 2 == 1 ? _rA : _rB, "PASS when the score is above its signal line and rising, or below it and falling, over Slope Len bars; a flat slope is BLOCK.")
+    if i_htfOn
+        bool   _hDef  = not na(_htfSt) and not na(_dir)
+        bool   _hPass = _hDef and _dir != 0 and _htfSt == _dir
+        string _hWord = na(_htfSt) ? "undefined" : _htfSt > 0 ? "BULL" : _htfSt < 0 ? "BEAR" : "NEUTRAL"
+        _r += 1
+        f_row(dash, _r, "Higher TF", _htfSkip ? "SKIPPED" : not _hDef ? "—" : _hPass ? "PASS" : "BLOCK", _htfSkip or not _hDef ? C_DASH_TXT : _hPass ? C_SUP : C_RES, _htfSkip ? C_WARN : _r % 2 == 1 ? _rA : _rB, _htfSkip ? "Higher TF is lower than the chart timeframe, so the filter is skipped and every signal passes." : "PASS when the side of the cross matches the higher timeframe's Bias state. The higher timeframe is currently " + _hWord + ".")
+    if i_adxOn
+        _r += 1
+        f_row(dash, _r, "Trend Strength", na(_adx) ? "—" : str.tostring(_adx, "0.0"), na(_adx) ? C_DASH_TXT : _adx >= i_adxThr ? C_SUP : C_RES, _r % 2 == 1 ? _rA : _rB, "ADX, in the bull colour at or above ADX Threshold and in the bear colour below it. No reading until the ADX has filled.")
+    if i_smMode != "None"
+        _r += 1
+        f_row(dash, _r, "Smoothing", i_smMode + " " + str.tostring(i_smLen), C_DASH_TXT, _r % 2 == 1 ? _rA : _rB, "Method and length applied to the blended score before the Smooth EMA.")
+    _r += 1
+    f_row(dash, _r, "Zone",      na(score) ? "—" : _isOb ? "OVERBOUGHT" : _isOs ? "OVERSOLD" : "NEUTRAL", _isOb ? C_RES : _isOs ? C_SUP : C_DASH_TXT, _r % 2 == 1 ? _rA : _rB, f_tip("", _mfiTip))
+    _r += 1
+    f_row(dash, _r, "Signal",    _lastDir > 0 ? "LONG" : _lastDir < 0 ? "SHORT" : "NONE", _lastDir > 0 ? C_SUP : _lastDir < 0 ? C_RES : C_DASH_TXT, _r % 2 == 1 ? _rA : _rB, f_tip("Side of the last entry signal. The script keeps at most 500 labels, so the oldest BULL and BEAR markers are removed beyond that.", _mfiTip))
+    float _riskT = math.abs(tEntry - tSl)
+    bool  _openT = tradeDir != 0 and not _tradeClosed
+    float _openR = _openT and _riskT > 0.0 ? (close - tEntry) * tradeDir / _riskT : na
+    _r += 1
+    f_row(dash, _r, "Trade", tradeDir == 0 ? "Flat" : (tradeDir == 1 ? "Long" : "Short") + " · " + (slHit ? "Stopped" : tp3Hit ? "Target 3" : tp2Hit ? "Target 2" : tp1Hit ? "Target 1" : "Open"), tradeDir > 0 ? C_SUP : tradeDir < 0 ? C_RES : C_DASH_TXT, _r % 2 == 1 ? _rA : _rB, "State of the current trade. Flat until the first signal arms a trade.")
+    _r += 1
+    f_row(dash, _r, "Entry", tradeDir == 0 ? "—" : str.tostring(tEntry, format.mintick), C_DASH_TXT, _r % 2 == 1 ? _rA : _rB, "Close of the signal bar.")
+    _r += 1
+    f_row(dash, _r, "Stop", tradeDir == 0 ? "—" : str.tostring(tSl, format.mintick) + (slHit ? " ✓" : ""), C_DASH_TXT, _r % 2 == 1 ? _rA : _rB, "Stop level placed at entry. It counts as hit only when a bar closes beyond it.")
+    _r += 1
+    f_row(dash, _r, "TP1", tradeDir == 0 ? "—" : str.tostring(tTp1, format.mintick) + (tp1Hit ? " ✓" : ""), C_DASH_TXT, _r % 2 == 1 ? _rA : _rB, "First target. It counts as hit on the touch.")
+    _r += 1
+    f_row(dash, _r, "TP2", tradeDir == 0 ? "—" : str.tostring(tTp2, format.mintick) + (tp2Hit ? " ✓" : ""), C_DASH_TXT, _r % 2 == 1 ? _rA : _rB, "Second target. It counts as hit on the touch.")
+    _r += 1
+    f_row(dash, _r, "TP3", tradeDir == 0 ? "—" : str.tostring(tTp3, format.mintick) + (tp3Hit ? " ✓" : ""), C_DASH_TXT, _r % 2 == 1 ? _rA : _rB, "Final target. Reaching it closes the trade.")
+    _r += 1
+    f_row(dash, _r, "ATR", na(_atr) ? "—" : str.tostring(_atr, format.mintick), C_DASH_TXT, _r % 2 == 1 ? _rA : _rB, "ATR that sets the stop distance. No trade is armed until it has a value.")
+    _r += 1
+    f_row(dash, _r, "Open R", na(_openR) ? "—" : (_openR >= 0.0 ? "+" : "") + str.tostring(math.round(_openR, 2)) + "R", na(_openR) ? C_DASH_TXT : _openR > 0.0 ? C_SUP : _openR < 0.0 ? C_RES : C_DASH_TXT, _r % 2 == 1 ? _rA : _rB, "Open trade result in multiples of the stop distance, at the current close. Not shown once the trade is closed.")
+    _r += 1
+    f_row(dash, _r, "Active",    str.tostring(_active) + " / 6", C_DASH_TXT, _r % 2 == 1 ? _rA : _rB, "Components switched on that have a reading.")
+    _r += 1
+    f_row(dash, _r, "RSI",   _okRsi  ? f_sgn(nRsi)  : i_useRsi  ? "—" : "OFF", _okRsi  ? f_sgnColor(nRsi)  : C_DASH_TXT, _r % 2 == 1 ? _rA : _rB, "RSI as a score from -100 to 100. No reading until the RSI length has filled.")
+    _r += 1
+    f_row(dash, _r, "Stoch", _okSto  ? f_sgn(nSto)  : i_useSto  ? "—" : "OFF", _okSto  ? f_sgnColor(nSto)  : C_DASH_TXT, _r % 2 == 1 ? _rA : _rB, "Stochastic as a score from -100 to 100. No reading until the stochastic length and then the Sm smoothing have filled.")
+    _r += 1
+    f_row(dash, _r, "CCI",   _okCci  ? f_sgn(nCci)  : i_useCci  ? "—" : "OFF", _okCci  ? f_sgnColor(nCci)  : C_DASH_TXT, _r % 2 == 1 ? _rA : _rB, "CCI scaled by Sat to a score from -100 to 100. No reading until the CCI length has filled.")
+    _r += 1
+    f_row(dash, _r, "MACD",  _okMacd ? f_sgn(nMacd) : i_useMacd ? "—" : "OFF", _okMacd ? f_sgnColor(nMacd) : C_DASH_TXT, _r % 2 == 1 ? _rA : _rB, "MACD histogram as a z-score. No reading until the MACD lengths and then Norm Len bars have filled, or while its window is flat.")
+    _r += 1
+    f_row(dash, _r, "ROC",   _okRoc  ? f_sgn(nRoc)  : i_useRoc  ? "—" : "OFF", _okRoc  ? f_sgnColor(nRoc)  : C_DASH_TXT, _r % 2 == 1 ? _rA : _rB, "Rate of change as a z-score. No reading until the ROC length and then Norm Len bars have filled, or while its window is flat.")
+    _r += 1
+    f_row(dash, _r, "MFI",   _okMfi  ? f_sgn(nMfi)  : i_useMfi  ? "—" : "OFF", _okMfi  ? f_sgnColor(nMfi)  : C_DASH_TXT, _r % 2 == 1 ? _rA : _rB, "MFI as a score from -100 to 100. No reading until the MFI length has filled." + (syminfo.volumetype == "tick" ? " Built on tick volume, a count of trades." : ""))
+    if i_macdFast > i_macdSlow
+        _r += 1
+        f_row(dash, _r, "MACD Lengths", "Fast and Slow swapped", C_DASH_TXT, C_WARN, "MACD Fast is above Slow, so the two lengths are used swapped: the smaller as fast, the larger as slow.")
+    if _tpReord
+        _r += 1
+        f_row(dash, _r, "Targets", "Reordered", C_DASH_TXT, C_WARN, "The target multiples were not in increasing order and were sorted nearest to farthest.")
+    if _r < DASH_ROWS - 1
+        table.clear(dash, 0, _r + 1, 1, DASH_ROWS - 1)
+
+if barstate.islast and not i_showDash and _std
+    int _r = 0
+    if _htfSkip
+        f_row(dash, _r, "Higher TF", "SKIPPED", C_DASH_TXT, C_WARN, "Higher TF is lower than the chart timeframe, so the filter is skipped and every signal passes.")
+        _r += 1
+    if i_macdFast > i_macdSlow
+        f_row(dash, _r, "MACD Lengths", "Fast and Slow swapped", C_DASH_TXT, C_WARN, "MACD Fast is above Slow, so the two lengths are used swapped: the smaller as fast, the larger as slow.")
+        _r += 1
+    if _tpReord
+        f_row(dash, _r, "Targets", "Reordered", C_DASH_TXT, C_WARN, "The target multiples were not in increasing order and were sorted nearest to farthest.")
+        _r += 1
+    if _r < DASH_ROWS
+        table.clear(dash, 0, _r, 1, DASH_ROWS - 1)
+
+if barstate.islast and not _std
+    table.cell(stdNote, 0, 0, "This indicator runs only on standard charts.", text_color = #FF0000, text_size = size.large, bgcolor = #2A2E39, text_formatting = text.format_bold)
+    table.cell(stdNote, 0, 1, "Heikin Ashi, Renko, Kagi, Point & Figure, Range and Line Break\nshow synthetic prices. Switch to Candles.", text_color = #FF0000, text_size = size.normal, bgcolor = #2A2E39, text_formatting = text.format_bold)

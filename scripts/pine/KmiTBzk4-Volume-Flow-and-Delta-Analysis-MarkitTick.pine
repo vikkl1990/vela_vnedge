@@ -1,0 +1,171 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © [MarkitTick]
+
+//@version=6
+indicator("Volume Flow and Delta Analysis [MarkitTick]", overlay = false, format = format.volume)
+
+// ============================================================================
+// 1. TYPES & ARCHITECTURE (OOP)
+// ============================================================================
+
+type VolumeMetrics
+    float vol_up
+    float vol_down
+    float vol_total
+    float delta
+    float delta_cum
+    float vol_ma
+    float delta_avg_abs
+
+type QuantDashboard
+    table  display_table
+    string position_str
+    color  color_theme_bg
+    color  color_theme_text
+
+// ============================================================================
+// 2. INPUTS 
+// ============================================================================
+
+// --- Timeframe Configuration ---
+string  GRP_TF      = "Timeframe Settings"
+bool    useCustomTf = input.bool(false, "Use Custom Timeframe", group = GRP_TF, tooltip = "Enable manually selecting lower timeframe.")
+string  tfInput     = input.timeframe("1", "Lower Timeframe", group = GRP_TF)
+
+// --- Quantitative Model Settings ---
+string  GRP_MODEL   = "Quant Model Settings"
+int     maLength    = input.int(20, "Volume MA Length", minval = 1, group = GRP_MODEL)
+string  maType      = input.string("SMA", "MA Algorithm", options = ["SMA", "EMA", "WMA"], group = GRP_MODEL)
+float   alertThresh = input.float(1.5, "Delta Volatility Threshold (σ)", minval = 0.1, step = 0.1, group = GRP_MODEL)
+
+// --- Visualization Toggles ---
+string  GRP_VIS     = "Visual Logic"
+bool    showDelta   = input.bool(true, "Show Delta", group = GRP_VIS)
+bool    showVolMA   = input.bool(true, "Show Volume MA", group = GRP_VIS)
+bool    histoMode   = input.bool(true, "Delta as Histogram", group = GRP_VIS)
+bool    showDash    = input.bool(true, "Show Quant Dashboard", group = GRP_VIS)
+
+// ============================================================================
+// 3. GLOBAL FUNCTIONS & METHODS
+// ============================================================================
+
+resolve_ltf_string(bool manual_override, string user_tf) =>
+    manual_override ? user_tf : 
+     timeframe.isseconds ? "1S" : 
+     timeframe.isintraday ? "1" : 
+     timeframe.isdaily ? "5" : "60"
+
+distribute_volume_by_direction() =>
+    float bullish_flow = 0.0
+    float bearish_flow = 0.0
+    
+    float close_open_diff = close - open
+    bool matches_prior_trend = close >= close[1]
+    
+    bullish_flow := close_open_diff > 0 ? volume : (close_open_diff == 0 and matches_prior_trend ? volume : 0.0)
+    bearish_flow := close_open_diff < 0 ? volume : (close_open_diff == 0 and not matches_prior_trend ? volume : 0.0)
+        
+    [bullish_flow, bearish_flow]
+
+
+// ============================================================================
+// 4. MAIN CALCULATIONS & LOGIC
+// ============================================================================
+
+string scanning_tf = resolve_ltf_string(useCustomTf, tfInput)
+
+[up_vol_array, down_vol_array] = request.security_lower_tf(syminfo.tickerid, scanning_tf, distribute_volume_by_direction())
+
+float sum_up   = array.sum(up_vol_array)
+float sum_down = array.sum(down_vol_array)
+float total_v  = sum_up + sum_down
+
+float v_ma = switch maType
+    "SMA" => ta.sma(total_v, maLength)
+    "WMA" => ta.wma(total_v, maLength)
+    =>       ta.ema(total_v, maLength)
+
+float bar_delta = sum_up - sum_down
+
+var float session_delta = 0.0
+bool new_session = timeframe.change("D")
+if new_session
+    session_delta := 0.0
+session_delta += bar_delta
+
+float avg_delta_abs = ta.ema(math.abs(bar_delta), 20)
+
+var VolumeMetrics metrics = VolumeMetrics.new()
+metrics.vol_up        := sum_up
+metrics.vol_down      := sum_down
+metrics.vol_total     := total_v
+metrics.delta         := bar_delta
+metrics.delta_cum     := session_delta
+metrics.vol_ma        := v_ma
+metrics.delta_avg_abs := avg_delta_abs
+
+// ============================================================================
+// 5. VISUALIZATION
+// ============================================================================
+
+plot(metrics.vol_total, "Total Volume (Background)", style = plot.style_columns, color = color.new(color.gray, 80))
+plot(metrics.vol_up,   "Volume Flow [Bullish]", style = plot.style_columns, color = color.new(#089981, 60))
+plot(metrics.vol_down, "Volume Flow [Bearish]", style = plot.style_columns, color = color.new(#f23645, 60))
+
+plot(showVolMA ? metrics.vol_ma : na, "Volume Moving Average", linewidth = 2, color = color.new(#ffeb3b, 0))
+
+float delta_abs_val = math.abs(metrics.delta)
+bool is_delta_bull = metrics.delta > 0
+
+float delta_bull = is_delta_bull ? delta_abs_val : na
+float delta_bear = not is_delta_bull ? delta_abs_val : na
+
+plot(showDelta and histoMode ? delta_bull : na, "Delta Hist [Bullish]", style = plot.style_histogram, linewidth = 4, color = #00ff0a)
+plot(showDelta and histoMode ? delta_bear : na, "Delta Hist [Bearish]", style = plot.style_histogram, linewidth = 4, color = #ff0014)
+
+plotchar(showDelta and not histoMode ? delta_bull : na, "Delta Line [Bullish]", "—", location.absolute, size = size.tiny, color = #00ff0a)
+plotchar(showDelta and not histoMode ? delta_bear : na, "Delta Line [Bearish]", "—", location.absolute, size = size.tiny, color = #ff0014)
+
+// ============================================================================
+// 6. QUANT DASHBOARD (HUD) - OPTIMIZED
+// ============================================================================
+
+var QuantDashboard hud = QuantDashboard.new(
+     display_table = na,
+     position_str = position.top_right,
+     color_theme_bg = #131722,
+     color_theme_text = #d1d4dc
+ )
+
+if showDash and barstate.islast
+    if na(hud.display_table)
+        hud.display_table := table.new(hud.position_str, 2, 4, border_width = 1)
+        
+        table.cell(hud.display_table, 0, 0, "METRIC", bgcolor=hud.color_theme_bg, text_color=hud.color_theme_text, text_size=size.small)
+        table.cell(hud.display_table, 1, 0, "VALUE",  bgcolor=hud.color_theme_bg, text_color=hud.color_theme_text, text_size=size.small)
+    
+    string d_status = metrics.delta > 0 ? "ACCUMULATION" : "DISTRIBUTION"
+    float intensity = metrics.delta_avg_abs != 0 ? (math.abs(metrics.delta) / metrics.delta_avg_abs) : 0.0
+    
+    table.cell(hud.display_table, 0, 1, "Session Delta", bgcolor=hud.color_theme_bg, text_color=hud.color_theme_text, text_halign=text.align_left, text_size=size.small)
+    table.cell(hud.display_table, 1, 1, str.tostring(metrics.delta_cum, format.volume), bgcolor=hud.color_theme_bg, text_color=metrics.delta_cum > 0 ? #089981 : #f23645, text_size=size.small)
+
+    table.cell(hud.display_table, 0, 2, "Flow Regime", bgcolor=hud.color_theme_bg, text_color=hud.color_theme_text, text_halign=text.align_left, text_size=size.small)
+    table.cell(hud.display_table, 1, 2, d_status, bgcolor=hud.color_theme_bg, text_color=metrics.delta > 0 ? #089981 : #f23645, text_size=size.small)
+
+    table.cell(hud.display_table, 0, 3, "Intensity (σ)", bgcolor=hud.color_theme_bg, text_color=hud.color_theme_text, text_halign=text.align_left, text_size=size.small)
+    table.cell(hud.display_table, 1, 3, str.tostring(intensity, "#.##") + "x", bgcolor=hud.color_theme_bg, text_color=intensity > alertThresh ? #ff9800 : hud.color_theme_text, text_size=size.small)
+
+// ============================================================================
+// 7. SIGNAL ENGINE & ALERTS
+// ============================================================================
+
+bool signal_buy_pressure  = metrics.delta > metrics.delta_avg_abs * alertThresh
+bool signal_sell_pressure = metrics.delta < -metrics.delta_avg_abs * alertThresh
+
+plotshape(signal_buy_pressure,  "Signal [Strong Buy]",  shape.triangleup,   location.top, size = size.tiny, color = color.new(color.green, 0))
+plotshape(signal_sell_pressure, "Signal [Strong Sell]", shape.triangledown, location.top, size = size.tiny, color = color.new(color.red, 0))
+
+alertcondition(signal_buy_pressure,  "Quant: Strong Buying Flow",  "Institutional buying pressure detected.")
+alertcondition(signal_sell_pressure, "Quant: Strong Selling Flow", "Institutional selling pressure detected.")

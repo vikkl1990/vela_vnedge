@@ -1,0 +1,500 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © MarkitTick
+
+//@version=6
+indicator("Smart Money Renko Matrix [MarkitTick]", overlay=true, precision=5)
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  UDTs & METHODS                                              ║
+// ╚══════════════════════════════════════════════════════════════╝
+type RenkoBar
+    float rc = na
+    float ro = na
+    float vol = na
+
+type SignalEngine
+    int  lStrk = 0
+    int  sStrk = 0
+    bool isBull = false
+    bool isBear = false
+    bool buyF = false
+    bool sellF = false
+    bool isChoCh = false
+    float entryPrice = na
+
+type RiskManager
+    float sl = na
+    float tp1 = na
+    float tp2 = na
+    float tp3 = na
+    float trailStop = na
+
+method updateSignals(SignalEngine this, float rcConf, float roConf, bool mtfBull, bool mtfBear, bool inKz, int recentSweep) =>
+    this.isBull := rcConf > roConf
+    this.isBear := rcConf < roConf
+    this.lStrk := this.isBull ? this.lStrk + 1 : 0
+    this.sStrk := this.isBear ? this.sStrk + 1 : 0
+    this.buyF := this.lStrk == 1 and mtfBull and inKz
+    this.sellF := this.sStrk == 1 and mtfBear and inKz
+    this.isChoCh := (this.buyF and recentSweep == -1) or (this.sellF and recentSweep == 1)
+    this.entryPrice := rcConf
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  PURE FUNCTIONS                                              ║
+// ╚══════════════════════════════════════════════════════════════╝
+f_color(int streak, color cA, color cB, int gd, bool highVol, bool exhausted) =>
+    float t = math.min(streak / float(gd), 1.0)
+    int   a = math.max(highVol ? 5 : 40, 50 - streak * 4)
+    if exhausted
+        a := 85
+    color.new(color.from_gradient(t, 0.0, 1.0, cA, cB), a)
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  INPUTS                                                      ║
+// ╚══════════════════════════════════════════════════════════════╝
+float  i_atrLen  = input.float(10.0, "ATR Length",       minval=1, maxval=100, step=1, group="◈ Renko")
+int    i_mult    = input.int(1,      "ATR Resolution ×", minval=0,                     group="◈ Renko")
+
+color  i_cBullA  = input.color(#0A2818, "Bull → Start",          group="◈ Visuals")
+color  i_cBullB  = input.color(#39FF6A, "Bull → End",            group="◈ Visuals")
+color  i_cBearA  = input.color(#2A0A0A, "Bear → Start",          group="◈ Visuals")
+color  i_cBearB  = input.color(#FF4500, "Bear → End",            group="◈ Visuals")
+int    i_gDepth  = input.int(12,        "Gradient Streak Depth", minval=3, maxval=50,  group="◈ Visuals")
+
+bool   i_sltp       = input.bool(true,  "Dynamic SL/TP in Alerts", group="◈ Risk Management")
+bool   i_structSl   = input.bool(false,  "Use Structure-Based SL",  group="◈ Risk Management")
+float  i_slMult     = input.float(1.5,  "SL ATR Multiplier",       minval=0.1, maxval=10.0, step=0.1, group="◈ Risk Management")
+float  i_tp1Mult    = input.float(2.0,  "TP1 ATR Multiplier",      minval=0.1, maxval=20.0, step=0.1, group="◈ Risk Management")
+float  i_tp2Mult    = input.float(4.0,  "TP2 ATR Multiplier",      minval=0.1, maxval=20.0, step=0.1, group="◈ Risk Management")
+float  i_tp3Mult    = input.float(6.0,  "TP3 ATR Multiplier",      minval=0.1, maxval=20.0, step=0.1, group="◈ Risk Management")
+bool   i_trail      = input.bool(true,  "Show Trailing Stop Line", group="◈ Risk Management")
+
+bool   i_useMtf  = input.bool(false,  "Use MTF Matrix",            group="◈ Quant Matrix")
+string i_mtfTf1  = input.timeframe("60",  "MTF Tier 1 (1H)",      group="◈ Quant Matrix")
+string i_mtfTf2  = input.timeframe("240", "MTF Tier 2 (4H)",      group="◈ Quant Matrix")
+string i_mtfTf3  = input.timeframe("D",   "MTF Tier 3 (1D)",      group="◈ Quant Matrix")
+
+bool   i_showLiq = input.bool(true,  "Show Liquidity Sweeps",     group="◈ SMC & Liquidity")
+int    i_liqLen  = input.int(10,     "Sweep Lookback (bars)",     minval=3, maxval=50, group="◈ SMC & Liquidity")
+color  i_cLiqB   = input.color(color.rgb(50, 220, 255), "Bullish Sweep Color", group="◈ SMC & Liquidity")
+color  i_cLiqS   = input.color(color.rgb(255, 140, 0),  "Bearish Sweep Color", group="◈ SMC & Liquidity")
+bool   i_showIob = input.bool(true,  "Show Institutional OBs",    group="◈ SMC & Liquidity")
+int    i_iobMax  = input.int(5,      "Max Active OBs",            minval=1, maxval=10, group="◈ SMC & Liquidity")
+bool   i_useKz   = input.bool(false, "Enable Session Killzones",  group="◈ SMC & Liquidity")
+string i_session = input.session("0800-1200,1300-1700", "Active Sessions (UTC)", group="◈ SMC & Liquidity")
+
+bool   i_showWick= input.bool(true,  "Show Wick Rejections (x3)", group="◈ Order Flow")
+bool   i_showDiv = input.bool(true,  "Show Volume Divergence",    group="◈ Order Flow")
+
+string i_aLong   = input.string("long",       "Long",        group="◈ Webhook Actions")
+string i_aShort  = input.string("short",      "Short",       group="◈ Webhook Actions")
+string i_aCLong  = input.string("closelong",  "Close Long",  group="◈ Webhook Actions")
+string i_aCSh    = input.string("closeshort", "Close Short", group="◈ Webhook Actions")
+
+string GRP_DASH       = '📊 Dashboard Settings'
+color  dash_bg_color  = input.color(color.rgb(10, 14, 26, 5),    'Background Color', group=GRP_DASH)
+color  dash_txt_color = input.color(color.rgb(224, 247, 255, 0), 'Text Color',       group=GRP_DASH)
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  CORE DATA FETCHING & MTF CONVERGENCE MATRIX                 ║
+// ╚══════════════════════════════════════════════════════════════╝
+string _res = timeframe.ismonthly ? str.tostring(timeframe.multiplier * i_mult, "###M") : timeframe.isweekly ? str.tostring(timeframe.multiplier * i_mult, "###W") : timeframe.isdaily ? str.tostring(timeframe.multiplier * i_mult, "###D") : timeframe.isintraday ? str.tostring(timeframe.multiplier * i_mult, "####") : "1D"
+string _tid = ticker.renko(syminfo.tickerid, "ATR", i_atrLen)
+
+var RenkoBar _bar = RenkoBar.new()
+_bar.rc  := request.security(_tid, _res, close[1],  lookahead=barmerge.lookahead_on)
+_bar.ro  := request.security(_tid, _res, open[1],   lookahead=barmerge.lookahead_on)
+_bar.vol := request.security(_tid, _res, volume[1], lookahead=barmerge.lookahead_on)
+
+float _rcConf = _bar.rc
+float _roConf = _bar.ro
+float _atr = ta.atr(14)
+float _volMa = ta.sma(_bar.vol, 20)
+bool  _highVol = _bar.vol > _volMa
+bool  _boxChanged = _rcConf != _rcConf[1] or _roConf != _roConf[1]
+
+float _mtfEma1 = request.security(syminfo.tickerid, i_mtfTf1, ta.sma(close, 50)[1], lookahead=barmerge.lookahead_on)
+float _mtfEma2 = request.security(syminfo.tickerid, i_mtfTf2, ta.sma(close, 50)[1], lookahead=barmerge.lookahead_on)
+float _mtfEma3 = request.security(syminfo.tickerid, i_mtfTf3, ta.sma(close, 50)[1], lookahead=barmerge.lookahead_on)
+
+int _bullScore = (close > _mtfEma1 ? 1 : 0) + (close > _mtfEma2 ? 1 : 0) + (close > _mtfEma3 ? 1 : 0)
+int _bearScore = (close < _mtfEma1 ? 1 : 0) + (close < _mtfEma2 ? 1 : 0) + (close < _mtfEma3 ? 1 : 0)
+
+bool  _mtfBull = not i_useMtf or _bullScore >= 2
+bool  _mtfBear = not i_useMtf or _bearScore >= 2
+
+bool _inKz = not i_useKz or not na(time(timeframe.period, i_session))
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  SMC: LIQUIDITY SWEEPS & CHOCH                               ║
+// ╚══════════════════════════════════════════════════════════════╝
+float _recentHigh = ta.highest(high[1], i_liqLen)
+float _recentLow  = ta.lowest(low[1],  i_liqLen)
+
+bool _bslSweep = high > _recentHigh and close < _recentHigh and close < open
+bool _sslSweep = low  < _recentLow  and close > _recentLow  and close > open
+
+var int _recentSweepState = 0
+if _bslSweep
+    _recentSweepState := 1
+if _sslSweep
+    _recentSweepState := -1
+
+var SignalEngine _engine = SignalEngine.new()
+_engine.updateSignals(_rcConf, _roConf, _mtfBull, _mtfBear, _inKz, _recentSweepState)
+
+if _engine.buyF or _engine.sellF
+    _recentSweepState := 0 
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  QUANT: Z-SCORE TREND EXHAUSTION                             ║
+// ╚══════════════════════════════════════════════════════════════╝
+var array<int> _streakHist = array.new<int>()
+var bool _isExhausted = false
+
+if _boxChanged and _engine.lStrk == 0 and (_engine[1]).lStrk > 2
+    array.push(_streakHist, (_engine[1]).lStrk)
+if _boxChanged and _engine.sStrk == 0 and (_engine[1]).sStrk > 2
+    array.push(_streakHist, (_engine[1]).sStrk)
+
+int _histSz = array.size(_streakHist)
+if _histSz > 30
+    array.shift(_streakHist)
+    _histSz := array.size(_streakHist)
+
+if _histSz >= 5
+    float _meanStrk = array.avg(_streakHist)
+    float _stdStrk  = array.stdev(_streakHist)
+    if _stdStrk > 0
+        if _engine.isBull
+            _isExhausted := (_engine.lStrk - _meanStrk) / _stdStrk > 2.0
+        else if _engine.isBear
+            _isExhausted := (_engine.sStrk - _meanStrk) / _stdStrk > 2.0
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  QUANT: RENKO VOLUME PROFILE (POC)                           ║
+// ╚══════════════════════════════════════════════════════════════╝
+var array<float> _vpPrice = array.new<float>()
+var array<float> _vpVol   = array.new<float>()
+var float _pocPrice = na
+
+if _boxChanged and not na(_bar.vol)
+    int _idx = array.indexof(_vpPrice, _rcConf)
+    if _idx == -1
+        array.push(_vpPrice, _rcConf)
+        array.push(_vpVol, _bar.vol)
+    else
+        array.set(_vpVol, _idx, array.get(_vpVol, _idx) + _bar.vol)
+    
+    int _vpSz = array.size(_vpPrice)
+    if _vpSz > 100 
+        array.shift(_vpPrice)
+        array.shift(_vpVol)
+        _vpSz := array.size(_vpPrice)
+        
+    if _vpSz > 0
+        float _maxVol = array.max(_vpVol)
+        int _pocIdx = array.indexof(_vpVol, _maxVol)
+        _pocPrice := array.get(_vpPrice, _pocIdx)
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  QUANT: AUTO-ANCHORED VWAP (ON CHOCH)                        ║
+// ╚══════════════════════════════════════════════════════════════╝
+var float _avwapNum = 0.0
+var float _avwapDen = 0.0
+var float _avwapVal = na
+
+if _engine.isChoCh
+    _avwapNum := 0.0
+    _avwapDen := 0.0
+
+if not na(_bar.vol)
+    _avwapNum += close * volume 
+    _avwapDen += volume
+
+_avwapVal := _avwapDen > 0 ? _avwapNum / _avwapDen : na
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  SMC: INSTITUTIONAL ORDER BLOCKS (IOB)                       ║
+// ╚══════════════════════════════════════════════════════════════╝
+var array<float> _iobTop  = array.new<float>()
+var array<float> _iobBot  = array.new<float>()
+var array<bool>  _iobBull = array.new<bool>()
+var array<box>   _iobDrw  = array.new<box>()
+
+if i_showIob and (_engine.buyF or _engine.sellF)
+    if array.size(_iobTop) >= i_iobMax
+        array.shift(_iobTop)
+        array.shift(_iobBot)
+        array.shift(_iobBull)
+        box.delete(array.shift(_iobDrw))
+    
+    float _top = math.max(_rcConf, _roConf)
+    float _bot = math.min(_rcConf, _roConf)
+    array.push(_iobTop, _top)
+    array.push(_iobBot, _bot)
+    array.push(_iobBull, _engine.buyF)
+    
+    color _iobCol = _engine.buyF ? color.new(i_cBullA, 85) : color.new(i_cBearA, 85)
+    array.push(_iobDrw, box.new(bar_index - 10, _top, bar_index + 20, _bot, border_color=na, bgcolor=_iobCol))
+
+int _iobDrwSz = array.size(_iobDrw)
+if _iobDrwSz > 0
+    for i = 0 to _iobDrwSz - 1
+        box.set_right(array.get(_iobDrw, i), bar_index + 15)
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  ORDER FLOW: WICK CLUSTERS & VOLUME DIVERGENCE               ║
+// ╚══════════════════════════════════════════════════════════════╝
+var float _lastWickH = na, var int _cntWickH = 0
+var float _lastWickL = na, var int _cntWickL = 0
+
+if high > math.max(close, open)
+    if math.abs(high - _lastWickH) <= (_atr * 0.1)
+        _cntWickH += 1
+    else
+        _lastWickH := high
+        _cntWickH := 1
+else
+    _cntWickH := 0
+
+if low < math.min(close, open)
+    if math.abs(low - _lastWickL) <= (_atr * 0.1)
+        _cntWickL += 1
+    else
+        _lastWickL := low
+        _cntWickL := 1
+else
+    _cntWickL := 0
+
+bool _volDivBuy  = _engine.buyF  and not _highVol
+bool _volDivSell = _engine.sellF and not _highVol
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  RISK MANAGER                                                ║
+// ╚══════════════════════════════════════════════════════════════╝
+var RiskManager _risk = RiskManager.new()
+
+if _engine.isBull
+    _risk.trailStop := na(_risk.trailStop) ? _roConf : math.max(_risk.trailStop, _roConf)
+else if _engine.isBear
+    _risk.trailStop := na(_risk.trailStop) ? _rcConf : math.min(_risk.trailStop, _rcConf)
+else
+    _risk.trailStop := na
+
+float _nearestSrSl = na
+if _engine.buyF or _engine.sellF
+    if i_structSl and array.size(_iobTop) > 1
+        float _dist = 9999999.9
+        int _iobSz = array.size(_iobTop)
+        for i = 0 to _iobSz - 2
+            float top = array.get(_iobTop, i)
+            float bot = array.get(_iobBot, i)
+            if _engine.buyF and top < _rcConf
+                if (_rcConf - top) < _dist
+                    _dist := _rcConf - top
+                    _nearestSrSl := bot
+            if _engine.sellF and bot > _rcConf
+                if (bot - _rcConf) < _dist
+                    _dist := bot - _rcConf
+                    _nearestSrSl := top
+
+    float _atrSl = _engine.buyF ? _rcConf - _atr * i_slMult : _rcConf + _atr * i_slMult
+    _risk.sl := not na(_nearestSrSl) ? _nearestSrSl : _atrSl
+    _risk.tp1 := _engine.buyF ? _rcConf + _atr * i_tp1Mult : _rcConf - _atr * i_tp1Mult
+    _risk.tp2 := _engine.buyF ? _rcConf + _atr * i_tp2Mult : _rcConf - _atr * i_tp2Mult
+    _risk.tp3 := _engine.buyF ? _rcConf + _atr * i_tp3Mult : _rcConf - _atr * i_tp3Mult
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  VISUALS & PLOTS                                             ║
+// ╚══════════════════════════════════════════════════════════════╝
+var int _legBoxCount = 0
+_legBoxCount := _engine.isBull or _engine.isBear ? (_engine.buyF or _engine.sellF ? 1 : _legBoxCount + (_boxChanged ? 1 : 0)) : _legBoxCount
+
+float _gradT = _engine.isBull ? math.min(_engine.lStrk / float(i_gDepth), 1.0) : _engine.isBear ? math.min(_engine.sStrk / float(i_gDepth), 1.0) : 0.0
+
+color _base = _engine.isBull ? color.from_gradient(_gradT, 0.0, 1.0, i_cBullA, i_cBullB) : _engine.isBear ? color.from_gradient(_gradT, 0.0, 1.0, i_cBearA, i_cBearB) : color.gray
+if _isExhausted
+    _base := color.new(_base, 75)
+
+color _core = _engine.isBull ? f_color(_engine.lStrk, i_cBullA, i_cBullB, i_gDepth, _highVol, _isExhausted) : _engine.isBear ? f_color(_engine.sStrk, i_cBearA, i_cBearB, i_gDepth, _highVol, _isExhausted) : color.new(color.gray, 50)
+
+float _upper = _rcConf
+float _lower = _roConf
+float _avg   = (_upper + _lower) / 2.0
+bool  _isReversed = _engine.buyF or _engine.sellF
+color _boxColor = _boxChanged ? na : _core
+
+plotcandle(open, high, low, close, title="Heatmap Candles", color=color.new(_base, 0), wickcolor=color.new(_base, 10), bordercolor=color.new(_base, 10), display=display.pane)
+
+plot(_avg, "Renko Mid", color=color.new(_core, 60), style=plot.style_line, linestyle=plot.linestyle_dotted, linewidth=1, display=display.pane)
+plot(_isReversed ? close : na, "Reversal Close", color=_core, style=plot.style_circles, linewidth=3, display=display.pane)
+
+pC = plot(_upper, "Renko Upper", color=_boxColor, style=plot.style_linebr, linewidth=1, display=display.pane)
+pO = plot(_lower, "Renko Lower", color=_boxColor, style=plot.style_linebr, linewidth=1, display=display.pane)
+fill(pC, pO, _boxChanged ? na : color.new(_base, 84), title="OC Core Zone")
+
+plot(i_trail ? _risk.trailStop : na, "Trailing Stop", color=_engine.isBull ? color.new(i_cBullB, 30) : color.new(i_cBearB, 30), style=plot.style_linebr, linewidth=2, linestyle=plot.linestyle_dashed, display=display.pane)
+
+plotshape(i_showLiq and _bslSweep ? high : na, "BSL Sweep", shape.labeldown, location.abovebar, i_cLiqS, text="Liq", textcolor=color.white, size=size.tiny)
+plotshape(i_showLiq and _sslSweep ? low  : na, "SSL Sweep", shape.labelup,   location.belowbar, i_cLiqB, text="Liq", textcolor=color.white, size=size.tiny)
+
+plotshape(i_showWick and _cntWickH >= 3 ? high : na, "Wick Rej Bear", shape.xcross, location.abovebar, color.rgb(255, 80, 180), size=size.tiny)
+plotshape(i_showWick and _cntWickL >= 3 ? low  : na, "Wick Rej Bull", shape.xcross, location.belowbar, color.rgb(0, 210, 180), size=size.tiny)
+
+plotshape(i_showDiv and _volDivBuy  ? low - _atr * 0.5 : na, "Vol Div Bull", shape.circle, location.absolute, color.new(color.rgb(230, 120, 255), 0), size=size.tiny)
+plotshape(i_showDiv and _volDivSell ? high + _atr * 0.5 : na, "Vol Div Bear", shape.circle, location.absolute, color.new(color.rgb(230, 120, 255), 0), size=size.tiny)
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  ENTRY / SL / TP LINES & LABELS                              ║
+// ╚══════════════════════════════════════════════════════════════╝
+var line  _entryLine  = na
+var line  _slLine     = na
+var line  _tp1Line    = na
+var line  _tp2Line    = na
+var line  _tp3Line    = na
+var label _entryLbl   = na
+var label _slLbl      = na
+var label _tp1Lbl     = na
+var label _tp2Lbl     = na
+var label _tp3Lbl     = na
+
+var float _lockedEntry  = na
+var float _lockedSL     = na
+var float _lockedTP1    = na
+var float _lockedTP2    = na
+var float _lockedTP3    = na
+var bool  _slHit        = false
+var bool  _tradeIsBull  = false
+
+color _dimGrayLine = color.rgb(100, 100, 100, 50)
+color _dimGrayText = color.rgb(120, 120, 120, 60)
+
+if not _slHit and not na(_lockedSL) and barstate.isconfirmed
+    if _tradeIsBull and close < _lockedSL
+        _slHit := true
+    else if not _tradeIsBull and close > _lockedSL
+        _slHit := true
+
+if _engine.buyF or _engine.sellF
+    _lockedEntry   := _rcConf
+    _lockedSL      := _risk.sl
+    _lockedTP1     := _risk.tp1
+    _lockedTP2     := _risk.tp2
+    _lockedTP3     := _risk.tp3
+    _slHit         := false
+    _tradeIsBull   := _engine.buyF
+
+    line.delete(_entryLine)
+    line.delete(_slLine)
+    line.delete(_tp1Line)
+    line.delete(_tp2Line)
+    line.delete(_tp3Line)
+    label.delete(_entryLbl)
+    label.delete(_slLbl)
+    label.delete(_tp1Lbl)
+    label.delete(_tp2Lbl)
+    label.delete(_tp3Lbl)
+
+    int _x1 = bar_index - 30
+    int _x2 = bar_index + 15
+
+    _entryLine := line.new(_x1, _lockedEntry, _x2, _lockedEntry, xloc=xloc.bar_index, color=color.rgb(255, 200, 50), style=line.style_dashed, width=1)
+    _entryLbl  := label.new(_x2, _lockedEntry, text="● Entry  " + str.tostring(_lockedEntry, format.mintick), style=label.style_label_left, color=color.new(color.black, 100), textcolor=color.rgb(255, 200, 50), size=size.small)
+
+    _slLine := line.new(_x1, _lockedSL, _x2, _lockedSL, xloc=xloc.bar_index, color=color.rgb(255, 80, 180), style=line.style_dashed, width=1)
+    _slLbl  := label.new(_x2, _lockedSL, text="✕ SL  " + str.tostring(_lockedSL, format.mintick), style=label.style_label_left, color=color.new(color.black, 100), textcolor=color.rgb(255, 80, 180), size=size.small)
+
+    _tp1Line := line.new(_x1, _lockedTP1, _x2, _lockedTP1, xloc=xloc.bar_index, color=color.rgb(0, 210, 180), style=line.style_dashed, width=1)
+    _tp1Lbl  := label.new(_x2, _lockedTP1, text="✦ TP 1  " + str.tostring(_lockedTP1, format.mintick), style=label.style_label_left, color=color.new(color.black, 100), textcolor=color.rgb(0, 210, 180), size=size.small)
+
+    _tp2Line := line.new(_x1, _lockedTP2, _x2, _lockedTP2, xloc=xloc.bar_index, color=color.rgb(90, 170, 255), style=line.style_dashed, width=1)
+    _tp2Lbl  := label.new(_x2, _lockedTP2, text="✦ TP 2  " + str.tostring(_lockedTP2, format.mintick), style=label.style_label_left, color=color.new(color.black, 100), textcolor=color.rgb(90, 170, 255), size=size.small)
+
+    _tp3Line := line.new(_x1, _lockedTP3, _x2, _lockedTP3, xloc=xloc.bar_index, color=color.rgb(255, 165, 60), style=line.style_dashed, width=1)
+    _tp3Lbl  := label.new(_x2, _lockedTP3, text="✦ TP 3  " + str.tostring(_lockedTP3, format.mintick), style=label.style_label_left, color=color.new(color.black, 100), textcolor=color.rgb(255, 165, 60), size=size.small)
+
+else if not na(_slLine)
+    if _slHit
+        line.set_color(_entryLine, _dimGrayLine)
+        line.set_color(_slLine,    _dimGrayLine)
+        line.set_color(_tp1Line,   _dimGrayLine)
+        line.set_color(_tp2Line,   _dimGrayLine)
+        line.set_color(_tp3Line,   _dimGrayLine)
+        label.set_textcolor(_entryLbl, _dimGrayText)
+        label.set_textcolor(_slLbl,    _dimGrayText)
+        label.set_textcolor(_tp1Lbl,   _dimGrayText)
+        label.set_textcolor(_tp2Lbl,   _dimGrayText)
+        label.set_textcolor(_tp3Lbl,   _dimGrayText)
+    else
+        line.set_x2(_entryLine, bar_index + 15)
+        line.set_x2(_slLine,    bar_index + 15)
+        line.set_x2(_tp1Line,   bar_index + 15)
+        line.set_x2(_tp2Line,   bar_index + 15)
+        line.set_x2(_tp3Line,   bar_index + 15)
+        
+        label.set_x(_entryLbl,  bar_index + 15)
+        label.set_x(_slLbl,     bar_index + 15)
+        label.set_x(_tp1Lbl,    bar_index + 15)
+        label.set_x(_tp2Lbl,    bar_index + 15)
+        label.set_x(_tp3Lbl,    bar_index + 15)
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  DASHBOARD GLOBALS (UNCONDITIONAL COMPUTATION)               ║
+// ╚══════════════════════════════════════════════════════════════╝
+var table dash = table.new(position.top_right, 2, 10, border_width=1, border_color=color.rgb(60, 220, 140, 20), frame_width=1, frame_color=color.rgb(255, 140, 0, 10))
+color hdrBg = color.rgb(8, 28, 18, 10)
+color altBg = color.rgb(18, 28, 22, 10)
+color oddBg = dash_bg_color
+
+float _volatility = (_atr / close) * 100 
+float _dynBoxSize = _atr * i_mult 
+string _mtfTierStr = _bullScore >= 2 ? ("Tier " + str.tostring(_bullScore) + " Bull") : _bearScore >= 2 ? ("Tier " + str.tostring(_bearScore) + " Bear") : "Neutral / Choppy"
+color _mtfTierCol  = _bullScore >= 2 ? color.rgb(60, 220, 140) : _bearScore >= 2 ? color.rgb(255, 140, 0) : color.gray
+string _cleanTicker = syminfo.prefix + ":" + syminfo.ticker
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  DASHBOARD POPULATION (UNCONDITIONAL, NO BARSTATE.ISLAST)    ║
+// ╚══════════════════════════════════════════════════════════════╝
+table.cell(dash, 0, 0, '  [MarkitTick] Renko Heatmap', text_color=dash_txt_color, bgcolor=hdrBg, text_font_family=font.family_monospace, text_size=size.small, text_halign=text.align_left)
+table.cell(dash, 1, 0, _cleanTicker + ' · ' + timeframe.period, text_color=color.rgb(60, 220, 140), bgcolor=hdrBg, text_font_family=font.family_monospace, text_size=size.small, text_halign=text.align_right)
+
+table.cell(dash, 0, 1, '  MTF Conv. Matrix', text_color=dash_txt_color, bgcolor=altBg, text_font_family=font.family_monospace, text_size=size.small, text_halign=text.align_left)
+table.cell(dash, 1, 1, _mtfTierStr, text_color=_mtfTierCol, bgcolor=altBg, text_font_family=font.family_monospace, text_size=size.small, text_halign=text.align_right)
+
+table.cell(dash, 0, 2, '  Vol. Adjusted Box', text_color=dash_txt_color, bgcolor=oddBg, text_font_family=font.family_monospace, text_size=size.small, text_halign=text.align_left)
+table.cell(dash, 1, 2, "Set to ≈ " + str.tostring(_dynBoxSize, format.mintick), text_color=color.rgb(0, 210, 180), bgcolor=oddBg, text_font_family=font.family_monospace, text_size=size.small, text_halign=text.align_right)
+
+table.cell(dash, 0, 3, '  VP POC Level', text_color=dash_txt_color, bgcolor=altBg, text_font_family=font.family_monospace, text_size=size.small, text_halign=text.align_left)
+table.cell(dash, 1, 3, str.tostring(_pocPrice, format.mintick), text_color=color.rgb(255, 200, 50), bgcolor=altBg, text_font_family=font.family_monospace, text_size=size.small, text_halign=text.align_right)
+
+table.cell(dash, 0, 4, '  Entry', text_color=dash_txt_color, bgcolor=oddBg, text_font_family=font.family_monospace, text_size=size.small, text_halign=text.align_left)
+table.cell(dash, 1, 4, str.tostring(_engine.entryPrice, format.mintick), text_color=color.rgb(255, 200, 50), bgcolor=oddBg, text_font_family=font.family_monospace, text_size=size.small, text_halign=text.align_right)
+
+table.cell(dash, 0, 5, '  Stop Loss', text_color=dash_txt_color, bgcolor=altBg, text_font_family=font.family_monospace, text_size=size.small, text_halign=text.align_left)
+table.cell(dash, 1, 5, str.tostring(_risk.sl, format.mintick), text_color=color.rgb(255, 80, 180), bgcolor=altBg, text_font_family=font.family_monospace, text_size=size.small, text_halign=text.align_right)
+
+table.cell(dash, 0, 6, '  TP 1 / TP 2', text_color=dash_txt_color, bgcolor=oddBg, text_font_family=font.family_monospace, text_size=size.small, text_halign=text.align_left)
+table.cell(dash, 1, 6, str.tostring(_risk.tp1, format.mintick) + " / " + str.tostring(_risk.tp2, format.mintick), text_color=color.rgb(0, 210, 180), bgcolor=oddBg, text_font_family=font.family_monospace, text_size=size.small, text_halign=text.align_right)
+table.cell(dash, 0, 7, '  TP 3', text_color=dash_txt_color, bgcolor=altBg, text_font_family=font.family_monospace, text_size=size.small, text_halign=text.align_left)
+table.cell(dash, 1, 7, str.tostring(_risk.tp3, format.mintick), text_color=color.rgb(255, 165, 60), bgcolor=altBg, text_font_family=font.family_monospace, text_size=size.small, text_halign=text.align_right)
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  JSON ALERTS & WEBHOOKS                                      ║
+// ╚══════════════════════════════════════════════════════════════╝
+string _epStr  = str.tostring(_rcConf, format.mintick)
+string _slStr  = i_sltp ? str.tostring(_risk.sl, format.mintick)  : "0"
+string _tp1Str = i_sltp ? str.tostring(_risk.tp1, format.mintick) : "0"
+string _tp2Str = i_sltp ? str.tostring(_risk.tp2, format.mintick) : "0"
+string _tp3Str = i_sltp ? str.tostring(_risk.tp3, format.mintick) : "0"
+
+string _jsonPayload = str.format(
+     "\"symbol\":\"{0}\",\"price\":{1},\"sl\":{2},\"tp1\":{3},\"tp2\":{4},\"tp3\":{5}",
+     syminfo.ticker, _epStr, _slStr, _tp1Str, _tp2Str, _tp3Str)
+
+if barstate.isconfirmed
+    if _engine.buyF
+        alert("{" + str.format("\"action\":\"{0}\",", i_aLong) + _jsonPayload + "}", alert.freq_once_per_bar_close)
+    if _engine.sellF
+        alert("{" + str.format("\"action\":\"{0}\",", i_aShort) + _jsonPayload + "}", alert.freq_once_per_bar_close)

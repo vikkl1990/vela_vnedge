@@ -1,0 +1,554 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © MarkitTick
+
+//@version=6
+indicator("Volume Defense Zones [MarkitTick]", overlay = false, max_boxes_count = 500, max_lines_count = 500, max_labels_count = 500, max_bars_back = 5000)
+
+// =============================================================================
+// 1. CONSTANTS — PROFESSIONAL HEATMAP SYSTEM
+// =============================================================================
+int   MAX_STORED_BARS    = 5000
+float ZONE_GHOST_TRANSP  = 88.0
+float ZONE_ACTIVE_TRANSP = 72.0
+float LARGE_PRICE_VAL    = 1.0e10
+
+color HM_C0 = color.rgb(  8,  20,  60)   
+color HM_C1 = color.rgb(  0, 130, 170)   
+color HM_C2 = color.rgb(  0, 210, 130)   
+color HM_C3 = color.rgb(255, 185,  20)   
+color HM_C4 = color.rgb(220,  30,  55)   
+
+color ZONE_BULL_COL    = color.rgb(  0, 210, 110)  
+color ZONE_BEAR_COL    = color.rgb(220,  45,  75)  
+color ZONE_NEUTRAL_COL = color.rgb(130, 140, 190)  
+color ZONE_INSIDE_COL  = color.rgb( 90, 170, 255)  
+
+color CLIMAX_BEAR_COL  = color.rgb(255,  75,  95)  
+color CLIMAX_BULL_COL  = color.rgb( 60, 245, 155)  
+
+color DASH_BG_COL     = color.rgb( 10,  14,  26)   
+color DASH_BORDER_COL = color.rgb( 40,  55,  90)   
+color DASH_HEADER_COL = color.rgb(140, 160, 210)   
+color DASH_VALUE_COL  = color.rgb(255, 215,  60)   
+
+// =============================================================================
+// 2. INPUTS
+// =============================================================================
+string G_VOL  = "2. Volume Settings"
+string G_DISP = "3. Visual & Analysis"
+string G_DATA = "4. Dashboard & Alerts"
+string G_MTF  = "5. Multi-Timeframe Overlay"
+
+string I_TIME_RES   = input.timeframe("", "Time Resolution", group = G_VOL)
+int    I_LOOKBACK   = input.int(20, "Comparison Length", minval=1, group=G_VOL)
+color  C_VOL_MAIN   = input.color(color.rgb(0, 130, 170),  "Base Volume Color", group = G_VOL)
+
+color  C_AVG        = input.color(color.rgb(255, 215, 60),  "Average Line Color", group = G_DISP)
+color  C_VOL_ULTRA  = input.color(color.rgb(220,  30, 55),  "Ultra High Vol Color", group = G_DISP)
+color  C_VWAP       = input.color(color.rgb(200, 220, 255), "Ultra Vol VWAP Line Color", group = G_DISP)
+
+int    I_SHOW_DEPTH = input.int(2, "Search Depth (Levels)", minval=1, maxval=50, group=G_DISP)
+float  I_MERGE_TH   = input.float(0.5, "Merge Threshold (%)", minval=0.0, step=0.05, group=G_DISP) / 100
+
+bool   I_SHOW_AVG    = input.bool(true,  "Show Average Volume Line", group = G_DISP)
+bool   I_SHOW_LABELS = input.bool(false, "Show All Data Labels",     group = G_DISP)
+bool   I_SHOW_DASH   = input.bool(true,  "Show Dashboard Summary",   group = G_DATA)
+
+string I_MTF_TF   = input.timeframe("240", "HTF Timeframe", group = G_MTF)
+bool   I_MTF_SHOW = input.bool(true,  "Show HTF Zones", group = G_MTF)
+color  C_MTF_ZONE = input.color(color.rgb(160, 90, 240), "HTF Zone Color", group = G_MTF)
+int    I_MTF_ZONES= input.int(2, "Max HTF Zones", minval=1, maxval=20, group = G_MTF)
+
+// =============================================================================
+// 3. HEATMAP ENGINE
+// =============================================================================
+lerpCol(color cA, color cB, float t) =>
+    float cT = math.max(0.0, math.min(1.0, t))
+    int r    = int(color.r(cA) + (color.r(cB) - color.r(cA)) * cT)
+    int g    = int(color.g(cA) + (color.g(cB) - color.g(cA)) * cT)
+    int b    = int(color.b(cA) + (color.b(cB) - color.b(cA)) * cT)
+    color.rgb(r, g, b)
+
+heatmapColor(float intensity, int transp = 0) =>
+    float t  = math.max(0.0, math.min(1.0, intensity))
+    color base = t < 0.25 ? lerpCol(HM_C0, HM_C1, t / 0.25) : t < 0.50 ? lerpCol(HM_C1, HM_C2, (t - 0.25) / 0.25) : t < 0.75 ? lerpCol(HM_C2, HM_C3, (t - 0.50) / 0.25) : lerpCol(HM_C3, HM_C4, (t - 0.75) / 0.25)
+    color.new(base, transp)
+
+heatmapTransp(float intensity) =>
+    int minT = 15
+    int maxT = 82
+    int(maxT - (maxT - minT) * math.max(0.0, math.min(1.0, intensity)))
+
+// =============================================================================
+// 4. TYPES & GLOBALS
+// =============================================================================
+type VolData
+    array<float> volumes
+    array<int>   times
+    array<float> closes
+    array<float> opens
+    float        maxVol
+    float        totalVol
+
+type DefLine
+    float price
+    int   tS
+    int   tE
+    bool  isBroken
+    int   rawEnd
+    color activeColor
+
+type ZoneObject
+    bool   isBox
+    float  pTop
+    float  pBottom
+    int    tS
+    int    tE
+    int    rawEnd
+    color  col
+    bool   isBroken
+    string txt
+
+var VolData volEngine = VolData.new(array.new<float>(), array.new<int>(), array.new<float>(), array.new<float>(), 0.0, 0.0)
+var array<box>   volBoxes  = array.new<box>()
+var array<line>  volLines  = array.new<line>()
+var array<label> volLabels = array.new<label>()
+var array<line>  mtfLines  = array.new<line>()
+
+var table dashTable = table.new(position.top_right, 2, 4, bgcolor = color.new(DASH_BG_COL, 15), frame_color = DASH_BORDER_COL, frame_width = 1, border_color = DASH_BORDER_COL, border_width = 1)
+
+var array<float> drawVols      = array.new<float>()
+var array<int>   drawTimeStart = array.new<int>()
+var array<int>   drawTimeEnd   = array.new<int>()
+var array<float> drawCloses    = array.new<float>()
+var array<float> drawOpens     = array.new<float>()
+var array<float> drawVWAPs     = array.new<float>()
+
+var array<float> mtfZoneHighs  = array.new<float>()
+var array<float> mtfZoneLows   = array.new<float>()
+var array<int>   mtfZoneTimes  = array.new<int>()
+
+int CHART_PERIOD_MS = int(timeframe.in_seconds(timeframe.period) * 1000)
+int TF_MS           = int(timeframe.in_seconds(I_TIME_RES) * 1000)
+
+// =============================================================================
+// 5. HELPER FUNCTIONS
+// =============================================================================
+ClearDrawingObjects() =>
+    int boxCount = volBoxes.size()
+    if boxCount > 0
+        for int i = boxCount - 1 to 0
+            box.delete(volBoxes.get(i))
+        volBoxes.clear()
+
+    int lineCount = volLines.size()
+    if lineCount > 0
+        for int i = lineCount - 1 to 0
+            line.delete(volLines.get(i))
+        volLines.clear()
+
+    int labelCount = volLabels.size()
+    if labelCount > 0
+        for int i = labelCount - 1 to 0
+            label.delete(volLabels.get(i))
+        volLabels.clear()
+
+    int mtfCount = mtfLines.size()
+    if mtfCount > 0
+        for int i = mtfCount - 1 to 0
+            line.delete(mtfLines.get(i))
+        mtfLines.clear()
+
+formatVol(float v) =>
+    v >= 1000000 ? str.tostring(v / 1000000, "#.##") + "M" : v >= 1000 ? str.tostring(v / 1000, "#.##") + "K" : str.tostring(v, "#")
+
+createZoneLabel(int xPos, float yPos, string txt, color textCol) =>
+    label lbl = label.new(x = xPos, y = yPos, text = txt, xloc = xloc.bar_time, yloc = yloc.price, color = color.new(color.white, 100), style = label.style_label_left, textcolor= textCol, size = size.small, force_overlay = true)
+    volLabels.push(lbl)
+
+drawZoneObj(ZoneObject z) =>
+    if z.isBox
+        box zoneBox = box.new(left = z.tS, top = z.pTop, right = z.tE, bottom = z.pBottom, border_width = 1, border_color = z.col, bgcolor = color.new(z.col, int(ZONE_ACTIVE_TRANSP)), xloc = xloc.bar_time, force_overlay= true)
+        volBoxes.push(zoneBox)
+
+        bool zoneBroken = z.tE < z.rawEnd
+        float midPrice  = (z.pTop + z.pBottom) / 2.0
+
+        if not zoneBroken
+            createZoneLabel(z.tE, midPrice, z.txt, z.col)
+
+        if zoneBroken
+            box ghostBox = box.new(left = z.tE, top = z.pTop, right = z.rawEnd, bottom = z.pBottom, border_width = 1, border_color = z.col, bgcolor = color.new(z.col, int(ZONE_GHOST_TRANSP)), border_style = line.style_dotted, xloc = xloc.bar_time, force_overlay= true)
+            volBoxes.push(ghostBox)
+            createZoneLabel(z.rawEnd, midPrice, z.txt, z.col)
+    else
+        string lnStyle = z.isBroken ? line.style_dashed : line.style_solid
+        line vwapLn = line.new(x1 = z.tS, y1 = z.pTop, x2 = z.tE, y2 = z.pTop, xloc = xloc.bar_time, color = z.col, width = 2, style = lnStyle, force_overlay = true)
+        volLines.push(vwapLn)
+
+        if not z.isBroken
+            createZoneLabel(z.tE, z.pTop, z.txt, z.col)
+
+        if z.isBroken
+            line ghostLn = line.new(x1 = z.tE, y1 = z.pTop, x2 = z.rawEnd, y2 = z.pTop, xloc = xloc.bar_time, color = z.col, width = 2, style = line.style_dotted, force_overlay = true)
+            volLines.push(ghostLn)
+            createZoneLabel(z.rawEnd, z.pTop, z.txt, z.col)
+
+// =============================================================================
+// 6. VOLUME MODULE
+// =============================================================================
+StoreVolume() =>
+    volEngine.volumes.push(volume)
+    volEngine.times.push(time)
+    volEngine.closes.push(close)
+    volEngine.opens.push(open)
+    volEngine.totalVol += volume
+
+    if volume > volEngine.maxVol
+        volEngine.maxVol := volume
+
+    if volEngine.volumes.size() > MAX_STORED_BARS
+        float removedVol = volEngine.volumes.shift()
+        volEngine.times.shift()
+        volEngine.closes.shift()
+        volEngine.opens.shift()
+        volEngine.totalVol -= removedVol
+
+DrawVolume() =>
+    ClearDrawingObjects()
+    int sz = volEngine.volumes.size()
+
+    if sz > 0 and volEngine.maxVol > 0
+        drawVols.clear()
+        drawTimeStart.clear()
+        drawTimeEnd.clear()
+        drawCloses.clear()
+        drawOpens.clear()
+        drawVWAPs.clear()
+
+        float drawMaxVol   = 0.0
+        float drawTotalVol = 0.0
+
+        if TF_MS > 0
+            int   currBinStartProps = -1
+            float accumVol          = 0.0
+            float accumPV           = 0.0
+            int   accumTimeStart    = -1
+            int   accumTimeEnd      = -1
+            float accumClose        = 0.0
+            float accumOpen         = 0.0
+            float binFirstOpen      = 0.0
+
+            for int i = 0 to sz - 1
+                int   t        = volEngine.times.get(i)
+                float v        = volEngine.volumes.get(i)
+                float c        = volEngine.closes.get(i)
+                float o        = volEngine.opens.get(i)
+                int   binStart = int(math.floor(t / TF_MS)) * TF_MS
+
+                if binStart != currBinStartProps
+                    if currBinStartProps != -1
+                        drawVols.push(accumVol)
+                        drawTimeStart.push(accumTimeStart)
+                        drawTimeEnd.push(accumTimeEnd + CHART_PERIOD_MS)
+                        drawCloses.push(accumClose)
+                        drawOpens.push(binFirstOpen)
+                        float bodyCenter = (binFirstOpen + accumClose) / 2.0
+                        float binVwap    = accumVol > 0 ? accumPV / accumVol : bodyCenter
+                        drawVWAPs.push(binVwap)
+                        drawTotalVol += accumVol
+                        if accumVol > drawMaxVol
+                            drawMaxVol := accumVol
+                    currBinStartProps := binStart
+                    accumVol          := 0.0
+                    accumPV           := 0.0
+                    accumTimeStart    := t
+                    binFirstOpen      := o
+
+                accumVol += v
+                float barBodyCenter = (o + c) / 2.0
+                accumPV  += (v * barBodyCenter)
+                accumTimeEnd := t
+                accumClose   := c
+
+            if currBinStartProps != -1
+                drawVols.push(accumVol)
+                drawTimeStart.push(accumTimeStart)
+                drawTimeEnd.push(accumTimeEnd + CHART_PERIOD_MS)
+                drawCloses.push(accumClose)
+                drawOpens.push(binFirstOpen)
+                float bodyCenter = (binFirstOpen + accumClose) / 2.0
+                float binVwap    = accumVol > 0 ? accumPV / accumVol : bodyCenter
+                drawVWAPs.push(binVwap)
+                drawTotalVol += accumVol
+                if accumVol > drawMaxVol
+                    drawMaxVol := accumVol
+
+        int   drawSz = drawVols.size()
+        float avgVol = drawSz > 0 ? drawTotalVol / drawSz : 0.0
+
+        if drawSz > 0 and drawMaxVol > 0
+            array<bool>  isPeakVol  = array.new<bool>(drawSz,  false)
+            array<float> rollingMax = array.new<float>(drawSz, 0.0)
+
+            for int i = 0 to drawSz - 1
+                float currentV = drawVols.get(i)
+                if i > 0
+                    int startIdx = math.max(0, i - I_LOOKBACK)
+                    if i <= I_LOOKBACK
+                        float maxPrev = 0.0
+                        for int j = startIdx to i - 1
+                            float vPrev = drawVols.get(j)
+                            if vPrev > maxPrev
+                                maxPrev := vPrev
+                        if currentV > maxPrev
+                            isPeakVol.set(i, true)
+                    else
+                        float exitingVal = drawVols.get(i - I_LOOKBACK - 1)
+                        float prevMax    = rollingMax.get(i - 1)
+                        float newMax = 0.0
+                        if exitingVal >= prevMax
+                            for int j = startIdx to i - 1
+                                float vPrev = drawVols.get(j)
+                                if vPrev > newMax
+                                    newMax := vPrev
+                        else
+                            float enteringVal = drawVols.get(i - 1)
+                            newMax := math.max(prevMax, enteringVal)
+                        if currentV > newMax
+                            isPeakVol.set(i, true)
+                        rollingMax.set(i, math.max(newMax, currentV))
+                else
+                    rollingMax.set(i, currentV)
+
+            array<DefLine>    defenseCandidates = array.new<DefLine>()
+            array<ZoneObject> allZones          = array.new<ZoneObject>()
+            int rawSz       = volEngine.times.size()
+            int lastRawTime = rawSz > 0 ? volEngine.times.get(rawSz - 1) : 0
+
+            for int i = 0 to drawSz - 1
+                float v     = drawVols.get(i)
+                int   timeS = drawTimeStart.get(i)
+                int   timeE = drawTimeEnd.get(i)
+                float vwap  = drawVWAPs.get(i)
+                float c     = drawCloses.get(i)
+
+                float intensity  = v / drawMaxVol
+                color hmBase     = heatmapColor(intensity)
+                int   hmTransp   = heatmapTransp(intensity)
+                color barCol     = color.new(hmBase, hmTransp)
+                bool  isUltraHigh = isPeakVol.get(i)
+                color finalColor  = isUltraHigh ? color.new(HM_C4, 10) : barCol
+                color borderCol   = isUltraHigh ? color.new(HM_C4, 0) : color.new(hmBase, 40)
+                int   finalWidth  = isUltraHigh ? 2 : 1
+
+                if v > 0
+                    box b = box.new(left = timeS, top = v, right = timeE, bottom = 0, border_width = finalWidth, border_color = borderCol, bgcolor = finalColor, xloc = xloc.bar_time)
+                    volBoxes.push(b)
+
+                    if i >= 2 and isUltraHigh
+                        float prevClose1 = drawCloses.get(i - 1)
+                        float prevClose2 = drawCloses.get(i - 2)
+                        bool  isTrendUp   = prevClose1 > prevClose2
+                        bool  isTrendDown = prevClose1 < prevClose2
+                        int   midTime     = int((timeS + timeE) / 2)
+
+                        if isTrendUp and c < vwap
+                            label climaxLbl = label.new(x = midTime, y = 0, text = "▼", xloc = xloc.bar_time, yloc = yloc.abovebar, color = color.new(CLIMAX_BEAR_COL, 100), style = label.style_none, textcolor = CLIMAX_BEAR_COL, size = size.normal, force_overlay = true)
+                            volLabels.push(climaxLbl)
+
+                        if isTrendDown and c > vwap
+                            label climaxLbl = label.new(x = midTime, y = 0, text = "▲", xloc = xloc.bar_time, yloc = yloc.belowbar, color = color.new(CLIMAX_BULL_COL, 100), style = label.style_none, textcolor = CLIMAX_BULL_COL, size = size.normal, force_overlay = true)
+                            volLabels.push(climaxLbl)
+
+                    if isUltraHigh
+                        float binOpen         = drawOpens.get(i)
+                        float bodyCenter      = (binOpen + c) / 2.0
+                        bool  isSupport       = bodyCenter >= vwap
+                        int   lineEndTime     = timeE
+                        bool  isBroken        = false
+
+                        if rawSz > 0
+                            int foundIdx = array.binary_search_rightmost(volEngine.times, timeE)
+                            int startK   = math.min(foundIdx + 1, rawSz - 1)
+                            if startK < rawSz
+                                for int k = startK to rawSz - 1
+                                    int tRaw = volEngine.times.get(k)
+                                    if tRaw > timeE
+                                        float cRaw    = volEngine.closes.get(k)
+                                        float oRaw    = volEngine.opens.get(k)
+                                        float rawBodyCenter = (oRaw + cRaw) / 2.0
+                                        if isSupport and rawBodyCenter < vwap
+                                            isBroken    := true
+                                            lineEndTime := tRaw
+                                            break
+                                        else if not isSupport and rawBodyCenter > vwap
+                                            isBroken    := true
+                                            lineEndTime := tRaw
+                                            break
+
+                        if not isBroken and rawSz > 0
+                            lineEndTime := lastRawTime
+
+                        float currentBodyCenter = (open + close) / 2.0
+                        color liveColor = currentBodyCenter >= vwap ? ZONE_BULL_COL : ZONE_BEAR_COL
+                        defenseCandidates.push(DefLine.new(vwap, timeS, lineEndTime, isBroken, lastRawTime, liveColor))
+
+                    if I_SHOW_LABELS
+                        label l = label.new(x = int((timeS + timeE) / 2), y = v, text = formatVol(v), xloc = xloc.bar_time, yloc = yloc.price, color = color.new(color.white, 100), style = label.style_label_down, textcolor = color.rgb(160, 175, 210), size = size.tiny)
+                        volLabels.push(l)
+
+            int dSz = defenseCandidates.size()
+            if dSz > 0
+                if dSz > 1
+                    array<float> sortKeys = array.new<float>(dSz)
+                    for int z = 0 to dSz - 1
+                        sortKeys.set(z, defenseCandidates.get(z).price)
+                    array<int>     sortedIndices = sortKeys.sort_indices()
+                    array<DefLine> sortedObjs    = array.new<DefLine>(dSz)
+                    for int j = 0 to dSz - 1
+                        sortedObjs.set(j, defenseCandidates.get(sortedIndices.get(j)))
+                    defenseCandidates := sortedObjs
+
+                int grpStartIdx = 0
+                for int i = 1 to dSz
+                    bool isMerge = false
+                    if i < dSz
+                        DefLine curr = defenseCandidates.get(i)
+                        DefLine prev = defenseCandidates.get(i - 1)
+                        float dist   = math.abs(curr.price - prev.price) / prev.price
+                        if dist <= I_MERGE_TH
+                            isMerge := true
+
+                    if not isMerge
+                        int grpSize = i - grpStartIdx
+                        if grpSize == 1
+                            DefLine lnObj    = defenseCandidates.get(grpStartIdx)
+                            string  priceTxt = str.tostring(lnObj.price, format.mintick)
+                            allZones.push(ZoneObject.new(false, lnObj.price, lnObj.price, lnObj.tS, lnObj.tE, lnObj.rawEnd, lnObj.activeColor, lnObj.isBroken, priceTxt))
+                        else
+                            float grpMaxP   = -LARGE_PRICE_VAL
+                            float grpMinP   =  LARGE_PRICE_VAL
+                            int   grpMaxE   = 0
+                            int   grpRawEnd = 0
+                            for int g = grpStartIdx to i - 1
+                                DefLine lnObj = defenseCandidates.get(g)
+                                if lnObj.price > grpMaxP
+                                    grpMaxP := lnObj.price
+                                if lnObj.price < grpMinP
+                                    grpMinP := lnObj.price
+                                if lnObj.tE > grpMaxE
+                                    grpMaxE := lnObj.tE
+                                grpRawEnd := lnObj.rawEnd
+
+                            color zoneCol = close >= grpMaxP ? ZONE_BULL_COL : close <= grpMinP ? ZONE_BEAR_COL : ZONE_INSIDE_COL
+                            string zoneTxt    = str.tostring(grpMinP, format.mintick) + " - " + str.tostring(grpMaxP, format.mintick)
+                            bool   zoneBroken = grpMaxE < grpRawEnd
+                            allZones.push(ZoneObject.new(true, grpMaxP, grpMinP, defenseCandidates.get(grpStartIdx).tS, grpMaxE, grpRawEnd, zoneCol, zoneBroken, zoneTxt))
+                        grpStartIdx := i
+
+            array<ZoneObject> zonesToDraw = array.new<ZoneObject>()
+            array<ZoneObject> supports    = array.new<ZoneObject>()
+            array<ZoneObject> resistances = array.new<ZoneObject>()
+            array<ZoneObject> active      = array.new<ZoneObject>()
+
+            for z in allZones
+                if z.pBottom > close
+                    resistances.push(z)
+                else if z.pTop < close
+                    supports.push(z)
+                else
+                    active.push(z)
+
+            int rCount = resistances.size()
+            if rCount > 0
+                int countToTake = math.min(rCount, I_SHOW_DEPTH)
+                for int i = 0 to countToTake - 1
+                    zonesToDraw.push(resistances.get(i))
+
+            int sCount = supports.size()
+            if sCount > 0
+                int countToTake = math.min(sCount, I_SHOW_DEPTH)
+                int startIdx    = sCount - countToTake
+                for int i = startIdx to sCount - 1
+                    zonesToDraw.push(supports.get(i))
+
+            for z in active
+                zonesToDraw.push(z)
+
+            int zoneCount = zonesToDraw.size()
+            if zoneCount > 0
+                for int zIdx = 0 to zoneCount - 1
+                    drawZoneObj(zonesToDraw.get(zIdx))
+
+            if barstate.islast and barstate.isrealtime
+                if drawSz > 0 and isPeakVol.get(drawSz - 1)
+                    alert("MarkitTick: New Ultra High Volume Level Confirmed", alert.freq_once_per_bar_close)
+                for z in allZones
+                    if not z.isBroken
+                        bool inside = (high >= z.pBottom and low <= z.pTop)
+                        if inside
+                            alert("MarkitTick: Zone Retest at " + z.txt, alert.freq_once_per_bar)
+                    if z.isBroken and z.rawEnd == time
+                        alert("MarkitTick: Zone Breakout at " + z.txt, alert.freq_once_per_bar)
+
+            if I_MTF_SHOW
+                int mtfZoneCount = mtfZoneHighs.size()
+                if mtfZoneCount > 0
+                    int barDuration  = time - time[1]
+                    int futureExtend = barDuration > 0 ? barDuration * 20 : CHART_PERIOD_MS * 20
+                    for int i = 0 to mtfZoneCount - 1
+                        float zHigh = mtfZoneHighs.get(i)
+                        float zLow  = mtfZoneLows.get(i)
+                        int   zTime = mtfZoneTimes.get(i)
+
+                        line mtfHighLine = line.new(x1 = zTime, y1 = zHigh, x2 = time + futureExtend, y2 = zHigh, xloc = xloc.bar_time, color = C_MTF_ZONE, width = 2, style = line.style_solid, force_overlay = true)
+                        mtfLines.push(mtfHighLine)
+
+                        line mtfLowLine = line.new(x1 = zTime, y1 = zLow, x2 = time + futureExtend, y2 = zLow, xloc = xloc.bar_time, color = C_MTF_ZONE, width = 2, style = line.style_solid, force_overlay = true)
+                        mtfLines.push(mtfLowLine)
+
+            if I_SHOW_AVG and drawSz > 0
+                line avgLn = line.new(x1 = drawTimeStart.get(0), y1 = avgVol, x2 = drawTimeEnd.get(drawSz - 1), y2 = avgVol, xloc = xloc.bar_time, color = C_AVG, width = 2, style = line.style_dashed)
+                volLines.push(avgLn)
+
+            if I_SHOW_DASH
+                table.cell(dashTable, 0, 0, "● Total Vol", text_color = DASH_HEADER_COL, text_size = size.small, bgcolor = color.new(DASH_BG_COL, 10))
+                table.cell(dashTable, 1, 0, formatVol(drawTotalVol), text_color = DASH_VALUE_COL, text_size = size.small, bgcolor = color.new(DASH_BG_COL, 10))
+                table.cell(dashTable, 0, 1, "● Max Vol", text_color = DASH_HEADER_COL, text_size = size.small, bgcolor = color.new(DASH_BG_COL, 10))
+                table.cell(dashTable, 1, 1, formatVol(drawMaxVol), text_color = color.new(HM_C4, 0), text_size = size.small, bgcolor = color.new(DASH_BG_COL, 10))
+                table.cell(dashTable, 0, 2, "● Avg Vol", text_color = DASH_HEADER_COL, text_size = size.small, bgcolor = color.new(DASH_BG_COL, 10))
+                table.cell(dashTable, 0, 3, formatVol(avgVol), text_color = C_AVG, text_size = size.small, bgcolor = color.new(DASH_BG_COL, 10))
+                table.cell(dashTable, 1, 2, "● Count", text_color = DASH_HEADER_COL, text_size = size.small, bgcolor = color.new(DASH_BG_COL, 10))
+                table.cell(dashTable, 1, 3, str.tostring(drawSz), text_color = color.new(HM_C2, 0), text_size = size.small, bgcolor = color.new(DASH_BG_COL, 10))
+        else
+            table.clear(dashTable, 0, 0, 1, 3)
+
+// =============================================================================
+// 7. MTF OVERLAY MODULE
+// =============================================================================
+ProcessMTFData() =>
+    if I_MTF_SHOW
+        [htfVol, htfHigh, htfLow, htfTime] = request.security(syminfo.tickerid, I_MTF_TF, [volume[1], high[1], low[1], time[1]], lookahead = barmerge.lookahead_on)
+        float htfMaxPrev = ta.highest(htfVol[1], I_LOOKBACK)
+        bool  htfIsPeak  = not na(htfVol) and not na(htfMaxPrev) and htfVol > htfMaxPrev
+        bool  newHTFBar  = ta.change(htfTime) != 0
+
+        if newHTFBar and htfIsPeak
+            mtfZoneHighs.push(htfHigh)
+            mtfZoneLows.push(htfLow)
+            mtfZoneTimes.push(htfTime)
+            while mtfZoneHighs.size() > I_MTF_ZONES
+                mtfZoneHighs.shift()
+                mtfZoneLows.shift()
+                mtfZoneTimes.shift()
+
+// =============================================================================
+// 8. MAIN EXECUTION
+// =============================================================================
+StoreVolume()
+ProcessMTFData()
+
+if barstate.islast
+    DrawVolume()

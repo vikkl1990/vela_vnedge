@@ -1,0 +1,346 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © MarkitTick
+//@version=6
+indicator("Session Seasonality Deviation [MarkitTick]", overlay=true, max_lines_count=100, max_labels_count=100)
+
+// ── INPUTS ──────────────────────────────────────────────────────
+var string GRP_CORE = "⚙️ Core Settings"
+i_session     = input.string("London", "Session", options=["Asia", "London", "New York"], group=GRP_CORE)
+i_lookbackW   = input.int(20, "Seasonality Lookback (Weeks)", minval=5, maxval=100, group=GRP_CORE)
+i_devMult     = input.float(1.5, "Deviation Threshold (σ)", minval=0.5, maxval=5.0, step=0.1, group=GRP_CORE)
+i_minSessions = input.int(5, "Min Sessions Required", minval=2, maxval=50, group=GRP_CORE)
+i_chochLen    = input.int(20, "CHoCH Structure Length", minval=5, maxval=100, group=GRP_CORE)
+
+var string GRP_FILT = "🕯️ Filters"
+i_useStats    = input.bool(true, "Require Min Sessions Stat", group=GRP_FILT)
+i_useDevMult  = input.bool(true, "Require Deviation Threshold", group=GRP_FILT)
+i_useMinRange = input.bool(true, "Require Min Session Range", group=GRP_FILT)
+i_useBias     = input.bool(true, "Require Session Bias Direction", group=GRP_FILT)
+i_useChoch    = input.bool(true, "Require CHoCH Confirmation", group=GRP_FILT)
+i_minRangeATR = input.float(0.5, "Min Session Range (xATR)", minval=0.0, step=0.1, group=GRP_FILT)
+
+var string GRP_TT = "📐 Trade Tools"
+i_slRangeMult = input.float(1.0, "SL — Historical Range Mult", minval=0.1, step=0.1, group=GRP_TT)
+i_tp1RangeMult= input.float(1.0, "TP1 — Historical Range Mult", minval=0.1, step=0.1, group=GRP_TT)
+i_tp2RangeMult= input.float(1.618,"TP2 — Historical Range Mult", minval=0.1, step=0.1, group=GRP_TT)
+i_tp3RangeMult= input.float(2.618,"TP3 — Historical Range Mult", minval=0.1, step=0.1, group=GRP_TT)
+
+var string GRP_VIS = "🎨 Visuals"
+i_showLevels  = input.bool(true, "Show Trade Levels", group=GRP_VIS)
+i_showAvgRange= input.bool(true, "Show Avg Session Range Band", group=GRP_VIS)
+i_showCandles = input.bool(true, "Show Deviation Heatmap Candles", group=GRP_VIS)
+
+var string _mt741a = "📊 Dashboard"
+i_showDash    = input.bool(true, "Show Dashboard", group=_mt741a)
+i_dashPos     = input.string(position.top_right, "Dashboard Position", options=[position.top_right, position.top_left, position.bottom_right, position.bottom_left], group=_mt741a)
+
+var string GRP_WH = "🔔 Alerts"
+i_actionLong        = input.string("long",        "↑ Long Action",        group=GRP_WH)
+i_actionShort       = input.string("short",       "↓ Short Action",       group=GRP_WH)
+i_actionCloseLong   = input.string("closelong",   "✕ Close Long Action",  group=GRP_WH)
+i_actionCloseShort  = input.string("closeshort",  "✕ Close Short Action", group=GRP_WH)
+
+var string GRP_COL = "🌈 Colors"
+c_bull        = input.color(#26a69a, "Bull Color", group=GRP_COL)
+c_bear        = input.color(#ef5350, "Bear Color", group=GRP_COL)
+c_neutral     = input.color(#787b86, "Neutral Color", group=GRP_COL)
+c_avgBand     = input.color(color.new(#2196f3, 50), "Avg Range Band", group=GRP_COL)
+_mt741c          = input.color(#ef5350, "SL Line", group=GRP_COL)
+c_entry       = input.color(#2196f3, "Entry Line", group=GRP_COL)
+c_tp1         = input.color(color.new(#26a69a, 40), "TP1 Line", group=GRP_COL)
+c_tp2         = input.color(color.new(#26a69a, 20), "TP2 Line", group=GRP_COL)
+c_tp3         = input.color(color.new(#26a69a, 0),  "TP3 Line", group=GRP_COL)
+c_riskFill    = input.color(color.new(#ef5350, 80), "Risk Zone Fill", group=GRP_COL)
+c_rewardFill  = input.color(color.new(#26a69a, 85), "Reward Zone Fill", group=GRP_COL)
+c_dashBg      = input.color(color.new(#0a0f1a, 10), "Dashboard Background", group=GRP_COL)
+c_dashHeader  = input.color(color.new(#14b5cb, 20), "Dashboard Header", group=GRP_COL)
+c_dashLabel   = input.color(color.new(#ffffff, 30), "Dashboard Label Text", group=GRP_COL)
+c_dashValue   = input.color(color.new(#ffffff, 0),  "Dashboard Value Text", group=GRP_COL)
+c_dashValBg   = input.color(color.new(#0d1117, 0),  "Dashboard Value Background", group=GRP_COL)
+
+// ── CORE LOGIC ──────────────────────────────────────────────────
+sessionStr = i_session == "Asia" ? "0000-0900:23456" : i_session == "London" ? "0800-1600:23456" : "1300-2200:23456"
+
+bool inSession = not na(time(timeframe.period, sessionStr, "GMT"))
+bool sessionStart = inSession and not inSession[1]
+bool sessionEnd   = not inSession and inSession[1]
+
+var float sHigh = na
+var float sLow  = na
+var float sOpen = na
+
+if sessionStart
+    sHigh := high
+    sLow  := low
+    sOpen := open
+else if inSession
+    sHigh := math.max(nz(sHigh), high)
+    sLow  := math.min(nz(sLow), low)
+
+float sessionRangeLive = sessionEnd ? nz(sHigh) - nz(sLow) : na
+int   dowLive = dayofweek
+
+var array<float> rangeHist = array.new_float(0)
+var array<int>   dowHist   = array.new_int(0)
+
+if sessionEnd[1] and not na(sessionRangeLive[1]) and barstate.isconfirmed
+    array.push(rangeHist, sessionRangeLive[1])
+    array.push(dowHist, dowLive[1])
+    if array.size(rangeHist) > i_lookbackW * 10
+        array.shift(rangeHist)
+        array.shift(dowHist)
+
+float sessionRangeConfirmed = sessionEnd[1] ? nz(sHigh[1]) - nz(sLow[1]) : na
+int   dow = dayofweek
+
+f_seasonStats(int targetDow) =>
+    float sum = 0.0
+    float sumSq = 0.0
+    int   n = 0
+    if array.size(dowHist) > 0
+        for i = 0 to array.size(dowHist) - 1
+            if array.get(dowHist, i) == targetDow
+                float v = array.get(rangeHist, i)
+                sum += v
+                sumSq += v * v
+                n += 1
+    float avgR = n > 0 ? sum / n : na
+    float varR = n > 1 ? (sumSq / n) - (avgR * avgR) : na
+    float stdR = n > 1 and varR > 0 ? math.sqrt(varR) : na
+    [avgR, stdR, n]
+
+[avgSeasonRange, stdSeasonRange, seasonN] = f_seasonStats(dow[1])
+
+atrVal = ta.atr(14)[1]
+
+bool haveStats = not i_useStats or (seasonN >= i_minSessions and not na(avgSeasonRange) and not na(stdSeasonRange) and stdSeasonRange > 0)
+
+float zScore = sessionEnd[1] and not na(avgSeasonRange) and not na(stdSeasonRange) and stdSeasonRange > 0 ? (sessionRangeConfirmed - avgSeasonRange) / stdSeasonRange : na
+
+bool passDevMult   = not i_useDevMult or (not na(zScore) and zScore >= i_devMult)
+bool passMinRange  = not i_useMinRange or (sessionRangeConfirmed >= atrVal * i_minRangeATR)
+
+bool deviationHigh = haveStats and sessionEnd[1] and passDevMult and passMinRange
+
+float swingHigh = ta.highest(high, i_chochLen)[1]
+float swingLow  = ta.lowest(low, i_chochLen)[1]
+
+bool chochBull = close[1] > swingHigh[1]
+bool chochBear = close[1] < swingLow[1]
+
+bool biasBull = sessionEnd[1] and close[1] > sOpen[1]
+bool biasBear = sessionEnd[1] and close[1] < sOpen[1]
+
+bool dirBull = i_useBias and i_useChoch ? (biasBull and chochBull) : i_useBias ? biasBull : i_useChoch ? chochBull : true
+bool dirBear = i_useBias and i_useChoch ? (biasBear and chochBear) : i_useBias ? biasBear : i_useChoch ? chochBear : false
+
+bool longSignal  = deviationHigh and dirBull
+bool shortSignal = deviationHigh and dirBear and not dirBull
+
+float entryPrice = close[1]
+float rangeRef   = haveStats ? avgSeasonRange : atrVal
+
+var float slLong    = na
+var float tp1Long   = na
+var float tp2Long   = na
+var float tp3Long   = na
+var float slShort   = na
+var float tp1Short  = na
+var float tp2Short  = na
+var float tp3Short  = na
+var string tradeDir = na
+var int lastSignalBar = na
+
+if longSignal
+    slLong  := entryPrice - rangeRef * i_slRangeMult
+    tp1Long := entryPrice + rangeRef * i_tp1RangeMult
+    tp2Long := entryPrice + rangeRef * i_tp2RangeMult
+    tp3Long := entryPrice + rangeRef * i_tp3RangeMult
+    tradeDir := "long"
+    lastSignalBar := bar_index
+
+if shortSignal
+    slShort  := entryPrice + rangeRef * i_slRangeMult
+    tp1Short := entryPrice - rangeRef * i_tp1RangeMult
+    tp2Short := entryPrice - rangeRef * i_tp2RangeMult
+    tp3Short := entryPrice - rangeRef * i_tp3RangeMult
+    tradeDir := "short"
+    lastSignalBar := bar_index
+
+bool tp1Hit = tradeDir == "long" ? high >= tp1Long : tradeDir == "short" ? low <= tp1Short : false
+bool tp2Hit = tradeDir == "long" ? high >= tp2Long : tradeDir == "short" ? low <= tp2Short : false
+bool tp3Hit = tradeDir == "long" ? high >= tp3Long : tradeDir == "short" ? low <= tp3Short : false
+
+// ── ALERTS ──────────────────────────────────────────────────────
+string _mt741b = str.format(
+     '"action":"{0}","ticker":"{1}","tf":"{2}","direction":"long","entry":"{3}","sl":"{4}","tp1":"{5}","tp2":"{6}","tp3":"{7}","zscore":"{8}"',
+     i_actionLong, syminfo.tickerid, timeframe.period,
+     str.tostring(entryPrice, format.mintick),
+     str.tostring(slLong, format.mintick),
+     str.tostring(tp1Long, format.mintick),
+     str.tostring(tp2Long, format.mintick),
+     str.tostring(tp3Long, format.mintick),
+     str.tostring(zScore))
+string longPayload = "{" + _mt741b + "}"
+
+string _shortInner = str.format(
+     '"action":"{0}","ticker":"{1}","tf":"{2}","direction":"short","entry":"{3}","sl":"{4}","tp1":"{5}","tp2":"{6}","tp3":"{7}","zscore":"{8}"',
+     i_actionShort, syminfo.tickerid, timeframe.period,
+     str.tostring(entryPrice, format.mintick),
+     str.tostring(slShort, format.mintick),
+     str.tostring(tp1Short, format.mintick),
+     str.tostring(tp2Short, format.mintick),
+     str.tostring(tp3Short, format.mintick),
+     str.tostring(zScore))
+string shortPayload = "{" + _shortInner + "}"
+
+string _closeLongInner = str.format('"action":"{0}","ticker":"{1}","tf":"{2}"', i_actionCloseLong, syminfo.tickerid, timeframe.period)
+string closeLongPayload = "{" + _closeLongInner + "}"
+
+string _closeShortInner = str.format('"action":"{0}","ticker":"{1}","tf":"{2}"', i_actionCloseShort, syminfo.tickerid, timeframe.period)
+string closeShortPayload = "{" + _closeShortInner + "}"
+
+string _tp1Inner = str.format('"action":"tp1_hit","ticker":"{0}","tf":"{1}","direction":"{2}","price":"{3}"', syminfo.tickerid, timeframe.period, tradeDir, str.tostring(tradeDir == "long" ? high : low, format.mintick))
+string tp1Payload = "{" + _tp1Inner + "}"
+
+string _tp2Inner = str.format('"action":"tp2_hit","ticker":"{0}","tf":"{1}","direction":"{2}","price":"{3}"', syminfo.tickerid, timeframe.period, tradeDir, str.tostring(tradeDir == "long" ? high : low, format.mintick))
+string tp2Payload = "{" + _tp2Inner + "}"
+
+string _tp3Inner = str.format('"action":"tp3_hit","ticker":"{0}","tf":"{1}","direction":"{2}","price":"{3}"', syminfo.tickerid, timeframe.period, tradeDir, str.tostring(tradeDir == "long" ? high : low, format.mintick))
+string tp3Payload = "{" + _tp3Inner + "}"
+
+if longSignal and barstate.isconfirmed
+    alert(longPayload, alert.freq_once_per_bar_close)
+if shortSignal and barstate.isconfirmed
+    alert(shortPayload, alert.freq_once_per_bar_close)
+if shortSignal and barstate.isconfirmed
+    alert(closeLongPayload, alert.freq_once_per_bar_close)
+if longSignal and barstate.isconfirmed
+    alert(closeShortPayload, alert.freq_once_per_bar_close)
+
+if tp1Hit
+    alert(tp1Payload, alert.freq_once_per_bar)
+if tp2Hit
+    alert(tp2Payload, alert.freq_once_per_bar)
+if tp3Hit
+    alert(tp3Payload, alert.freq_once_per_bar)
+
+alertcondition(longSignal  and barstate.isconfirmed, "BUY Signal",  "MarkitTick SSD — BUY Signal Fired")
+alertcondition(shortSignal and barstate.isconfirmed, "SELL Signal", "MarkitTick SSD — SELL Signal Fired")
+alertcondition(shortSignal and barstate.isconfirmed, "Close Long Signal",  "MarkitTick SSD — Close Long")
+alertcondition(longSignal  and barstate.isconfirmed, "Close Short Signal", "MarkitTick SSD — Close Short")
+
+// ── VISUALS ─────────────────────────────────────────────────────
+color biasColor = biasBull ? c_bull : biasBear ? c_bear : c_neutral
+
+plotcandle(i_showCandles ? open : na, i_showCandles ? high : na, i_showCandles ? low : na, i_showCandles ? close : na,
+     title       = "Heatmap Candles",
+     color       = biasColor,
+     wickcolor   = biasColor,
+     bordercolor = biasColor)
+
+plot(i_showAvgRange and haveStats ? sOpen + avgSeasonRange / 2 : na, "Avg Range Upper", color=c_avgBand, style=plot.style_linebr)
+plot(i_showAvgRange and haveStats ? sOpen - avgSeasonRange / 2 : na, "Avg Range Lower", color=c_avgBand, style=plot.style_linebr)
+
+var line   slLine    = na
+var line   entryLine = na
+var line   tp1Line   = na
+var line   tp2Line   = na
+var line   tp3Line   = na
+var label  slLbl     = na
+var label  entryLbl  = na
+var label  tp1Lbl    = na
+var label  tp2Lbl    = na
+var label  tp3Lbl    = na
+var linefill riskFill   = na
+var linefill rewardFill = na
+
+f_deleteLevels() =>
+    line.delete(slLine),   line.delete(entryLine)
+    line.delete(tp1Line),  line.delete(tp2Line),  line.delete(tp3Line)
+    label.delete(slLbl),   label.delete(entryLbl)
+    label.delete(tp1Lbl),  label.delete(tp2Lbl),  label.delete(tp3Lbl)
+    linefill.delete(riskFill), linefill.delete(rewardFill)
+
+bool newSignal = i_showLevels and (longSignal or shortSignal)
+
+if newSignal
+    f_deleteLevels()
+    float slV  = longSignal ? slLong  : slShort
+    float tp1V = longSignal ? tp1Long : tp1Short
+    float tp2V = longSignal ? tp2Long : tp2Short
+    float tp3V = longSignal ? tp3Long : tp3Short
+    color slC   = _mt741c
+    color entC  = c_entry
+    color tp1C  = c_tp1
+    color tp2C  = c_tp2
+    color tp3C  = c_tp3
+
+    slLine    := line.new(bar_index, slV, bar_index, slV, color=slC, style=line.style_solid, width=2)
+    entryLine := line.new(bar_index, entryPrice, bar_index, entryPrice, color=entC, style=line.style_dashed, width=1)
+    tp1Line   := line.new(bar_index, tp1V, bar_index, tp1V, color=tp1C, style=line.style_dashed, width=1)
+    tp2Line   := line.new(bar_index, tp2V, bar_index, tp2V, color=tp2C, style=line.style_dashed, width=1)
+    tp3Line   := line.new(bar_index, tp3V, bar_index, tp3V, color=tp3C, style=line.style_dashed, width=1)
+
+    slLbl    := label.new(bar_index, slV, "✕ SL " + str.tostring(slV, format.mintick), style=label.style_label_left, color=slC, textcolor=color.white, size=size.small)
+    entryLbl := label.new(bar_index, entryPrice, "▶ Entry " + str.tostring(entryPrice, format.mintick), style=label.style_label_left, color=entC, textcolor=color.white, size=size.small)
+    tp1Lbl   := label.new(bar_index, tp1V, "◆ TP1 " + str.tostring(tp1V, format.mintick), style=label.style_label_left, color=tp1C, textcolor=color.white, size=size.small)
+    tp2Lbl   := label.new(bar_index, tp2V, "✦ TP2 " + str.tostring(tp2V, format.mintick), style=label.style_label_left, color=tp2C, textcolor=color.white, size=size.small)
+    tp3Lbl   := label.new(bar_index, tp3V, "◆ TP3 " + str.tostring(tp3V, format.mintick), style=label.style_label_left, color=tp3C, textcolor=color.white, size=size.small)
+
+    riskFill   := linefill.new(slLine, entryLine, c_riskFill)
+    rewardFill := linefill.new(entryLine, tp3Line, c_rewardFill)
+
+if i_showLevels and not na(slLine) and not na(lastSignalBar) and bar_index <= lastSignalBar + 50
+    int _extX = lastSignalBar + 50
+    line.set_x2(slLine,    _extX)
+    line.set_x2(entryLine, _extX)
+    line.set_x2(tp1Line,   _extX)
+    line.set_x2(tp2Line,   _extX)
+    line.set_x2(tp3Line,   _extX)
+    label.set_x(slLbl,     _extX)
+    label.set_x(entryLbl,  _extX)
+    label.set_x(tp1Lbl,    _extX)
+    label.set_x(tp2Lbl,    _extX)
+    label.set_x(tp3Lbl,    _extX)
+
+// ── DASHBOARD ───────────────────────────────────────────────────
+f_barColor(float pct) =>
+    pct >= 0.66 ? color.new(#26a69a, 0) : pct >= 0.33 ? color.new(#f9a825, 0) : color.new(#ef5350, 0)
+
+f_bar(float val, float maxVal) =>
+    int filled = math.round(math.min(math.abs(val) / maxVal, 1.0) * 10)
+    string bar = ""
+    for i = 1 to 10
+        bar += i <= filled ? "█" : "░"
+    bar + "  " + str.tostring(math.round(math.min(math.abs(val) / maxVal, 1.0) * 100)) + "%"
+
+var table dash = table.new(i_dashPos, 2, 8, border_width=1)
+
+if i_showDash
+    table.cell(dash, 0, 0, "SSD — Session Seasonality", text_color=color.white, bgcolor=c_dashHeader, text_size=size.normal, text_halign=text.align_left)
+    table.cell(dash, 1, 0, "", text_color=color.white, bgcolor=c_dashHeader, text_size=size.normal)
+
+    table.cell(dash, 0, 1, "Session", text_color=c_dashLabel, bgcolor=c_dashBg, text_size=size.small)
+    table.cell(dash, 1, 1, i_session, text_color=c_dashValue, bgcolor=c_dashValBg, text_size=size.small)
+
+    table.cell(dash, 0, 2, "Bias", text_color=c_dashLabel, bgcolor=c_dashBg, text_size=size.small)
+    table.cell(dash, 1, 2, biasBull ? "Bullish" : biasBear ? "Bearish" : "Neutral", text_color=biasColor, bgcolor=c_dashValBg, text_size=size.small)
+
+    table.cell(dash, 0, 3, "Z-Score", text_color=c_dashLabel, bgcolor=c_dashBg, text_size=size.small)
+    float zAbsPct = na(zScore) ? 0.0 : math.min(math.abs(zScore) / 3.0, 1.0)
+    table.cell(dash, 1, 3, na(zScore) ? "n/a" : f_bar(zScore, 3.0), text_color=f_barColor(zAbsPct), bgcolor=c_dashValBg, text_size=size.small)
+
+    table.cell(dash, 0, 4, "Avg Session Range", text_color=c_dashLabel, bgcolor=c_dashBg, text_size=size.small)
+    table.cell(dash, 1, 4, na(avgSeasonRange) ? "n/a" : str.tostring(avgSeasonRange, format.mintick), text_color=c_dashValue, bgcolor=c_dashValBg, text_size=size.small)
+
+    table.cell(dash, 0, 5, "Sample Size (n)", text_color=c_dashLabel, bgcolor=c_dashBg, text_size=size.small)
+    float nPct = math.min(seasonN / (i_lookbackW * 1.0), 1.0)
+    table.cell(dash, 1, 5, f_bar(seasonN, i_lookbackW * 1.0), text_color=f_barColor(nPct), bgcolor=c_dashValBg, text_size=size.small)
+
+    table.cell(dash, 0, 6, "CHoCH State", text_color=c_dashLabel, bgcolor=c_dashBg, text_size=size.small)
+    table.cell(dash, 1, 6, chochBull ? "Bull CHoCH" : chochBear ? "Bear CHoCH" : "None", text_color=chochBull ? c_bull : chochBear ? c_bear : c_neutral, bgcolor=c_dashValBg, text_size=size.small)
+
+    table.cell(dash, 0, 7, "Last Signal", text_color=c_dashLabel, bgcolor=c_dashBg, text_size=size.small)
+    table.cell(dash, 1, 7, na(tradeDir) ? "None" : tradeDir, text_color=tradeDir == "long" ? c_bull : tradeDir == "short" ? c_bear : c_neutral, bgcolor=c_dashValBg, text_size=size.small)

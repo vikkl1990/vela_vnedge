@@ -1,0 +1,423 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © MarkitTick
+
+//@version=6
+indicator("Multi-Confluence Signal Engine [MarkitTick]", overlay=true, max_lines_count=500, max_labels_count=500)
+
+// ── INPUTS ──────────────────────────────────────────────────────
+GRP_CORE  = "⚙️ Core Settings"
+GRP_TREND = "📈 Trend Leg"
+GRP_MOM   = "🌊 Momentum Leg"
+GRP_VOL   = "📦 Volume Leg"
+GRP_STR   = "🏗️ Structure Leg"
+GRP_FILT  = "🕯️ Filters"
+GRP_TRD   = "📐 Trade Tools"
+GRP_VIS   = "🎨 Visuals"
+_mt741a  = "📊 Dashboard"
+GRP_WH    = "🔔 Alerts"
+GRP_COL   = "🌈 Colors"
+
+i_scoreStrong   = input.int(70, "Strong Threshold", minval=50, maxval=100, group=GRP_CORE)
+i_scoreMedium   = input.int(45, "Medium Threshold", minval=20, maxval=90, group=GRP_CORE)
+i_minBarsGap    = input.int(15, "Min Bars Between Signals", minval=0, group=GRP_CORE)
+i_minScoreGap   = input.float(10, "Min Score Gap Bull/Bear", minval=0, maxval=50, step=1, group=GRP_CORE)
+
+i_wTrend        = input.float(30, "Trend Weight %", minval=0, maxval=100, step=5, group=GRP_CORE)
+i_wMom          = input.float(25, "Momentum Weight %", minval=0, maxval=100, step=5, group=GRP_CORE)
+i_wVol          = input.float(15, "Volume Weight %", minval=0, maxval=100, step=5, group=GRP_CORE)
+i_wStruct       = input.float(30, "Structure Weight %", minval=0, maxval=100, step=5, group=GRP_CORE)
+
+i_emaFastLen    = input.int(21, "EMA Fast", minval=1, group=GRP_TREND)
+i_emaSlowLen    = input.int(50, "EMA Slow", minval=1, group=GRP_TREND)
+i_emaTrendLen   = input.int(200, "EMA Macro", minval=1, group=GRP_TREND)
+i_slopeLen      = input.int(5, "Slope Lookback", minval=1, group=GRP_TREND)
+
+i_rsiLen        = input.int(14, "RSI Length", minval=1, group=GRP_MOM)
+i_rsiMid        = input.int(50, "RSI Midline", minval=1, maxval=99, group=GRP_MOM)
+i_macdFast      = input.int(12, "MACD Fast", minval=1, group=GRP_MOM)
+i_macdSlow      = input.int(26, "MACD Slow", minval=1, group=GRP_MOM)
+i_macdSig       = input.int(9, "MACD Signal", minval=1, group=GRP_MOM)
+
+i_volMaLen      = input.int(20, "Volume MA Length", minval=1, group=GRP_VOL)
+i_volSpike      = input.float(1.5, "Volume Spike Mult", minval=1.0, step=0.1, group=GRP_VOL)
+
+i_pivotLen      = input.int(5, "Pivot Lookback", minval=2, group=GRP_STR)
+
+i_useHtfFilter  = input.bool(false, "Enable HTF Trend Filter", group=GRP_FILT)
+i_htfRes        = input.timeframe("60", "HTF Timeframe", group=GRP_FILT)
+i_useVolatFilt  = input.bool(true, "Enable Volatility Filter", group=GRP_FILT)
+i_atrLen        = input.int(14, "ATR Length", minval=1, group=GRP_FILT)
+i_atrMinPct     = input.float(0.05, "Min ATR % of Price", minval=0.0, step=0.01, group=GRP_FILT)
+
+i_slAtrMult     = input.float(1.5, "SL ATR Multiplier", minval=0.1, step=0.1, group=GRP_TRD)
+i_tp1RR         = input.float(1.0, "TP1 R:R", minval=0.1, step=0.1, group=GRP_TRD)
+i_tp2RR         = input.float(2.0, "TP2 R:R", minval=0.1, step=0.1, group=GRP_TRD)
+i_tp3RR         = input.float(3.0, "TP3 R:R", minval=0.1, step=0.1, group=GRP_TRD)
+i_showLevels    = input.bool(true, "Show Trade Levels", group=GRP_TRD)
+i_lockSignal    = input.bool(false, "🔒 Lock Signal", group=GRP_TRD, tooltip="Freeze current signal · block new ones")
+
+i_showCandles   = input.bool(true, "Heatmap Candles", group=GRP_VIS)
+i_showEmas      = input.bool(true, "Show EMA Lines", group=GRP_VIS)
+i_showScoreLbl  = input.bool(true, "Show Score Labels", group=GRP_VIS)
+
+i_showDash      = input.bool(true, "Show Dashboard", group=_mt741a)
+i_dashPos       = input.string("Top Right", "Dashboard Position", options=["Top Right", "Top Left", "Bottom Right", "Bottom Left"], group=_mt741a)
+
+i_actionLong        = input.string("long", "↑ Long Action", group=GRP_WH)
+i_actionShort       = input.string("short", "↓ Short Action", group=GRP_WH)
+i_actionCloseLong   = input.string("closelong", "✕ Close Long Action", group=GRP_WH)
+i_actionCloseShort  = input.string("closeshort", "✕ Close Short Action", group=GRP_WH)
+
+c_bull          = input.color(color.new(#26a69a, 0), "Bull Color", group=GRP_COL)
+c_bear          = input.color(color.new(#ef5350, 0), "Bear Color", group=GRP_COL)
+c_neutral       = input.color(color.new(#787b86, 0), "Neutral Color", group=GRP_COL)
+c_emaFast       = input.color(color.new(#2196f3, 0), "EMA Fast Color", group=GRP_COL)
+c_emaSlow       = input.color(color.new(#ff9800, 0), "EMA Slow Color", group=GRP_COL)
+_mt741b      = input.color(color.new(#9c27b0, 0), "EMA Macro Color", group=GRP_COL)
+c_sl            = input.color(#ef5350, "SL Color", group=GRP_COL)
+c_entry         = input.color(#2196f3, "Entry Color", group=GRP_COL)
+c_tp            = input.color(#26a69a, "TP Color", group=GRP_COL)
+c_lblTxt        = input.color(color.white, "Label Text Color", group=GRP_COL)
+C_DASH_HDR      = input.color(color.new(#3a2a6d, 55), "Dashboard Header", group=GRP_COL)
+_mt741c       = input.color(color.new(#0a0f1a, 10), "Dashboard Background", group=GRP_COL)
+C_DASH_TXT      = input.color(color.new(#ffffff, 0), "Dashboard Text", group=GRP_COL)
+
+// ── CORE LOGIC ─────────────────────────────────────────────
+f_ema(series float src, simple int length) =>
+    float alpha = 2.0 / (length + 1)
+    var float result = na
+    result := na(result[1]) ? src : alpha * src + (1 - alpha) * result[1]
+    result
+
+emaFast = f_ema(close, i_emaFastLen)
+emaSlow = f_ema(close, i_emaSlowLen)
+emaMacro = f_ema(close, i_emaTrendLen)
+emaFastSlope = (emaFast - emaFast[i_slopeLen]) / i_slopeLen
+emaSlowSlope = (emaSlow - emaSlow[i_slopeLen]) / i_slopeLen
+
+trendUpScore = 0.0
+trendUpScore += emaFast > emaSlow ? 40.0 : 0.0
+trendUpScore += close > emaMacro ? 30.0 : 0.0
+trendUpScore += emaFastSlope > 0 ? 20.0 : 0.0
+trendUpScore += emaSlowSlope > 0 ? 10.0 : 0.0
+
+trendDnScore = 0.0
+trendDnScore += emaFast < emaSlow ? 40.0 : 0.0
+trendDnScore += close < emaMacro ? 30.0 : 0.0
+trendDnScore += emaFastSlope < 0 ? 20.0 : 0.0
+trendDnScore += emaSlowSlope < 0 ? 10.0 : 0.0
+
+rsiVal = ta.rsi(close, i_rsiLen)
+[macdLine, macdSig, macdHist] = ta.macd(close, i_macdFast, i_macdSlow, i_macdSig)
+
+momUpScore = 0.0
+momUpScore += rsiVal > i_rsiMid ? 35.0 : 0.0
+momUpScore += macdLine > macdSig ? 35.0 : 0.0
+momUpScore += macdHist > macdHist[1] ? 30.0 : 0.0
+
+momDnScore = 0.0
+momDnScore += rsiVal < i_rsiMid ? 35.0 : 0.0
+momDnScore += macdLine < macdSig ? 35.0 : 0.0
+momDnScore += macdHist < macdHist[1] ? 30.0 : 0.0
+
+volMa = ta.sma(volume, i_volMaLen)
+volRatio = volMa > 0 ? volume / volMa : 1.0
+isVolSpike = volRatio >= i_volSpike
+bullCandle = close > open
+bearCandle = close < open
+
+volUpScore = 0.0
+volUpScore += isVolSpike and bullCandle ? 60.0 : 0.0
+volUpScore += volume > volume[1] and bullCandle ? 40.0 : 0.0
+
+volDnScore = 0.0
+volDnScore += isVolSpike and bearCandle ? 60.0 : 0.0
+volDnScore += volume > volume[1] and bearCandle ? 40.0 : 0.0
+
+f_pivotHigh(series float src, simple int len) =>
+    float candidate = src[len]
+    bool isValid = true
+    for i = 0 to len * 2
+        if i != len and src[i] >= candidate
+            isValid := false
+    isValid ? candidate : na
+f_pivotLow(series float src, simple int len) =>
+    float candidate = src[len]
+    bool isValid = true
+    for i = 0 to len * 2
+        if i != len and src[i] <= candidate
+            isValid := false
+    isValid ? candidate : na
+
+ph = f_pivotHigh(high[1], i_pivotLen)
+pl = f_pivotLow(low[1], i_pivotLen)
+
+var float lastPH = na
+var float lastPH2 = na
+var float lastPL = na
+var float lastPL2 = na
+
+if not na(ph)
+    lastPH2 := lastPH
+    lastPH := ph
+if not na(pl)
+    lastPL2 := lastPL
+    lastPL := pl
+
+structUp = not na(lastPH) and not na(lastPH2) and not na(lastPL) and not na(lastPL2) and lastPH > lastPH2 and lastPL > lastPL2
+structDn = not na(lastPH) and not na(lastPH2) and not na(lastPL) and not na(lastPL2) and lastPH < lastPH2 and lastPL < lastPL2
+
+var int lastBosDir = 0
+bosUp = not na(lastPH) and close[1] > lastPH and lastBosDir <= 0
+bosDn = not na(lastPL) and close[1] < lastPL and lastBosDir >= 0
+if bosUp
+    lastBosDir := 1
+if bosDn
+    lastBosDir := -1
+
+structUpScore = 0.0
+structUpScore += structUp ? 60.0 : 0.0
+structUpScore += bosUp ? 40.0 : 0.0
+
+structDnScore = 0.0
+structDnScore += structDn ? 60.0 : 0.0
+structDnScore += bosDn ? 40.0 : 0.0
+
+wSum = i_wTrend + i_wMom + i_wVol + i_wStruct
+wSumSafe = wSum == 0 ? 1.0 : wSum
+
+bullScore = (trendUpScore * i_wTrend + momUpScore * i_wMom + volUpScore * i_wVol + structUpScore * i_wStruct) / wSumSafe
+bearScore = (trendDnScore * i_wTrend + momDnScore * i_wMom + volDnScore * i_wVol + structDnScore * i_wStruct) / wSumSafe
+
+f_tier(float s) =>
+    string t = s >= i_scoreStrong ? "Strong" : s >= i_scoreMedium ? "Medium" : s > 0 ? "Weak" : "None"
+    t
+
+bullTier = f_tier(bullScore)
+bearTier = f_tier(bearScore)
+
+htfResSafe = timeframe.in_seconds(i_htfRes) >= timeframe.in_seconds(timeframe.period) ? i_htfRes : timeframe.period
+htfEmaRaw = ta.ema(close, i_emaSlowLen)
+[htfClose, htfEma] = request.security(syminfo.tickerid, htfResSafe, [close[1], htfEmaRaw[1]], lookahead=barmerge.lookahead_on)
+htfBullOk = not i_useHtfFilter or (not na(htfClose) and not na(htfEma) and htfClose > htfEma)
+htfBearOk = not i_useHtfFilter or (not na(htfClose) and not na(htfEma) and htfClose < htfEma)
+
+atrVal = ta.atr(i_atrLen)
+atrPct = close > 0 ? atrVal / close * 100 : 0.0
+volatOk = not i_useVolatFilt or atrPct >= i_atrMinPct
+
+var int lastLongBarIdx = na
+var int lastShortBarIdx = na
+gapOkLong = na(lastLongBarIdx) or (bar_index - lastLongBarIdx) >= i_minBarsGap
+gapOkShort = na(lastShortBarIdx) or (bar_index - lastShortBarIdx) >= i_minBarsGap
+
+rawLongSignal = bullScore >= i_scoreMedium and (bullScore - bearScore) >= i_minScoreGap and htfBullOk and volatOk and gapOkLong
+rawShortSignal = bearScore >= i_scoreMedium and (bearScore - bullScore) >= i_minScoreGap and htfBearOk and volatOk and gapOkShort
+
+longSignal = rawLongSignal and barstate.isconfirmed
+shortSignal = rawShortSignal and barstate.isconfirmed
+
+if longSignal
+    lastLongBarIdx := bar_index
+if shortSignal
+    lastShortBarIdx := bar_index
+
+var float entryPrice = na
+var float slPrice = na
+var float tp1Price = na
+var float tp2Price = na
+var float tp3Price = na
+var int lastSignalBar = na
+var int lastDir = 0
+
+if longSignal
+    entryPrice := close
+    slPrice := close - atrVal * i_slAtrMult
+    riskDist = entryPrice - slPrice
+    tp1Price := entryPrice + riskDist * i_tp1RR
+    tp2Price := entryPrice + riskDist * i_tp2RR
+    tp3Price := entryPrice + riskDist * i_tp3RR
+    lastSignalBar := bar_index
+    lastDir := 1
+
+if shortSignal
+    entryPrice := close
+    slPrice := close + atrVal * i_slAtrMult
+    riskDist = slPrice - entryPrice
+    tp1Price := entryPrice - riskDist * i_tp1RR
+    tp2Price := entryPrice - riskDist * i_tp2RR
+    tp3Price := entryPrice - riskDist * i_tp3RR
+    lastSignalBar := bar_index
+    lastDir := -1
+
+tp1Hit = not na(tp1Price) and lastDir == 1 and high >= tp1Price
+tp2Hit = not na(tp2Price) and lastDir == 1 and high >= tp2Price
+tp3Hit = not na(tp3Price) and lastDir == 1 and high >= tp3Price
+tp1HitS = not na(tp1Price) and lastDir == -1 and low <= tp1Price
+tp2HitS = not na(tp2Price) and lastDir == -1 and low <= tp2Price
+tp3HitS = not na(tp3Price) and lastDir == -1 and low <= tp3Price
+
+var line slLine = na
+var line entryLine = na
+var line tp1Line = na
+var line tp2Line = na
+var line tp3Line = na
+var label slLbl = na
+var label entryLbl = na
+var label tp1Lbl = na
+var label tp2Lbl = na
+var label tp3Lbl = na
+var linefill riskFill = na
+var linefill rewardFill = na
+
+f_deleteLevels() =>
+    line.delete(slLine)
+    line.delete(entryLine)
+    line.delete(tp1Line)
+    line.delete(tp2Line)
+    line.delete(tp3Line)
+    label.delete(slLbl)
+    label.delete(entryLbl)
+    label.delete(tp1Lbl)
+    label.delete(tp2Lbl)
+    label.delete(tp3Lbl)
+    linefill.delete(riskFill)
+    linefill.delete(rewardFill)
+
+bool _locked = i_lockSignal and barstate.islast
+
+if i_showLevels and (longSignal or shortSignal) and not _locked
+    f_deleteLevels()
+    tpColLong1 = color.new(c_tp, 40)
+    tpColLong2 = color.new(c_tp, 20)
+    tpColLong3 = color.new(c_tp, 0)
+    slLine := line.new(bar_index, slPrice, bar_index, slPrice, color=c_sl, width=2)
+    entryLine := line.new(bar_index, entryPrice, bar_index, entryPrice, color=c_entry, width=1, style=line.style_dashed)
+    tp1Line := line.new(bar_index, tp1Price, bar_index, tp1Price, color=tpColLong1, width=1, style=line.style_dashed)
+    tp2Line := line.new(bar_index, tp2Price, bar_index, tp2Price, color=tpColLong2, width=1, style=line.style_dashed)
+    tp3Line := line.new(bar_index, tp3Price, bar_index, tp3Price, color=tpColLong3, width=1, style=line.style_dashed)
+    slLbl := label.new(bar_index, slPrice, "✕ SL " + str.tostring(slPrice, format.mintick), style=label.style_label_left, color=c_sl, textcolor=c_lblTxt, size=size.small)
+    entryLbl := label.new(bar_index, entryPrice, "▶ Entry " + str.tostring(entryPrice, format.mintick), style=label.style_label_left, color=c_entry, textcolor=c_lblTxt, size=size.small)
+    tp1Lbl := label.new(bar_index, tp1Price, "◆ TP1 " + str.tostring(tp1Price, format.mintick), style=label.style_label_left, color=c_tp, textcolor=c_lblTxt, size=size.small)
+    tp2Lbl := label.new(bar_index, tp2Price, "✦ TP2 " + str.tostring(tp2Price, format.mintick), style=label.style_label_left, color=c_tp, textcolor=c_lblTxt, size=size.small)
+    tp3Lbl := label.new(bar_index, tp3Price, "◆ TP3 " + str.tostring(tp3Price, format.mintick), style=label.style_label_left, color=c_tp, textcolor=c_lblTxt, size=size.small)
+    riskFill := linefill.new(slLine, entryLine, color.new(c_sl, 80))
+    rewardFill := linefill.new(entryLine, tp3Line, color.new(c_tp, 85))
+
+if i_showLevels and not na(slLine) and not na(lastSignalBar) and (i_lockSignal or bar_index <= lastSignalBar + 50)
+    int _extX = i_lockSignal ? bar_index + 50 : lastSignalBar + 50
+    line.set_x2(slLine, _extX)
+    line.set_x2(entryLine, _extX)
+    line.set_x2(tp1Line, _extX)
+    line.set_x2(tp2Line, _extX)
+    line.set_x2(tp3Line, _extX)
+    label.set_x(slLbl, _extX)
+    label.set_x(entryLbl, _extX)
+    label.set_x(tp1Lbl, _extX)
+    label.set_x(tp2Lbl, _extX)
+    label.set_x(tp3Lbl, _extX)
+
+// ── VISUALS ───────────────────────────────────────────────
+bodyColor = bullScore > bearScore and bullScore >= i_scoreMedium ? c_bull : bearScore > bullScore and bearScore >= i_scoreMedium ? c_bear : c_neutral
+borderColor = bodyColor
+
+plotcandle(open, high, low, close, title="Heatmap Candles", color=i_showCandles ? bodyColor : na, wickcolor=i_showCandles ? borderColor : na, bordercolor=i_showCandles ? borderColor : na)
+
+plot(i_showEmas ? emaFast : na, "EMA Fast", color=c_emaFast, linewidth=1)
+plot(i_showEmas ? emaSlow : na, "EMA Slow", color=c_emaSlow, linewidth=1)
+plot(i_showEmas ? emaMacro : na, "EMA Macro", color=_mt741b, linewidth=2)
+
+if i_showScoreLbl and longSignal
+    label.new(bar_index, low, str.tostring(math.round(bullScore)), style=label.style_label_up, color=c_bull, textcolor=c_lblTxt, size=size.small)
+if i_showScoreLbl and shortSignal
+    label.new(bar_index, high, str.tostring(math.round(bearScore)), style=label.style_label_down, color=c_bear, textcolor=c_lblTxt, size=size.small)
+
+f_barColor(float pct) =>
+    color result = pct >= 0.66 ? color.new(#26a69a, 0) : pct >= 0.33 ? color.new(#f9a825, 0) : color.new(#ef5350, 0)
+    result
+
+f_bar(float val, float maxVal) =>
+    float safeMax = maxVal == 0 ? 1.0 : maxVal
+    int filled = math.round(math.min(val / safeMax, 1.0) * 10)
+    string bar = ""
+    for i = 1 to 10
+        bar += i <= filled ? "█" : "░"
+    bar + "  " + str.tostring(math.round(val / safeMax * 100)) + "%"
+
+// ── DASHBOARD ─────────────────────────────────────────
+var table dash = na
+
+f_dashPos(string p) =>
+    string result = p == "Top Right" ? position.top_right : p == "Top Left" ? position.top_left : p == "Bottom Right" ? position.bottom_right : position.bottom_left
+    result
+
+if i_showDash
+    if na(dash)
+        dash := table.new(f_dashPos(i_dashPos), 2, 12, border_width=1, border_color=color.new(#2a3040, 40), frame_width=1, frame_color=color.new(#3a2a6d, 40))
+    row_a = _mt741c
+    row_b = color.new(_mt741c, 40)
+    lbl_col = color.new(C_DASH_TXT, 25)
+    table.cell(dash, 0, 0, "MCSE", text_color=C_DASH_TXT, text_size=size.small, bgcolor=C_DASH_HDR, text_halign=text.align_left)
+    table.cell(dash, 1, 0, syminfo.ticker + "  ·  " + timeframe.period, text_color=C_DASH_TXT, text_size=size.small, bgcolor=C_DASH_HDR, text_halign=text.align_right)
+    table.cell(dash, 0, 1, "  Lock", text_color=lbl_col, text_size=size.small, bgcolor=row_a, text_halign=text.align_left)
+    table.cell(dash, 1, 1, i_lockSignal ? "ACTIVE  " : "OFF  ", text_color=i_lockSignal ? c_bear : C_DASH_TXT, text_size=size.small, bgcolor=row_a, text_halign=text.align_right)
+    table.cell(dash, 0, 2, "  Bull Score", text_color=lbl_col, text_size=size.small, bgcolor=row_b, text_halign=text.align_left)
+    table.cell(dash, 1, 2, f_bar(bullScore, 100), text_color=f_barColor(bullScore / 100), text_size=size.small, bgcolor=row_b, text_halign=text.align_right)
+    table.cell(dash, 0, 3, "  Bear Score", text_color=lbl_col, text_size=size.small, bgcolor=row_a, text_halign=text.align_left)
+    table.cell(dash, 1, 3, f_bar(bearScore, 100), text_color=f_barColor(bearScore / 100), text_size=size.small, bgcolor=row_a, text_halign=text.align_right)
+    table.cell(dash, 0, 4, "  Bull Tier", text_color=lbl_col, text_size=size.small, bgcolor=row_b, text_halign=text.align_left)
+    table.cell(dash, 1, 4, bullTier + "  ", text_color=bullTier == "None" ? C_DASH_TXT : c_bull, text_size=size.small, bgcolor=row_b, text_halign=text.align_right)
+    table.cell(dash, 0, 5, "  Bear Tier", text_color=lbl_col, text_size=size.small, bgcolor=row_a, text_halign=text.align_left)
+    table.cell(dash, 1, 5, bearTier + "  ", text_color=bearTier == "None" ? C_DASH_TXT : c_bear, text_size=size.small, bgcolor=row_a, text_halign=text.align_right)
+    table.cell(dash, 0, 6, "  Trend Leg", text_color=lbl_col, text_size=size.small, bgcolor=row_b, text_halign=text.align_left)
+    table.cell(dash, 1, 6, f_bar(math.max(trendUpScore, trendDnScore), 100), text_color=f_barColor(math.max(trendUpScore, trendDnScore) / 100), text_size=size.small, bgcolor=row_b, text_halign=text.align_right)
+    table.cell(dash, 0, 7, "  Momentum Leg", text_color=lbl_col, text_size=size.small, bgcolor=row_a, text_halign=text.align_left)
+    table.cell(dash, 1, 7, f_bar(math.max(momUpScore, momDnScore), 100), text_color=f_barColor(math.max(momUpScore, momDnScore) / 100), text_size=size.small, bgcolor=row_a, text_halign=text.align_right)
+    table.cell(dash, 0, 8, "  Volume Leg", text_color=lbl_col, text_size=size.small, bgcolor=row_b, text_halign=text.align_left)
+    table.cell(dash, 1, 8, f_bar(math.max(volUpScore, volDnScore), 100), text_color=f_barColor(math.max(volUpScore, volDnScore) / 100), text_size=size.small, bgcolor=row_b, text_halign=text.align_right)
+    table.cell(dash, 0, 9, "  Structure Leg", text_color=lbl_col, text_size=size.small, bgcolor=row_a, text_halign=text.align_left)
+    table.cell(dash, 1, 9, f_bar(math.max(structUpScore, structDnScore), 100), text_color=f_barColor(math.max(structUpScore, structDnScore) / 100), text_size=size.small, bgcolor=row_a, text_halign=text.align_right)
+    table.cell(dash, 0, 10, "  Volume Ratio", text_color=lbl_col, text_size=size.small, bgcolor=row_b, text_halign=text.align_left)
+    table.cell(dash, 1, 10, str.tostring(volRatio, "#.##") + "x  ", text_color=isVolSpike ? c_bull : C_DASH_TXT, text_size=size.small, bgcolor=row_b, text_halign=text.align_right)
+    table.cell(dash, 0, 11, "  ATR %", text_color=lbl_col, text_size=size.small, bgcolor=row_a, text_halign=text.align_left)
+    table.cell(dash, 1, 11, str.tostring(atrPct, "#.##") + "%  ", text_color=volatOk ? C_DASH_TXT : c_bear, text_size=size.small, bgcolor=row_a, text_halign=text.align_right)
+
+// ── ALERTS ──────────────────────────────────────────────
+string _longInner = str.format('"action":"{0}","ticker":"{1}","tf":"{2}","direction":"long","score":"{3}","tier":"{4}","entry":"{5}","sl":"{6}","tp1":"{7}","tp2":"{8}","tp3":"{9}"', i_actionLong, syminfo.tickerid, timeframe.period, str.tostring(math.round(bullScore)), bullTier, str.tostring(close, format.mintick), str.tostring(nz(slPrice), format.mintick), str.tostring(nz(tp1Price), format.mintick), str.tostring(nz(tp2Price), format.mintick), str.tostring(nz(tp3Price), format.mintick))
+string longPayload = "{" + _longInner + "}"
+
+string _shortInner = str.format('"action":"{0}","ticker":"{1}","tf":"{2}","direction":"short","score":"{3}","tier":"{4}","entry":"{5}","sl":"{6}","tp1":"{7}","tp2":"{8}","tp3":"{9}"', i_actionShort, syminfo.tickerid, timeframe.period, str.tostring(math.round(bearScore)), bearTier, str.tostring(close, format.mintick), str.tostring(nz(slPrice), format.mintick), str.tostring(nz(tp1Price), format.mintick), str.tostring(nz(tp2Price), format.mintick), str.tostring(nz(tp3Price), format.mintick))
+string shortPayload = "{" + _shortInner + "}"
+
+string _closeLongInner = str.format('"action":"{0}","ticker":"{1}","tf":"{2}","direction":"closelong"', i_actionCloseLong, syminfo.tickerid, timeframe.period)
+string closeLongPayload = "{" + _closeLongInner + "}"
+
+string _closeShortInner = str.format('"action":"{0}","ticker":"{1}","tf":"{2}","direction":"closeshort"', i_actionCloseShort, syminfo.tickerid, timeframe.period)
+string closeShortPayload = "{" + _closeShortInner + "}"
+
+string _tp1Inner = str.format('"action":"tp1hit","ticker":"{0}","tf":"{1}","price":"{2}"', syminfo.tickerid, timeframe.period, str.tostring(nz(tp1Price), format.mintick))
+string tp1Payload = "{" + _tp1Inner + "}"
+string _tp2Inner = str.format('"action":"tp2hit","ticker":"{0}","tf":"{1}","price":"{2}"', syminfo.tickerid, timeframe.period, str.tostring(nz(tp2Price), format.mintick))
+string tp2Payload = "{" + _tp2Inner + "}"
+string _tp3Inner = str.format('"action":"tp3hit","ticker":"{0}","tf":"{1}","price":"{2}"', syminfo.tickerid, timeframe.period, str.tostring(nz(tp3Price), format.mintick))
+string tp3Payload = "{" + _tp3Inner + "}"
+
+if longSignal
+    alert(longPayload, alert.freq_once_per_bar_close)
+    alert(closeShortPayload, alert.freq_once_per_bar_close)
+if shortSignal
+    alert(shortPayload, alert.freq_once_per_bar_close)
+    alert(closeLongPayload, alert.freq_once_per_bar_close)
+
+if tp1Hit or tp1HitS
+    alert(tp1Payload, alert.freq_once_per_bar)
+if tp2Hit or tp2HitS
+    alert(tp2Payload, alert.freq_once_per_bar)
+if tp3Hit or tp3HitS
+    alert(tp3Payload, alert.freq_once_per_bar)
+
+alertcondition(longSignal, "BUY Signal", "MarkitTick — BUY Signal Fired")
+alertcondition(shortSignal, "SELL Signal", "MarkitTick — SELL Signal Fired")
+alertcondition(shortSignal, "Close Long Signal", "MarkitTick — Close Long")
+alertcondition(longSignal, "Close Short Signal", "MarkitTick — Close Short")

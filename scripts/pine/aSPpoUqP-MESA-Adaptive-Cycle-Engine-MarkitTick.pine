@@ -1,0 +1,160 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © MarkitTick
+
+//@version=6
+indicator("MESA Adaptive Cycle Engine [MarkitTick]", overlay = true)
+
+// -----------------------------------------------------------------------------
+// Constants & Inputs
+// -----------------------------------------------------------------------------
+string GRP_VISUALS = "Visual Settings"
+string GRP_ALGO    = "MESA DSP Parameters"
+string GRP_RISK    = "Automation & JSON Payload"
+
+color  c_mama    = input.color(color.new(#00E676, 0),  "MAMA Color",           group = GRP_VISUALS)
+color  c_fama    = input.color(color.new(#FF1744, 0),  "FAMA Color",           group = GRP_VISUALS)
+color  c_bull    = input.color(color.new(#00E676, 85), "Bullish Fill",         group = GRP_VISUALS)
+color  c_bear    = input.color(color.new(#FF1744, 85), "Bearish Fill",         group = GRP_VISUALS)
+color  c_dashBg  = input.color(color.new(#131722, 10), "Dashboard Background", group = GRP_VISUALS)
+color  c_dashTxt = input.color(color.white,             "Dashboard Text",       group = GRP_VISUALS)
+
+float  src       = input.source(hl2,  "Price Source",                           group = GRP_ALGO)
+float  fastLimit = input.float(0.5,   "Fast Limit", minval = 0.1,  maxval = 0.9,  step = 0.1,  group = GRP_ALGO)
+float  slowLimit = input.float(0.05,  "Slow Limit", minval = 0.01, maxval = 0.1,  step = 0.01, group = GRP_ALGO)
+
+float  atrMult   = input.float(2.0,   "ATR Multiplier (Risk)", minval = 0.5, step = 0.1,       group = GRP_RISK)
+string whLong    = input.string("LONG",  "Webhook Action: Long",  group = GRP_RISK)
+string whShort   = input.string("SHORT", "Webhook Action: Short", group = GRP_RISK)
+
+// -----------------------------------------------------------------------------
+// Safety Check
+// -----------------------------------------------------------------------------
+bool isNonStandard = syminfo.type == "heikinashi" or syminfo.type == "renko" or syminfo.type == "linebreak" or syminfo.type == "kagi" or syminfo.type == "pnf"
+if isNonStandard
+    runtime.error("[MarkitTick] Warning: Non-standard chart detected. Cycle measurements will be distorted.")
+
+// -----------------------------------------------------------------------------
+// UDT Definitions
+// -----------------------------------------------------------------------------
+type RiskManager
+    float entryPrice
+    float stopLoss
+    float takeProfit
+
+type SignalEngine
+    int    regime
+    bool   hasSignal
+    string jsonMessage
+
+// -----------------------------------------------------------------------------
+// Global Methods (Risk & Webhook Mechanics)
+// -----------------------------------------------------------------------------
+method updateRisk(RiskManager this, float price, float atr, int direction) =>
+    this.entryPrice := price
+    this.stopLoss   := direction > 0 ? price - atr : price + atr
+    this.takeProfit := direction > 0 ? price + atr * 2.0 : price - atr * 2.0
+
+method buildPayload(SignalEngine this, RiskManager risk, string actionType) =>
+    string innerTemplate = '"ticker": "{0}", "action": "{1}", "entry": {2}, "sl": {3}, "tp": {4}'
+    string formattedInner = str.format(innerTemplate, syminfo.tickerid, actionType, str.tostring(risk.entryPrice, format.mintick), str.tostring(risk.stopLoss, format.mintick), str.tostring(risk.takeProfit, format.mintick))
+    this.jsonMessage := "{" + formattedInner + "}"
+
+// -----------------------------------------------------------------------------
+// MESA DSP Algorithm (Hilbert Transform)
+// -----------------------------------------------------------------------------
+var float phase    = 0.0
+var float mamaLine = src
+var float famaLine = src
+var float detrend  = 0.0
+var float i2       = 0.0
+var float q2       = 0.0
+var float re       = 0.0
+var float im       = 0.0
+var float period   = 0.0
+
+float htCoeff = 0.075 * nz(phase[1]) + 0.54
+float smooth = (4.0 * src + 3.0 * nz(src[1]) + 2.0 * nz(src[2]) + nz(src[3])) / 10.0
+detrend := (0.0962 * smooth + 0.5769 * nz(smooth[2]) - 0.5769 * nz(smooth[4]) - 0.0962 * nz(smooth[6])) * htCoeff
+
+float q1 = (0.0962 * detrend + 0.5769 * nz(detrend[2]) - 0.5769 * nz(detrend[4]) - 0.0962 * nz(detrend[6])) * htCoeff
+float i1 = nz(detrend[3])
+
+float jI = (0.0962 * i1 + 0.5769 * nz(i1[2]) - 0.5769 * nz(i1[4]) - 0.0962 * nz(i1[6])) * htCoeff
+float jQ = (0.0962 * q1 + 0.5769 * nz(q1[2]) - 0.5769 * nz(q1[4]) - 0.0962 * nz(q1[6])) * htCoeff
+
+i2 := 0.2 * (i1 - jQ) + 0.8 * nz(i2[1])
+q2 := 0.2 * (q1 + jI) + 0.8 * nz(q2[1])
+
+float prevI2 = nz(i2[1])
+float prevQ2 = nz(q2[1])
+
+re := 0.2 * (i2 * prevI2 + q2 * prevQ2) + 0.8 * nz(re[1])
+im := 0.2 * (i2 * prevQ2 - q2 * prevI2) + 0.8 * nz(im[1])
+
+if im != 0.0 and re != 0.0
+    float rawPeriod = 360.0 / math.todegrees(math.atan(im / re))
+    period := math.max(math.min(rawPeriod, 1.5 * nz(period[1])), 0.67 * nz(period[1]))
+
+period := 0.2 * math.max(math.min(period, 50.0), 6.0) + 0.8 * nz(period[1])
+
+if i1 != 0.0
+    phase := math.todegrees(math.atan(q1 / i1))
+
+float deltaPhase = math.max(nz(phase[1]) - phase, 1.0)
+float alpha      = math.max(math.min(fastLimit / deltaPhase, fastLimit), slowLimit)
+
+mamaLine := alpha * src + (1.0 - alpha) * nz(mamaLine[1])
+famaLine := 0.5 * alpha * mamaLine + (1.0 - 0.5 * alpha) * nz(famaLine[1])
+
+// -----------------------------------------------------------------------------
+// Risk Assessment & State Evaluation
+// -----------------------------------------------------------------------------
+float atrVal = ta.atr(14)
+
+var RiskManager  rm = RiskManager.new(na, na, na)
+var SignalEngine se = SignalEngine.new(0, false, "")
+
+bool isGoldenCross = ta.crossover(mamaLine, famaLine)
+bool isDeathCross  = ta.crossunder(mamaLine, famaLine)
+
+if isGoldenCross
+    se.regime    := 1
+    se.hasSignal := true
+    rm.updateRisk(close, atrVal * atrMult, 1)
+    se.buildPayload(rm, whLong)
+else if isDeathCross
+    se.regime    := -1
+    se.hasSignal := true
+    rm.updateRisk(close, atrVal * atrMult, -1)
+    se.buildPayload(rm, whShort)
+else
+    se.hasSignal := false
+
+if se.hasSignal and barstate.isconfirmed
+    alert(se.jsonMessage, alert.freq_once_per_bar_close)
+
+// -----------------------------------------------------------------------------
+// Plots & Visuals
+// -----------------------------------------------------------------------------
+p_mama = plot(mamaLine, "MAMA", color = c_mama, linewidth = 2)
+p_fama = plot(famaLine, "FAMA", color = c_fama, linewidth = 2)
+fill(p_mama, p_fama, color = mamaLine > famaLine ? c_bull : c_bear, title = "Regime Fill")
+
+plotshape(isGoldenCross, title = "Buy Signal",  style = shape.triangleup,   location = location.belowbar, color = c_mama, size = size.small)
+plotshape(isDeathCross,  title = "Sell Signal", style = shape.triangledown, location = location.abovebar, color = c_fama, size = size.small)
+
+// -----------------------------------------------------------------------------
+// Dashboard (Self-Cleaning Architecture)
+// -----------------------------------------------------------------------------
+var table analyticsDash = table.new(position.bottom_right, 2, 3, bgcolor = c_dashBg, border_width = 1, border_color = color.gray)
+bool isBull = mamaLine > famaLine
+
+table.cell(analyticsDash, 0, 0, "Market Regime", text_color = c_dashTxt, text_halign = text.align_left)
+table.cell(analyticsDash, 1, 0, isBull ? "Bullish (Trend Mode)" : "Bearish (Trend Mode)", text_color = isBull ? c_mama : c_fama, text_halign = text.align_right)
+
+table.cell(analyticsDash, 0, 1, "Phase Volatility (ATR)", text_color = c_dashTxt, text_halign = text.align_left)
+table.cell(analyticsDash, 1, 1, str.tostring(atrVal, format.mintick), text_color = c_dashTxt, text_halign = text.align_right)
+
+table.cell(analyticsDash, 0, 2, "Active Automation Payload", text_color = c_dashTxt, text_halign = text.align_left)
+table.cell(analyticsDash, 1, 2, str.length(se.jsonMessage) > 0 ? "Ready for Webhook" : "Awaiting Cross...", text_color = c_dashTxt, text_halign = text.align_right)

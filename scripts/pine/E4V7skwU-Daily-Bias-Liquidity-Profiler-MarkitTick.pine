@@ -1,0 +1,848 @@
+
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © MarkitTick
+
+//@version=6
+indicator("Daily Bias Liquidity Profiler [MarkitTick]", overlay = true, max_boxes_count = 500, max_lines_count = 500, max_labels_count = 500, max_bars_back = 5000)
+
+// -----------------------------------------------------------------------------
+// UDTs, Inputs & Constants
+// -----------------------------------------------------------------------------
+
+type DayProfile
+    float  pdh
+    float  pdl
+    float  pdc
+    float  pdRange
+    int    dayType
+    float  adrValue
+
+type RangeZone
+    float  upper
+    float  lower
+    float  probability
+    box    displayBox
+    line   midLine
+
+type SessionLiquidity
+    float  asiaHigh
+    float  asiaLow
+    float  londonHigh
+    float  londonLow
+    float  nyHigh
+    float  nyLow
+    bool   asiaSwept
+    bool   londonSwept
+
+type VolatilityMetrics
+    float  adrPct
+    int    barsToReach68
+    int    barsToReach95
+    bool   fastMomentum
+
+type BiasState
+    float  sweepProbPDH
+    float  sweepProbPDL
+    int    expansionCount
+    int    consolidationCount
+    int    reversalCount
+    float  avgExpansionRatio
+    float  avgConsolidRatio
+    float  avgReversalRatio
+    bool   biasLong
+    bool   biasShort
+    bool   biasNeutral
+
+string G_CORE    = "Core Settings"
+string G_ZONES   = "Probability Zones"
+string G_SWEEP   = "Sweep Probability"
+string G_BIAS    = "Bias Engine"
+string G_VISUAL  = "Visual Settings"
+string G_DASH    = "Dashboard"
+string G_ALERTS  = "Alerts"
+string G_SESSION = "Session Liquidity"
+string G_VOLMET  = "Volatility Metrics"
+
+int    inAdrLen           = input.int(20,    "ADR Lookback (Days)",              minval = 5,  maxval = 100, group = G_CORE)
+int    inPatternLen       = input.int(10,    "Pattern History (Days)",           minval = 3,  maxval = 50,  group = G_CORE)
+bool   inUseSession       = input.bool(false,"Filter by Session",                group = G_CORE)
+string inSessionSpec      = input.session("0930-1600", "Session Hours",          group = G_CORE)
+
+bool   inShow68           = input.bool(true,  "Show 68% Zone",                  group = G_ZONES)
+bool   inShow95           = input.bool(false,  "Show 95% Zone",                  group = G_ZONES)
+bool   inShow99           = input.bool(false, "Show 99% Zone",                  group = G_ZONES)
+bool   inShowMid          = input.bool(true,  "Show Daily Midline",             group = G_ZONES)
+float  inSigma1Mult       = input.float(0.68, "68% Zone Multiplier", minval = 0.5, maxval = 1.0,  step = 0.01, group = G_ZONES)
+float  inSigma2Mult       = input.float(1.28, "95% Zone Multiplier", minval = 1.0, maxval = 2.0,  step = 0.01, group = G_ZONES)
+float  inSigma3Mult       = input.float(1.75, "99% Zone Multiplier", minval = 1.5, maxval = 3.0,  step = 0.01, group = G_ZONES)
+
+bool   inShowSweepProb    = input.bool(true,  "Show Sweep Probability Labels",  group = G_SWEEP)
+int    inSweepLen         = input.int(20,     "Sweep Probability Lookback",     minval = 5, maxval = 100, group = G_SWEEP)
+
+float  inExpansionThresh  = input.float(1.1,  "Expansion Threshold (× ADR)",   minval = 1.0, step = 0.05, group = G_BIAS)
+float  inConsolidThresh   = input.float(0.6,  "Consolidation Threshold (× ADR)", minval = 0.1, step = 0.05, group = G_BIAS)
+int    inBiasPatternLen   = input.int(3,      "Consecutive Bars for Bias",     minval = 1, maxval = 5, group = G_BIAS)
+
+color  colZone68Upper     = input.color(color.new(#00f5ff, 80), "68% Zone Color",      group = G_VISUAL)
+color  colZone95Upper     = input.color(color.new(#bf5fff, 83), "95% Zone Color",      group = G_VISUAL)
+color  colZone99Upper     = input.color(color.new(#ff2d6e, 86), "99% Zone Color",      group = G_VISUAL)
+color  colMidLine         = input.color(color.new(#a8edff, 30), "Midline Color",       group = G_VISUAL)
+color  colPDH             = input.color(color.new(#ff7700, 12), "PDH Line Color",      group = G_VISUAL)
+color  colPDL             = input.color(color.new(#0095ff, 12), "PDL Line Color",      group = G_VISUAL)
+color  colExpansion       = input.color(color.new(#00ff9f,  0), "Expansion Label",     group = G_VISUAL)
+color  colConsolid        = input.color(color.new(#ffee00,  0), "Consolidation Label", group = G_VISUAL)
+color  colReversal        = input.color(color.new(#ff2d6e,  0), "Reversal Label",      group = G_VISUAL)
+
+bool   inShowDash         = input.bool(true,         "Show Dashboard", group = G_DASH)
+string inDashPos          = input.string("Top Right", "Position", options = ["Top Right","Top Left","Bottom Right","Bottom Left"], group = G_DASH)
+string inDashSize         = input.string("Small",     "Size",     options = ["Tiny","Small","Normal","Large"], group = G_DASH)
+
+string inActExpansion     = input.string("expansion",     "Expansion Alert Tag",     group = G_ALERTS)
+string inActConsolid      = input.string("consolidation", "Consolidation Alert Tag", group = G_ALERTS)
+string inActReversal      = input.string("reversal",      "Reversal Alert Tag",      group = G_ALERTS)
+string inActSweepPDH      = input.string("sweep_pdh",     "Sweep PDH Alert Tag",     group = G_ALERTS)
+string inActSweepPDL      = input.string("sweep_pdl",     "Sweep PDL Alert Tag",     group = G_ALERTS)
+
+bool   inEnableSession    = input.bool(false,   "Enable Session Liquidity",       group = G_SESSION)
+string inAsiaSession      = input.session("1700-0000", "Asia Session",           group = G_SESSION)
+string inLondonSession    = input.session("0200-0800", "London Session",         group = G_SESSION)
+string inNYSession        = input.session("0700-1200", "New York Session",       group = G_SESSION)
+bool   inShowSessionLines = input.bool(true,   "Show Session H/L Lines",         group = G_SESSION)
+color  colAsia            = input.color(color.new(#f5c842, 50), "Asia Color",    group = G_SESSION)
+color  colLondon          = input.color(color.new(#42f5a7, 50), "London Color",  group = G_SESSION)
+color  colNY              = input.color(color.new(#f542a7, 50), "NY Color",      group = G_SESSION)
+float  inBodyPctFilter    = input.float(0.65, "Min Body % for Sweep Confirm",
+     minval = 0.30, maxval = 0.95, step = 0.05,                                  group = G_SESSION)
+bool   inEnableFVGConfl   = input.bool(true,  "FVG Confluence at Zones",         group = G_SESSION)
+
+bool   inEnableVolMet     = input.bool(true,  "Enable Volatility Metrics",       group = G_VOLMET)
+int    inAdrPctLen        = input.int(100,    "ADR Percentile Lookback (Days)",
+     minval = 20, maxval = 500,                                                   group = G_VOLMET)
+int    inFastMomBars      = input.int(24,     "Fast Momentum Threshold (Bars)",
+     minval = 4, maxval = 200,                                                    group = G_VOLMET)
+bool   inShowVolDash      = input.bool(true,  "Show Vol Metrics in Dashboard",   group = G_VOLMET)
+
+float SIGMA_BASE = 0.5
+int   MAX_DAYS   = 500
+
+// -----------------------------------------------------------------------------
+// Core Calculation Engine
+// -----------------------------------------------------------------------------
+
+bool _isIntraday = timeframe.in_seconds() < 3600
+
+var array<DayProfile> dayHistory    = array.new<DayProfile>()
+var array<float>      dailyRanges   = array.new<float>()
+var BiasState         biasState     = BiasState.new(0.0, 0.0, 0, 0, 0, 0.0, 0.0, 0.0, false, false, true)
+
+var float curDayOpen  = na
+var float curDayHigh  = na
+var float curDayLow   = na
+var int   curDayStart = na
+
+var float adr = na
+var float pdh = na
+var float pdl = na
+var float pdc = na
+
+var array<int> sweepPDHHistory = array.new<int>()
+var array<int> sweepPDLHistory = array.new<int>()
+var array<int> dayTypeHistory  = array.new<int>()
+
+var RangeZone zone68 = RangeZone.new(na, na, 0.68, na, na)
+var RangeZone zone95 = RangeZone.new(na, na, 0.95, na, na)
+var RangeZone zone99 = RangeZone.new(na, na, 0.99, na, na)
+
+var SessionLiquidity  sessLiq   = SessionLiquidity.new(na, na, na, na, na, na, false, false)
+var array<float>      adrPctBuf = array.new<float>()
+var VolatilityMetrics volMet    = VolatilityMetrics.new(na, -1, -1, false)
+
+var line lnAsiaH   = na, var line lnAsiaL   = na
+var line lnLondonH = na, var line lnLondonL = na
+var line lnNYH     = na, var line lnNYL     = na
+
+var bool fvgBullAt95 = false
+var bool fvgBearAt95 = false
+var bool fvgBullAt99 = false
+var bool fvgBearAt99 = false
+
+var line  lnPDH      = na, var line  lnPDL      = na
+var label lbPDH      = na, var label lbPDL      = na
+var label lbSweepPDH = na, var label lbSweepPDL = na
+var table dashTable  = na
+
+f_computeADR() =>
+    int sz = array.size(dailyRanges)
+    if sz == 0
+        float(na)
+    else
+        int n = math.min(sz, inAdrLen)
+        float sum = 0.0
+        for i = 0 to n - 1
+            sum += array.get(dailyRanges, sz - 1 - i)
+        sum / n
+
+f_classifyDay(float dayRange, float adrVal) =>
+    if na(adrVal) or adrVal == 0.0
+        2
+    else
+        float ratio = dayRange / adrVal
+        ratio >= inExpansionThresh ? 1 : ratio <= inConsolidThresh ? 2 : 3
+
+f_sweepProb(array<int> hist) =>
+    int sz = array.size(hist)
+    if sz == 0
+        float(na)
+    else
+        int n   = math.min(sz, inSweepLen)
+        int sum = 0
+        for i = 0 to n - 1
+            sum += array.get(hist, sz - 1 - i)
+        float(sum) / float(n)
+
+f_rebuildBias(array<DayProfile> hist) =>
+    int sz = array.size(hist)
+    if sz == 0
+        biasState.expansionCount     := 0
+        biasState.consolidationCount := 0
+        biasState.reversalCount      := 0
+        biasState.avgExpansionRatio  := 1.1
+        biasState.avgConsolidRatio   := 0.5
+        biasState.avgReversalRatio   := 0.9
+    else
+        int expC = 0, int conC = 0, int revC = 0
+        float expRSum = 0.0, float conRSum = 0.0, float revRSum = 0.0
+        int n = math.min(sz, inPatternLen)
+        for i = 0 to n - 1
+            DayProfile dp = array.get(hist, sz - 1 - i)
+            float ratio = (dp.adrValue > 0.0 and not na(dp.adrValue)) ? dp.pdRange / dp.adrValue : 1.0
+            if dp.dayType == 1
+                expC    += 1
+                expRSum += ratio
+            else if dp.dayType == 2
+                conC    += 1
+                conRSum += ratio
+            else
+                revC    += 1
+                revRSum += ratio
+        biasState.expansionCount     := expC
+        biasState.consolidationCount := conC
+        biasState.reversalCount      := revC
+        biasState.avgExpansionRatio  := expC > 0 ? expRSum / expC : 1.1
+        biasState.avgConsolidRatio   := conC > 0 ? conRSum / conC : 0.5
+        biasState.avgReversalRatio   := revC > 0 ? revRSum / revC : 0.9
+
+f_computeBias(array<int> typeHist, float refClose) =>
+    int sz  = array.size(typeHist)
+    bool bL = false, bool bS = false, bool bN = true
+    if sz >= inBiasPatternLen
+        int expCount = 0, int conCount = 0, int revCount = 0
+        int n = math.min(sz, inBiasPatternLen)
+        for i = 0 to n - 1
+            int t = array.get(typeHist, sz - 1 - i)
+            if t == 1
+                expCount += 1
+            else if t == 2
+                conCount += 1
+            else
+                revCount += 1
+        if conCount >= inBiasPatternLen
+            if not na(pdh) and not na(pdl)
+                float mid = (pdh + pdl) / 2.0
+                bL := refClose < mid
+                bS := refClose >= mid
+                bN := false
+        else if expCount >= inBiasPatternLen
+            bN := true
+        else if revCount >= inBiasPatternLen
+            bL := refClose < pdc
+            bS := refClose >= pdc
+            bN := false
+    [bL, bS, bN]
+
+f_buildZone(RangeZone z, float dayOpenPrice, float halfRange, color zoneCol, bool showZone) =>
+    if not na(z.displayBox)
+        box.delete(z.displayBox)
+    if not na(z.midLine)
+        line.delete(z.midLine)
+    if showZone and not na(dayOpenPrice) and not na(halfRange)
+        float upper  = dayOpenPrice + halfRange
+        float lower  = dayOpenPrice - halfRange
+        z.upper      := upper
+        z.lower      := lower
+        float _buf   = nz(adr, halfRange) * 0.15
+        float _vTop  = _isIntraday and not na(curDayHigh) ? math.min(upper, curDayHigh + _buf) : upper
+        float _vBot  = _isIntraday and not na(curDayLow)  ? math.max(lower, curDayLow  - _buf) : lower
+        z.displayBox := box.new(curDayStart, _vTop, bar_index, _vBot,
+             border_color = color.new(zoneCol, 30), border_width = 1,
+             bgcolor = zoneCol,
+             text = str.tostring(math.round(z.probability * 100)) + "%",
+             text_color = color.new(#e8f8ff, 0), text_size = size.normal,
+             text_halign = text.align_right, text_valign = text.align_center)
+        if inShowMid
+            z.midLine := line.new(curDayStart, dayOpenPrice, bar_index, dayOpenPrice,
+                 color = colMidLine, style = line.style_dashed, width = 1)
+    z
+
+f_extendZone(RangeZone z) =>
+    if not na(z.displayBox)
+        box.set_right(z.displayBox, bar_index + 50)
+        if _isIntraday and not na(curDayHigh) and not na(curDayLow)
+            float _buf = nz(adr, 0.0) * 0.15
+            box.set_top(z.displayBox,    math.min(z.upper, curDayHigh + _buf))
+            box.set_bottom(z.displayBox, math.max(z.lower, curDayLow  - _buf))
+    if not na(z.midLine)
+        line.set_x2(z.midLine, bar_index + 50)
+
+f_bodyPct(float o, float h, float l, float c) =>
+    float rng = h - l
+    rng > 0.0 ? math.abs(c - o) / rng : 0.0
+
+f_adrPct(float curADR) =>
+    int sz = array.size(adrPctBuf)
+    if sz < 2 or na(curADR)
+        float(na)
+    else
+        int below = 0
+        int _n    = math.min(sz, inAdrPctLen)
+        int _off  = sz - _n
+        for i = _off to sz - 1
+            if array.get(adrPctBuf, i) <= curADR
+                below += 1
+        float(below) / float(_n)
+
+f_detectFVG() =>
+    bool bull = low[1]  > high[3]
+    bool bear = high[1] < low[3]
+    [bull, bear]
+
+f_updateSessionLiq() =>
+    if inEnableSession
+        bool inAsia   = not na(time("", inAsiaSession))
+        bool inLondon = not na(time("", inLondonSession))
+        bool inNY     = not na(time("", inNYSession))
+        if inAsia
+            sessLiq.asiaHigh   := na(sessLiq.asiaHigh)   or high[1] > sessLiq.asiaHigh   ? high[1] : sessLiq.asiaHigh  
+            sessLiq.asiaLow    := na(sessLiq.asiaLow)    or low[1]  < sessLiq.asiaLow    ? low[1]  : sessLiq.asiaLow
+        if inLondon
+            sessLiq.londonHigh := na(sessLiq.londonHigh) or high[1] > sessLiq.londonHigh ? high[1] : sessLiq.londonHigh 
+            sessLiq.londonLow  := na(sessLiq.londonLow)  or low[1]  < sessLiq.londonLow  ? low[1]  : sessLiq.londonLow
+        if inNY
+            sessLiq.nyHigh     := na(sessLiq.nyHigh)     or high[1] > sessLiq.nyHigh     ? high[1] : sessLiq.nyHigh     
+            sessLiq.nyLow      := na(sessLiq.nyLow)      or low[1]  < sessLiq.nyLow      ? low[1]  : sessLiq.nyLow
+
+f_internalSweeps() =>
+    float bp  = f_bodyPct(open[1], high[1], low[1], close[1])
+    bool  mom = bp >= inBodyPctFilter
+    bool sAH  = not na(sessLiq.asiaHigh)   and high[1] > sessLiq.asiaHigh   and close[1] < sessLiq.asiaHigh   and mom
+    bool sAL  = not na(sessLiq.asiaLow)    and low[1]  < sessLiq.asiaLow    and close[1] > sessLiq.asiaLow    and mom
+    bool sLH  = not na(sessLiq.londonHigh) and high[1] > sessLiq.londonHigh and close[1] < sessLiq.londonHigh and mom
+    bool sLL  = not na(sessLiq.londonLow)  and low[1]  < sessLiq.londonLow  and close[1] > sessLiq.londonLow  and mom
+    [sAH, sAL, sLH, sLL]
+
+bool isNewDay = timeframe.change("D")
+
+if isNewDay
+    if not na(curDayOpen) and not na(curDayHigh) and not na(curDayLow)
+        float prevRange      = curDayHigh - curDayLow
+        float adrForClassify = f_computeADR()
+        int   prevType       = f_classifyDay(prevRange, adrForClassify)
+
+        int sweptPDH = (not na(pdh) and curDayHigh > pdh) ? 1 : 0
+        int sweptPDL = (not na(pdl) and curDayLow  < pdl) ? 1 : 0
+
+        array.push(sweepPDHHistory, sweptPDH)
+        array.push(sweepPDLHistory, sweptPDL)
+        if array.size(sweepPDHHistory) > inSweepLen + 5
+            array.shift(sweepPDHHistory)
+        if array.size(sweepPDLHistory) > inSweepLen + 5
+            array.shift(sweepPDLHistory)
+
+        array.push(dayTypeHistory, prevType)
+        if array.size(dayTypeHistory) > inPatternLen + 5
+            array.shift(dayTypeHistory)
+
+        array.push(dailyRanges, prevRange)
+        if array.size(dailyRanges) > inAdrLen + 5
+            array.shift(dailyRanges)
+
+        if inEnableVolMet
+            array.push(adrPctBuf, prevRange)
+            if array.size(adrPctBuf) > inAdrPctLen + 5
+                array.shift(adrPctBuf)
+
+        DayProfile dp = DayProfile.new(pdh, pdl, pdc, prevRange, prevType, adrForClassify)
+        array.push(dayHistory, dp)
+        if array.size(dayHistory) > MAX_DAYS
+            array.shift(dayHistory)
+
+    pdh := curDayHigh
+    pdl := curDayLow
+    pdc := close[1]
+
+    adr := f_computeADR()
+
+    f_rebuildBias(dayHistory)
+    [bL, bS, bN] = f_computeBias(dayTypeHistory, open)
+    biasState.biasLong     := bL
+    biasState.biasShort    := bS
+    biasState.biasNeutral  := bN
+    biasState.sweepProbPDH := nz(f_sweepProb(sweepPDHHistory), 0.0)
+    biasState.sweepProbPDL := nz(f_sweepProb(sweepPDLHistory), 0.0)
+
+    curDayOpen  := open
+    curDayHigh  := high
+    curDayLow   := low
+    curDayStart := bar_index
+
+    if inEnableSession
+        sessLiq.asiaHigh   := na,  sessLiq.asiaLow   := na
+        sessLiq.londonHigh := na,  sessLiq.londonLow  := na
+        sessLiq.nyHigh     := na,  sessLiq.nyLow      := na
+        sessLiq.asiaSwept  := false, sessLiq.londonSwept := false
+
+    if inEnableVolMet
+        volMet.barsToReach68 := -1
+        volMet.barsToReach95 := -1
+        volMet.fastMomentum  := false
+        volMet.adrPct        := f_adrPct(adr)
+
+    if not na(adr) and not na(curDayOpen)
+        zone68 := f_buildZone(zone68, curDayOpen, adr * inSigma1Mult * SIGMA_BASE * 2.0, colZone68Upper, inShow68)
+        zone95 := f_buildZone(zone95, curDayOpen, adr * inSigma2Mult * SIGMA_BASE * 2.0, colZone95Upper, inShow95)
+        zone99 := f_buildZone(zone99, curDayOpen, adr * inSigma3Mult * SIGMA_BASE * 2.0, colZone99Upper, inShow99)
+
+else
+    if na(curDayHigh) or high > curDayHigh
+        curDayHigh := high
+    if na(curDayLow) or low < curDayLow
+        curDayLow := low
+    f_extendZone(zone68)
+    f_extendZone(zone95)
+    f_extendZone(zone99)
+
+    if inEnableSession
+        f_updateSessionLiq()
+
+    if inEnableVolMet and not na(adr) and not na(curDayOpen) and not na(curDayStart)
+        int _elapsed = bar_index - curDayStart
+        if volMet.barsToReach68 == -1 and (high[1] >= zone68.upper or low[1] <= zone68.lower)   
+            volMet.barsToReach68 := _elapsed
+        if volMet.barsToReach95 == -1 and (high[1] >= zone95.upper or low[1] <= zone95.lower)   
+            volMet.barsToReach95 := _elapsed
+            volMet.fastMomentum  := _elapsed <= inFastMomBars
+
+    if inEnableFVGConfl and not na(zone95.upper) and not na(zone95.lower)
+        [_bull, _bear] = f_detectFVG()
+        bool _near95   = (low[1] <= zone95.upper and low[1] >= zone95.lower) or
+                         (high[1] >= zone95.lower and high[1] <= zone95.upper)
+        bool _near99   = not na(zone99.upper) and
+                         ((low[1] <= zone99.upper and low[1] >= zone99.lower) or
+                          (high[1] >= zone99.lower and high[1] <= zone99.upper))
+        fvgBullAt95 := _bull and _near95
+        fvgBearAt95 := _bear and _near95
+        fvgBullAt99 := _bull and _near99
+        fvgBearAt99 := _bear and _near99
+
+float intradayRange = na(curDayHigh) or na(curDayLow) ? na : curDayHigh - curDayLow
+int   projectedType = na(intradayRange) or na(adr) ? 2 : f_classifyDay(intradayRange, adr)
+
+int  _dhSz       = array.size(dayHistory)
+int  _lastDt     = _dhSz > 0 ? array.get(dayHistory, _dhSz - 1).dayType : 0
+bool sigExpansion = isNewDay and _lastDt == 1
+bool sigConsolid  = isNewDay and _lastDt == 2
+bool sigReversal  = isNewDay and _lastDt == 3
+bool sigSweepPDH  = not na(pdh) and high[1] > pdh and close[1] < pdh   
+bool sigSweepPDL  = not na(pdl) and low[1]  < pdl and close[1] > pdl   
+
+bool sigSwAsiaH   = false
+bool sigSwAsiaL   = false
+bool sigSwLondonH = false
+bool sigSwLondonL = false
+if inEnableSession
+    [_sAH, _sAL, _sLH, _sLL] = f_internalSweeps()
+    sigSwAsiaH   := _sAH
+    sigSwAsiaL   := _sAL
+    sigSwLondonH := _sLH
+    sigSwLondonL := _sLL
+
+bool sigFVGBullConfl = inEnableFVGConfl and (fvgBullAt95 or fvgBullAt99)
+bool sigFVGBearConfl = inEnableFVGConfl and (fvgBearAt95 or fvgBearAt99)
+
+// -----------------------------------------------------------------------------
+// Visualization Engine
+// -----------------------------------------------------------------------------
+
+f_dayTypeColor(int dt) =>
+    dt == 1 ? colExpansion : dt == 2 ? colConsolid : colReversal
+
+f_dayTypeText(int dt) =>
+    dt == 1 ? "EXPANSION" : dt == 2 ? "CONSOLIDATION" : "REVERSAL"
+
+f_biasText() =>
+    biasState.biasLong ? "LONG BIAS" : biasState.biasShort ? "SHORT BIAS" : "NEUTRAL"
+
+f_biasColor() =>
+    biasState.biasLong ? colExpansion : biasState.biasShort ? colReversal : colConsolid
+
+var label lbProjType     = na
+var label lbDayTypeHist  = na
+var label lbActiveSweepH = na
+var label lbActiveSweepL = na
+
+if isNewDay
+    line.delete(lnPDH),  line.delete(lnPDL)
+    label.delete(lbPDH), label.delete(lbPDL)
+    label.delete(lbSweepPDH), label.delete(lbSweepPDL)
+    label.delete(lbDayTypeHist)
+    label.delete(lbActiveSweepH)
+    label.delete(lbActiveSweepL)
+
+    float _tick = math.max(nz(adr, syminfo.mintick * 100) * 0.015, syminfo.mintick)
+
+    if inShowDash
+        if not na(pdh)
+            lnPDH := line.new(curDayStart, pdh, curDayStart + 1, pdh,
+                 color = colPDH, width = 1, style = line.style_dotted)
+            lbPDH := label.new(bar_index + 50, pdh,
+                 "PDH  " + str.tostring(pdh, format.mintick),
+                 yloc = yloc.price, style = label.style_none,
+                 color = color.new(colPDH, 60),
+                 textcolor = color.new(colPDH, 0), size = size.small,
+                 textalign = text.align_left)
+            if inShowSweepProb and not na(biasState.sweepProbPDH)
+                lbSweepPDH := label.new(curDayStart, pdh,
+                     str.tostring(math.round(biasState.sweepProbPDH * 100)) + "% sweep",
+                     yloc = yloc.price, style = label.style_label_right,
+                     color = color.new(colPDH, 45), textcolor = color.white, size = size.small)
+        if not na(pdl)
+            lnPDL := line.new(curDayStart, pdl, curDayStart + 1, pdl,
+                 color = colPDL, width = 1, style = line.style_dotted)
+            lbPDL := label.new(bar_index + 50, pdl,
+                 "PDL  " + str.tostring(pdl, format.mintick),
+                 yloc = yloc.price, style = label.style_none,
+                 color = color.new(colPDL, 60),
+                 textcolor = color.new(colPDL, 0), size = size.small,
+                 textalign = text.align_left)
+            if inShowSweepProb and not na(biasState.sweepProbPDL)
+                lbSweepPDL := label.new(curDayStart, pdl,
+                     str.tostring(math.round(biasState.sweepProbPDL * 100)) + "% sweep",
+                     yloc = yloc.price, style = label.style_label_right,
+                     color = color.new(colPDL, 45), textcolor = color.white, size = size.small)
+
+if not isNewDay
+    if not na(lnPDH)
+        line.set_x2(lnPDH, bar_index + 50)
+    if not na(lnPDL)
+        line.set_x2(lnPDL, bar_index + 50)
+    if not na(lbPDH)
+        label.set_x(lbPDH, bar_index + 50)
+    if not na(lbPDL)
+        label.set_x(lbPDL, bar_index + 50)
+
+label.delete(lbProjType)
+if not na(projectedType) and not na(curDayStart)
+    int _midX = curDayStart + math.round((bar_index + 50 - curDayStart) / 2)
+    float _labelY = _isIntraday and not na(curDayHigh)
+         ? curDayHigh + nz(adr, 0.0) * 0.03
+         : not na(zone99.upper) ? zone99.upper * 1.001
+         : not na(zone95.upper) ? zone95.upper * 1.001
+         : not na(zone68.upper) ? zone68.upper * 1.001 : high
+    lbProjType := label.new(_midX, _labelY,
+         f_dayTypeText(projectedType) + "  |  " + f_biasText(),
+         yloc = yloc.price, style = label.style_label_down,
+         color = color.new(f_dayTypeColor(projectedType), 40),
+         textcolor = color.white, size = size.small,
+         textalign = text.align_center)
+
+if isNewDay and _dhSz > 0
+    DayProfile lastDp = array.get(dayHistory, _dhSz - 1)
+    float _candleMid = (high[1] + low[1]) / 2.0
+    lbDayTypeHist := label.new(bar_index - 2, _candleMid,
+         f_dayTypeText(lastDp.dayType),
+         yloc = yloc.price, style = label.style_label_right,
+         color = color.new(f_dayTypeColor(lastDp.dayType), 35),
+         textcolor = color.white, size = size.small)
+
+if sigSweepPDH
+    label.delete(lbActiveSweepH)
+    int _midXH = curDayStart + math.round((bar_index + 50 - curDayStart) / 2)
+    lbActiveSweepH := label.new(_midXH, pdh,
+         "⚡ PDH SWEPT  " + str.tostring(math.round(biasState.sweepProbPDH * 100)) + "% hist",
+         yloc = yloc.price, style = label.style_label_up,
+         color = color.new(colPDH, 15), textcolor = color.white, size = size.small)
+
+if sigSweepPDL
+    label.delete(lbActiveSweepL)
+    int _midXL = curDayStart + math.round((bar_index + 50 - curDayStart) / 2)
+    lbActiveSweepL := label.new(_midXL, pdl,
+         "⚡ PDL SWEPT  " + str.tostring(math.round(biasState.sweepProbPDL * 100)) + "% hist",
+         yloc = yloc.price, style = label.style_label_down,
+         color = color.new(colPDL, 15), textcolor = color.white, size = size.small)
+
+if inEnableSession and inShowSessionLines
+    if not na(sessLiq.asiaHigh)
+        if na(lnAsiaH)
+            lnAsiaH := line.new(curDayStart, sessLiq.asiaHigh, bar_index + 50, sessLiq.asiaHigh,
+                 color = colAsia, width = 1, style = line.style_dashed)
+        else
+            line.set_y1(lnAsiaH, sessLiq.asiaHigh), line.set_y2(lnAsiaH, sessLiq.asiaHigh)
+            line.set_x2(lnAsiaH, bar_index + 50)
+    if not na(sessLiq.asiaLow)
+        if na(lnAsiaL)
+            lnAsiaL := line.new(curDayStart, sessLiq.asiaLow, bar_index + 50, sessLiq.asiaLow,
+                 color = colAsia, width = 1, style = line.style_dashed)
+        else
+            line.set_y1(lnAsiaL, sessLiq.asiaLow), line.set_y2(lnAsiaL, sessLiq.asiaLow)
+            line.set_x2(lnAsiaL, bar_index + 50)
+    if not na(sessLiq.londonHigh)
+        if na(lnLondonH)
+            lnLondonH := line.new(curDayStart, sessLiq.londonHigh, bar_index + 50, sessLiq.londonHigh,
+                 color = colLondon, width = 1, style = line.style_dashed)
+        else
+            line.set_y1(lnLondonH, sessLiq.londonHigh), line.set_y2(lnLondonH, sessLiq.londonHigh)
+            line.set_x2(lnLondonH, bar_index + 50)
+    if not na(sessLiq.londonLow)
+        if na(lnLondonL)
+            lnLondonL := line.new(curDayStart, sessLiq.londonLow, bar_index + 50, sessLiq.londonLow,
+                 color = colLondon, width = 1, style = line.style_dashed)
+        else
+            line.set_y1(lnLondonL, sessLiq.londonLow), line.set_y2(lnLondonL, sessLiq.londonLow)
+            line.set_x2(lnLondonL, bar_index + 50)
+    if not na(sessLiq.nyHigh)
+        if na(lnNYH)
+            lnNYH := line.new(curDayStart, sessLiq.nyHigh, bar_index + 50, sessLiq.nyHigh,
+                 color = colNY, width = 1, style = line.style_dashed)
+        else
+            line.set_y1(lnNYH, sessLiq.nyHigh), line.set_y2(lnNYH, sessLiq.nyHigh)
+            line.set_x2(lnNYH, bar_index + 50)
+    if not na(sessLiq.nyLow)
+        if na(lnNYL)
+            lnNYL := line.new(curDayStart, sessLiq.nyLow, bar_index + 50, sessLiq.nyLow,
+                 color = colNY, width = 1, style = line.style_dashed)
+        else
+            line.set_y1(lnNYL, sessLiq.nyLow), line.set_y2(lnNYL, sessLiq.nyLow)
+            line.set_x2(lnNYL, bar_index + 50)
+
+if isNewDay
+    line.delete(lnAsiaH),   lnAsiaH   := na
+    line.delete(lnAsiaL),   lnAsiaL   := na
+    line.delete(lnLondonH), lnLondonH := na
+    line.delete(lnLondonL), lnLondonL := na
+    line.delete(lnNYH),     lnNYH     := na
+    line.delete(lnNYL),     lnNYL     := na
+
+plot(zone68.upper, "Zone68 Upper", color.new(colZone68Upper, 100), display = display.data_window)
+plot(zone68.lower, "Zone68 Lower", color.new(colZone68Upper, 100), display = display.data_window)
+plot(zone95.upper, "Zone95 Upper", color.new(colZone95Upper, 100), display = display.data_window)
+plot(zone95.lower, "Zone95 Lower", color.new(colZone95Upper, 100), display = display.data_window)
+plot(adr,          "ADR",          color.new(color.white,    100), display = display.data_window)
+
+// -----------------------------------------------------------------------------
+// Dashboard & Alerts
+// -----------------------------------------------------------------------------
+
+f_tblSize() =>
+    inDashSize == "Tiny" ? size.tiny : inDashSize == "Normal" ? size.normal : inDashSize == "Large" ? size.large : size.small
+
+f_tblPos() =>
+    inDashPos == "Top Left" ? position.top_left : inDashPos == "Bottom Right" ? position.bottom_right : inDashPos == "Bottom Left" ? position.bottom_left : position.top_right
+
+f_probBar(float p) =>
+    int filled = math.round(nz(p, 0.0) * 10)
+    string bar = ""
+    for i = 1 to 10
+        bar += i <= filled ? "█" : "░"
+    bar
+
+f_countStr(int e, int c, int r) =>
+    "E:" + str.tostring(e) + "  C:" + str.tostring(c) + "  R:" + str.tostring(r)
+
+float projUpper68 = not na(curDayOpen) and not na(adr) ? curDayOpen + adr * inSigma1Mult * SIGMA_BASE * 2.0 : na
+float projLower68 = not na(curDayOpen) and not na(adr) ? curDayOpen - adr * inSigma1Mult * SIGMA_BASE * 2.0 : na
+float projUpper95 = not na(curDayOpen) and not na(adr) ? curDayOpen + adr * inSigma2Mult * SIGMA_BASE * 2.0 : na
+float projLower95 = not na(curDayOpen) and not na(adr) ? curDayOpen - adr * inSigma2Mult * SIGMA_BASE * 2.0 : na
+
+if inShowDash
+    if na(dashTable)
+        dashTable := table.new(f_tblPos(), 2, 16,
+             bgcolor      = color.new(#03060f, 5),
+             border_color = color.new(#00f5ff, 65),
+             border_width = 1,
+             frame_color  = color.new(#00f5ff, 20),
+             frame_width  = 1)
+
+    string sz = f_tblSize()
+
+    table.cell(dashTable, 0, 0, "⬡  SMART DAILY RANGE  ⬡",
+         text_color = color.new(#00f5ff, 0), bgcolor = color.new(#071528, 8),
+         text_size = sz, text_halign = text.align_center)
+    table.merge_cells(dashTable, 0, 0, 1, 0)
+
+    table.cell(dashTable, 0, 1, "ADR",
+         text_color = color.new(#3d6b9e, 0), bgcolor = color.new(#070c18, 20), text_size = sz)
+    table.cell(dashTable, 1, 1,
+         na(adr) ? "—" : str.tostring(adr, format.mintick),
+         text_color = color.new(#c8e8ff, 0), bgcolor = color.new(#0d1828, 20), text_size = sz)
+
+    table.cell(dashTable, 0, 2, "Day Open",
+         text_color = color.new(#3d6b9e, 0), bgcolor = color.new(#070c18, 20), text_size = sz)
+    table.cell(dashTable, 1, 2,
+         na(curDayOpen) ? "—" : str.tostring(curDayOpen, format.mintick),
+         text_color = color.new(#c8e8ff, 0), bgcolor = color.new(#0d1828, 20), text_size = sz)
+
+    table.cell(dashTable, 0, 3, "68% Zone",
+         text_color = color.new(#00f5ff, 0), bgcolor = color.new(#070c18, 20), text_size = sz)
+    table.cell(dashTable, 1, 3,
+         na(projUpper68) ? "—" : str.tostring(projUpper68, format.mintick) + " / " + str.tostring(projLower68, format.mintick),
+         text_color = color.new(#00f5ff, 0), bgcolor = color.new(#0d1828, 20), text_size = sz)
+
+    table.cell(dashTable, 0, 4, "95% Zone",
+         text_color = color.new(#bf5fff, 0), bgcolor = color.new(#070c18, 20), text_size = sz)
+    table.cell(dashTable, 1, 4,
+         na(projUpper95) ? "—" : str.tostring(projUpper95, format.mintick) + " / " + str.tostring(projLower95, format.mintick),
+         text_color = color.new(#bf5fff, 0), bgcolor = color.new(#0d1828, 20), text_size = sz)
+
+    color projCol = f_dayTypeColor(projectedType)
+    table.cell(dashTable, 0, 5, "Day Type",
+         text_color = color.new(#3d6b9e, 0), bgcolor = color.new(#070c18, 20), text_size = sz)
+    table.cell(dashTable, 1, 5,
+         na(projectedType) ? "—" : f_dayTypeText(projectedType),
+         text_color = projCol, bgcolor = color.new(#0d1828, 20), text_size = sz)
+
+    table.cell(dashTable, 0, 6, "Bias",
+         text_color = color.new(#3d6b9e, 0), bgcolor = color.new(#070c18, 20), text_size = sz)
+    table.cell(dashTable, 1, 6, f_biasText(),
+         text_color = f_biasColor(), bgcolor = color.new(#0d1828, 20), text_size = sz)
+
+    table.cell(dashTable, 0, 7, "Pattern",
+         text_color = color.new(#3d6b9e, 0), bgcolor = color.new(#070c18, 20), text_size = sz)
+    table.cell(dashTable, 1, 7,
+         f_countStr(biasState.expansionCount, biasState.consolidationCount, biasState.reversalCount),
+         text_color = color.new(#7ab8e8, 0), bgcolor = color.new(#0d1828, 20), text_size = sz)
+
+    float pPDH = biasState.sweepProbPDH
+    color cPDH = na(pPDH) ? color.new(#3d6b9e, 0) : color.from_gradient(pPDH, 0.0, 1.0, color.new(#ff2d6e, 0), color.new(#00ff9f, 0))
+    table.cell(dashTable, 0, 8, "PDH Sweep",
+         text_color = color.new(#3d6b9e, 0), bgcolor = color.new(#070c18, 20), text_size = sz)
+    table.cell(dashTable, 1, 8,
+         na(pPDH) ? "—" : f_probBar(pPDH) + "  " + str.tostring(math.round(pPDH * 100)) + "%",
+         text_color = cPDH, bgcolor = color.new(#0d1828, 20), text_size = sz)
+
+    float pPDL = biasState.sweepProbPDL
+    color cPDL = na(pPDL) ? color.new(#3d6b9e, 0) : color.from_gradient(pPDL, 0.0, 1.0, color.new(#ff2d6e, 0), color.new(#00ff9f, 0))
+    table.cell(dashTable, 0, 9, "PDL Sweep",
+         text_color = color.new(#3d6b9e, 0), bgcolor = color.new(#070c18, 20), text_size = sz)
+    table.cell(dashTable, 1, 9,
+         na(pPDL) ? "—" : f_probBar(pPDL) + "  " + str.tostring(math.round(pPDL * 100)) + "%",
+         text_color = cPDL, bgcolor = color.new(#0d1828, 20), text_size = sz)
+
+    if inEnableVolMet and inShowVolDash
+        float _ap = volMet.adrPct
+        string _apStr = na(_ap) ? "—" : str.tostring(math.round(_ap * 100)) + "% pct"
+        color  _apCol = na(_ap) ? color.new(#3d6b9e,0) :
+             _ap < 0.25 ? color.new(#00ff9f,0) :
+             _ap > 0.80 ? color.new(#ff2d6e,0) :
+             color.new(#c8e8ff,0)
+        table.cell(dashTable, 0, 10, "ADR Pct",
+             text_color = color.new(#3d6b9e,0), bgcolor = color.new(#070c18,20), text_size = sz)
+        table.cell(dashTable, 1, 10, _apStr,
+             text_color = _apCol, bgcolor = color.new(#0d1828,20), text_size = sz)
+
+        string _tdStr = volMet.barsToReach95 == -1 ? "Not reached" :
+             (volMet.fastMomentum ? "⚡ Fast (" : "Slow (") + str.tostring(volMet.barsToReach95) + " bars)"
+        color _tdCol = volMet.fastMomentum ? color.new(#00ff9f,0) : color.new(#ffee00,0)
+        table.cell(dashTable, 0, 11, "95% Speed",
+             text_color = color.new(#3d6b9e,0), bgcolor = color.new(#070c18,20), text_size = sz)
+        table.cell(dashTable, 1, 11, _tdStr,
+             text_color = _tdCol, bgcolor = color.new(#0d1828,20), text_size = sz)
+    else
+        table.cell(dashTable, 0, 10, "", text_color = color.new(#070c18,100), bgcolor = color.new(#070c18,100), text_size = sz)
+        table.cell(dashTable, 1, 10, "", text_color = color.new(#070c18,100), bgcolor = color.new(#070c18,100), text_size = sz)
+        table.cell(dashTable, 0, 11, "", text_color = color.new(#070c18,100), bgcolor = color.new(#070c18,100), text_size = sz)
+        table.cell(dashTable, 1, 11, "", text_color = color.new(#070c18,100), bgcolor = color.new(#070c18,100), text_size = sz)
+
+    if inEnableSession and inShowSessionLines
+        string _sessStr = (not na(sessLiq.asiaHigh)   ? "A✓ " : "A— ") +
+                          (not na(sessLiq.londonHigh)  ? "L✓ " : "L— ") +
+                          (not na(sessLiq.nyHigh)      ? "N✓"  : "N—")
+        table.cell(dashTable, 0, 12, "Sessions",
+             text_color = color.new(#3d6b9e,0), bgcolor = color.new(#070c18,20), text_size = sz)
+        table.cell(dashTable, 1, 12, _sessStr,
+             text_color = color.new(#7ab8e8,0), bgcolor = color.new(#0d1828,20), text_size = sz)
+
+        string _fvgStr = sigFVGBullConfl ? "BULL FVG @ Zone" : sigFVGBearConfl ? "BEAR FVG @ Zone" : "No FVG"
+        color  _fvgCol = sigFVGBullConfl ? color.new(#00ff9f,0) : sigFVGBearConfl ? color.new(#ff2d6e,0) : color.new(#3d6b9e,0)
+        table.cell(dashTable, 0, 13, "FVG Confl",
+             text_color = color.new(#3d6b9e,0), bgcolor = color.new(#070c18,20), text_size = sz)
+        table.cell(dashTable, 1, 13, _fvgStr,
+             text_color = _fvgCol, bgcolor = color.new(#0d1828,20), text_size = sz)
+    else
+        table.cell(dashTable, 0, 12, "", text_color = color.new(#070c18,100), bgcolor = color.new(#070c18,100), text_size = sz)
+        table.cell(dashTable, 1, 12, "", text_color = color.new(#070c18,100), bgcolor = color.new(#070c18,100), text_size = sz)
+        table.cell(dashTable, 0, 13, "", text_color = color.new(#070c18,100), bgcolor = color.new(#070c18,100), text_size = sz)
+        table.cell(dashTable, 1, 13, "", text_color = color.new(#070c18,100), bgcolor = color.new(#070c18,100), text_size = sz)
+
+    table.cell(dashTable, 0, 14,
+         syminfo.prefix + ":" + syminfo.ticker + " · " + timeframe.period,
+         text_color = color.new(#00f5ff, 28), bgcolor = color.new(#071528, 8),
+         text_size = sz, text_halign = text.align_center)
+    table.merge_cells(dashTable, 0, 14, 1, 14)
+
+alertcondition(sigExpansion    and barstate.isconfirmed, "Day Type: Expansion",       "Expansion day sealed")
+alertcondition(sigConsolid     and barstate.isconfirmed, "Day Type: Consolidation",   "Consolidation day sealed")
+alertcondition(sigReversal     and barstate.isconfirmed, "Day Type: Reversal",        "Reversal day sealed")
+alertcondition(sigSweepPDH     and barstate.isconfirmed, "PDH Swept",                 "PDH swept — watch for reversal")
+alertcondition(sigSweepPDL     and barstate.isconfirmed, "PDL Swept",                 "PDL swept — watch for reversal")
+alertcondition(sigSwAsiaH      and barstate.isconfirmed, "Session: Asia High Swept",   "Asia High swept (momentum-confirmed)")
+alertcondition(sigSwAsiaL      and barstate.isconfirmed, "Session: Asia Low Swept",    "Asia Low swept (momentum-confirmed)")
+alertcondition(sigSwLondonH    and barstate.isconfirmed, "Session: London High Swept", "London High swept (momentum-confirmed)")
+alertcondition(sigSwLondonL    and barstate.isconfirmed, "Session: London Low Swept",  "London Low swept (momentum-confirmed)")
+alertcondition(sigFVGBullConfl and barstate.isconfirmed, "FVG Bull Confluence",        "Bullish FVG at probability zone")
+alertcondition(sigFVGBearConfl and barstate.isconfirmed, "FVG Bear Confluence",        "Bearish FVG at probability zone")
+
+bool _anyDayTypeSig = (sigExpansion or sigConsolid or sigReversal) and barstate.isconfirmed
+if _anyDayTypeSig
+    string _act = sigExpansion ? inActExpansion : sigConsolid ? inActConsolid : inActReversal
+    string _inner = str.format('"ticker":"{0}","tf":"{1}","action":"{2}","adr":{3},"pdh":{4},"pdl":{5},"sweep_prob_pdh":{6},"sweep_prob_pdl":{7}',
+         syminfo.prefix + ":" + syminfo.ticker, timeframe.period, _act,
+         str.tostring(adr, format.mintick), str.tostring(pdh, format.mintick), str.tostring(pdl, format.mintick),
+         str.tostring(math.round(biasState.sweepProbPDH * 100)), str.tostring(math.round(biasState.sweepProbPDL * 100)))
+    alert("{" + _inner + "}", alert.freq_once_per_bar_close)
+
+if sigSweepPDH and barstate.isconfirmed
+    string _inner = str.format('"ticker":"{0}","tf":"{1}","action":"{2}","swept_level":{3},"sweep_prob_hist":{4},"bias":"{5}"',
+         syminfo.prefix + ":" + syminfo.ticker, timeframe.period, inActSweepPDH,
+         str.tostring(pdh, format.mintick),
+         str.tostring(math.round(biasState.sweepProbPDH * 100)), f_biasText())
+    alert("{" + _inner + "}", alert.freq_once_per_bar_close)
+
+if sigSweepPDL and barstate.isconfirmed
+    string _inner = str.format('"ticker":"{0}","tf":"{1}","action":"{2}","swept_level":{3},"sweep_prob_hist":{4},"bias":"{5}"',
+         syminfo.prefix + ":" + syminfo.ticker, timeframe.period, inActSweepPDL,
+         str.tostring(pdl, format.mintick),
+         str.tostring(math.round(biasState.sweepProbPDL * 100)), f_biasText())
+    alert("{" + _inner + "}", alert.freq_once_per_bar_close)
+
+bool _anySessSwep = (sigSwAsiaH or sigSwAsiaL or sigSwLondonH or sigSwLondonL) and barstate.isconfirmed
+if _anySessSwep
+    string _sessAct = sigSwAsiaH ? "sweep_asia_high" : sigSwAsiaL ? "sweep_asia_low" :
+         sigSwLondonH ? "sweep_london_high" : "sweep_london_low"
+    float _sessLvl  = sigSwAsiaH ? sessLiq.asiaHigh : sigSwAsiaL ? sessLiq.asiaLow :
+         sigSwLondonH ? sessLiq.londonHigh : sessLiq.londonLow
+    string _inner   = str.format('"ticker":"{0}","tf":"{1}","action":"{2}","swept_level":{3},"body_pct":{4},"bias":"{5}"',
+         syminfo.prefix + ":" + syminfo.ticker, timeframe.period, _sessAct,
+         str.tostring(_sessLvl, format.mintick),
+         str.tostring(math.round(f_bodyPct(open[1], high[1], low[1], close[1]) * 100)), f_biasText())
+    alert("{" + _inner + "}", alert.freq_once_per_bar_close)
+
+bool _anyFVG = (sigFVGBullConfl or sigFVGBearConfl) and barstate.isconfirmed
+if _anyFVG
+    string _fvgAct   = sigFVGBullConfl ? "fvg_bull_confluence" : "fvg_bear_confluence"
+    string _fvgZone  = (fvgBullAt99 or fvgBearAt99) ? "99pct" : "95pct"
+    string _innerFVG = str.format('"ticker":"{0}","tf":"{1}","action":"{2}","zone":"{3}","adr_pct":{4},"fast_mom":{5},"bias":"{6}"',
+         syminfo.prefix + ":" + syminfo.ticker, timeframe.period, _fvgAct, _fvgZone,
+         na(volMet.adrPct) ? "null" : str.tostring(math.round(volMet.adrPct * 100)),
+         volMet.fastMomentum ? "true" : "false", f_biasText())
+    alert("{" + _innerFVG + "}", alert.freq_once_per_bar_close)

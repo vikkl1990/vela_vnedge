@@ -1,0 +1,406 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © MarkitTick
+
+//@version=6
+indicator(title = "State Transition Matrix [MarkitTick]", overlay = false)
+
+// ── INPUTS ──────────────────────────────────────────
+string GRP_CORE   = "⚙️ Matrix Settings"
+string GRP_FILT   = "🕯️ Filters"
+string GRP_VIS    = "🎨 Display"
+string GRP_DASH   = "📊 Dashboard"
+string GRP_ALERT  = "🔔 Alerts"
+string GRP_COLORS = "🌈 Colors"
+
+int   i_trendLen  = input.int(20, "Trend Length", minval = 5, maxval = 200, step = 1, tooltip = "Number of bars over which the net price move is measured to decide up, down or sideways.", group = GRP_CORE)
+int   i_atrLen    = input.int(14, "ATR Length", minval = 2, maxval = 100, step = 1, tooltip = "Length of the average true range used to measure the move and the volatility.", group = GRP_CORE)
+float i_dirThr    = input.float(0.5, "Direction Threshold", minval = 0.1, maxval = 3.0, step = 0.05, tooltip = "How large the net move must be, in units of typical movement, to count as up or down. Smaller values give fewer sideways bars.", group = GRP_CORE)
+int   i_rankLen   = input.int(250, "Volatility Rank Length", minval = 50, maxval = 2000, step = 1, tooltip = "Number of past bars the current volatility is ranked against.", group = GRP_CORE)
+float i_violent   = input.float(67.0, "Violent Level", minval = 50.0, maxval = 95.0, step = 1.0, tooltip = "Volatility rank at or above which the market counts as violent; below it, calm.", group = GRP_CORE)
+int   i_histLen   = input.int(2000, "History Length", minval = 200, maxval = 5000, step = 50, tooltip = "Number of most recent bar-to-bar transitions counted in the matrix. Fewer are used if the chart holds fewer bars.", group = GRP_CORE)
+int   i_minObs    = input.int(30, "Minimum Observations", minval = 5, maxval = 500, step = 1, tooltip = "A row shows percentages only when it holds at least this many counted transitions. An age row that holds fewer falls back to the state's all-ages row.", group = GRP_CORE)
+bool  i_ageOn     = input.bool(true, "Age-Aware Rows", tooltip = "Condition the odds on how long the current state has lasted (young, mature or old) instead of using one row per state.", group = GRP_CORE)
+int   i_youngTo   = input.int(5, "Young Up To", minval = 1, maxval = 50, step = 1, tooltip = "A state that has lasted this many bars or fewer counts as young.", group = GRP_CORE)
+int   i_oldFrom   = input.int(21, "Old From", minval = 2, maxval = 200, step = 1, tooltip = "A state that has lasted at least this many bars counts as old. Must be larger than Young Up To; if it is not, it is treated as Young Up To + 1.", group = GRP_CORE)
+int   i_horizon   = input.int(5, "Outlook Horizon", minval = 1, maxval = 50, step = 1, tooltip = "Number of bars ahead for the outlook rows.", group = GRP_CORE)
+float i_lowStay   = input.float(50.0, "Low Stay Level", minval = 10.0, maxval = 90.0, step = 1.0, tooltip = "When the stay chance falls below this level, the Stay Chance Low event fires.", group = GRP_CORE)
+
+bool   i_htfOn    = input.bool(false, "HTF Confirmation", tooltip = "While on, State Changed also requires the higher timeframe's current state to belong to the same family as the new state: Up (states 1 and 2), Down (states 3 and 4) or Sideways (states 5 and 6). A timeframe lower than the chart's is skipped and shown as skipped.", group = GRP_FILT)
+string i_htfTf    = input.timeframe("1D", "HTF Timeframe", tooltip = "Higher timeframe whose confirmed bars are read. Not lower than the chart timeframe.", group = GRP_FILT)
+bool   i_adxOn    = input.bool(false, "Trend Strength Filter", tooltip = "While on, State Changed also requires ADX at or above the threshold on the event's own confirmed bar. Changes into the two Sideways states will mostly not fire.", group = GRP_FILT)
+float  i_adxThr   = input.float(20.0, "ADX Threshold", minval = 1.0, maxval = 100.0, step = 1.0, tooltip = "ADX at or above this value counts as a trend.", group = GRP_FILT)
+int    i_adxLen   = input.int(14, "ADX Length", minval = 2, maxval = 100, step = 1, tooltip = "DI length and ADX smoothing length.", group = GRP_FILT)
+string i_smMethod = input.string("None", "Adaptive Smoothing", options = ["None", "SMA", "EMA", "WMA", "RMA"], tooltip = "Smoothing applied to the drift and to the ATR percent before they are classified. None leaves them raw.", group = GRP_FILT)
+int    i_smLen    = input.int(3, "Smoothing Length", minval = 2, maxval = 50, step = 1, tooltip = "Length of the adaptive smoothing.", group = GRP_FILT)
+
+bool i_shade      = input.bool(true, "Shade Background", tooltip = "Shade the pane background in the colour role of the current state.", group = GRP_VIS)
+bool i_candles    = input.bool(true, "Color Candles", tooltip = "Colour each price candle by the market state of that bar. The chart's own candles stay underneath.", group = GRP_VIS)
+bool i_showLb     = input.bool(true, "Show Reliability Bound", tooltip = "Show the lower bound next to each stay chance.", group = GRP_VIS)
+
+bool   i_showDash  = input.bool(true, "Show Dashboard", group = GRP_DASH)
+string i_dashPos   = input.string("Top Right", "Dashboard Position", options = ["Top Right", "Top Left", "Bottom Right", "Bottom Left"], group = GRP_DASH)
+bool   i_dashPrice = input.bool(true, "Show on Price Chart", tooltip = "While on, the dashboard is drawn on the price chart; while off, it stays in the indicator pane.", group = GRP_DASH)
+
+bool   i_alertState  = input.bool(true, "Alert: State Changed", group = GRP_ALERT)
+string i_actionState = input.string("statechanged", "State Changed Action", group = GRP_ALERT)
+bool   i_alertLow    = input.bool(true, "Alert: Stay Chance Low", group = GRP_ALERT)
+string i_actionLow   = input.string("staychancelow", "Stay Chance Low Action", group = GRP_ALERT)
+
+color C_UP_CALM  = input.color(#80cbc4, "Calm Uptrend", tooltip = "Bullish soft. The background shade is a faded copy of this colour.", group = GRP_COLORS)
+color C_UP_VIOL  = input.color(#26a69a, "Violent Uptrend", tooltip = "Bullish strong. The background shade is a faded copy of this colour.", group = GRP_COLORS)
+color C_DN_CALM  = input.color(#ef9a9a, "Calm Downtrend", tooltip = "Bearish soft. The background shade is a faded copy of this colour.", group = GRP_COLORS)
+color C_DN_VIOL  = input.color(#ef5350, "Violent Downtrend", tooltip = "Bearish strong. The background shade is a faded copy of this colour.", group = GRP_COLORS)
+color C_RANGE    = input.color(#9598a1, "Tight Range", tooltip = "Neutral. The background shade is a faded copy of this colour.", group = GRP_COLORS)
+color C_CHOP     = input.color(#f9a825, "Choppy Range", tooltip = "Warning. The background shade is a faded copy of this colour.", group = GRP_COLORS)
+color C_DASH_BG  = input.color(color.new(#0a0f1a, 10), "Dashboard Background", group = GRP_COLORS)
+color C_DASH_HDR = input.color(color.new(#3a2a6d, 55), "Dashboard Header", group = GRP_COLORS)
+color C_DASH_TXT = input.color(#ffffff, "Dashboard Text", group = GRP_COLORS)
+color C_WARN     = input.color(color.new(#f9a825, 80), "Dashboard Warning", group = GRP_COLORS)
+
+// ── CORE LOGIC ──────────────────────────────────────
+f_smooth(float src, string method, int len) =>
+    float sSma = ta.sma(src, len)
+    float sEma = ta.ema(src, len)
+    float sWma = ta.wma(src, len)
+    float sRma = ta.rma(src, len)
+    switch method
+        "SMA" => sSma
+        "EMA" => sEma
+        "WMA" => sWma
+        "RMA" => sRma
+        => src
+
+f_state(int trendLen, int atrLen, float thr, int rankLen, float violentLvl, string method, int smLen) =>
+    var array<float> hist = array.new<float>()
+    float atrV = ta.atr(atrLen)
+    float atrPctRaw = close > 0 ? atrV / close * 100 : na
+    float move = ta.change(close, trendLen)
+    float driftRaw = atrV > 0 ? move / (atrV * math.sqrt(trendLen)) : na
+    float drift = f_smooth(driftRaw, method, smLen)
+    float atrPct = f_smooth(atrPctRaw, method, smLen)
+    int histSize = array.size(hist)
+    float rank = na
+    if not na(atrPct) and histSize >= 50
+        int below = 0
+        for i = 0 to histSize - 1
+            if array.get(hist, i) < atrPct
+                below += 1
+        rank := below / histSize * 100
+    if barstate.isconfirmed and not na(atrPct)
+        array.push(hist, atrPct)
+        if array.size(hist) > rankLen
+            array.shift(hist)
+    int dir = na(drift) ? na : drift >= thr ? 1 : drift <= -thr ? 2 : 0
+    int st = na
+    if not na(dir) and not na(rank)
+        bool violent = rank >= violentLvl
+        st := dir == 1 ? (violent ? 2 : 1) : dir == 2 ? (violent ? 4 : 3) : (violent ? 6 : 5)
+    st
+
+f_name(int s) =>
+    switch s
+        1 => "Calm Uptrend"
+        2 => "Violent Uptrend"
+        3 => "Calm Downtrend"
+        4 => "Violent Downtrend"
+        5 => "Tight Range"
+        6 => "Choppy Range"
+        => "—"
+
+f_family(int s) =>
+    s <= 2 ? 1 : s <= 4 ? 2 : 3
+
+f_ageGroup(int age, int youngTo, int oldFrom) =>
+    age <= youngTo ? 0 : age >= oldFrom ? 2 : 1
+
+f_ageName(int g) =>
+    switch g
+        0 => "Young"
+        1 => "Mature"
+        2 => "Old"
+        => "—"
+
+f_wilson(float p, int n) =>
+    float z = 1.96
+    float nn = n
+    n > 0 ? math.max(0.0, (p + z * z / (2 * nn) - z * math.sqrt(p * (1 - p) / nn + z * z / (4 * nn * nn))) / (1 + z * z / nn)) : na
+
+f_outlook(array<int> m, int s, int h, int minObs) =>
+    array<float> p = array.new<float>(36, 0.0)
+    bool ok = true
+    for i = 0 to 5
+        int t = 0
+        for j = 0 to 5
+            int c = array.get(m, i * 18 + j) + array.get(m, i * 18 + 6 + j) + array.get(m, i * 18 + 12 + j)
+            array.set(p, i * 6 + j, c)
+            t += c
+        if t < minObs
+            ok := false
+        else
+            for j = 0 to 5
+                array.set(p, i * 6 + j, array.get(p, i * 6 + j) / t)
+    array<float> v = array.new<float>(6, 0.0)
+    if ok
+        array.set(v, s - 1, 1.0)
+        for k = 1 to h
+            array<float> w = array.new<float>(6, 0.0)
+            for i = 0 to 5
+                float vi = array.get(v, i)
+                for j = 0 to 5
+                    array.set(w, j, array.get(w, j) + vi * array.get(p, i * 6 + j))
+            v := w
+        v
+    else
+        array.new<float>()
+
+f_stateColor(int s) =>
+    switch s
+        1 => C_UP_CALM
+        2 => C_UP_VIOL
+        3 => C_DN_CALM
+        4 => C_DN_VIOL
+        5 => C_RANGE
+        6 => C_CHOP
+        => color(na)
+
+f_tf(string tf) =>
+    string u = str.upper(tf)
+    int n = str.length(u)
+    string last = str.substring(u, n - 1, n)
+    bool hasUnit = last == "S" or last == "D" or last == "W" or last == "M" or last == "T"
+    string digits = hasUnit ? str.substring(u, 0, n - 1) : u
+    float mult = digits == "" ? 1.0 : str.tonumber(digits)
+    string out = ""
+    if hasUnit
+        out := str.tostring(mult, "#") + (last == "S" ? "s" : last == "T" ? "t" : last)
+    else
+        out := mult % 60 == 0 ? str.tostring(mult / 60, "#") + "H" : str.tostring(mult, "#") + "m"
+    out
+
+f_num(float v) =>
+    float a = math.abs(v)
+    string sign = v < 0 ? "-" : ""
+    string out = ""
+    if math.round(a, 2) < 1000
+        out := str.tostring(math.round(a, 2), "#.##")
+    else
+        float k = math.round(a / 1000, 1)
+        if k < 1000
+            out := str.tostring(k, "#.#") + "K"
+        else
+            float m = math.round(a / 1000000, 1)
+            if m < 1000
+                out := str.tostring(m, "#.#") + "M"
+            else
+                out := str.tostring(math.round(a / 1000000000, 1), "#.#") + "B"
+    sign + out
+
+f_esc(string s) =>
+    str.replace_all(str.replace_all(s, "\\", "\\\\"), "\"", "\\\"")
+
+f_jq(string s) =>
+    str.format('"{0}"', s)
+
+int oldFromEff = math.max(i_oldFrom, i_youngTo + 1)
+bool stdChart = chart.is_standard
+int rawState = f_state(i_trendLen, i_atrLen, i_dirThr, i_rankLen, i_violent, i_smMethod, i_smLen)
+[diPlus, diMinus, adxVal] = ta.dmi(i_adxLen, i_adxLen)
+
+bool htfSkipped = i_htfOn and timeframe.in_seconds(i_htfTf) < timeframe.in_seconds()
+int htfState = na
+if i_htfOn and not htfSkipped
+    htfState := request.security(syminfo.tickerid, i_htfTf, f_state(i_trendLen, i_atrLen, i_dirThr, i_rankLen, i_violent, i_smMethod, i_smLen)[1], lookahead = barmerge.lookahead_on)
+
+var int lastState = int(na)
+var int timeIn = 0
+var float adxLast = float(na)
+var int htfLast = int(na)
+var array<int> trans = array.new<int>()
+var array<int> mat = array.new<int>(108, 0)
+var float prevStay = float(na)
+bool stateChanged = false
+bool filtersPass = false
+bool stayLow = false
+int evPrev = na
+
+if barstate.isconfirmed and stdChart
+    if not na(rawState) and not na(lastState)
+        int idx = ((lastState - 1) * 3 + f_ageGroup(timeIn, i_youngTo, oldFromEff)) * 6 + (rawState - 1)
+        array.push(trans, idx)
+        array.set(mat, idx, array.get(mat, idx) + 1)
+        if array.size(trans) > i_histLen
+            int oldIdx = array.shift(trans)
+            array.set(mat, oldIdx, array.get(mat, oldIdx) - 1)
+    bool freshChange = not na(rawState) and not na(lastState) and rawState != lastState
+    bool htfPass = not i_htfOn or htfSkipped or (not na(htfState) and not na(rawState) and f_family(htfState) == f_family(rawState))
+    bool adxPass = not i_adxOn or adxVal >= i_adxThr
+    filtersPass := htfPass and adxPass
+    stateChanged := freshChange and htfPass and adxPass
+    timeIn := na(rawState) ? 0 : (not na(lastState) and rawState == lastState ? timeIn + 1 : 1)
+    adxLast := adxVal
+    htfLast := htfState
+    evPrev := lastState
+    lastState := rawState
+
+bool hasState = not na(lastState)
+int totalTrans = array.size(trans)
+int rowN = 0
+int stayN = 0
+int n1State = na
+int n1Cnt = 0
+int n2State = na
+int n2Cnt = 0
+int ageG = f_ageGroup(timeIn, i_youngTo, oldFromEff)
+int stBase = hasState ? (lastState - 1) * 18 : 0
+int ageRowN = 0
+if hasState
+    for j = 0 to 5
+        ageRowN += array.get(mat, stBase + ageG * 6 + j)
+bool byAge = hasState and i_ageOn and ageRowN >= i_minObs
+if hasState
+    for j = 0 to 5
+        int c = byAge ? array.get(mat, stBase + ageG * 6 + j) : array.get(mat, stBase + j) + array.get(mat, stBase + 6 + j) + array.get(mat, stBase + 12 + j)
+        rowN += c
+        if j == lastState - 1
+            stayN := c
+        else if c > n1Cnt
+            n2State := n1State
+            n2Cnt := n1Cnt
+            n1State := j + 1
+            n1Cnt := c
+        else if c > n2Cnt
+            n2State := j + 1
+            n2Cnt := c
+
+bool enough = hasState and rowN >= i_minObs
+float stayPct = enough ? stayN / rowN * 100 : na
+float stayLo = enough ? f_wilson(stayN / rowN, rowN) * 100 : na
+string rowTxt = byAge ? "by age" : "all ages"
+color stateCol = f_stateColor(lastState)
+
+if barstate.isconfirmed and stdChart
+    stayLow := not na(prevStay) and not na(stayPct) and prevStay >= i_lowStay and stayPct < i_lowStay and filtersPass
+    prevStay := stayPct
+
+// ── ALERTS ──────────────────────────────────────────
+if stateChanged and i_alertState and barstate.isconfirmed and stdChart
+    string stayTxt = enough ? str.tostring(math.round(stayPct)) : "null"
+    string n1Pct = enough and not na(n1State) ? str.tostring(math.round(n1Cnt / rowN * 100)) : "null"
+    string n2Pct = enough and not na(n2State) ? str.tostring(math.round(n2Cnt / rowN * 100)) : "null"
+    string n1Txt = na(n1State) ? "null" : f_jq(f_name(n1State))
+    string n2Txt = na(n2State) ? "null" : f_jq(f_name(n2State))
+    string payloadInner = str.format('"action":"{0}","ticker":"{1}","tf":"{2}","direction":"neutral","price":"{3}","time":"{4}","previous_state":"{5}","new_state":"{6}","stay_chance":{7},"next1_state":{8},"next1_percent":{9},"next2_state":{10},"next2_percent":{11},"row":"{12}"', f_esc(i_actionState), f_esc(syminfo.tickerid), f_esc(timeframe.period), str.tostring(close, format.mintick), str.format_time(time, "yyyy-MM-dd'T'HH:mm:ssZ", "UTC"), f_name(evPrev), f_name(lastState), stayTxt, n1Txt, n1Pct, n2Txt, n2Pct, rowTxt)
+    alert("{" + payloadInner + "}", alert.freq_once_per_bar_close)
+
+if stayLow and i_alertLow and barstate.isconfirmed and stdChart
+    string lStay = enough ? str.tostring(math.round(stayPct)) : "null"
+    string lBound = enough ? str.tostring(math.round(stayLo)) : "null"
+    string lN1Pct = enough and not na(n1State) ? str.tostring(math.round(n1Cnt / rowN * 100)) : "null"
+    string lN2Pct = enough and not na(n2State) ? str.tostring(math.round(n2Cnt / rowN * 100)) : "null"
+    string lN1 = na(n1State) ? "null" : f_jq(f_name(n1State))
+    string lN2 = na(n2State) ? "null" : f_jq(f_name(n2State))
+    string lowInner = str.format('"action":"{0}","ticker":"{1}","tf":"{2}","direction":"neutral","price":"{3}","time":"{4}","state":"{5}","age_group":"{6}","stay_chance":{7},"stay_chance_lower_bound":{8},"next1_state":{9},"next1_percent":{10},"next2_state":{11},"next2_percent":{12},"row":"{13}"', f_esc(i_actionLow), f_esc(syminfo.tickerid), f_esc(timeframe.period), str.tostring(close, format.mintick), str.format_time(time, "yyyy-MM-dd'T'HH:mm:ssZ", "UTC"), f_name(lastState), f_ageName(ageG), lStay, lBound, lN1, lN1Pct, lN2, lN2Pct, rowTxt)
+    alert("{" + lowInner + "}", alert.freq_once_per_bar_close)
+
+alertcondition(stateChanged and i_alertState and barstate.isconfirmed and stdChart, "State Changed", "MarkitTick — State Transition Matrix: State Changed")
+alertcondition(stayLow and i_alertLow and barstate.isconfirmed and stdChart, "Stay Chance Low", "MarkitTick — State Transition Matrix: Stay Chance Low")
+
+// ── VISUALS ─────────────────────────────────────────
+plot(stdChart ? stayPct : na, "Stay Chance (history)", color = stateCol, linewidth = 2)
+bgcolor(i_shade and stdChart and hasState ? color.new(stateCol, 85) : na, title = "State Shade")
+color candleCol = i_candles and stdChart and barstate.isconfirmed and hasState ? stateCol : na
+plotcandle(open, high, low, close, title = "State Candles", color = candleCol, wickcolor = candleCol, bordercolor = candleCol, force_overlay = true)
+
+// ── DASHBOARD ───────────────────────────────────────
+f_bar(float val, float maxVal) =>
+    int filled = math.round(math.min(val / maxVal, 1.0) * 10)
+    string bar = ""
+    for i = 1 to 10
+        bar += i <= filled ? "█" : "░"
+    bar + "  " + str.tostring(math.round(val / maxVal * 100)) + "%"
+
+f_barColor(float pct) =>
+    pct >= 0.66 ? color.new(#26a69a, 0) : pct >= 0.33 ? color.new(#f9a825, 0) : color.new(#ef5350, 0)
+
+f_row(table t, int r, string lbl, string val, color vcol, bool warn) =>
+    color bg = warn ? C_WARN : (r % 2 == 1 ? C_DASH_BG : color.new(C_DASH_BG, 40))
+    table.cell(t, 0, r, "  " + lbl, text_color = color.new(C_DASH_TXT, 25), text_halign = text.align_left, text_size = size.small, bgcolor = bg)
+    table.cell(t, 1, r, val + "  ", text_color = vcol, text_halign = text.align_right, text_size = size.small, bgcolor = bg)
+
+string dashPos = switch i_dashPos
+    "Top Left" => position.top_left
+    "Bottom Right" => position.bottom_right
+    "Bottom Left" => position.bottom_left
+    => position.top_right
+
+var table dash = i_dashPrice ? table.new(dashPos, 2, 16, bgcolor = C_DASH_BG, border_width = 1, border_color = color.new(#2a3040, 40), frame_width = 1, frame_color = color.new(#3a2a6d, 40), force_overlay = true) : table.new(dashPos, 2, 16, bgcolor = C_DASH_BG, border_width = 1, border_color = color.new(#2a3040, 40), frame_width = 1, frame_color = color.new(#3a2a6d, 40))
+var table notice = table.new(position.middle_center, 1, 2, force_overlay = true)
+
+if barstate.islast
+    table.clear(dash, 0, 0, 1, 15)
+    if not stdChart
+        table.cell(notice, 0, 0, "This indicator runs only on standard charts.", text_color = #FF0000, text_size = size.large, bgcolor = #2A2E39, text_formatting = text.format_bold)
+        table.cell(notice, 0, 1, "Heikin Ashi, Renko, Kagi, Point & Figure, Range and Line Break\nshow synthetic prices. Switch to Candles.", text_color = #FF0000, text_size = size.normal, bgcolor = #2A2E39, text_formatting = text.format_bold)
+    else if i_showDash
+        table.cell(dash, 0, 0, "  STM", text_color = C_DASH_TXT, text_halign = text.align_left, text_size = size.small, bgcolor = C_DASH_HDR)
+        table.cell(dash, 1, 0, syminfo.ticker + "  ·  " + f_tf(timeframe.period) + "  ", text_color = C_DASH_TXT, text_halign = text.align_right, text_size = size.small, bgcolor = C_DASH_HDR)
+        bool warming = not hasState or totalTrans < i_minObs
+        int r = 1
+        f_row(dash, r, "Current State", hasState ? f_name(lastState) : "—", hasState ? stateCol : C_DASH_TXT, false)
+        r += 1
+        f_row(dash, r, "Time in State", hasState ? f_num(timeIn) + " bars" : "—", C_DASH_TXT, false)
+        r += 1
+        f_row(dash, r, "Age Group", hasState ? f_ageName(ageG) + " (" + rowTxt + ")" : "—", C_DASH_TXT, false)
+        r += 1
+        f_row(dash, r, "Stay Chance (history)", hasState ? (enough ? f_bar(stayPct, 100.0) + " (n " + f_num(stayN) + ")" + (i_showLb and not na(stayLo) ? " [≥ " + str.tostring(math.round(stayLo)) + "%]" : "") : "not enough data") : "—", enough ? f_barColor(stayPct / 100) : C_DASH_TXT, false)
+        r += 1
+        f_row(dash, r, "Next 1 (history)", enough and not na(n1State) ? f_name(n1State) + "  " + str.tostring(math.round(n1Cnt / rowN * 100)) + "% (n " + f_num(n1Cnt) + ")" : "—", C_DASH_TXT, false)
+        r += 1
+        f_row(dash, r, "Next 2 (history)", enough and not na(n2State) ? f_name(n2State) + "  " + str.tostring(math.round(n2Cnt / rowN * 100)) + "% (n " + f_num(n2Cnt) + ")" : "—", C_DASH_TXT, false)
+        r += 1
+        float expRem = enough and stayN < rowN ? math.round(rowN / (rowN - stayN), 1) : na
+        f_row(dash, r, "Expected Remaining (history-based)", hasState ? (enough ? (stayN < rowN ? f_num(expRem) + " bars" : "no exit seen") : "n/a") : "—", C_DASH_TXT, false)
+        array<float> outV = hasState ? f_outlook(mat, lastState, i_horizon, i_minObs) : array.new<float>()
+        int o1 = na
+        int o2 = na
+        float o1v = -1.0
+        float o2v = -1.0
+        if array.size(outV) == 6
+            for j = 0 to 5
+                float pj = array.get(outV, j)
+                if pj > o1v
+                    o2 := o1
+                    o2v := o1v
+                    o1 := j + 1
+                    o1v := pj
+                else if pj > o2v
+                    o2 := j + 1
+                    o2v := pj
+        r += 1
+        f_row(dash, r, "Outlook 1 (+" + str.tostring(i_horizon) + " bars, history)", hasState ? (array.size(outV) == 6 ? f_name(o1) + "  " + str.tostring(math.round(o1v * 100)) + "%" : "not enough data") : "—", C_DASH_TXT, false)
+        r += 1
+        f_row(dash, r, "Outlook 2 (+" + str.tostring(i_horizon) + " bars, history)", hasState ? (array.size(outV) == 6 ? f_name(o2) + "  " + str.tostring(math.round(o2v * 100)) + "%" : "not enough data") : "—", C_DASH_TXT, false)
+        r += 1
+        f_row(dash, r, "Row Observations", hasState ? f_num(rowN) : "—", C_DASH_TXT, false)
+        r += 1
+        float sharePct = hasState and totalTrans > 0 ? rowN / totalTrans * 100 : na
+        f_row(dash, r, "Share of History", na(sharePct) ? "—" : f_bar(sharePct, 100.0), na(sharePct) ? C_DASH_TXT : f_barColor(sharePct / 100), false)
+        r += 1
+        f_row(dash, r, "History", warming ? "warming up" : f_num(totalTrans), C_DASH_TXT, false)
+        if i_htfOn
+            r += 1
+            if htfSkipped
+                f_row(dash, r, "HTF Confirm", "Skipped: lower than chart", C_DASH_TXT, true)
+            else
+                bool htfOk = hasState and not na(htfLast) and f_family(htfLast) == f_family(lastState)
+                f_row(dash, r, "HTF Confirm", f_tf(i_htfTf) + "  " + (na(htfLast) ? "—" : f_name(htfLast)) + (hasState ? (htfOk ? "  Pass" : "  Fail") : ""), hasState ? f_barColor(htfOk ? 1.0 : 0.0) : C_DASH_TXT, false)
+        if i_adxOn
+            r += 1
+            bool adxOk = not na(adxLast) and adxLast >= i_adxThr
+            f_row(dash, r, "Trend Strength", na(adxLast) ? "—" : "ADX " + str.tostring(adxLast, "#.0") + (adxOk ? " ≥ " : " < ") + str.tostring(i_adxThr, "#.##"), na(adxLast) ? C_DASH_TXT : f_barColor(adxOk ? 1.0 : 0.0), false)
+        if i_smMethod != "None"
+            r += 1
+            f_row(dash, r, "Smoothing", i_smMethod + " " + str.tostring(i_smLen), C_DASH_TXT, false)
+    else if htfSkipped
+        table.cell(dash, 0, 0, "  HTF filter skipped: its timeframe is lower than the chart's  ", text_color = C_DASH_TXT, text_halign = text.align_left, text_size = size.small, bgcolor = C_WARN)

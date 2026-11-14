@@ -1,0 +1,173 @@
+// © MarkitTick
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+
+//@version=6
+indicator("Squeeze Bollinger Bands Tracker [MarkitTick]", overlay=true)
+
+// ============================================================================
+// Types & Methods
+// ============================================================================
+type SignalEngine
+    bool  isLong
+    bool  isShort
+    float entryPrice
+    float stopLoss
+    float takeProfit
+    string grade
+
+method generateJSON(SignalEngine sig) =>
+    string actionStr = sig.isLong ? 'BUY' : 'SELL'
+    string json = '{"action": "' + actionStr + '", '
+    json += '"entry": ' + str.tostring(sig.entryPrice, format.mintick) + ', '
+    json += '"tp": ' + str.tostring(sig.takeProfit, format.mintick) + ', '
+    json += '"sl": ' + str.tostring(sig.stopLoss, format.mintick) + '}'
+    json
+
+method calcGrade(float currentSpread, float avgSpread, float currentVol, float avgVol) =>
+    string g = "C"
+    if currentSpread > (avgSpread * 1.5) and currentVol > (avgVol * 1.5)
+        g := "A"
+    else if currentSpread > avgSpread or currentVol > avgVol
+        g := "B"
+    g
+
+// ============================================================================
+// Inputs
+// ============================================================================
+int   length     = input.int(20, "Channel Length", minval=1, group="Channel Settings")
+float mult       = input.float(2.0, "Standard Deviation Multiplier", minval=0.1, step=0.1, group="Channel Settings")
+int   sqzLength  = input.int(50, "Squeeze/Z-Score Length", minval=1, group="Analytics Settings")
+int   volLength  = input.int(20, "Quality SMA Length", minval=1, group="Analytics Settings")
+
+color c_upper    = input.color(#00FFFF, "Neon Upper (Cyan)", group="Color Settings")
+color c_lower    = input.color(#FF00FF, "Neon Lower (Magenta)", group="Color Settings")
+color c_basis    = input.color(#FFFF00, "Neon Basis (Yellow)", group="Color Settings")
+color c_bg       = input.color(color.new(#00FFFF, 93), "Background Fill", group="Color Settings")
+color c_dashBg   = input.color(color.new(#111111, 10), "Dashboard Background", group="Color Settings")
+color c_sqzWarn  = input.color(#FF3300, "Squeeze Warning (Neon Orange)", group="Color Settings")
+
+color c_bullCold = input.color(#004D40, "Bullish Low Volatility (Cold)", group="Candle Heatmap Settings")
+color c_bullHot  = input.color(#00FF00, "Bullish High Volatility (Hot/Neon)", group="Candle Heatmap Settings")
+color c_bearCold = input.color(#4A148C, "Bearish Low Volatility (Cold)", group="Candle Heatmap Settings")
+color c_bearHot  = input.color(#FF0000, "Bearish High Volatility (Hot/Neon)", group="Candle Heatmap Settings")
+color c_neutral  = input.color(#808080, "Neutral Market Base", group="Candle Heatmap Settings")
+
+// ============================================================================
+// Core Logic & Volatility Metrics 
+// ============================================================================
+float basis = ta.sma(close, length)
+float dev   = mult * ta.stdev(close, length)
+float upper = basis + dev
+float lower = basis - dev
+
+float chWidth    = basis == 0 ? 0 : ((upper - lower) / basis) * 100
+float avgChWidth = ta.sma(chWidth, sqzLength)
+bool  isSqueeze  = chWidth < avgChWidth
+
+float stdChWidth = ta.stdev(chWidth, sqzLength)
+float zScore     = stdChWidth == 0 ? 0 : (chWidth - avgChWidth) / stdChWidth
+float sigmoidVol = 100 / (1 + math.exp(-zScore))
+
+float spread    = math.abs(close - open)
+float avgSpread = ta.sma(spread, volLength)
+float avgVol    = ta.sma(volume, volLength)
+string brkGrade = calcGrade(spread, avgSpread, volume, avgVol)
+
+// ============================================================================
+// Signal Engine & Trend Tracking
+// ============================================================================
+bool longCond  = ta.crossover(close, upper[1])
+bool shortCond = ta.crossunder(close, lower[1])
+
+var int trendState = 0
+var int trendAge   = 0
+
+if longCond or shortCond
+    trendState := longCond ? 1 : -1
+    trendAge   := 0
+else
+    trendAge += 1
+
+SignalEngine engine = SignalEngine.new(false, false, 0.0, 0.0, 0.0, "")
+
+if longCond
+    engine.isLong     := true
+    engine.entryPrice := close
+    engine.stopLoss   := basis[1]
+    engine.takeProfit := close + (close - lower[1])
+    engine.grade      := brkGrade
+
+else if shortCond
+    engine.isShort    := true
+    engine.entryPrice := close
+    engine.stopLoss   := basis[1]
+    engine.takeProfit := close - (upper[1] - close)
+    engine.grade      := brkGrade
+
+if longCond or shortCond
+    alert(engine.generateJSON(), alert.freq_once_per_bar_close)
+    
+    string lblText = (longCond ? "BUY [Grade " : "SELL [Grade ") + engine.grade + "]\n" + 
+                     "E: "  + str.tostring(engine.entryPrice, format.mintick) + "\n" + 
+                     "TP: " + str.tostring(engine.takeProfit, format.mintick) + "\n" + 
+                     "SL: " + str.tostring(engine.stopLoss, format.mintick)
+    
+    color  lblColor = longCond ? c_upper : c_lower
+    string lblStyle = longCond ? label.style_label_up : label.style_label_down
+    float  lblY     = longCond ? low : high
+    
+    label.new(bar_index, lblY, lblText, color=color.new(lblColor, 85), style=lblStyle, textcolor=lblColor, size=size.small)
+
+// ============================================================================
+// True Institutional Heatmap
+// ============================================================================
+color bullBodyGrad = color.from_gradient(sigmoidVol, 0, 100, c_bullCold, c_bullHot)
+color bearBodyGrad = color.from_gradient(sigmoidVol, 0, 100, c_bearCold, c_bearHot)
+
+color bodyColor   = trendState == 1 ? bullBodyGrad : trendState == -1 ? bearBodyGrad : c_neutral
+color borderColor = bodyColor
+
+plotcandle(open, high, low, close, title="Heatmap Candles", color=bodyColor, wickcolor=borderColor, bordercolor=borderColor)
+
+// ============================================================================
+// 3D Neon Visualization 
+// ============================================================================
+plot(upper, color=color.new(c_upper, 85), linewidth=6, title="Upper Glow 1", display=display.pane)
+plot(upper, color=color.new(c_upper, 60), linewidth=4, title="Upper Glow 2", display=display.pane)
+p_upper = plot(upper, color=c_upper, linewidth=2, title="Upper Core")
+
+plot(lower, color=color.new(c_lower, 85), linewidth=6, title="Lower Glow 1", display=display.pane)
+plot(lower, color=color.new(c_lower, 60), linewidth=4, title="Lower Glow 2", display=display.pane)
+p_lower = plot(lower, color=c_lower, linewidth=2, title="Lower Core")
+
+plot(basis, color=color.new(c_basis, 80), linewidth=4, title="Basis Glow", display=display.pane)
+plot(basis, color=c_basis, linewidth=2, title="Basis Core")
+
+fill(p_upper, p_lower, color=c_bg, title="Channel Fill")
+
+// ============================================================================
+// Institutional Analytics Dashboard
+// ============================================================================
+var table dash = table.new(position.top_right, 2, 4, bgcolor=c_dashBg, border_width=1, border_color=color.new(color.gray, 80))
+
+if barstate.islast
+    float proxUp = (upper[1] - close) / close * 100
+    float proxDn = (close - lower[1]) / close * 100
+    
+    string stateStr = trendState == 1 ? "BULLISH" : trendState == -1 ? "BEARISH" : "NEUTRAL"
+    color  stateCol = trendState == 1 ? c_upper : trendState == -1 ? c_lower : color.gray
+    string sqzStr   = isSqueeze ? "⚠️ SQUEEZE" : "EXPANDING"
+    color  sqzCol   = isSqueeze ? c_sqzWarn : c_upper
+
+    table.cell(dash, 0, 0, "Trend Maturity", text_color=color.gray, text_size=size.small)
+    table.cell(dash, 1, 0, stateStr + " (" + str.tostring(trendAge) + " Bars)", text_color=stateCol, text_size=size.small, text_halign=text.align_left)
+
+    table.cell(dash, 0, 1, "Volatility State", text_color=color.gray, text_size=size.small)
+    table.cell(dash, 1, 1, sqzStr + " (" + str.tostring(chWidth, "#.##") + "%)", text_color=sqzCol, text_size=size.small, text_halign=text.align_left)
+
+    table.cell(dash, 0, 2, "Proximity UP", text_color=color.gray, text_size=size.small)
+    table.cell(dash, 1, 2, str.tostring(proxUp, "#.##") + "% to Break", text_color=c_upper, text_size=size.small, text_halign=text.align_left)
+
+    table.cell(dash, 0, 3, "Proximity DOWN", text_color=color.gray, text_size=size.small)
+    table.cell(dash, 1, 3, str.tostring(proxDn, "#.##") + "% to Break", text_color=c_lower, text_size=size.small, text_halign=text.align_left)

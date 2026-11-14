@@ -1,0 +1,99 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © MarkitTick
+
+//@version=6
+indicator("Liquidity Strain Detector [MarkitTick]", overlay = true)
+
+int LEN_TREND = input.int(50, "Trend Filter Length", minval=10, group="Model Parameters")
+int LEN_STATS = input.int(20, "Statistical Lookback", minval=5, group="Model Parameters")
+float THRESHOLD_SIGMA = input.float(2.0, "Stress Threshold (Sigma)", step=0.1, group="Model Parameters")
+
+float ATR_MULT_SL = input.float(1.5, "SL ATR Multiplier", group="Risk Management")
+float ATR_MULT_TP = input.float(3.0, "TP ATR Multiplier", group="Risk Management")
+
+string WH_LONG = input.string("long", "Long Action Name", group="Webhook Action Names")
+string WH_SHORT = input.string("short", "Short Action Name", group="Webhook Action Names")
+string WH_CLOSE_LONG = input.string("closelong", "Close Long Action Name", group="Webhook Action Names")
+string WH_CLOSE_SHORT = input.string("closeshort", "Close Short Action Name", group="Webhook Action Names")
+
+color COL_SE = input.color(color.new(color.green, 0), "Seller Exhaustion (Long)", group="Visuals")
+color COL_BE = input.color(color.new(color.red, 0), "Buyer Exhaustion (Short)", group="Visuals")
+color COL_TXT = input.color(color.new(color.white, 0), "Text Color", group="Visuals")
+
+type LiquidityEngine
+    float raw_illiquidity
+    float z_score
+    bool is_high_stress
+
+method update(LiquidityEngine self, int len, float threshold, float vol, float tr) =>
+    float vol_safe = vol == 0 ? 1.0 : vol
+    float impact = tr / vol_safe
+    self.raw_illiquidity := math.log(impact + 1)
+    float mean = ta.sma(self.raw_illiquidity, len)
+    float std = ta.stdev(self.raw_illiquidity, len)
+    self.z_score := (std == 0) ? 0.0 : (self.raw_illiquidity - mean) / std
+    self.is_high_stress := (self.z_score > threshold)
+
+method build_json(string action, float p_entry, float p_sl, float p_tp) =>
+    string inner = '"action": "{0}", "ticker": "{1}", "entry": {2}, "sl": {3}, "tp": {4}'
+    string entry_str = str.tostring(p_entry, format.mintick)
+    string sl_str = str.tostring(p_sl, format.mintick)
+    string tp_str = str.tostring(p_tp, format.mintick)
+    string payload = "{" + str.format(inner, action, syminfo.ticker, entry_str, sl_str, tp_str) + "}"
+    payload
+
+var LiquidityEngine engine = LiquidityEngine.new(0.0, 0.0, false)
+engine.update(LEN_STATS, THRESHOLD_SIGMA, volume, ta.tr(true))
+
+float trend_baseline = ta.ema(close, LEN_TREND)
+bool is_downtrend = close < trend_baseline
+bool is_uptrend = close > trend_baseline
+
+bool seller_exhaustion = engine.is_high_stress and is_downtrend and (close < open)
+bool buyer_exhaustion = engine.is_high_stress and is_uptrend and (close > open)
+
+var int current_state = 0
+var float active_sl = na
+var float active_tp = na
+float current_atr = ta.atr(14)
+
+bool trigger_long = seller_exhaustion and current_state <= 0
+bool trigger_short = buyer_exhaustion and current_state >= 0
+
+bool close_long_cond = (close <= active_sl) or (close >= active_tp) or (is_uptrend == false)
+bool close_short_cond = (close >= active_sl) or (close <= active_tp) or (is_downtrend == false)
+
+bool trigger_close_long = current_state == 1 and close_long_cond
+bool trigger_close_short = current_state == -1 and close_short_cond
+
+if trigger_close_long
+    string alert_msg = build_json(WH_CLOSE_LONG, close, active_sl, active_tp)
+    alert(alert_msg, alert.freq_once_per_bar_close)
+    current_state := 0
+    active_sl := na
+    active_tp := na
+
+if trigger_close_short
+    string alert_msg = build_json(WH_CLOSE_SHORT, close, active_sl, active_tp)
+    alert(alert_msg, alert.freq_once_per_bar_close)
+    current_state := 0
+    active_sl := na
+    active_tp := na
+
+if trigger_long
+    active_sl := close - (current_atr * ATR_MULT_SL)
+    active_tp := close + (current_atr * ATR_MULT_TP)
+    string alert_msg = build_json(WH_LONG, close, active_sl, active_tp)
+    alert(alert_msg, alert.freq_once_per_bar_close)
+    current_state := 1
+
+if trigger_short
+    active_sl := close + (current_atr * ATR_MULT_SL)
+    active_tp := close - (current_atr * ATR_MULT_TP)
+    string alert_msg = build_json(WH_SHORT, close, active_sl, active_tp)
+    alert(alert_msg, alert.freq_once_per_bar_close)
+    current_state := -1
+
+plotshape(trigger_long, "Seller Exhaustion", shape.labelup, location.belowbar, COL_SE, 0, "SE", COL_TXT)
+plotshape(trigger_short, "Buyer Exhaustion", shape.labeldown, location.abovebar, COL_BE, 0, "BE", COL_TXT)

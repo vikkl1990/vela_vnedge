@@ -1,0 +1,388 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © MarkitTick
+
+//@version=6
+indicator("Market Structure Target Tracker [MarkitTick]", overlay=true, max_lines_count=500, max_labels_count=500)
+// ── Input Groups ──────────────────────────────────────────────────────────────
+string GRP_BOS   = "BOS"
+string GRP_HTF   = "HTF"
+string GRP_VIS   = "Vis"
+string GRP_TP    = "SL/TP"
+string GRP_ALERT = "Alerts"
+string GRP_DASH  = "Dash"
+// ── User Inputs ───────────────────────────────────────────────────────────────
+int    swingLen       = input.int(5,        "Swing Length",    minval=3,  maxval=50, group=GRP_BOS)
+bool   showBosLine    = input.bool(true,      "Show BOS Line",               group=GRP_VIS)
+bool   showLabel      = input.bool(true,      "Show Labels",                 group=GRP_VIS)
+bool   invalidateMode = input.bool(true,      "Auto-Invalidate",             group=GRP_VIS)
+color  colBullBos     = input.color(color.rgb(0,200,120,0),   "Bull BOS",   group=GRP_VIS)
+color  colBearBos     = input.color(color.rgb(220,50,50,0),   "Bear BOS",   group=GRP_VIS)
+color  colTarget      = input.color(color.rgb(255,200,0,0),   "Target",     group=GRP_VIS)
+color  colHit         = input.color(color.rgb(180,100,255,0), "Target Hit", group=GRP_VIS)
+bool   showTpSl       = input.bool(true,      "Show Entry/SL/TP",            group=GRP_TP)
+float  slMulti        = input.float(1.0,      "SL ATR Multi",  minval=0.1, maxval=10.0, step=0.1, group=GRP_TP)
+float  tp1Multi       = input.float(1.5,      "TP1 ATR Multi", minval=0.1, maxval=20.0, step=0.1, group=GRP_TP)
+float  tp2Multi       = input.float(3.0,      "TP2 ATR Multi", minval=0.1, maxval=20.0, step=0.1, group=GRP_TP)
+float  tp3Multi       = input.float(5.0,      "TP3 ATR Multi", minval=0.1, maxval=20.0, step=0.1, group=GRP_TP)
+int    atrLen         = input.int(14,         "ATR Length",    minval=1,  maxval=50,   group=GRP_TP)
+color  colEntry       = input.color(color.rgb(100,180,255,0), "Entry",    group=GRP_TP)
+color  colSl          = input.color(color.rgb(255,60,60,0),   "SL",       group=GRP_TP)
+color  colTp1         = input.color(color.rgb(0,220,130,0),   "TP1",      group=GRP_TP)
+color  colTp2         = input.color(color.rgb(0,255,180,0),   "TP2",      group=GRP_TP)
+color  colTp3         = input.color(color.rgb(0,255,255,0),   "TP3",      group=GRP_TP)
+string htfRes         = input.timeframe("240", "HTF",         group=GRP_HTF)
+bool   useHtfFilter   = input.bool(false,       "HTF Filter",  group=GRP_HTF)
+int    htfRsiLen      = input.int(14,          "HTF RSI Len", group=GRP_HTF, minval=2)
+bool   alertBos       = input.bool(true,       "BOS Alert",   group=GRP_ALERT)
+bool   alertTarget    = input.bool(true,       "Target Alert",group=GRP_ALERT)
+color  dash_bg_color  = input.color(color.rgb(10,10,18,5),    "BG",  group=GRP_DASH)
+color  dash_txt_color = input.color(color.rgb(220,220,235,0), "Text",group=GRP_DASH)
+
+// ── Dashboard Helper Functions ────────────────────────────────────────────────
+f_blockBar(float rawVal, float domainMax) =>
+    float  pct = math.min(math.max(rawVal / domainMax * 100.0, 0.0), 100.0)
+    int    n   = math.round(pct / 10.0)
+    string s   = ''
+    for i = 1 to 10
+        s += i <= n ? '█' : '░'
+    s + ' ' + str.tostring(math.round(pct), '##0') + '%'
+
+f_blockColor(float rawVal, float lo, float mid, float hi) =>
+    rawVal >= hi  ? color.rgb(0, 255, 120) :
+     rawVal >= mid ? color.rgb(80, 255, 0)  :
+     rawVal >= lo  ? color.rgb(200, 200, 0) :
+                     color.rgb(110, 110, 110)
+
+// ── Symbol & ATR Calculations ─────────────────────────────────────────────────
+string clean_ticker = syminfo.prefix + ':' + syminfo.ticker
+float atrVal    = ta.atr(atrLen)
+float atrLocked = atrVal[1]
+
+// ── HTF Bias Filter via RSI ───────────────────────────────────────────────────
+float htfRsiRaw = request.security(syminfo.tickerid, htfRes, ta.rsi(close, htfRsiLen)[1], lookahead=barmerge.lookahead_off)
+float htfRsi    = htfRsiRaw
+bool  htfBull   = htfRsi > 50.0
+bool  htfBear   = htfRsi < 50.0
+bool  htfOkBull = not useHtfFilter or htfBull
+bool  htfOkBear = not useHtfFilter or htfBear
+
+// ── Pivot Detection ───────────────────────────────────────────────────────────
+float ph = ta.pivothigh(high, swingLen, swingLen)
+float pl = ta.pivotlow(low,  swingLen, swingLen)
+
+// ── Persistent State Variables ────────────────────────────────────────────────
+var float lastSwingHigh    = na
+var float lastSwingLow     = na
+var float prevSwingHigh    = na
+var float prevSwingLow     = na
+var int   lastSwingHighBar = na
+var int   lastSwingLowBar  = na
+var int   trend            = 0
+var float bosLevel         = na
+var float targetLevel      = na
+var int   bosBar           = na
+var int   bosBarTime       = na
+var bool  bosIsBull        = false
+var bool  targetHit        = false
+var float entryPrice       = na
+var float slPrice          = na
+var float tp1Price         = na
+var float tp2Price         = na
+var float tp3Price         = na
+var line  bosLine          = na
+var line  entryLine        = na
+var line  slLine           = na
+var line  tp1Line          = na
+var line  tp2Line          = na
+var line  tp3Line          = na
+var label bosLbl           = na
+var label entryLbl         = na
+var label slLbl            = na
+var label tp1Lbl           = na
+var label tp2Lbl           = na
+var label tp3Lbl           = na
+var int   bosBarsCount     = 0
+var int   totalBos         = 0
+var int   bullBosCount     = 0
+var int   bearBosCount     = 0
+var float invalidSwingRef  = na
+var int   lastProcessedHighBar = na
+var int   lastProcessedLowBar  = na
+
+if not na(ph)
+    prevSwingHigh    := lastSwingHigh
+    lastSwingHigh    := ph
+    lastSwingHighBar := bar_index - swingLen
+
+if not na(pl)
+    prevSwingLow    := lastSwingLow
+    lastSwingLow    := pl
+    lastSwingLowBar := bar_index - swingLen
+
+bool bosBull = barstate.isconfirmed and not na(lastSwingHigh) and close > lastSwingHigh and htfOkBull and (na(lastProcessedHighBar) or lastSwingHighBar != lastProcessedHighBar)
+bool bosBear = barstate.isconfirmed and not na(lastSwingLow)  and close < lastSwingLow  and htfOkBear and (na(lastProcessedLowBar)  or lastSwingLowBar  != lastProcessedLowBar)
+
+// ── Bullish BOS/CHoCH Handler ─────────────────────────────────────────────────
+if bosBull
+    lastProcessedHighBar := lastSwingHighBar  
+    string _lbl    = trend == 1 ? "BOS" : "CHoCH"
+    trend         := 1
+    bosLevel      := lastSwingHigh
+    targetLevel   := prevSwingHigh
+    bosBar        := bar_index
+    bosBarTime    := time
+    bosIsBull     := true
+    targetHit     := false
+    bosBarsCount  := 0
+    totalBos      += 1
+    bullBosCount  += 1
+    entryPrice    := bosLevel + atrLocked * 0.1
+    slPrice       := bosLevel - atrLocked * slMulti
+    tp1Price      := entryPrice + atrLocked * tp1Multi
+    tp2Price      := entryPrice + atrLocked * tp2Multi
+    tp3Price      := entryPrice + atrLocked * tp3Multi
+    invalidSwingRef := lastSwingLow
+    if showBosLine and not na(bosLevel)
+        line.delete(bosLine)
+        int _x1 = na(lastSwingHighBar) ? bar_index : math.max(lastSwingHighBar, bar_index - 499)
+        bosLine := line.new(_x1, bosLevel, bar_index, bosLevel, color=colBullBos, width=2, style=line.style_dashed)
+    if showLabel
+        label.delete(bosLbl)
+        int _x1  = na(lastSwingHighBar) ? bar_index : math.max(lastSwingHighBar, bar_index - 499)
+        int _mid = math.min(math.round((_x1 + bar_index) / 2), bar_index)
+        bosLbl  := label.new(_mid, bosLevel, "▲ " + _lbl, color=color.new(color.white, 100), textcolor=colBullBos, style=label.style_label_down, size=size.small)
+    if showTpSl
+        line.delete(entryLine)
+        line.delete(slLine)
+        line.delete(tp1Line)
+        line.delete(tp2Line)
+        line.delete(tp3Line)
+        label.delete(entryLbl)
+        label.delete(slLbl)
+        label.delete(tp1Lbl)
+        label.delete(tp2Lbl)
+        label.delete(tp3Lbl)
+        entryLine := line.new(bosBar, entryPrice, bar_index + 30, entryPrice, color=colEntry, width=1, style=line.style_dashed)
+        slLine    := line.new(bosBar, slPrice,    bar_index + 30, slPrice,    color=colSl,    width=1, style=line.style_dashed)
+        tp1Line   := line.new(bosBar, tp1Price,   bar_index + 30, tp1Price,   color=colTp1,   width=1, style=line.style_dashed)
+        tp2Line   := line.new(bosBar, tp2Price,   bar_index + 30, tp2Price,   color=colTp2,   width=1, style=line.style_dashed)
+        tp3Line   := line.new(bosBar, tp3Price,   bar_index + 30, tp3Price,   color=colTp3,   width=1, style=line.style_dashed)
+        entryLbl  := label.new(bar_index + 30, entryPrice, "► Entry  " + str.tostring(entryPrice, format.mintick), color=color.new(colEntry,70), textcolor=colEntry, style=label.style_label_left, size=size.small)
+        slLbl     := label.new(bar_index + 30, slPrice,    "✕ SL  "    + str.tostring(slPrice,    format.mintick), color=color.new(colSl,   70), textcolor=colSl,    style=label.style_label_left, size=size.small)
+        tp1Lbl    := label.new(bar_index + 30, tp1Price,   "● TP1  "   + str.tostring(tp1Price,   format.mintick), color=color.new(colTp1,  70), textcolor=colTp1,   style=label.style_label_left, size=size.small)
+        tp2Lbl    := label.new(bar_index + 30, tp2Price,   "★ TP2  "   + str.tostring(tp2Price,   format.mintick), color=color.new(colTp2,  70), textcolor=colTp2,   style=label.style_label_left, size=size.small)
+        tp3Lbl    := label.new(bar_index + 30, tp3Price,   "◆ TP3  "   + str.tostring(tp3Price,   format.mintick), color=color.new(colTp3,  70), textcolor=colTp3,   style=label.style_label_left, size=size.small)
+
+// ── Bearish BOS/CHoCH Handler ─────────────────────────────────────────────────
+if bosBear
+    lastProcessedLowBar := lastSwingLowBar   
+    string _lbl    = trend == -1 ? "BOS" : "CHoCH"
+    trend         := -1
+    bosLevel      := lastSwingLow
+    targetLevel   := prevSwingLow
+    bosBar        := bar_index
+    bosBarTime    := time
+    bosIsBull     := false
+    targetHit     := false
+    bosBarsCount  := 0
+    totalBos      += 1
+    bearBosCount  += 1
+    entryPrice    := bosLevel - atrLocked * 0.1
+    slPrice       := bosLevel + atrLocked * slMulti
+    tp1Price      := entryPrice - atrLocked * tp1Multi
+    tp2Price      := entryPrice - atrLocked * tp2Multi
+    tp3Price      := entryPrice - atrLocked * tp3Multi
+    invalidSwingRef := lastSwingHigh
+    if showBosLine and not na(bosLevel)
+        line.delete(bosLine)
+        int _x1 = na(lastSwingLowBar) ? bar_index : math.max(lastSwingLowBar, bar_index - 499)
+        bosLine := line.new(_x1, bosLevel, bar_index, bosLevel, color=colBearBos, width=2, style=line.style_dashed)
+    if showLabel
+        label.delete(bosLbl)
+        int _x1  = na(lastSwingLowBar) ? bar_index : math.max(lastSwingLowBar, bar_index - 499)
+        int _mid = math.min(math.round((_x1 + bar_index) / 2), bar_index)
+        bosLbl  := label.new(_mid, bosLevel, "▼ " + _lbl, color=color.new(color.white, 100), textcolor=colBearBos, style=label.style_label_up, size=size.small)
+    if showTpSl
+        line.delete(entryLine)
+        line.delete(slLine)
+        line.delete(tp1Line)
+        line.delete(tp2Line)
+        line.delete(tp3Line)
+        label.delete(entryLbl)
+        label.delete(slLbl)
+        label.delete(tp1Lbl)
+        label.delete(tp2Lbl)
+        label.delete(tp3Lbl)
+        entryLine := line.new(bosBar, entryPrice, bar_index + 30, entryPrice, color=colEntry, width=1, style=line.style_dashed)
+        slLine    := line.new(bosBar, slPrice,    bar_index + 30, slPrice,    color=colSl,    width=1, style=line.style_dashed)
+        tp1Line   := line.new(bosBar, tp1Price,   bar_index + 30, tp1Price,   color=colTp1,   width=1, style=line.style_dashed)
+        tp2Line   := line.new(bosBar, tp2Price,   bar_index + 30, tp2Price,   color=colTp2,   width=1, style=line.style_dashed)
+        tp3Line   := line.new(bosBar, tp3Price,   bar_index + 30, tp3Price,   color=colTp3,   width=1, style=line.style_dashed)
+        entryLbl  := label.new(bar_index + 30, entryPrice, "► Entry  " + str.tostring(entryPrice, format.mintick), color=color.new(colEntry,70), textcolor=colEntry, style=label.style_label_left, size=size.small)
+        slLbl     := label.new(bar_index + 30, slPrice,    "✕ SL  "    + str.tostring(slPrice,    format.mintick), color=color.new(colSl,   70), textcolor=colSl,    style=label.style_label_left, size=size.small)
+        tp1Lbl    := label.new(bar_index + 30, tp1Price,   "● TP1  "   + str.tostring(tp1Price,   format.mintick), color=color.new(colTp1,  70), textcolor=colTp1,   style=label.style_label_left, size=size.small)
+        tp2Lbl    := label.new(bar_index + 30, tp2Price,   "★ TP2  "   + str.tostring(tp2Price,   format.mintick), color=color.new(colTp2,  70), textcolor=colTp2,   style=label.style_label_left, size=size.small)
+        tp3Lbl    := label.new(bar_index + 30, tp3Price,   "◆ TP3  "   + str.tostring(tp3Price,   format.mintick), color=color.new(colTp3,  70), textcolor=colTp3,   style=label.style_label_left, size=size.small)
+
+var linefill slFill   = na
+var linefill tp1Fill  = na
+var linefill tp2Fill  = na
+var linefill tp3Fill  = na
+
+if bosBull or bosBear
+    linefill.delete(slFill)
+    linefill.delete(tp1Fill)
+    linefill.delete(tp2Fill)
+    slFill  := linefill.new(entryLine, slLine,  color.new(colSl,  70))
+    tp1Fill := linefill.new(entryLine, tp1Line, color.new(colTp1, 70))
+    tp2Fill := linefill.new(tp1Line,   tp2Line, color.new(colTp2, 85))
+    tp3Fill := linefill.new(tp2Line,   tp3Line, color.new(colTp2, 95))
+
+// ── Active BOS Line Extension ─────────────────────────────────────────────────
+bool bosActive = not na(bosLevel) and not na(bosBar)
+if bosActive and not bosBull and not bosBear
+    bosBarsCount += 1
+    if showTpSl
+        if not na(entryLine)
+            line.set_x2(entryLine, bar_index + 30)
+        if not na(slLine)
+            line.set_x2(slLine, bar_index + 30)
+        if not na(tp1Line)
+            line.set_x2(tp1Line, bar_index + 30)
+        if not na(tp2Line)
+            line.set_x2(tp2Line, bar_index + 30)
+        if not na(tp3Line)
+            line.set_x2(tp3Line, bar_index + 30)
+        if not na(entryLbl)
+            label.set_x(entryLbl, bar_index + 30)
+        if not na(slLbl)
+            label.set_x(slLbl, bar_index + 30)
+        if not na(tp1Lbl)
+            label.set_x(tp1Lbl, bar_index + 30)
+        if not na(tp2Lbl)
+            label.set_x(tp2Lbl, bar_index + 30)
+        if not na(tp3Lbl)
+            label.set_x(tp3Lbl, bar_index + 30)
+
+// ── Target Hit Detection ──────────────────────────────────────────────────────
+bool targetReached = bosActive and not targetHit and not na(targetLevel) and (bosIsBull ? high >= targetLevel : low <= targetLevel)
+if targetReached
+    targetHit := true
+
+// ── BOS Invalidation Logic ────────────────────────────────────────────────────
+bool invalidated = bosActive and not targetHit and barstate.isconfirmed and not na(invalidSwingRef) and (bosIsBull ? close < invalidSwingRef : close > invalidSwingRef) and invalidateMode
+if invalidated
+    bosLevel    := na
+    bosBar      := na
+    bosBarTime  := na
+    targetLevel := na
+    entryPrice := na
+    slPrice    := na
+    tp1Price   := na
+    tp2Price   := na
+    tp3Price   := na
+    invalidSwingRef := na
+    trend := 0
+    lastProcessedHighBar := na
+    lastProcessedLowBar  := na
+    if not na(bosLine)
+        line.delete(bosLine)
+    if not na(entryLine)
+        line.delete(entryLine)
+    if not na(slLine)
+        line.delete(slLine)
+    if not na(tp1Line)
+        line.delete(tp1Line)
+    if not na(tp2Line)
+        line.delete(tp2Line)
+    if not na(tp3Line)
+        line.delete(tp3Line)
+    label.delete(entryLbl)
+    label.delete(slLbl)
+    label.delete(tp1Lbl)
+    label.delete(tp2Lbl)
+    label.delete(tp3Lbl)
+
+// ── Dashboard String & Color Pre-computation ──────────────────────────────────
+string trendStr    = trend == 1 ? '▲ Bull' : trend == -1 ? '▼ Bear' : '● Neutral'
+color  trendCol    = trend == 1 ? color.rgb(0,200,120) : trend == -1 ? color.rgb(220,50,50) : color.rgb(140,140,140)
+float  htfBarVal   = htfRsi
+string htfBarStr   = f_blockBar(htfBarVal, 100.0)
+color  htfBarCol   = f_blockColor(htfBarVal, 30.0, 50.0, 70.0)
+string bosLvlStr   = bosActive and not na(bosLevel)    ? str.tostring(bosLevel,    format.mintick) : '—'
+string tgtLvlStr   = bosActive and not na(targetLevel) ? str.tostring(targetLevel, format.mintick) : '—'
+string entryStr    = bosActive and not na(entryPrice)  ? str.tostring(entryPrice,  format.mintick) : '—'
+string slStr       = bosActive and not na(slPrice)     ? str.tostring(slPrice,     format.mintick) : '—'
+string tp1Str      = bosActive and not na(tp1Price)    ? str.tostring(tp1Price,    format.mintick) : '—'
+string tp2Str      = bosActive and not na(tp2Price)    ? str.tostring(tp2Price,    format.mintick) : '—'
+string tp3Str      = bosActive and not na(tp3Price)    ? str.tostring(tp3Price,    format.mintick) : '—'
+string tgtHitStr   = targetHit ? '✓ Hit' : bosActive ? '⏳ Pending' : '—'
+color  tgtHitCol   = targetHit ? colHit : bosActive ? color.rgb(255,200,0) : color.rgb(110,110,110)
+string durationStr = bosActive ? '⏳ ' + str.tostring(bosBarsCount) + ' Bars' : '—'
+string totalStr    = str.tostring(totalBos) + ' (' + str.tostring(bullBosCount) + '▲ / ' + str.tostring(bearBosCount) + '▼)'
+string htfStr      = htfBull ? '▲ Bull HTF' : '▼ Bear HTF'
+color  htfDirCol   = htfBull ? color.rgb(0,200,120) : color.rgb(220,50,50)
+float  _slDiff     = math.abs(entryPrice - slPrice)
+float  rrVal       = bosActive and not na(tp1Price) and not na(entryPrice) and not na(slPrice) and _slDiff > 0.0 ? math.abs(tp1Price - entryPrice) / _slDiff : 0.0
+string rrStr       = bosActive ? str.tostring(rrVal, '#.##') + ' R' : '—'
+color  rrCol       = rrVal >= 2.0 ? color.rgb(0,255,120) : rrVal >= 1.5 ? color.rgb(80,255,0) : rrVal >= 1.0 ? color.rgb(200,200,0) : color.rgb(110,110,110)
+
+// ── Dashboard Table ───────────────────────────────────────────────────────────
+var table dash = table.new(position.top_right, 2, 15,
+     border_width=1, border_color=color.rgb(50,50,70,20),
+     frame_width=1,  frame_color=color.rgb(60,60,90,10))
+color hdrBg = color.rgb(30,30,45,10)
+color altBg = color.rgb(20,20,25,10)
+color oddBg = dash_bg_color
+table.cell(dash, 0, 0,  clean_ticker, text_color=dash_txt_color,         bgcolor=hdrBg, text_halign=text.align_left,  text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 1, 0,  'BOS [MT]',   text_color=color.rgb(180,180,220), bgcolor=hdrBg, text_halign=text.align_right, text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 0, 1,  'Trend',      text_color=dash_txt_color,         bgcolor=oddBg, text_halign=text.align_left,  text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 1, 1,  trendStr,     text_color=trendCol,               bgcolor=oddBg, text_halign=text.align_right, text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 0, 2,  'HTF Dir',    text_color=dash_txt_color,         bgcolor=altBg, text_halign=text.align_left,  text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 1, 2,  htfStr,       text_color=htfDirCol,              bgcolor=altBg, text_halign=text.align_right, text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 0, 3,  'HTF RSI',    text_color=dash_txt_color,         bgcolor=oddBg, text_halign=text.align_left,  text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 1, 3,  htfBarStr,    text_color=htfBarCol,              bgcolor=oddBg, text_halign=text.align_right, text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 0, 4,  'BOS Lvl',    text_color=dash_txt_color,         bgcolor=altBg, text_halign=text.align_left,  text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 1, 4,  bosLvlStr,    text_color=color.rgb(200,200,60),  bgcolor=altBg, text_halign=text.align_right, text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 0, 5,  'Target',     text_color=dash_txt_color,         bgcolor=oddBg, text_halign=text.align_left,  text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 1, 5,  tgtLvlStr,    text_color=color.rgb(200,200,60),  bgcolor=oddBg, text_halign=text.align_right, text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 0, 6,  'Tgt Status', text_color=dash_txt_color,         bgcolor=altBg, text_halign=text.align_left,  text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 1, 6,  tgtHitStr,    text_color=tgtHitCol,              bgcolor=altBg, text_halign=text.align_right, text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 0, 7,  '► Entry',    text_color=dash_txt_color,         bgcolor=oddBg, text_halign=text.align_left,  text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 1, 7,  entryStr,     text_color=colEntry,               bgcolor=oddBg, text_halign=text.align_right, text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 0, 8,  '✕ SL',       text_color=dash_txt_color,         bgcolor=altBg, text_halign=text.align_left,  text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 1, 8,  slStr,        text_color=colSl,                  bgcolor=altBg, text_halign=text.align_right, text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 0, 9,  '● TP1',      text_color=dash_txt_color,         bgcolor=oddBg, text_halign=text.align_left,  text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 1, 9,  tp1Str,       text_color=colTp1,                 bgcolor=oddBg, text_halign=text.align_right, text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 0, 10, '★ TP2',      text_color=dash_txt_color,         bgcolor=altBg, text_halign=text.align_left,  text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 1, 10, tp2Str,       text_color=colTp2,                 bgcolor=altBg, text_halign=text.align_right, text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 0, 11, '◆ TP3',      text_color=dash_txt_color,         bgcolor=oddBg, text_halign=text.align_left,  text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 1, 11, tp3Str,       text_color=colTp3,                 bgcolor=oddBg, text_halign=text.align_right, text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 0, 12, 'R:R',        text_color=dash_txt_color,         bgcolor=altBg, text_halign=text.align_left,  text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 1, 12, rrStr,        text_color=rrCol,                  bgcolor=altBg, text_halign=text.align_right, text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 0, 13, 'Duration',   text_color=dash_txt_color,         bgcolor=oddBg, text_halign=text.align_left,  text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 1, 13, durationStr,  text_color=color.rgb(140,180,255), bgcolor=oddBg, text_halign=text.align_right, text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 0, 14, 'Total BOS',  text_color=dash_txt_color,         bgcolor=hdrBg, text_halign=text.align_left,  text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 1, 14, totalStr,     text_color=color.rgb(180,180,220), bgcolor=hdrBg, text_halign=text.align_right, text_font_family=font.family_monospace, text_size=size.small)
+
+// ── Webhook Alert Message Construction ───────────────────────────────────────
+string bosAlertMsg = "{" + str.format('"t":"{0}","tf":"{1}","type":"BOS","dir":"{2}","lvl":{3},"entry":{4},"sl":{5},"tp1":{6},"tp2":{7},"tp3":{8}',
+     syminfo.tickerid, timeframe.period,
+     bosIsBull ? "bull" : "bear",
+     str.tostring(bosLevel,   format.mintick),
+     str.tostring(entryPrice, format.mintick),
+     str.tostring(slPrice,    format.mintick),
+     str.tostring(tp1Price,   format.mintick),
+     str.tostring(tp2Price,   format.mintick),
+     str.tostring(tp3Price,   format.mintick)) + "}"
+string tgtAlertMsg = "{" + str.format('"t":"{0}","tf":"{1}","type":"TGT","dir":"{2}","tgt":{3}',
+     syminfo.tickerid, timeframe.period,
+     bosIsBull ? "bull" : "bear",
+     str.tostring(targetLevel, format.mintick)) + "}"
+
+// ── Alert Dispatch ────────────────────────────────────────────────────────────
+if alertBos and (bosBull or bosBear) and barstate.isconfirmed
+    alert(bosAlertMsg, alert.freq_once_per_bar_close)
+if alertTarget and targetReached and barstate.isconfirmed
+    alert(tgtAlertMsg, alert.freq_once_per_bar_close)

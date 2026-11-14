@@ -5,6 +5,7 @@ import { pineLibraries } from '../pine/libraries.ts';
 import { applyPatches } from '../pine/patches.ts';
 import { familyFor, originOf } from '../library/families.ts';
 import { variantCompatibleSource } from './variantCompat.ts';
+import { markitTickSourceError } from './markitTick.ts';
 
 /** `removed`: retired from the library for good (decision 127); the row stays in the manifest so the library sync never re-imports it, the source file is gone, and the registry never loads it. */
 export type ScannerStatus = 'ok' | 'incompatible' | 'unavailable' | 'removed';
@@ -116,6 +117,8 @@ export class ScannerRegistry {
       const source = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
       const { source: compatible, applied } = source ? applyPatches(source, m.file) : { source: '', applied: [] };
       let { status, reason } = reviewedStatus(m, report[m.id]);
+      const nativeSourceError=markitTickSourceError(m.id,source);
+      if(nativeSourceError){status='incompatible';reason=nativeSourceError;}
       let patched = compatible;
       try { patched = pineLibraries().pin(compatible); pineLibraries().resolver(patched); }
       catch (error) { status = 'incompatible'; reason = reason ?? `Pine dependencies: ${(error as Error).message}`; }

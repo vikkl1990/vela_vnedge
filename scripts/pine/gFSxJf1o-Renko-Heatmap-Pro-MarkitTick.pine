@@ -1,0 +1,543 @@
+// © MarkitTick
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+
+//@version=6
+indicator("Renko Heatmap Pro [MarkitTick]", overlay=true, precision=5)
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  UDTs                                                        ║
+// ╚══════════════════════════════════════════════════════════════╝
+type RenkoBar
+    float rc = na
+    float ro = na
+
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  PURE FUNCTIONS                                              ║
+// ╚══════════════════════════════════════════════════════════════╝
+f_color(int streak, color cA, color cB, int gd) =>
+    float t = math.min(streak / float(gd), 1.0)
+    int   a = math.max(5, 50 - streak * 4)
+    color.new(color.from_gradient(t, 0.0, 1.0, cA, cB), a)
+
+f_blockBar(float score) =>
+    int    n = math.min(math.max(math.round(score), 0), 10)
+    string s = ''
+    for i = 1 to 10
+        s += i <= n ? '█' : '░'
+    s
+
+f_blockColor(float score) =>
+    score >= 7.0 ? color.rgb(0, 255, 120) :
+     score >= 4.0 ? color.rgb(80, 255, 0) :
+     score >= 1.5 ? color.rgb(200, 200, 0) :
+     color.rgb(110, 110, 110)
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  INPUTS — ◈ Renko                                           ║
+// ╚══════════════════════════════════════════════════════════════╝
+float  i_atrLen  = input.float(10.0, "ATR Length",       minval=1, maxval=100, step=1, group="◈ Renko")
+int    i_mult    = input.int(1,      "ATR Resolution ×", minval=0,                     group="◈ Renko")
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  INPUTS — ◈ Visuals                                         ║
+// ╚══════════════════════════════════════════════════════════════╝
+color  i_cBullA  = input.color(#004E92, "Bull → Start",          group="◈ Visuals")
+color  i_cBullB  = input.color(#43C6AC, "Bull → End",            group="◈ Visuals")
+color  i_cBearA  = input.color(#C31432, "Bear → Start",          group="◈ Visuals")
+color  i_cBearB  = input.color(#FF4B2B, "Bear → End",            group="◈ Visuals")
+int    i_gDepth  = input.int(12,        "Gradient Streak Depth", minval=3, maxval=50,  group="◈ Visuals")
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  INPUTS — ◈ Risk Management                                 ║
+// ╚══════════════════════════════════════════════════════════════╝
+bool   i_sltp    = input.bool(true,  "Dynamic SL/TP in Alerts",   group="◈ Risk Management")
+float  i_slMult  = input.float(1.5,  "SL ATR Multiplier",         minval=0.1, maxval=10.0, step=0.1, group="◈ Risk Management")
+float  i_tpMult  = input.float(3.0,  "TP ATR Multiplier",         minval=0.1, maxval=20.0, step=0.1, group="◈ Risk Management")
+bool   i_rrPanel = input.bool(true,  "Show R:R Panel",            group="◈ Risk Management")
+bool   i_trail   = input.bool(true,  "Show Trailing Stop Line",   group="◈ Risk Management")
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  INPUTS — ◈ Structure Analysis                              ║
+// ╚══════════════════════════════════════════════════════════════╝
+bool   i_boxCnt  = input.bool(true,  "Show Box Count Label",      group="◈ Structure Analysis")
+bool   i_srLvl   = input.bool(true,  "Show S/R Levels",           group="◈ Structure Analysis")
+int    i_srMax   = input.int(5,      "Max S/R Levels",            minval=1, maxval=10,    group="◈ Structure Analysis")
+int    i_srFade  = input.int(200,    "S/R Fade Age (bars)",        minval=50, maxval=500,  group="◈ Structure Analysis")
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  INPUTS — ◈ Webhook Actions                                 ║
+// ╚══════════════════════════════════════════════════════════════╝
+string i_aLong   = input.string("long",       "Long",        group="◈ Webhook Actions")
+string i_aShort  = input.string("short",      "Short",       group="◈ Webhook Actions")
+string i_aCLong  = input.string("closelong",  "Close Long",  group="◈ Webhook Actions")
+string i_aCSh    = input.string("closeshort", "Close Short", group="◈ Webhook Actions")
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  INPUTS — 📊 Dashboard Settings                             ║
+// ╚══════════════════════════════════════════════════════════════╝
+string GRP_DASH       = '📊 Dashboard Settings'
+color  dash_bg_color  = input.color(color.rgb(10, 10, 18, 5),    'Background Color', group=GRP_DASH)
+color  dash_txt_color = input.color(color.rgb(220, 220, 235, 0), 'Text Color',       group=GRP_DASH)
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  RESOLUTION STRING BUILDER                                   ║
+// ╚══════════════════════════════════════════════════════════════╝
+string _res = timeframe.ismonthly  ? str.tostring(timeframe.multiplier * i_mult, "###M") :
+              timeframe.isweekly   ? str.tostring(timeframe.multiplier * i_mult, "###W") :
+              timeframe.isdaily    ? str.tostring(timeframe.multiplier * i_mult, "###D") :
+              timeframe.isintraday ? str.tostring(timeframe.multiplier * i_mult, "####") : "1D"
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  RENKO TICKER CONSTRUCTION                                   ║
+// ╚══════════════════════════════════════════════════════════════╝
+string _tid = ticker.renko(syminfo.tickerid, "ATR", i_atrLen)
+
+// FIX: Both current-bar and confirmed-bar slots now use [1]+lookahead_on
+//      (the previous _bar.rc/ro used [0] which leaked unconfirmed Renko
+//       levels into all visual plots, causing intra-bar repainting)
+var RenkoBar _bar = RenkoBar.new()
+_bar.rc := request.security(_tid, _res, close[1], lookahead=barmerge.lookahead_on)
+_bar.ro := request.security(_tid, _res, open[1],  lookahead=barmerge.lookahead_on)
+
+float _rcConf = request.security(_tid, _res, close[1], lookahead=barmerge.lookahead_on)
+float _roConf = request.security(_tid, _res, open[1],  lookahead=barmerge.lookahead_on)
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  ATR (chart timeframe)
+// ╚══════════════════════════════════════════════════════════════╝
+float _atr = ta.atr(14)
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  PLAIN SERIES 
+// ╚══════════════════════════════════════════════════════════════╝
+float _rc = _bar.rc
+float _ro = _bar.ro
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  STREAK ENGINE 
+// ╚══════════════════════════════════════════════════════════════╝
+var int _lStrk = 0
+var int _sStrk = 0
+
+bool _isBull = _rcConf > _roConf
+bool _isBear = _rcConf < _roConf
+
+_lStrk := _isBull ? _lStrk + 1 : 0
+_sStrk := _isBear ? _sStrk + 1 : 0
+
+bool _buy  = _lStrk == 1
+bool _sell = _sStrk == 1
+
+int  _streak = _isBull ? _lStrk : _isBear ? _sStrk : 0
+
+bool _buyF  = _buy
+bool _sellF = _sell
+
+bool _boxChanged = _rcConf != _rcConf[1] or _roConf != _roConf[1]
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  TRAILING STOP ENGINE                                        ║
+// ╚══════════════════════════════════════════════════════════════╝
+var float _trailStop = na
+if _isBull
+    _trailStop := na(_trailStop) ? _roConf : math.max(_trailStop, _roConf)
+else if _isBear
+    _trailStop := na(_trailStop) ? _rcConf : math.min(_trailStop, _rcConf)
+else
+    _trailStop := na
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  S/R LEVEL ENGINE            ║
+// ╚══════════════════════════════════════════════════════════════╝
+var array<float> _srPrices = array.new<float>()
+var array<int>   _srAges   = array.new<int>()
+var array<bool>  _srIsBull = array.new<bool>()
+
+if i_srLvl
+    int _srSz = array.size(_srPrices)
+    if _srSz > 0
+        for i = 0 to _srSz - 1
+            array.set(_srAges, i, array.get(_srAges, i) + 1)
+
+    if _buyF or _sellF
+        if array.size(_srPrices) >= i_srMax
+            array.shift(_srPrices)
+            array.shift(_srAges)
+            array.shift(_srIsBull)
+        array.push(_srPrices,  _roConf)
+        array.push(_srAges,    0)
+        array.push(_srIsBull,  _buyF)
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  BOX COUNT ENGINE                                            ║
+// ╚══════════════════════════════════════════════════════════════╝
+var int _legBoxCount = 0
+_legBoxCount := _isBull or _isBear ?
+     (_buy or _sell ? 1 : _legBoxCount + (_boxChanged ? 1 : 0)) :
+     _legBoxCount
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  GRADIENT COLOR ENGINE                                       ║
+// ╚══════════════════════════════════════════════════════════════╝
+float _gradT   = _isBull ? math.min(_lStrk / float(i_gDepth), 1.0) :
+                 _isBear ? math.min(_sStrk / float(i_gDepth), 1.0) : 0.0
+
+color _base = _isBull ? color.from_gradient(_gradT, 0.0, 1.0, i_cBullA, i_cBullB) :
+              _isBear ? color.from_gradient(_gradT, 0.0, 1.0, i_cBearA, i_cBearB) :
+              color.gray
+
+color _core = _isBull ? f_color(_lStrk, i_cBullA, i_cBullB, i_gDepth) :
+              _isBear ? f_color(_sStrk, i_cBearA, i_cBearB, i_gDepth) :
+              color.new(color.gray, 50)
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  DRAW PRIMITIVES                                             ║
+// ╚══════════════════════════════════════════════════════════════╝
+float _upper = _rc
+float _lower = _ro
+float _avg   = (_upper + _lower) / 2.0
+
+bool  _isChanged  = _upper != _upper[1] or _lower != _lower[1]
+bool  _isReversed = _buyF or _sellF
+
+color _boxColor = _isChanged ? na : _core
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  TREND HEATMAP                                               ║
+// ╚══════════════════════════════════════════════════════════════╝
+color _bodyColor   = _isBull ? color.new(_base, 0) :
+                     _isBear ? color.new(_base, 0) :
+                     color.new(color.gray, 40)
+color _borderColor = _isBull ? color.new(i_cBullB, 10) :
+                     _isBear ? color.new(i_cBearB, 10) :
+                     color.new(color.gray, 60)
+
+plotcandle(open, high, low, close,
+     title       = "Heatmap Candles",
+     color       = _bodyColor,
+     wickcolor   = _borderColor,
+     bordercolor = _borderColor,
+     display     = display.pane)
+
+plot(_rc, "REMOCC",
+     color   = _isBull ? color.rgb(0, 255, 120) : _isBear ? color.rgb(255, 60, 80) : color.rgb(180, 180, 180),
+     display = display.none)
+
+plot(_avg, "Renko Mid",
+     color     = color.new(_core, 60),
+     style     = plot.style_line,
+     linestyle = plot.linestyle_dotted,
+     linewidth = 1,
+     display   = display.pane)
+
+plot(_isReversed ? close : na, "Reversal Close",
+     color     = _core,
+     style     = plot.style_circles,
+     linewidth = 3,
+     display   = display.pane)
+
+pC = plot(_upper, "Renko Upper",
+     color   = _boxColor,
+     style   = plot.style_linebr,
+     linewidth = 1,
+     display = display.pane)
+pO = plot(_lower, "Renko Lower",
+     color   = _boxColor,
+     style   = plot.style_linebr,
+     linewidth = 1,
+     display = display.pane)
+
+fill(pC, pO, _isChanged ? na : color.new(_base, 84), title="OC Core Zone")
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  TRAILING STOP PLOT                                          ║
+// ╚══════════════════════════════════════════════════════════════╝
+plot(i_trail ? _trailStop : na, "Trailing Stop",
+     color     = _isBull ? color.new(i_cBullB, 30) : color.new(i_cBearB, 30),
+     style     = plot.style_linebr,
+     linewidth = 2,
+     linestyle = plot.linestyle_dashed,
+     display   = display.pane)
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  S/R LEVEL LINES                                             ║
+// ╚══════════════════════════════════════════════════════════════╝
+var array<line> _srLines = array.new<line>()
+
+if i_srLvl
+    int _lineSz = array.size(_srLines)
+    if _lineSz > 0
+        for i = 0 to _lineSz - 1
+            line.delete(array.get(_srLines, i))
+    array.clear(_srLines)
+
+    int _srSz2 = array.size(_srPrices)
+    if _srSz2 > 0
+        for i = 0 to _srSz2 - 1
+            float _lvl  = array.get(_srPrices, i)
+            int   _age  = array.get(_srAges, i)
+            bool  _bull = array.get(_srIsBull, i)
+            int   _fade = math.min(int(_age / float(i_srFade) * 80), 80)
+            color _lc   = _bull ? color.new(i_cBullA, _fade) : color.new(i_cBearA, _fade)
+            array.push(_srLines,
+                 line.new(bar_index - 50, _lvl, bar_index, _lvl,
+                          color=_lc, width=1, style=line.style_dotted))
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  SIGNAL SHAPES                                               ║
+// ╚══════════════════════════════════════════════════════════════╝
+plotshape(_buyF  ? low  : na, "▲ BUY",  shape.labelup,   location.belowbar,
+     color.new(i_cBullA, 8), text="▲", textcolor=color.white, size=size.small)
+plotshape(_sellF ? high : na, "▼ SELL", shape.labeldown, location.abovebar,
+     color.new(i_cBearA, 8), text="▼", textcolor=color.white, size=size.small)
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  ENTRY / SL / TP LINES & LABELS                              ║
+// ╚══════════════════════════════════════════════════════════════╝
+var line  _entryLine  = na
+var line  _slLine     = na
+var line  _tpLine     = na
+var label _entryLbl   = na
+var label _slLbl      = na
+var label _tpLbl      = na
+var float _lockedEntry = na
+var float _lockedSL    = na
+var float _lockedTP    = na
+
+// Lock prices only when a NEW signal fires — never on continuation bars
+if _buyF or _sellF
+    _lockedEntry := _rcConf
+    _lockedSL    := _buyF ? _rcConf - _atr * i_slMult : _rcConf + _atr * i_slMult
+    _lockedTP    := _buyF ? _rcConf + _atr * i_tpMult : _rcConf - _atr * i_tpMult
+
+    line.delete(_entryLine)
+    line.delete(_slLine)
+    line.delete(_tpLine)
+    label.delete(_entryLbl)
+    label.delete(_slLbl)
+    label.delete(_tpLbl)
+
+    int _x1 = bar_index - 30
+    int _x2 = bar_index + 15
+
+    // ── Entry — Gold #FFD700 ──────────────────────────────────
+    _entryLine := line.new(_x1, _lockedEntry, _x2, _lockedEntry,
+         xloc    = xloc.bar_index,
+         color   = color.rgb(255, 215, 0),
+         style   = line.style_dashed,
+         width   = 1)
+    _entryLbl := label.new(_x2, _lockedEntry,
+         text      = "● Entry  " + str.tostring(_lockedEntry, format.mintick),
+         style     = label.style_label_left,
+         color     = color.new(color.black, 100),
+         textcolor = color.rgb(255, 215, 0),
+         size      = size.small)
+
+    // ── SL — Burnt Orange #FF6B00 ─────────────────────────────
+    _slLine := line.new(_x1, _lockedSL, _x2, _lockedSL,
+         xloc    = xloc.bar_index,
+         color   = color.rgb(255, 107, 0),
+         style   = line.style_dashed,
+         width   = 1)
+    _slLbl := label.new(_x2, _lockedSL,
+         text      = "✕ SL  " + str.tostring(_lockedSL, format.mintick),
+         style     = label.style_label_left,
+         color     = color.new(color.black, 100),
+         textcolor = color.rgb(255, 107, 0),
+         size      = size.small)
+
+    // ── TP — Violet #C77DFF ───────────────────────────────────
+    _tpLine := line.new(_x1, _lockedTP, _x2, _lockedTP,
+         xloc    = xloc.bar_index,
+         color   = color.rgb(199, 125, 255),
+         style   = line.style_dashed,
+         width   = 1)
+    _tpLbl := label.new(_x2, _lockedTP,
+         text      = "✦ TP  " + str.tostring(_lockedTP, format.mintick),
+         style     = label.style_label_left,
+         color     = color.new(color.black, 100),
+         textcolor = color.rgb(199, 125, 255),
+         size      = size.small)
+
+// Extend lines forward on every subsequent bar (no price update — locked values only)
+else if not na(_entryLine)
+    line.set_x2(_entryLine, bar_index + 15)
+    line.set_x2(_slLine,    bar_index + 15)
+    line.set_x2(_tpLine,    bar_index + 15)
+    label.set_x(_entryLbl,  bar_index + 15)
+    label.set_x(_slLbl,     bar_index + 15)
+    label.set_x(_tpLbl,     bar_index + 15)
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  BOX COUNT LABEL                                             ║
+// ╚══════════════════════════════════════════════════════════════╝
+var label _boxLbl = na
+
+if i_boxCnt and (_buyF or _sellF)
+    label.delete(_boxLbl)
+    _boxLbl := label.new(bar_index,
+         _isBull ? low - _atr * 0.8 : high + _atr * 0.8,
+         text      = "Leg: " + str.tostring(_legBoxCount) + " boxes",
+         style     = _isBull ? label.style_label_up : label.style_label_down,
+         color     = _isBull ? color.new(i_cBullA, 20) : color.new(i_cBearA, 20),
+         textcolor = color.white,
+         size      = size.small)
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  DASHBOARD                                                   ║
+// ╚══════════════════════════════════════════════════════════════╝
+string clean_ticker = syminfo.prefix + ':' + syminfo.ticker
+
+string dash_biasLbl = _isBull ? '▲ Bull Trend' : _isBear ? '▼ Bear Trend' : '○ Neutral'
+color  dash_biasCol = _isBull ? color.rgb(0, 255, 120) : _isBear ? color.rgb(255, 60, 80) : color.rgb(110, 110, 110)
+
+float  dash_strkScore = math.min(_streak / float(i_gDepth) * 10.0, 10.0)
+string dash_strkBar   = (_isBull ? '▲ ' : _isBear ? '▼ ' : '○ ') + f_blockBar(dash_strkScore)
+color  dash_strkCol   = f_blockColor(dash_strkScore)
+
+float  _dashSlP     = _isBull ? _rcConf - _atr * i_slMult : _rcConf + _atr * i_slMult
+float  _dashTpP     = _isBull ? _rcConf + _atr * i_tpMult : _rcConf - _atr * i_tpMult
+float  _dashRR      = math.abs(_dashTpP - _rcConf) / math.max(math.abs(_dashSlP - _rcConf), syminfo.mintick)
+float  dash_rrScore = math.min(_dashRR * 2.0, 10.0)
+string dash_rrBar   = f_blockBar(dash_rrScore)
+color  dash_rrCol   = f_blockColor(dash_rrScore)
+
+string dash_entryStr = str.tostring(_rcConf,      format.mintick)
+color  dash_entryCol = _isBull ? color.rgb(0, 255, 120) : _isBear ? color.rgb(255, 60, 80) : color.rgb(200, 200, 60)
+string dash_slStr    = str.tostring(_dashSlP,     format.mintick)
+string dash_tpStr    = str.tostring(_dashTpP,     format.mintick)
+string dash_trailStr = na(_trailStop) ? '—' : str.tostring(_trailStop, format.mintick)
+color  dash_trailCol = _isBull ? color.rgb(0, 204, 255) : color.rgb(255, 17, 85)
+
+string dash_legStr = '⏳ ' + str.tostring(_legBoxCount) + ' Boxes'
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  DASHBOARD TABLE 
+// ╚══════════════════════════════════════════════════════════════╝
+var table dash = table.new(position.top_right, 2, 10,
+     border_width  = 1,
+     border_color  = color.rgb(50, 50, 70, 20),
+     frame_width   = 1,
+     frame_color   = color.rgb(60, 60, 90, 10))
+
+color hdrBg = color.rgb(30, 30, 45, 10)
+color altBg = color.rgb(20, 20, 25, 10)
+color oddBg = dash_bg_color
+
+table.cell(dash, 0, 0, '  REMOCC v2',
+     text_color=dash_txt_color, bgcolor=hdrBg,
+     text_font_family=font.family_monospace, text_size=size.small,
+     text_halign=text.align_left)
+table.cell(dash, 1, 0, clean_ticker + ' · ' + timeframe.period,
+     text_color=color.rgb(160, 160, 200), bgcolor=hdrBg,
+     text_font_family=font.family_monospace, text_size=size.small,
+     text_halign=text.align_right)
+
+table.cell(dash, 0, 1, '  Trend Bias',
+     text_color=dash_txt_color, bgcolor=altBg,
+     text_font_family=font.family_monospace, text_size=size.small,
+     text_halign=text.align_left)
+table.cell(dash, 1, 1, dash_biasLbl,
+     text_color=dash_biasCol, bgcolor=altBg,
+     text_font_family=font.family_monospace, text_size=size.small,
+     text_halign=text.align_right)
+
+table.cell(dash, 0, 2, '  Streak Depth',
+     text_color=dash_txt_color, bgcolor=oddBg,
+     text_font_family=font.family_monospace, text_size=size.small,
+     text_halign=text.align_left)
+table.cell(dash, 1, 2, dash_strkBar,
+     text_color=dash_strkCol, bgcolor=oddBg,
+     text_font_family=font.family_monospace, text_size=size.small,
+     text_halign=text.align_right)
+
+table.cell(dash, 0, 3, '  R:R Quality',
+     text_color=dash_txt_color, bgcolor=altBg,
+     text_font_family=font.family_monospace, text_size=size.small,
+     text_halign=text.align_left)
+table.cell(dash, 1, 3, dash_rrBar,
+     text_color=dash_rrCol, bgcolor=altBg,
+     text_font_family=font.family_monospace, text_size=size.small,
+     text_halign=text.align_right)
+
+table.cell(dash, 0, 4, '  Entry',
+     text_color=dash_txt_color, bgcolor=oddBg,
+     text_font_family=font.family_monospace, text_size=size.small,
+     text_halign=text.align_left)
+table.cell(dash, 1, 4, dash_entryStr,
+     text_color=dash_entryCol, bgcolor=oddBg,
+     text_font_family=font.family_monospace, text_size=size.small,
+     text_halign=text.align_right)
+
+table.cell(dash, 0, 5, '  Stop Loss',
+     text_color=dash_txt_color, bgcolor=altBg,
+     text_font_family=font.family_monospace, text_size=size.small,
+     text_halign=text.align_left)
+table.cell(dash, 1, 5, dash_slStr,
+     text_color=color.rgb(255, 68, 68), bgcolor=altBg,
+     text_font_family=font.family_monospace, text_size=size.small,
+     text_halign=text.align_right)
+
+table.cell(dash, 0, 6, '  Take Profit',
+     text_color=dash_txt_color, bgcolor=oddBg,
+     text_font_family=font.family_monospace, text_size=size.small,
+     text_halign=text.align_left)
+table.cell(dash, 1, 6, dash_tpStr,
+     text_color=color.rgb(0, 255, 136), bgcolor=oddBg,
+     text_font_family=font.family_monospace, text_size=size.small,
+     text_halign=text.align_right)
+
+table.cell(dash, 0, 7, '  Trail Stop',
+     text_color=dash_txt_color, bgcolor=altBg,
+     text_font_family=font.family_monospace, text_size=size.small,
+     text_halign=text.align_left)
+table.cell(dash, 1, 7, dash_trailStr,
+     text_color=dash_trailCol, bgcolor=altBg,
+     text_font_family=font.family_monospace, text_size=size.small,
+     text_halign=text.align_right)
+
+table.cell(dash, 0, 8, '  Leg Length',
+     text_color=dash_txt_color, bgcolor=oddBg,
+     text_font_family=font.family_monospace, text_size=size.small,
+     text_halign=text.align_left)
+table.cell(dash, 1, 8, dash_legStr,
+     text_color=color.rgb(140, 180, 255), bgcolor=oddBg,
+     text_font_family=font.family_monospace, text_size=size.small,
+     text_halign=text.align_right)
+
+table.cell(dash, 0, 9, '  R:R Ratio',
+     text_color=dash_txt_color, bgcolor=altBg,
+     text_font_family=font.family_monospace, text_size=size.small,
+     text_halign=text.align_left)
+table.cell(dash, 1, 9, str.tostring(_dashRR, '#.##') + ':1',
+     text_color=_dashRR >= 2.0 ? color.rgb(0, 255, 136) : color.rgb(255, 165, 0), bgcolor=altBg,
+     text_font_family=font.family_monospace, text_size=size.small,
+     text_halign=text.align_right)
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  ALERTS                                                      ║
+// ╚══════════════════════════════════════════════════════════════╝
+float  _slAlrt = _isBull ? _rcConf - _atr * i_slMult : _rcConf + _atr * i_slMult
+float  _tpAlrt = _isBull ? _rcConf + _atr * i_tpMult : _rcConf - _atr * i_tpMult
+
+string _ep = str.tostring(_rcConf,                                 format.mintick)
+string _sl = i_sltp ? str.tostring(_slAlrt, format.mintick) : "0"
+string _tp = i_sltp ? str.tostring(_tpAlrt, format.mintick) : "0"
+
+string _baseFields = str.format(
+     "\"symbol\":\"{0}\",\"tf\":\"{1}\",\"price\":{2},\"sl\":{3},\"tp\":{4}",
+     clean_ticker, timeframe.period, _ep, _sl, _tp)
+
+if barstate.isconfirmed
+    if _buyF
+        alert("{" + str.format("\"action\":\"{0}\",", i_aLong) + _baseFields + "}", alert.freq_once_per_bar_close)
+        alert("{" + str.format("\"action\":\"{0}\",", i_aCSh)  + _baseFields + "}", alert.freq_once_per_bar_close)
+    if _sellF
+        alert("{" + str.format("\"action\":\"{0}\",", i_aShort) + _baseFields + "}", alert.freq_once_per_bar_close)
+        alert("{" + str.format("\"action\":\"{0}\",", i_aCLong) + _baseFields + "}", alert.freq_once_per_bar_close)
+
+alertcondition(_buyF  and barstate.isconfirmed or _sellF and barstate.isconfirmed, title="REMOCC Cross Alert",   message="REMOCC Cross Alert")
+alertcondition(_buyF  and barstate.isconfirmed,                                    title="REMOCC BUY",           message="REMOCC BUY")
+alertcondition(_sellF and barstate.isconfirmed,                                    title="REMOCC SELL",          message="REMOCC SELL")

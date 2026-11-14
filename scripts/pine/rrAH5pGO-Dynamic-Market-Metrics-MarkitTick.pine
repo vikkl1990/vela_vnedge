@@ -1,0 +1,418 @@
+// © MarkitTick
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+
+//@version=6
+// ── DECLARATION ──────────────────────────────────────────────────
+indicator("Dynamic Market Metrics [MarkitTick]", overlay=true, format=format.price, precision=2)
+
+// ── INPUTS ───────────────────────────────────────────────────────
+var string GRP_CORE = "⚙️ Core"
+var string _mt741a   = "🛡️ Breakout"
+var string GRP_HTF  = "🕐 HTF"
+var string GRP_TT   = "📐 Trade Tools"
+var string GRP_CF   = "☁️ Cloud"
+var string GRP_WH   = "🔔 Alerts"
+var string GRP_COL  = "🌈 Colors"
+
+float _mt741b        = input.float(1.0,  "ATR Mult", step=0.1, group=GRP_CORE)
+int   AP           = input.int  (14,   "ATR/MFI Len", minval=1, group=GRP_CORE)
+bool  showsignalsk = input.bool (true, "Show Signals", group=GRP_CORE)
+
+bool  overrideEnabled     = input.bool (true, "BO Override", group=_mt741a)
+float overrideSensitivity = input.float(2.0,  "BO Sens", step=0.1, group=_mt741a)
+
+bool   i_htf_show = input.bool     (false, "Show HTF", group=GRP_HTF)
+string i_htf_tf   = input.timeframe("D",   "HTF TF",   group=GRP_HTF)
+
+bool i_tt_showLevels = input.bool(true, "Show Trade Levels", group=GRP_TT)
+
+bool  i_cf_show    = input.bool(true, "Show Cloud", group=GRP_CF)
+int   i_cf_len     = input.int (8,    "Cloud Len",   minval=1, maxval=50, group=GRP_CF)
+int   i_cf_transp  = input.int (65,   "Cloud Transp", minval=0, maxval=95, group=GRP_CF)
+bool  i_cf_candles = input.bool(true, "Color Candles", group=GRP_CF)
+int   i_cf_ctransp = input.int (20,   "Candle Transp", minval=0, maxval=95, group=GRP_CF)
+
+string i_wh_long       = input.string("long",       "Long Action",        group=GRP_WH)
+string i_wh_short      = input.string("short",      "Short Action",       group=GRP_WH)
+string i_wh_closelong  = input.string("closelong",  "Close Long Action",  group=GRP_WH)
+string i_wh_closeshort = input.string("closeshort", "Close Short Action", group=GRP_WH)
+
+color i_vis_ua = input.color(#00ACC1, "Bull",    group=GRP_COL, inline="col")
+color i_vis_da = input.color(#0D47A1, "Bear",    group=GRP_COL, inline="col")
+color i_vis_cn = input.color(#607D8B, "Neutral", group=GRP_COL, inline="col")
+
+color i_dashBg  = input.color(color.rgb(9, 14, 26, 10),     "Dash BG",   group=GRP_COL)
+color i_dashTxt = input.color(color.rgb(214, 233, 245, 0),  "Dash Text", group=GRP_COL)
+color i_dashTp  = input.color(color.rgb(0, 172, 193),       "Dash TP",   group=GRP_COL)
+color i_dashSl  = input.color(color.rgb(13, 71, 161),       "Dash SL",   group=GRP_COL)
+color i_dashHdr = input.color(color.new(#1565C0, 45),       "Dash Hdr",  group=GRP_COL)
+color i_dashBrd = input.color(color.rgb(0, 151, 167, 60),   "Dash Border", group=GRP_COL)
+color i_volExp  = input.color(color.rgb(21, 101, 192),      "Vol Exp",   group=GRP_COL)
+color i_volCon  = input.color(color.rgb(77, 208, 225),      "Vol Con",   group=GRP_COL)
+color i_mfiOb   = input.color(color.rgb(13, 71, 161),       "MFI OB",    group=GRP_COL)
+color i_mfiOs   = input.color(color.rgb(0, 172, 193),       "MFI OS",    group=GRP_COL)
+color i_ageTxt  = input.color(color.rgb(96, 125, 139, 20),  "Age Text",  group=GRP_COL)
+color i_momHi   = input.color(color.rgb(77, 208, 225),      "Mom Hi",    group=GRP_COL, inline="mom")
+color i_momMd   = input.color(color.rgb(30, 136, 229),      "Mom Md",    group=GRP_COL, inline="mom")
+color i_momLo   = input.color(color.rgb(84, 110, 122),      "Mom Lo",    group=GRP_COL, inline="mom")
+color i_momNe   = input.color(color.rgb(55, 71, 79, 15),    "Mom Ne",    group=GRP_COL, inline="mom")
+
+color i_slCol   = input.color(#0D47A1, "SL Line",   group=GRP_COL, inline="lvl1")
+color i_enCol   = input.color(#1E88E5, "Entry Line", group=GRP_COL, inline="lvl1")
+color i_tpCol   = input.color(#00ACC1, "TP Line",   group=GRP_COL, inline="lvl1")
+color i_riskFillCol   = input.color(color.new(#0D47A1, 78), "Risk Fill",   group=GRP_COL, inline="lvl2")
+color i_rewardFillCol = input.color(color.new(#00ACC1, 84), "Reward Fill", group=GRP_COL, inline="lvl2")
+
+// ── STATE ────────────────────────────────────────────────────
+var string JSON_TEMPLATE = '"action": "{0}", "ticker": "{1}", "tf": "{2}", "direction": "{3}", "entry": "{4}", "tp1": "{5}", "tp2": "{6}", "tp3": "{7}", "sl": "{8}"'
+
+type TradeState
+    bool  isLong  = false
+    bool  isShort = false
+    float entry   = 0.0
+    float sl      = 0.0
+    float tp1     = 0.0
+    float tp2     = 0.0
+    float tp3     = 0.0
+    bool  active  = false
+
+method calcRiskTargets(TradeState this, float _close, float _atLine) =>
+    float _risk = math.max(math.abs(_close - _atLine), syminfo.mintick * 10)
+    if this.isLong
+        this.entry := _close
+        this.sl    := _atLine
+        this.tp1   := _close + (_risk * 1.0)
+        this.tp2   := _close + (_risk * 2.0)
+        this.tp3   := _close + (_risk * 3.0)
+    if this.isShort
+        this.entry := _close
+        this.sl    := _atLine
+        this.tp1   := _close - (_risk * 1.0)
+        this.tp2   := _close - (_risk * 2.0)
+        this.tp3   := _close - (_risk * 3.0)
+
+// ── CALCULATIONS ──────────────────────────────────────────
+float ATR    = ta.sma(ta.tr[1], AP)
+float upT    = low[1]  - ATR * _mt741b
+float downT  = high[1] + ATR * _mt741b
+float mfiVal = ta.mfi(hlc3, AP)[1]
+
+float AlphaTrend = 0.0
+AlphaTrend := mfiVal >= 50 ? (upT < nz(AlphaTrend[1]) ? nz(AlphaTrend[1]) : upT) : (downT > nz(AlphaTrend[1]) ? nz(AlphaTrend[1]) : downT)
+
+var int direction = 1
+if AlphaTrend[1] > AlphaTrend[3]
+    direction := 1
+else if AlphaTrend[1] < AlphaTrend[3]
+    direction := -1
+
+var int trendAge = 0
+trendAge := direction != nz(direction[1]) ? 1 : nz(trendAge) + 1
+
+bool isCrossUp   = close[1] > AlphaTrend[1] and close[2] <= nz(AlphaTrend[2])
+bool isCrossDn   = close[1] < AlphaTrend[1] and close[2] >= nz(AlphaTrend[2])
+bool _boMomentum = overrideEnabled and (math.abs(close[1] - close[2]) > ATR[1] * overrideSensitivity)
+
+if _boMomentum and isCrossUp
+    direction := 1
+else if _boMomentum and isCrossDn
+    direction := -1
+
+bool isTrendCrossUp = AlphaTrend[1] > AlphaTrend[3] and nz(AlphaTrend[2]) <= nz(AlphaTrend[4])
+bool isTrendCrossDn = AlphaTrend[1] < AlphaTrend[3] and nz(AlphaTrend[2]) >= nz(AlphaTrend[4])
+
+bool buySignalk  = isTrendCrossUp or (_boMomentum and isCrossUp)
+bool sellSignalk = isTrendCrossDn or (_boMomentum and isCrossDn)
+
+var int K1 = 0
+var int K2 = 0
+var int O1 = 0
+var int O2 = 0
+
+O1 := buySignalk[1]  ? 0 : O1 + 1
+O2 := sellSignalk[1] ? 0 : O2 + 1
+K1 := buySignalk[1]  ? 0 : K1 + 1
+K2 := sellSignalk[1] ? 0 : K2 + 1
+
+bool validLong  = buySignalk  and O1 > K2
+bool validShort = sellSignalk and O2 > K1
+
+float htfAT         = request.security(syminfo.tickerid, i_htf_tf, AlphaTrend[1], lookahead=barmerge.lookahead_on)
+int   htfDir        = request.security(syminfo.tickerid, i_htf_tf, direction[1],  lookahead=barmerge.lookahead_on)
+bool  htfValidLong  = request.security(syminfo.tickerid, i_htf_tf, validLong[1],  lookahead=barmerge.lookahead_on)
+bool  htfValidShort = request.security(syminfo.tickerid, i_htf_tf, validShort[1], lookahead=barmerge.lookahead_on)
+
+bool _htfNewBar = ta.change(time(i_htf_tf))[1] != 0
+
+color _dirCol = direction == 1 ? i_vis_ua : direction == -1 ? i_vis_da : i_vis_cn
+
+// ── PLOTS ───────────────────────────────────────────────
+plot_up   = plot(not i_htf_show and direction ==  1 ? AlphaTrend : na, "Up Trend",   color=i_vis_ua, linewidth=3, style=plot.style_linebr, display=display.pane)
+plot_down = plot(not i_htf_show and direction == -1 ? AlphaTrend : na, "Down Trend", color=i_vis_da, linewidth=3, style=plot.style_linebr, display=display.pane)
+
+float _cloudRef = ta.sma(hlc3[1], i_cf_len)
+float _cloudMid = (AlphaTrend + _cloudRef) / 2.0
+
+_mt741c  = plot(AlphaTrend, "TL Anchor", color=color.new(chart.fg_color, 100), display=display.none)
+plot_mid = plot(_cloudMid,  "Cloud Mid", color=color.new(chart.fg_color, 100), display=display.none)
+plot_ref = plot(_cloudRef,  "Cloud Ref", color=color.new(chart.fg_color, 100), display=display.none)
+
+bool _showCloud = i_cf_show and not i_htf_show
+int  _tOuter    = math.min(i_cf_transp + 25, 95)
+
+fill(_mt741c,  plot_mid, AlphaTrend, _cloudMid, _showCloud ? color.new(_dirCol, i_cf_transp) : na, _showCloud ? color.new(_dirCol, _tOuter)     : na)
+fill(plot_mid, plot_ref, _cloudMid,  _cloudRef,  _showCloud ? color.new(_dirCol, _tOuter)     : na, color(na))
+
+bool  _showCandles = i_cf_candles
+color _candleCol   = _showCandles ? color.new(_dirCol, i_cf_ctransp) : na
+
+plotcandle(
+     _showCandles ? open  : na,
+     _showCandles ? high  : na,
+     _showCandles ? low   : na,
+     _showCandles ? close : na,
+     color       = _candleCol,
+     bordercolor = _candleCol,
+     wickcolor   = _candleCol,
+     display     = display.pane)
+
+color _htfCol = htfDir == 1 ? i_vis_ua : htfDir == -1 ? i_vis_da : i_vis_cn
+plot(i_htf_show ? htfAT : na, "HTF AlphaTrend", color=_htfCol, linewidth=2, style=plot.style_stepline, display=display.pane)
+
+plotshape(
+     not i_htf_show and validLong  and showsignalsk ? AlphaTrend[2] * 0.9999 : na,
+     title="BULL",  text="BULL",  location=location.absolute,
+     style=shape.labelup,   size=size.tiny,
+     color=color.new(i_vis_ua, 20), textcolor=color.white, display=display.pane)
+
+plotshape(
+     not i_htf_show and validShort and showsignalsk ? AlphaTrend[2] * 1.0001 : na,
+     title="BEAR", text="BEAR", location=location.absolute,
+     style=shape.labeldown, size=size.tiny,
+     color=color.new(i_vis_da, 20), textcolor=color.white, display=display.pane)
+
+plotshape(
+     i_htf_show and htfValidLong  and showsignalsk and _htfNewBar ? htfAT * 0.9999 : na,
+     title="HTF BULL",  text="BULL",  location=location.absolute,
+     style=shape.labelup,   size=size.tiny,
+     color=color.new(i_vis_ua, 20), textcolor=color.white, display=display.pane)
+
+plotshape(
+     i_htf_show and htfValidShort and showsignalsk and _htfNewBar ? htfAT * 1.0001 : na,
+     title="HTF BEAR", text="BEAR", location=location.absolute,
+     style=shape.labeldown, size=size.tiny,
+     color=color.new(i_vis_da, 20), textcolor=color.white, display=display.pane)
+
+// ── TRADE LEVELS ──────────────────────────────────────
+var TradeState tradeData = TradeState.new()
+
+bool _risingLong  = bar_index >= 4 and validLong  and not validLong[1]
+bool _risingShort = bar_index >= 4 and validShort and not validShort[1]
+
+tradeData.isLong  := validLong
+tradeData.isShort := validShort
+tradeData.active  := _risingLong or _risingShort
+
+if tradeData.active
+    tradeData.calcRiskTargets(close[1], AlphaTrend[1])
+
+bool _slHitLong  = (K1 < K2) and (close[1] < AlphaTrend[1])
+bool _slHitShort = (K2 < K1) and (close[1] > AlphaTrend[1])
+
+var bool isClosed = true
+if _risingLong or _risingShort
+    isClosed := false
+
+bool _wasOpenForClose = not isClosed
+
+var line  slLine    = na
+var line  enLine    = na
+var line  tp1Line   = na
+var line  tp2Line   = na
+var line  tp3Line   = na
+var label slLbl     = na
+var label enLbl     = na
+var label tp1Lbl    = na
+var label tp2Lbl    = na
+var label tp3Lbl    = na
+var linefill riskFill   = na
+var linefill rewardFill = na
+var int lastSignalBar = na
+
+f_deleteLevels() =>
+    line.delete(slLine)
+    line.delete(enLine)
+    line.delete(tp1Line)
+    line.delete(tp2Line)
+    line.delete(tp3Line)
+    label.delete(slLbl)
+    label.delete(enLbl)
+    label.delete(tp1Lbl)
+    label.delete(tp2Lbl)
+    label.delete(tp3Lbl)
+    linefill.delete(riskFill)
+    linefill.delete(rewardFill)
+
+if i_tt_showLevels and (_risingLong or _risingShort)
+    f_deleteLevels()
+    lastSignalBar := bar_index
+    int _extX0 = bar_index + 50
+    slLine  := line.new(bar_index, tradeData.sl,    _extX0, tradeData.sl,    color=i_slCol, style=line.style_solid,  width=2)
+    enLine  := line.new(bar_index, tradeData.entry, _extX0, tradeData.entry, color=i_enCol, style=line.style_dashed, width=1)
+    tp1Line := line.new(bar_index, tradeData.tp1,   _extX0, tradeData.tp1,   color=color.new(i_tpCol, 40), style=line.style_dashed, width=1)
+    tp2Line := line.new(bar_index, tradeData.tp2,   _extX0, tradeData.tp2,   color=color.new(i_tpCol, 20), style=line.style_dashed, width=1)
+    tp3Line := line.new(bar_index, tradeData.tp3,   _extX0, tradeData.tp3,   color=color.new(i_tpCol, 0),  style=line.style_dashed, width=1)
+    slLbl  := label.new(_extX0, tradeData.sl,    "✕ SL "    + str.tostring(tradeData.sl,    format.mintick), style=label.style_label_left, color=i_slCol, textcolor=color.white, size=size.small)
+    enLbl  := label.new(_extX0, tradeData.entry, "▶ Entry " + str.tostring(tradeData.entry, format.mintick), style=label.style_label_left, color=i_enCol, textcolor=color.white, size=size.small)
+    tp1Lbl := label.new(_extX0, tradeData.tp1,   "◆ TP1 "   + str.tostring(tradeData.tp1,   format.mintick), style=label.style_label_left, color=color.new(i_tpCol, 40), textcolor=color.white, size=size.small)
+    tp2Lbl := label.new(_extX0, tradeData.tp2,   "✦ TP2 "   + str.tostring(tradeData.tp2,   format.mintick), style=label.style_label_left, color=color.new(i_tpCol, 20), textcolor=color.white, size=size.small)
+    tp3Lbl := label.new(_extX0, tradeData.tp3,   "◆ TP3 "   + str.tostring(tradeData.tp3,   format.mintick), style=label.style_label_left, color=color.new(i_tpCol, 0),  textcolor=color.white, size=size.small)
+    riskFill   := linefill.new(slLine, enLine, i_riskFillCol)
+    rewardFill := linefill.new(enLine, tp3Line, i_rewardFillCol)
+
+if i_tt_showLevels and not na(slLine) and not na(lastSignalBar) and bar_index <= lastSignalBar + 50
+    int _extX = lastSignalBar + 50
+    line.set_x2(slLine, _extX)
+    line.set_x2(enLine, _extX)
+    line.set_x2(tp1Line, _extX)
+    line.set_x2(tp2Line, _extX)
+    line.set_x2(tp3Line, _extX)
+    label.set_x(slLbl, _extX)
+    label.set_x(enLbl, _extX)
+    label.set_x(tp1Lbl, _extX)
+    label.set_x(tp2Lbl, _extX)
+    label.set_x(tp3Lbl, _extX)
+
+// ── DASHBOARD ────────────────────────────────────────
+f_momBar(float score) =>
+    int    n = math.min(math.round(score / 3.0 * 10.0), 10)
+    string s = ""
+    for i = 1 to 10
+        s += i <= n ? "█" : "░"
+    s
+
+f_momColor(float score) =>
+    score >= 2.5 ? i_momHi : score >= 1.5 ? i_momMd : score >= 0.8 ? i_momLo : i_momNe
+
+f_bar(float val, float maxVal) =>
+    int    n = math.round(math.min(val / maxVal, 1.0) * 10)
+    string s = ""
+    for i = 1 to 10
+        s += i <= n ? "█" : "░"
+    s + "  " + str.tostring(math.round(val / maxVal * 100)) + "%"
+
+f_barColor(float pct) =>
+    pct >= 0.66 ? i_mfiOs : pct >= 0.33 ? color.rgb(2, 119, 189) : i_mfiOb
+
+float atrSma = ta.sma(ATR, 50)
+
+var table dash = table.new(position.top_right, 2, 10, bgcolor=i_dashBg, border_width=1, border_color=i_dashBrd, frame_width=1, frame_color=color.new(#1A3A5C, 40))
+
+float atDist   = math.abs(close[1] - AlphaTrend[1])
+float momScore = ATR > 0.0 ? atDist / ATR : 0.0
+
+string volState = ATR > atrSma ? "📈 Expansion" : "📉 Contraction"
+color  volCol   = ATR > atrSma ? i_volExp : i_volCon
+
+float mfiPct  = math.min(math.max(mfiVal, 0.0), 100.0) / 100.0
+color mfiCol  = f_barColor(mfiPct)
+
+string clean_ticker = syminfo.ticker + "  ·  " + timeframe.period
+color  row_a = i_dashBg
+color  row_b = color.new(i_dashBg, 40)
+
+table.cell(dash, 0, 0, "Dynamic Market Metrics", text_color=i_dashTxt, text_size=size.small, bgcolor=i_dashHdr, text_halign=text.align_left)
+table.cell(dash, 1, 0, clean_ticker,          text_color=i_dashTxt, text_size=size.small, bgcolor=i_dashHdr, text_halign=text.align_right)
+
+table.cell(dash, 0, 1, "  Trend State", text_color=color.new(i_dashTxt, 25), text_size=size.small, bgcolor=row_a, text_halign=text.align_left)
+table.cell(dash, 1, 1, (direction == 1 ? "▲  BULLISH" : "▼  BEARISH") + "  ", text_color = direction == 1 ? i_vis_ua : i_vis_da, text_size=size.small, bgcolor=row_a, text_halign=text.align_right)
+
+table.cell(dash, 0, 2, "  Entry Trigger", text_color=color.new(i_dashTxt, 25), text_size=size.small, bgcolor=row_b, text_halign=text.align_left)
+table.cell(dash, 1, 2, str.tostring(tradeData.entry, format.mintick) + "  ", text_color=i_dashTxt, text_size=size.small, bgcolor=row_b, text_halign=text.align_right)
+
+table.cell(dash, 0, 3, "  Target (TP1/2/3)", text_color=color.new(i_dashTxt, 25), text_size=size.small, bgcolor=row_a, text_halign=text.align_left)
+table.cell(dash, 1, 3, str.tostring(tradeData.tp1, format.mintick) + " / " + str.tostring(tradeData.tp2, format.mintick) + " / " + str.tostring(tradeData.tp3, format.mintick) + "  ", text_color=i_dashTp, text_size=size.small, bgcolor=row_a, text_halign=text.align_right)
+
+table.cell(dash, 0, 4, "  Stop Loss (SL)", text_color=color.new(i_dashTxt, 25), text_size=size.small, bgcolor=row_b, text_halign=text.align_left)
+table.cell(dash, 1, 4, str.tostring(tradeData.sl, format.mintick) + "  ", text_color=i_dashSl, text_size=size.small, bgcolor=row_b, text_halign=text.align_right)
+
+table.cell(dash, 0, 5, "  Momentum", text_color=color.new(i_dashTxt, 25), text_size=size.small, bgcolor=row_a, text_halign=text.align_left)
+table.cell(dash, 1, 5, f_momBar(momScore) + "  ", text_color=f_momColor(momScore), text_size=size.small, bgcolor=row_a, text_halign=text.align_right)
+
+table.cell(dash, 0, 6, "  Money Flow", text_color=color.new(i_dashTxt, 25), text_size=size.small, bgcolor=row_b, text_halign=text.align_left)
+table.cell(dash, 1, 6, f_bar(mfiVal, 100.0) + "  ", text_color=mfiCol, text_size=size.small, bgcolor=row_b, text_halign=text.align_right)
+
+table.cell(dash, 0, 7, "  Volatility", text_color=color.new(i_dashTxt, 25), text_size=size.small, bgcolor=row_a, text_halign=text.align_left)
+table.cell(dash, 1, 7, volState + "  ", text_color=volCol, text_size=size.small, bgcolor=row_a, text_halign=text.align_right)
+
+table.cell(dash, 0, 8, "  Trend Age", text_color=color.new(i_dashTxt, 25), text_size=size.small, bgcolor=row_b, text_halign=text.align_left)
+table.cell(dash, 1, 8, str.tostring(trendAge) + " Bars  ", text_color=i_ageTxt, text_size=size.small, bgcolor=row_b, text_halign=text.align_right)
+
+string htfLabel = htfDir == 1 ? "▲ BULLISH (" + i_htf_tf + ")" : htfDir == -1 ? "▼ BEARISH (" + i_htf_tf + ")" : "○ NEUTRAL (" + i_htf_tf + ")"
+color  htfColor = htfDir == 1 ? i_vis_ua : htfDir == -1 ? i_vis_da : i_vis_cn
+table.cell(dash, 0, 9, "  HTF Context", text_color=color.new(i_dashTxt, 25), text_size=size.small, bgcolor=row_a, text_halign=text.align_left)
+table.cell(dash, 1, 9, (i_htf_show ? htfLabel : "Disabled") + "  ", text_color=htfColor, text_size=size.small, bgcolor=row_a, text_halign=text.align_right)
+
+// ── ALERTS ────────────────────────────────────────────
+var float _activeTp1 = float(na)
+var float _activeTp2 = float(na)
+var float _activeTp3 = float(na)
+var bool  _activeIsLong = bool(na)
+var bool  _tp1Done = false
+var bool  _tp2Done = false
+var bool  _tp3Done = false
+
+if _risingLong or _risingShort
+    _activeTp1 := tradeData.tp1
+    _activeTp2 := tradeData.tp2
+    _activeTp3 := tradeData.tp3
+    _activeIsLong := _risingLong
+    _tp1Done := false
+    _tp2Done := false
+    _tp3Done := false
+
+bool tp1Hit = not isClosed and not _tp1Done and not na(_activeTp1) and (_activeIsLong ? high >= _activeTp1 : low <= _activeTp1)
+bool tp2Hit = not isClosed and not _tp2Done and not na(_activeTp2) and (_activeIsLong ? high >= _activeTp2 : low <= _activeTp2)
+bool tp3Hit = not isClosed and not _tp3Done and not na(_activeTp3) and (_activeIsLong ? high >= _activeTp3 : low <= _activeTp3)
+
+if not isClosed
+    if _slHitLong
+        isClosed := true
+    else if _slHitShort
+        isClosed := true
+
+if _risingLong and barstate.isconfirmed
+    string _innerJson = str.format(JSON_TEMPLATE, i_wh_long, syminfo.tickerid, timeframe.period, str.tostring(tradeData.entry, format.mintick), str.tostring(tradeData.tp1, format.mintick), str.tostring(tradeData.tp2, format.mintick), str.tostring(tradeData.tp3, format.mintick), str.tostring(tradeData.sl, format.mintick))
+    alert("{" + _innerJson + "}", alert.freq_once_per_bar_close)
+else if _risingShort and barstate.isconfirmed
+    string _innerJson = str.format(JSON_TEMPLATE, i_wh_short, syminfo.tickerid, timeframe.period, str.tostring(tradeData.entry, format.mintick), str.tostring(tradeData.tp1, format.mintick), str.tostring(tradeData.tp2, format.mintick), str.tostring(tradeData.tp3, format.mintick), str.tostring(tradeData.sl, format.mintick))
+    alert("{" + _innerJson + "}", alert.freq_once_per_bar_close)
+else if _wasOpenForClose and barstate.isconfirmed
+    if _slHitLong
+        string _innerJson = str.format(JSON_TEMPLATE, i_wh_closelong, syminfo.tickerid, timeframe.period, str.tostring(close[1], format.mintick), "0", "0", "0", "0")
+        alert("{" + _innerJson + "}", alert.freq_once_per_bar_close)
+    else if _slHitShort
+        string _innerJson = str.format(JSON_TEMPLATE, i_wh_closeshort, syminfo.tickerid, timeframe.period, str.tostring(close[1], format.mintick), "0", "0", "0", "0")
+        alert("{" + _innerJson + "}", alert.freq_once_per_bar_close)
+
+if tp1Hit
+    string _innerJson = str.format(JSON_TEMPLATE, "tp1hit", syminfo.tickerid, timeframe.period, str.tostring(_activeTp1, format.mintick), str.tostring(tradeData.tp1, format.mintick), str.tostring(tradeData.tp2, format.mintick), str.tostring(tradeData.tp3, format.mintick), str.tostring(tradeData.sl, format.mintick))
+    alert("{" + _innerJson + "}", alert.freq_once_per_bar)
+    _tp1Done := true
+if tp2Hit
+    string _innerJson = str.format(JSON_TEMPLATE, "tp2hit", syminfo.tickerid, timeframe.period, str.tostring(_activeTp2, format.mintick), str.tostring(tradeData.tp1, format.mintick), str.tostring(tradeData.tp2, format.mintick), str.tostring(tradeData.tp3, format.mintick), str.tostring(tradeData.sl, format.mintick))
+    alert("{" + _innerJson + "}", alert.freq_once_per_bar)
+    _tp2Done := true
+if tp3Hit
+    string _innerJson = str.format(JSON_TEMPLATE, "tp3hit", syminfo.tickerid, timeframe.period, str.tostring(_activeTp3, format.mintick), str.tostring(tradeData.tp1, format.mintick), str.tostring(tradeData.tp2, format.mintick), str.tostring(tradeData.tp3, format.mintick), str.tostring(tradeData.sl, format.mintick))
+    alert("{" + _innerJson + "}", alert.freq_once_per_bar)
+    _tp3Done := true
+
+alertcondition(_risingLong,                          "BUY Signal",         "MarkitTick — BUY Signal Fired")
+alertcondition(_risingShort,                         "SELL Signal",        "MarkitTick — SELL Signal Fired")
+alertcondition(_slHitLong  and _wasOpenForClose,      "Close Long Signal",  "MarkitTick — Close Long")
+alertcondition(_slHitShort and _wasOpenForClose,      "Close Short Signal", "MarkitTick — Close Short")
+alertcondition(tp1Hit,                                "TP1 Hit",            "MarkitTick — TP1 Hit")
+alertcondition(tp2Hit,                                "TP2 Hit",            "MarkitTick — TP2 Hit")
+alertcondition(tp3Hit,                                "TP3 Hit",            "MarkitTick — TP3 Hit")
