@@ -194,6 +194,20 @@
   .banner { margin: 8px 12px 0; }
   .menu { position: fixed; right: 12px; left: 12px; width: auto; top: 58px; }
 }
+/* ---------- desktop top bar: one row; the breadcrumb and the search give way first ---------- */
+@media (min-width: 901px) {
+  .topbar { flex-wrap: nowrap; }
+  .crumb { flex: 0 1 auto; min-width: 0; overflow: hidden; }
+  .crumb-title { overflow: hidden; text-overflow: ellipsis; min-width: 0; max-width: 30ch; }
+  .search-trigger { flex: 0 1 240px; min-width: 150px; }
+  .topbar-status { flex-wrap: nowrap; flex: 0 0 auto; gap: 14px; }
+  .topbar-actions { flex-wrap: nowrap; flex: 0 0 auto; }
+}
+@media (min-width: 901px) and (max-width: 1320px) {
+  .topbar-status .topstat:nth-of-type(4) { display: none; } /* the open-position count: the bottom of every table has it */
+  .account-name-text { display: none; }
+}
+
 /* ---------- phones: one row of controls, the account's vital signs on a second row ---------- */
 @media (max-width: 640px) {
   .topbar { gap: 8px; padding: 6px 12px; }
