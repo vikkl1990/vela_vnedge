@@ -6,15 +6,17 @@ import { DensityProvider } from './lib/density'
 import { ThemeProvider } from './lib/theme'
 import { ToastProvider } from './lib/toast'
 import { SSEProvider } from './sse/SSEProvider'
-import './styles/base.css'
-import './styles/components.css'
-import './styles/data-views.css'
-import './styles/kit.css'
-import './styles/pages.css'
-import './styles/polish.css'
-import './styles/shell.css'
+
+// Preserve the cascade: tokens, shared controls, page refinements, then data-view overrides.
 import './styles/tokens.css'
+import './styles/base.css'
+import './styles/shell.css'
+import './styles/components.css'
+import './styles/kit.css'
+import './styles/polish.css'
+import './styles/pages.css'
 import './terminal.css'
+import './styles/data-views.css'
 
 const queryClient = new QueryClient({
   defaultOptions: {

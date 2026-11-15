@@ -33,6 +33,19 @@ test('Signals render bounded rows, preserve filters, and sort every result', asy
     await expect(rows.first().getByText('SL', { exact: true })).not.toBeVisible()
     await rows.first().locator('summary').click()
     await expect(rows.first().getByText('SL', { exact: true })).toBeVisible()
+    const undersized = await page
+      .locator('.data-card *')
+      .evaluateAll((nodes) =>
+        nodes
+          .filter(
+            (n) =>
+              n.textContent?.trim() &&
+              getComputedStyle(n).display !== 'none' &&
+              parseFloat(getComputedStyle(n).fontSize) < 11,
+          )
+          .map((n) => ({ tag: n.tagName, size: getComputedStyle(n).fontSize })),
+      )
+    expect(undersized).toEqual([])
   }
   await page.evaluate(() => window.scrollTo(0, 0))
   await page.screenshot({ path: info.outputPath('signals.png'), fullPage: true })
