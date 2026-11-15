@@ -403,6 +403,7 @@ export const api = {
       books: Array<{
         book: string
         matching: number
+        capacityCompatible?: number
         changed: number
         legacy: number
         quarantined: number

@@ -25,6 +25,12 @@ test('Live readiness separates historical halt advice from its six required chec
               value: '1',
               note: 'Advisory history: past halts do not block readiness. Active loss limits, drawdown controls and the kill switch still apply.',
             },
+            {
+              key: 'capacity-evidence',
+              label: 'Readiness evidence in the last 30 days',
+              value: '0 exact + 11 capacity-compatible trades',
+              note: 'Compatible trades differ only in stricter global position-count ceilings. Their actual fills, costs, size, exits and returns are retained. This history does not establish performance at higher concurrency; promotion and leverage rules are unchanged.',
+            },
           ],
           sim: null,
         },
@@ -39,6 +45,10 @@ test('Live readiness separates historical halt advice from its six required chec
     page.getByText(/Active loss limits, drawdown controls and the kill switch still apply/),
   ).toBeVisible()
   await expect(page.locator('.live-checks')).not.toContainText('Historical halts')
+  await expect(
+    page.getByText('Readiness evidence in the last 30 days: 0 exact + 11 capacity-compatible trades'),
+  ).toBeVisible()
+  await expect(page.getByText(/does not establish performance at higher concurrency/)).toBeVisible()
   await expect(page.locator('body')).toContainText('Off')
   expect(writes).toEqual([])
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)

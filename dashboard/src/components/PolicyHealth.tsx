@@ -64,8 +64,9 @@ export function PolicyHealthPanel() {
             </p>
           )}
           <p className="small muted">
-            Last {q.data.windowDays} days. Matching means the current scanner source and trade rules.
-            Historical results remain in the journal; only matching evidence supports promotion and leverage.
+            Last {q.data.windowDays} days. Paper matching includes readiness-compatible trades from stricter
+            global position-count ceilings, with all other policy settings identical. Shadow matching uses
+            strategy identity. Promotion and leverage keep their separate evidence rules.
           </p>
           <div style={{ overflowX: 'auto' }}>
             <table className="table">
@@ -84,7 +85,12 @@ export function PolicyHealthPanel() {
                 {q.data.books.map((b) => (
                   <tr key={b.book}>
                     <td>{b.book === 'paper' ? 'Paper account' : 'Shadow research'}</td>
-                    <td>{b.matching}</td>
+                    <td>
+                      {b.matching}
+                      {!!b.capacityCompatible && (
+                        <div className="small muted">{b.capacityCompatible} capacity-compatible</div>
+                      )}
+                    </td>
                     <td>{b.changed}</td>
                     <td>{b.legacy}</td>
                     <td>{b.quarantined}</td>

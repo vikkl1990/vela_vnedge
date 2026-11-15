@@ -550,8 +550,8 @@ function EngineSection({
   const cur = learning?.current
   const exitEvidence = cur
     ? cur.trades > 0
-      ? `${cur.trades} closed account trades under these settings, average ${signed(cur.avgR, 2)}R after costs.`
-      : 'No closed account trades under these settings yet.'
+      ? `${cur.trades} closed account trades with compatible trade rules, average ${signed(cur.avgR, 2)}R after costs.`
+      : 'No closed account trades with compatible trade rules yet.'
     : 'Closed-trade evidence has not loaded.'
 
   let sizeRule: string

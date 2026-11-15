@@ -28,6 +28,12 @@ export interface TradePolicy {
   adoptedAt?:number;
 }
 
+/** Verify an archived full policy without changing its immutable identity. */
+export function tradePolicyIdFor(policy:TradePolicy):string {
+  const {id,strategyId,adoptedAt,...body}=policy;
+  return hash(body);
+}
+
 export function makeTradePolicy(cfg:AppConfig,cell:{scannerId:string;symbol:string;tf:string;exitMode:ExitMode},
   paper:PaperConfig,sizing:PaperConfig,sourceHash:string|null,book:number):TradePolicy {
   const resolved=structuredClone(paper);
