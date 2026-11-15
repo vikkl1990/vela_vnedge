@@ -7808,3 +7808,27 @@ The VVVUSD Kinetic 1h position inspected during implementation has an active 18.
 Pin VN EDGE and its two scheduled jobs to a root-owned, separately installed Node 24.22.3 LTS runtime. Leave the host-wide Node installation and other applications untouched. Test the production architecture and SQLite snapshot before switching. Open logs through a service-user wrapper instead of systemd's root-owned append files, use umask 0077 and a daily/maxsize logrotate rule. Protect existing data using a preflighted, no-follow permission migration with an ownership allowlist; preserve contents and executable bits. Config atomic replacements, SQLite databases and snapshots explicitly use private modes even outside the service.
 
 No configuration, execution, sizing, risk or evidence migration is involved. Keep paper mode and every saved setting byte-for-byte unchanged. Maintenance and rollback instructions: VM-MAINTENANCE.md.
+
+## 276. Honour explicit scanner/market screen requests without promoting trackers (15 November 2026)
+
+The Alphamojo and RSI Volume Ladder allocation audit found that both remain enabled but
+have no direct account allocations. Their tracker subscriptions are intentionally outside
+promotion evidence (decision 139). However, an explicit IDS + MARKETS screen inherited the
+nightly skip for tracked cells, and the three-silent-market discovery shortcut could omit
+requested markets. A successful job could therefore leave the requested cells untested.
+
+Bounded scanner/market batches now screen tracked cells and finish their requested market
+probes, subject to the existing job budget and market eligibility. Broad discovery retains
+its rolling three-market probe and tracker exclusion. Shadow rescreens retain their requested
+stage scope; active account/shadow cells and retirement cooldowns retain their existing paths.
+
+Recording a passing screen still leaves a tracked cell tracked: its subscription, age and
+historical evidence scope stay unchanged, and it is not admitted, copied or promoted. This is
+a coverage correction, not a lower evidence bar. Paper mode, sizing, fees, entry/exit rules,
+risk limits, readiness thresholds and shadow capacity are unchanged.
+
+Validation: 1,561 server tests pass and server TypeScript checking passes. Regression cases
+cover explicit watch-cell coverage, silence beyond three requested markets, unchanged broad
+and shadow-rescreen scopes, and a passing watched-cell screen remaining outside admission.
+Fresh scanner/pair research runs separately against a private database snapshot; its simulated
+trades never enter the production journals or qualify a cell for paper.
