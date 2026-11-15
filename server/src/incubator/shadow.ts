@@ -224,8 +224,11 @@ export class ShadowRunner {
     // pass. Sharing only the in-flight promise loses that change until the next
     // five-minute tick, by which time its first close may already be stale.
     if(!this.syncing)this.syncing=Promise.resolve().then(async()=>{
-      while(this.syncRequested){this.syncRequested=false;await this.syncInside();}
-    }).finally(()=>{this.syncing=null;});
+      try{while(this.syncRequested){this.syncRequested=false;await this.syncInside();}}
+      // Clear in the same continuation as the loop's final check. A chained
+      // finally leaves a microtask gap where another request can be lost.
+      finally{this.syncing=null;}
+    });
     return this.syncing;
   }
   private async syncInside(): Promise<void> {

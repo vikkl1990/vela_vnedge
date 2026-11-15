@@ -31,7 +31,7 @@ These gaps did **not** cause the observed 60 quiet scans: those match the source
 ## Validation and boundaries
 
 - Both bug-specific regression tests fail on the old code and pass with the correction.
-- Full server suite: **1,477 / 1,477 pass**. Server TypeScript check passes.
+- Full server suite: **1,478 / 1,478 pass**. Server TypeScript check passes. The additional concurrency test also covers a refresh arriving while the previous pass settles.
 - Tests cover fresh activation, a config change during candle loading, stream subscriptions, duplicate suppression, stale-close rejection, no fabricated fills and unchanged policy configuration.
 - Existing import tests exercise positive native signals, original-source parity, Python reference entries, causal stop amendments, charged fees and experimental evidence exclusion.
 - Signal replay uses the VM's actual 1,000-bar history limit. Raw data stays in the local research workspace. The committed JSON contains diagnostics and receipts only, without credentials or account configuration.

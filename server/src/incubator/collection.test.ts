@@ -103,3 +103,13 @@ test('a newly enabled plan never replays an expired activation bar',async t=>{
  assert.ok(f.runner.active.some((r:any)=>r.scannerId==='new-scanner'));
  assert.deepEqual(f.seen,[]);assert.equal(f.runner.scheduledBars.size,0);
 });
+
+test('a refresh requested as the previous pass settles is not lost',async t=>{
+ const f=fixture(t);let passes=0,late:Promise<void>|undefined;
+ f.runner.syncInside=async()=>{
+  passes++;
+  if(passes===1)queueMicrotask(()=>queueMicrotask(()=>{late=f.runner.sync();}));
+ };
+ await f.runner.sync();await late;
+ assert.equal(passes,2);
+});
