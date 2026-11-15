@@ -248,9 +248,10 @@ export function Signals() {
       scanner: scanner || undefined,
       symbol: symbol || undefined,
       kind: kind || undefined,
+      side: side || undefined,
       tf: tf || undefined,
     }),
-    [scanner, symbol, kind, tf],
+    [scanner, symbol, kind, tf, side],
   )
   const signals = useSignals(q)
 
@@ -468,6 +469,38 @@ export function Signals() {
               </button>
             )}
           </Toolbar>
+          <p className="small muted" role="status">
+            Recent journal: latest {q.limit} matching events at most, across all dates. These rows are
+            separate from the 24-hour totals above.
+            {signals.data?.length === q.limit &&
+              ' History is capped; narrow the scanner, market or timeframe to inspect older activity.'}
+            {rows.length > 0 && (
+              <>
+                {' '}
+                Loaded from <Time t={Math.min(...rows.map((s) => s.at))} mode="datetime" /> to{' '}
+                <Time t={Math.max(...rows.map((s) => s.at))} mode="datetime" />.
+              </>
+            )}
+            {signals.dataUpdatedAt > 0 && (
+              <>
+                {' '}
+                Refreshed <Time t={signals.dataUpdatedAt} />.
+              </>
+            )}
+            <button
+              className="btn btn-sm"
+              disabled={signals.isFetching}
+              onClick={() => {
+                void signals.refetch()
+                void activity.refetch()
+              }}
+            >
+              Refresh signals
+            </button>
+          </p>
+          {signals.isError && signals.data && (
+            <ErrorState error={signals.error} onRetry={() => signals.refetch()} />
+          )}
           <Section variant="panel" pad={false}>
             {signals.isLoading && !signals.data && <Loading kind="table" rows={10} cols={9} />}
             {signals.isError && !signals.data && (

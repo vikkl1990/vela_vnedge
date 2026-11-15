@@ -38,6 +38,7 @@ export interface SSEEventMap {
   signal: Signal
   position: PositionEvent
   trade: Trade
+  pending: { type: string; id: number; reason?: string }
   order: Order
   scanner: ScannerEvent
   stats: Stats

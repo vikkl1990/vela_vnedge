@@ -142,3 +142,20 @@ test('enrolled forward cells get timely research service while copy holds and wo
  releases.shift()!();await new Promise<void>(r=>setImmediate(r));assert.deepEqual(got,[['forward',false],['ordinary',false]]);
  releases.shift()!();await new Promise<void>(r=>setImmediate(r));runner.stop();
 });
+
+test('capped shadow diagnostics are labelled without changing counts or evidence', () => {
+  const store={shadowFunnel:()=>({}),setShadowFunnel:()=>{},liveMarks:()=>undefined,setLiveMarks:()=>{}};
+  const runner=new ShadowRunner({store,paper:new EventEmitter()} as any) as any;
+  const key='s|ETHUSD|15m';
+  for(let i=1;i<=119;i++)runner.note(key,'opened',i);
+  assert.equal(runner.funnelOf(key,0).historyCapped,false);
+  runner.note(key,'opened',120);
+  assert.equal(runner.funnelOf(key,0).historyCapped,true);
+  runner.note(key,'other',121);
+  const f=runner.funnelOf(key,0);
+  assert.equal(f.entries,120);assert.equal(f.opened,119);assert.equal(f.other,1);
+  assert.equal(f.retainedSince,2);
+  assert.equal(runner.funnelOf(key,100).historyCapped,false);
+  assert.equal(runner.funnelOf('missing',0).historyCapped,false);
+  runner.stop();
+});

@@ -1,3 +1,4 @@
+import { ambiguousScannerNames } from '../lib/scannerNames'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Fragment, useDeferredValue, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
@@ -147,13 +148,27 @@ export default function Incubator() {
       <RouteHeader
         sub="Follow candidates into shadow, inspect forward evidence and track account allocations. Approvals and demotions are reviewed in Decisions."
         actions={
-          <Link to="/decisions" className="btn btn-sm">
-            Decisions →
-          </Link>
+          <>
+            <button
+              className="btn btn-sm"
+              disabled={q.isFetching}
+              onClick={() => {
+                void q.refetch()
+              }}
+            >
+              Refresh incubator
+            </button>
+            <Link to="/decisions" className="btn btn-sm">
+              Decisions →
+            </Link>
+          </>
         }
       />
       <QueryState {...q} data={q.data} empty="Incubator unavailable." onRetry={() => q.refetch()}>
         {(d) => {
+          const ambiguousNames = ambiguousScannerNames(
+            d.pairs.map((p) => ({ id: p.scannerId, name: p.scannerName })),
+          )
           const by = (st: IncubatorPair['stage']) => d.pairs.filter((p) => p.stage === st)
           const decisions = [...by('proposed'), ...by('demote_proposed')]
           const shadow = by('shadow').sort((a, b) => (b.stats?.trades ?? 0) - (a.stats?.trades ?? 0))
@@ -398,8 +413,9 @@ export default function Incubator() {
                   </Toolbar>
                   <p className="muted small" role="status">
                     {matchingCohorts.length} of {cohorts.length} shadow {byCohort ? 'cohorts' : 'pairs'} ·{' '}
-                    {matchingCandidates.length} of {candidates.length} candidates. Filters apply to the Shadow
-                    book and Candidates tabs only; account and proposal totals stay unchanged.
+                    {matchingCandidates.length} of {candidates.length} candidates · {matchingLive.length} of{' '}
+                    {live.length} account allocations. Filters narrow these lists; headline totals and gate
+                    evidence stay unchanged.
                     {byCohort
                       ? ' Matching cohorts keep all their markets so their gate evidence stays intact.'
                       : ''}
@@ -455,7 +471,12 @@ export default function Incubator() {
                           {matchingLive.map((p) => (
                             <tr key={p.id}>
                               <td>
-                                <Link to={`/scanners/${p.scannerId}`}>{p.scannerName}</Link>
+                                <Link to={`/scanners/${p.scannerId}`}>
+                                  {p.scannerName}
+                                  {ambiguousNames.has(p.scannerName) && (
+                                    <span className="small muted"> · {p.scannerId}</span>
+                                  )}
+                                </Link>
                               </td>
                               <td className="mono">
                                 {p.symbol} · {p.tf}
@@ -595,6 +616,9 @@ export default function Incubator() {
                                   <th scope="rowgroup" colSpan={1}>
                                     <Link to={`/scanners/${c.scannerId}`} className="strong">
                                       {c.scanner}
+                                      {ambiguousNames.has(c.scanner) && (
+                                        <span className="small muted"> · {c.scannerId}</span>
+                                      )}
                                     </Link>{' '}
                                     <span className="mono muted">{c.tf}</span>{' '}
                                     <span className="muted small">
@@ -659,8 +683,14 @@ export default function Incubator() {
                                     )}
                                   </td>
                                   <td className="small muted">
+                                    {c.members.some((p) => p.funnel?.historyCapped) ? '≥' : ''}
                                     {c.members.reduce((a, p) => a + (p.funnel?.entries ?? 0), 0)} signals ·{' '}
                                     {c.members.reduce((a, p) => a + (p.funnel?.opened ?? 0), 0)} opened
+                                    {c.members.some((p) => p.funnel?.historyCapped) && (
+                                      <div className="warn small">
+                                        Retained sample only; older signals are not included.
+                                      </div>
+                                    )}
                                   </td>
                                   <td className="small">
                                     <Pill
@@ -794,7 +824,12 @@ export default function Incubator() {
                           {matchingCandidates.slice(0, candidateLimit).map((p) => (
                             <tr key={p.id}>
                               <td>
-                                <Link to={`/scanners/${p.scannerId}`}>{p.scannerName}</Link>
+                                <Link to={`/scanners/${p.scannerId}`}>
+                                  {p.scannerName}
+                                  {ambiguousNames.has(p.scannerName) && (
+                                    <span className="small muted"> · {p.scannerId}</span>
+                                  )}
+                                </Link>
                               </td>
                               <td className="mono">
                                 {p.symbol} · {p.tf}

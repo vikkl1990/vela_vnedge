@@ -1,3 +1,4 @@
+import { ambiguousScannerNames } from '../lib/scannerNames'
 import { useQueryClient } from '@tanstack/react-query'
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
@@ -74,7 +75,7 @@ export function Scanners() {
   const { params, set, setSection, hash } = useResearchFilters()
   const activity = choice(
     params.get('activity'),
-    ['all', 'scheduled', 'fault', 'unallocated', 'context', 'off', 'unknown'],
+    ['all', 'scheduled', 'shadow', 'fault', 'unallocated', 'context', 'off', 'unknown'],
     'all',
   )
   const config = useConfig()
@@ -177,6 +178,7 @@ export function Scanners() {
     }),
     [listed],
   )
+  const ambiguousNames = useMemo(() => ambiguousScannerNames(scanners.data ?? []), [scanners.data])
   const fleet = useMemo(() => fleetStats(scanners.data ?? []), [scanners.data])
   const todo = useMemo(() => worthActingOn(scanners.data ?? []), [scanners.data])
   const [todoAll, setTodoAll] = useState(false)
@@ -277,6 +279,7 @@ export function Scanners() {
             <span>
               <Link to={`/scanners/${s.id}`} className="strong">
                 {s.name}
+                {ambiguousNames.has(s.name) && <span className="small muted"> · {s.id}</span>}
               </Link>{' '}
               <a
                 href={s.url}
@@ -547,7 +550,7 @@ export function Scanners() {
       },
     ],
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [symbolOptions, busy, run.isPending, config.data?.timeframes],
+    [symbolOptions, busy, run.isPending, config.data?.timeframes, ambiguousNames],
   )
 
   const totalEntries = fleet.totalEntries
@@ -571,6 +574,7 @@ export function Scanners() {
                 <span className="sc-name-line">
                   <Link to={`/scanners/${s.id}`} className="strong">
                     {s.name}
+                    {ambiguousNames.has(s.name) && <span className="small muted"> · {s.id}</span>}
                   </Link>
                   <a
                     href={s.url}
@@ -749,7 +753,7 @@ export function Scanners() {
       },
     ],
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [busy, run.isPending, release.isPending, totalEntries, auth.canTrade],
+    [busy, run.isPending, release.isPending, totalEntries, auth.canTrade, ambiguousNames],
   )
   const rowMenuItems = (s: Scanner): MenuItem[] => [
     { key: 'open', label: 'Open details', to: `/scanners/${s.id}` },
@@ -804,10 +808,10 @@ export function Scanners() {
     },
   ]
   const subtitle = scanners.data
-    ? `${tabCounts.trading} trading now, ${tabCounts.catalogue} in the catalogue, ${tabCounts.quarantined} quarantined${hiddenCount ? `, ${hiddenCount} removed` : ''}.`
+    ? `${tabCounts.trading} allocated or enabled, ${tabCounts.catalogue} in the catalogue, ${tabCounts.quarantined} quarantined${hiddenCount ? `, ${hiddenCount} removed` : ''}.`
     : 'Loading scanners.'
   const tabItems = [
-    { id: 'trading' as const, label: 'Trading', count: scanners.data ? tabCounts.trading : undefined },
+    { id: 'trading' as const, label: 'Allocated', count: scanners.data ? tabCounts.trading : undefined },
     { id: 'catalogue' as const, label: 'Catalogue', count: scanners.data ? tabCounts.catalogue : undefined },
     {
       id: 'quarantined' as const,
@@ -843,10 +847,10 @@ export function Scanners() {
 
       <StatGrid min={150}>
         <Stat
-          label="Entry signals · 7d"
+          label="Paper entry signals · 7d"
           value={scanners.data ? fleet.totalEntries.toLocaleString() : '–'}
           sub={scanners.data ? `${fleet.opened} opened a trade` : undefined}
-          title="Entry signals from every listed scanner in the last seven days"
+          title="Paper admission signals, including qualified shadow copies, from listed scanners in the last seven days"
         />
         <Stat
           label="Largest share"
@@ -993,7 +997,7 @@ export function Scanners() {
                 ))}
               </select>
               <label className="sc-field">
-                <span>Paper activity</span>
+                <span>Execution path</span>
                 <select
                   className="select"
                   value={activity}
@@ -1005,6 +1009,7 @@ export function Scanners() {
                   <option value="unallocated">No scheduled cells</option>
                   <option value="context">Entries disabled</option>
                   <option value="off">Paper disabled</option>
+                  <option value="shadow">Shadow allocated / copy path</option>
                   <option value="unknown">Schedule unknown</option>
                 </select>
               </label>
@@ -1046,9 +1051,7 @@ export function Scanners() {
             ) : (
               <Loading kind="table" rows={10} cols={8} />
             ))}
-          {scanners.isError && !scanners.data && (
-            <ErrorState error={scanners.error} onRetry={() => scanners.refetch()} />
-          )}
+          {scanners.isError && <ErrorState error={scanners.error} onRetry={() => scanners.refetch()} />}
 
           {scanners.data && rows.length === 0 && (
             <div className="panel mt-page">
@@ -1111,6 +1114,7 @@ export function Scanners() {
                 <ScannerCard
                   key={s.id}
                   s={s}
+                  showIdentity={ambiguousNames.has(s.name)}
                   onToggle={(v) => patch(s, { enabled: v })}
                   onRun={() => runNow(s)}
                   onHide={() => onHide(s)}

@@ -70,6 +70,7 @@ export function RestorationPanel({ pairs }: { pairs: IncubatorPair[] }) {
                             : 'No completed scan recorded'}
                         </div>
                         <div className="small mono">
+                          {p.collection.funnel.historyCapped ? '≥' : ''}
                           {p.collection.funnel.entries} signals · {p.collection.entries.filled} filled ·{' '}
                           {p.collection.entries.open} open · {p.collection.entries.pending} pending
                         </div>
@@ -78,6 +79,12 @@ export function RestorationPanel({ pairs }: { pairs: IncubatorPair[] }) {
                         )}
                         <details className="small muted">
                           <summary>Entry outcomes since enrollment</summary>
+                          {p.collection.funnel.historyCapped && (
+                            <div>
+                              Retained sample only; older signals are not included. Filled-trade and evidence
+                              totals are separate complete queries.
+                            </div>
+                          )}
                           {Object.entries(p.collection.funnel.reasons ?? {}).map(([reason, n]) => (
                             <div key={reason}>
                               {n} × {reason}

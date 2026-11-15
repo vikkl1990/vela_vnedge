@@ -223,11 +223,12 @@ export const test = base.extend<{ writes: string[]; faults: string[] }>({
       }
       if (key === '/signals') {
         let data = signals
-        for (const field of ['scanner', 'symbol', 'tf', 'kind']) {
+        for (const field of ['scanner', 'symbol', 'tf', 'kind', 'side']) {
           const value = url.searchParams.get(field)
           if (value)
             data = data.filter(
-              (s) => s[field === 'scanner' ? 'scannerId' : (field as 'symbol' | 'tf' | 'kind')] === value,
+              (s) =>
+                s[field === 'scanner' ? 'scannerId' : (field as 'symbol' | 'tf' | 'kind' | 'side')] === value,
             )
         }
         await route.fulfill({ json: data })
@@ -254,8 +255,18 @@ export const test = base.extend<{ writes: string[]; faults: string[] }>({
         constructor() {
           setTimeout(() => this.onopen?.(), 0)
         }
-        addEventListener() {}
-        close() {}
+        listeners = new Map<string, (e: MessageEvent) => void>()
+        receive = (e: Event) => {
+          const { name, data } = (e as CustomEvent<{ name: string; data: unknown }>).detail
+          this.listeners.get(name)?.(new MessageEvent(name, { data: JSON.stringify(data) }))
+        }
+        addEventListener(name: string, listener: (e: MessageEvent) => void) {
+          this.listeners.set(name, listener)
+          window.addEventListener('fixture-sse', this.receive)
+        }
+        close() {
+          window.removeEventListener('fixture-sse', this.receive)
+        }
       }
       Object.defineProperty(window, 'EventSource', { value: FakeEventSource })
     })

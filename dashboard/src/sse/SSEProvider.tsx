@@ -1,3 +1,4 @@
+import { decisionRefreshKeys } from './decisionRefresh'
 import { batchedInvalidation } from '../lib/batchedInvalidation'
 import { useQueryClient } from '@tanstack/react-query'
 import {
@@ -52,6 +53,7 @@ const EVENTS: SSEEventName[] = [
   'position',
   'trade',
   'order',
+  'pending',
   'scanner',
   'stats',
   'health',
@@ -144,12 +146,7 @@ export function SSEProvider({ children }: { children: ReactNode }) {
       }),
       sseBus.on('signal', (s: Signal) => {
         setLiveSignal(s)
-        invalidate(['signals'])
-        invalidate(['signal-activity'])
-        invalidate(['radar'])
-        invalidate(['gates'])
-        invalidate(['scanner-pipeline'])
-        invalidate(qk.scanners)
+        for (const key of decisionRefreshKeys('signal')) invalidate(key)
       }),
       sseBus.on('position', (e: PositionEvent) => {
         qc.setQueryData<Position[]>(qk.positions, (prev) => {
@@ -162,9 +159,11 @@ export function SSEProvider({ children }: { children: ReactNode }) {
           next[idx] = e.position
           return next
         })
+        for (const key of decisionRefreshKeys('position', e.type)) invalidate(key)
         if (e.type !== 'updated') bumpStats()
       }),
       sseBus.on('trade', () => {
+        for (const key of decisionRefreshKeys('trade')) invalidate(key)
         invalidate(['trades'])
         invalidate(['journal'])
         invalidate(['journal-detail'])
@@ -178,7 +177,13 @@ export function SSEProvider({ children }: { children: ReactNode }) {
         invalidate(qk.analytics)
         bumpStats()
       }),
-      sseBus.on('order', () => invalidate(qk.orders)),
+      sseBus.on('order', () => {
+        invalidate(qk.orders)
+        for (const key of decisionRefreshKeys('order')) invalidate(key)
+      }),
+      sseBus.on('pending', () => {
+        for (const key of decisionRefreshKeys('pending')) invalidate(key)
+      }),
       sseBus.on('scanner', (e: ScannerEvent) => {
         qc.setQueryData<Scanner[]>(qk.scanners, (prev) =>
           prev ? prev.map((s) => (s.id === e.id ? { ...s, lastRun: e.lastRun, stats: e.stats } : s)) : prev,

@@ -1,5 +1,60 @@
 import type { Signal } from '../api/types'
 
+// Operational holds must not masquerade as late scanner runs. Use the same
+// precedence in grouped cells and in the outcome summary.
+const operationalReasons = [
+  {
+    key: 'exchange',
+    label: 'exchange status unavailable',
+    tone: 'warn' as const,
+    hint: 'Exchange product status could not be verified at admission.',
+    test: (a: string) =>
+      /exchange product status|exchange (?:unavailable|recovery)|feed disconnected/.test(a),
+  },
+  {
+    key: 'depth',
+    label: 'fresh depth unavailable',
+    tone: 'warn' as const,
+    hint: 'Executable order-book depth was missing or stale at the entry check.',
+    test: (a: string) => /fresh depth|stale depth|depth unavailable/.test(a),
+  },
+  {
+    key: 'burst',
+    label: 'entry burst spacing',
+    tone: 'muted' as const,
+    hint: 'The configured spacing between entries has not elapsed.',
+    test: (a: string) => /rejected:risk burst/.test(a),
+  },
+  {
+    key: 'cooldown',
+    label: 're-entry cooldown',
+    tone: 'muted' as const,
+    hint: 'The configured re-entry cooldown is still active.',
+    test: (a: string) => /cooldown|rejected:risk re-entry/.test(a),
+  },
+  {
+    key: 'chop',
+    label: 'choppy market',
+    tone: 'warn' as const,
+    hint: 'The configured market-condition check refused this entry.',
+    test: (a: string) => /choppy|choppiness/.test(a),
+  },
+  {
+    key: 'stop-policy',
+    label: 'scanner stop policy',
+    tone: 'warn' as const,
+    hint: 'The signal did not supply a stop accepted by its configured execution policy.',
+    test: (a: string) => /own stop|script stop|stop policy/.test(a),
+  },
+  {
+    key: 'no-fill',
+    label: 'order expired unfilled',
+    tone: 'muted' as const,
+    hint: 'The resting order expired without a qualifying fill.',
+    test: (a: string) => /no fill|no-fill|limit expired/.test(a),
+  },
+]
+
 /** The fate of a batch of signals, in the operator's words: how many became trades, and what refused the rest. */
 export function summarizeOutcomes(rows: Signal[]) {
   const defs: Array<{
@@ -9,6 +64,7 @@ export function summarizeOutcomes(rows: Signal[]) {
     hint: string
     test: (a: string, s: Signal) => boolean
   }> = [
+    ...operationalReasons,
     {
       key: 'opened',
       label: 'opened',
@@ -42,7 +98,7 @@ export function summarizeOutcomes(rows: Signal[]) {
       label: 'margin / position cap',
       tone: 'warn',
       hint: 'no room in the account: margin, position limits, or a scrap-sized fill refused (decision 53)',
-      test: (a) => /margin|max positions|position cap|intended size|budget/.test(a),
+      test: (a) => /margin|max (?:\d+ )?positions|position cap|positions on|intended size|budget/.test(a),
     },
     {
       key: 'received',
@@ -62,8 +118,8 @@ export function summarizeOutcomes(rows: Signal[]) {
       key: 'halted',
       label: 'halted / loss limit',
       tone: 'danger',
-      hint: 'kill switch, daily or weekly loss limit, cooldown',
-      test: (a) => /halt|loss limit|cooldown/.test(a),
+      hint: 'kill switch, daily or weekly loss limit',
+      test: (a) => /halt|loss limit/.test(a),
     },
     {
       key: 'regime',
@@ -147,6 +203,9 @@ export function gateOf(action: string | null | undefined): {
   href?: string
 } {
   const a = String(action ?? '')
+  const operational = operationalReasons.find((r) => r.test(a))
+  if (operational)
+    return { key: operational.key, label: operational.label, tone: operational.tone, href: '/gates' }
   if (a === 'opened' || a === 'reversed') return { key: 'opened', label: 'opened', tone: 'ok' }
   if (a === 'pending' || a.startsWith('pending:'))
     return { key: 'pending', label: 'order pending', tone: 'accent' }

@@ -191,6 +191,8 @@ export interface IncubatorPair {
   openShadow: number
   /** Decision 112: what became of the cell's entry signals in the last 14 days — opened, or which gate refused them. */
   funnel?: {
+    historyCapped?: boolean
+    retainedSince?: number | null
     reasons?: Record<string, number>
     entries: number
     opened: number

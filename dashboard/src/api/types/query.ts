@@ -9,6 +9,7 @@ export interface SignalQuery {
   limit?: number
   scanner?: string
   symbol?: string
+  side?: string
   kind?: SignalKind
   since?: number
 }

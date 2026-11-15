@@ -37,7 +37,7 @@ const toPair = (r: any): PairRow => ({
 });
 
 /** Decision 190: `pending` is an order resting or waiting to fill; it is not an opened trade until it fills, and a lapsed one counts as `other`. */
-export interface SignalFunnel { reasons?: Record<string, number>; entries: number; opened: number; pending: number; regime: number; cost: number; market: number; quote: number; other: number; lastOpenAt: number | null }
+export interface SignalFunnel { historyCapped?: boolean; retainedSince?: number | null; reasons?: Record<string, number>; entries: number; opened: number; pending: number; regime: number; cost: number; market: number; quote: number; other: number; lastOpenAt: number | null }
 /** The gate an entry signal's recorded action names (decision 112); the same words the Signals page shows. */
 export function funnelClass(action: string): 'opened' | 'pending' | 'regime' | 'cost' | 'market' | 'quote' | 'other' {
   if (action === 'opened' || action === 'reversed') return 'opened';
