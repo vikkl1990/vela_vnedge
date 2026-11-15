@@ -774,7 +774,7 @@ export class App {
     const since = Date.now() - 30 * 86_400_000;
     const liveAll = this.paper.trades({ limit: 5000 }).map(toLearn(this.paper.book));
     const live = learnBook(liveAll);
-    // Exact policies plus capacity-only compatibility (decision 272); recorded P&L is never rewritten.
+    // Exact policies plus verified readiness compatibility (decisions 272–273); recorded P&L is never rewritten.
     const policyEvidence=currentPolicyEvidence(this.db,this.paper),currentIds=policyEvidence.ids;
     const current=learnBook(this.paper.trades({limit:5000}).filter(t=>currentIds.has(t.id)).map(toLearn(this.paper.book)));
     const shadow = learnBook(this.shadow.trades({ limit: 20000 }).filter(t => !t.scannerId.startsWith('plan:') && (t.exitAt ?? 0) >= since).map(toLearn(this.shadow.book)));
