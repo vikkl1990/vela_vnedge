@@ -168,14 +168,16 @@ const SECTIONS: Section[] = [
         label: 'Max open positions (engine)',
         kind: 'number',
         step: '1',
-        validate: num(1, 500),
+        hint: '0 removes this count limit; margin and all other risk checks still apply',
+        validate: num(0, 500),
       },
       {
         path: 'risk.maxPositionsTotal',
         label: 'Max open positions (risk layer)',
         kind: 'number',
         step: '1',
-        validate: num(1, 500),
+        hint: '0 removes this count limit; margin and all other risk checks still apply',
+        validate: num(0, 500),
       },
       {
         path: 'risk.maxPositionsPerSymbol',
