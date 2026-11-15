@@ -176,3 +176,86 @@ test('All navigation destinations render through unavailable endpoint states', a
   }
   expect(writes).toEqual([])
 })
+
+test('resting fill and cancellation events refresh the loaded journal without a scanner fire', async ({
+  page,
+  faults,
+  writes,
+}, info) => {
+  void faults
+  let action = 'pending:resting limit at 99.4'
+  await page.route('**/api/signals?**', async (route) => {
+    const { signals } = await import('./fixtures')
+    await route.fulfill({ json: [{ ...signals[0], action }] })
+  })
+  await page.goto('/signals?view=flat')
+  const row = (info.project.name === 'phone' ? page.locator('.data-card') : page.locator('tbody tr')).first()
+  await expect(row).toContainText('pending')
+  action = 'opened'
+  await page.evaluate(() =>
+    window.dispatchEvent(
+      new CustomEvent('fixture-sse', { detail: { name: 'order', data: { reason: 'entry' } } }),
+    ),
+  )
+  await expect(row).toContainText('opened')
+  action = 'rejected:no fill'
+  await page.evaluate(() =>
+    window.dispatchEvent(
+      new CustomEvent('fixture-sse', { detail: { name: 'pending', data: { type: 'cancelled', id: 1 } } }),
+    ),
+  )
+  await expect(row).toContainText('no fill')
+  await expect(page.getByText(/Recent journal: latest 500/)).toBeVisible()
+  expect(writes).toEqual([])
+})
+
+test('Incubator labels capped diagnostics, keeps separate identities and refreshes read-only', async ({
+  page,
+  faults,
+  writes,
+}) => {
+  void faults
+  let reads = 0
+  const { incubator } = await import('./incubatorFixture')
+  await page.route('**/api/incubator', async (route) => {
+    reads++
+    await route.fulfill({ json: incubator })
+  })
+  await page.goto('/incubator')
+  await expect(
+    page.getByText('Retained sample only; older signals are not included.', { exact: true }),
+  ).toBeVisible()
+  await expect(page.getByRole('link', { name: 'Same scanner · native-reader', exact: true })).toBeVisible()
+  await expect(
+    page.getByRole('link', { name: 'Same scanner · continuation-reader', exact: true }),
+  ).toBeVisible()
+  await expect(page.getByText('≥120 signals', { exact: false })).toBeVisible()
+  const before = reads
+  await page.getByRole('button', { name: 'Refresh incubator', exact: true }).click()
+  await expect.poll(() => reads).toBeGreaterThan(before)
+  expect(writes).toEqual([])
+})
+
+test('Scanners explain qualified copying when the direct-paper switch is off', async ({
+  page,
+  faults,
+  writes,
+}) => {
+  void faults
+  const { scanners } = await import('./fixtures')
+  await page.route('**/api/scanners', (route) =>
+    route.fulfill({
+      json: [
+        {
+          ...scanners[0],
+          enabled: false,
+          books: { account: [], shadow: ['ETHUSD'], proposed: [] },
+        },
+      ],
+    }),
+  )
+  await page.goto('/scanners?section=trading&view=list')
+  await expect(page.getByText('Shadow allocated', { exact: true })).toBeVisible()
+  await expect(page.getByText('Paper disabled', { exact: true })).not.toBeVisible()
+  expect(writes).toEqual([])
+})

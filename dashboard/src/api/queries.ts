@@ -119,7 +119,14 @@ export const useMarkets = () =>
     retryDelay: (n) => Math.min(30_000, 2_000 * 2 ** n),
   })
 export const useScanners = (opts?: Opts<Awaited<ReturnType<typeof api.scanners>>>) =>
-  useQuery({ queryKey: qk.scanners, queryFn: api.scanners, staleTime: LIVE_STALE, retry: 1, ...opts })
+  useQuery({
+    queryKey: qk.scanners,
+    queryFn: api.scanners,
+    staleTime: LIVE_STALE,
+    refetchInterval: REFRESH.slow,
+    retry: 1,
+    ...opts,
+  })
 /**
  * Name/status lookup for headers, dropdowns and pickers. Same rows as `useScanners`, without the
  * per-scanner statistics and symbol lists that make the full response ~100x larger.
@@ -176,7 +183,13 @@ export const useScannerOverlay = (id: string | undefined, symbol: string, tf: st
     retry: 0,
   })
 export const useSignals = (q: SignalQuery = {}) =>
-  useQuery({ queryKey: qk.signals(q), queryFn: () => api.signals(q), staleTime: LIVE_STALE, retry: 1 })
+  useQuery({
+    queryKey: qk.signals(q),
+    queryFn: () => api.signals(q),
+    staleTime: LIVE_STALE,
+    refetchInterval: REFRESH.slow,
+    retry: 1,
+  })
 export const usePositions = () =>
   useQuery({
     queryKey: qk.positions,

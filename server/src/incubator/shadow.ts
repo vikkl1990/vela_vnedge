@@ -161,7 +161,10 @@ export class ShadowRunner {
   funnelOf(key: string, since: number): SignalFunnel {
     const f: SignalFunnel = { entries: 0, opened: 0, pending: 0, regime: 0, cost: 0, market: 0, quote: 0, other: 0, lastOpenAt: null };
     f.reasons = {};
-    for (const [at, k, reason] of this.funnel.get(key) ?? []) {
+    const samples=this.funnel.get(key) ?? [];
+    f.retainedSince=samples.length?Math.min(...samples.map(([at])=>at)):null;
+    f.historyCapped=samples.length>=FUNNEL_CAP && f.retainedSince!==null && f.retainedSince>=since;
+    for (const [at, k, reason] of samples) {
       if (at < since) continue;
       const detail=reason ?? `legacy:${k}`; f.reasons[detail]=(f.reasons[detail]??0)+1;
       f.entries++; const kk = (['opened','pending','regime','cost','market','quote','other'].includes(k) ? k : 'other') as FunnelKind; f[kk]++;

@@ -45,11 +45,17 @@ export function Funnel({ f, pair }: { f: IncubatorPair['funnel']; pair?: Incubat
   ].filter(([, n]) => (n as number) > 0) as Array<[string, number]>
   return (
     <span>
-      <span className="mono">{f.entries}</span> signals ·{' '}
-      <span className={f.opened ? 'gain' : 'loss'}>{f.opened} opened</span>
+      <span className="mono">
+        {f.historyCapped ? '≥' : ''}
+        {f.entries}
+      </span>{' '}
+      signals · <span className={f.opened ? 'gain' : 'loss'}>{f.opened} opened</span>
       {(f.pending ?? 0) > 0 && <span className="warn"> · {f.pending} pending</span>}
       {parts.length > 0 && (
         <span className="muted"> · other outcomes: {parts.map(([k, n]) => `${n} ${k}`).join(', ')}</span>
+      )}
+      {f.historyCapped && (
+        <span className="warn small"> · retained sample only; older signals are not included</span>
       )}
       {f.reasons && Object.keys(f.reasons).length > 0 && (
         <details className="funnel-reasons">

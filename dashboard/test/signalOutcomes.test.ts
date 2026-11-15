@@ -47,3 +47,28 @@ test('exit and information events cannot inflate entry conversion', () => {
   assert.equal(result.entries, 0)
   assert.equal(result.opened, 0)
 })
+
+test('data freshness, burst spacing and cooldown never masquerade as late scanners', () => {
+  const cases = [
+    ['rejected:exchange product status unknown or stale', 'exchange'],
+    ['rejected:risk market: fresh depth stale depth', 'depth'],
+    ['rejected:risk market: fresh depth cost exceeds ceiling (0.373% for $148)', 'market'],
+    ['rejected:risk market: fresh depth insufficient depth', 'market'],
+    ['rejected:risk burst: same side within 120s', 'burst'],
+    ['rejected:risk cooldown', 'cooldown'],
+    ['rejected:risk regime: choppy market', 'chop'],
+    ["rejected:the scanner's own stop: the account takes only the ATR stop", 'stop-policy'],
+    ['rejected:no fill', 'no-fill'],
+    ['rejected:risk max 1 positions on ETHUSD', 'capacity'],
+    ['rejected:stale signal', 'stale'],
+  ]
+  for (const [action, expected] of cases) {
+    assert.equal(gateOf(action).key, expected, action)
+    const buckets = summarizeOutcomes([signal(action)]).buckets
+    assert.deepEqual(
+      buckets.map((b) => [b.key, b.n]),
+      [[expected, 1]],
+      action,
+    )
+  }
+})

@@ -7,6 +7,7 @@ import { readerLabel, scannerActivity } from '../../lib/scannerPresentation'
 
 export function ScannerCard({
   s,
+  showIdentity,
   onToggle,
   onRun,
   busy,
@@ -15,6 +16,7 @@ export function ScannerCard({
   onRelease,
 }: {
   s: Scanner
+  showIdentity?: boolean
   onToggle: (v: boolean) => void
   onRun: () => void
   busy: boolean
@@ -33,6 +35,7 @@ export function ScannerCard({
         <span className={`dot ${s.enabled ? 'dot-ok' : s.status === 'ok' ? 'dot-neutral' : 'dot-danger'}`} />
         <Link to={`/scanners/${s.id}`} className="card-title">
           {s.name}
+          {showIdentity && <span className="small muted"> · {s.id}</span>}
         </Link>
         <span className="card-pills">
           <BookCells s={s} />

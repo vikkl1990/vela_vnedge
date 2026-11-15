@@ -29,3 +29,10 @@ test('quarantine, missing allocation and normal silence are distinct', () => {
 test('runtime errors remain visible on a scheduled scanner', () => {
   assert.equal(scannerActivity({ ...base, lastRun: { error: 'timeout' } as Scanner['lastRun'] }).key, 'fault')
 })
+
+test('shadow copying is distinct from the direct-paper enable switch', () => {
+  const s = { ...base, enabled: false, books: { account: [], shadow: ['ETHUSD'], proposed: [] } }
+  assert.equal(scannerActivity(s).key, 'shadow')
+  assert.match(scannerActivity(s).detail, /only after evidence and entry checks pass/)
+  assert.equal(scannerActivity({ ...s, health: { quarantined: true } as Scanner['health'] }).key, 'fault')
+})
