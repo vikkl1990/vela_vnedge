@@ -92,6 +92,7 @@ export interface IncubatorConfig {
   promote: {
     maxPerWeek: number
     maxFleet: number
+    countLimitsEnabled?: boolean
     maxPerMarket?: number
     maxPerScanner?: number
     [k: string]: unknown

@@ -461,6 +461,8 @@ export interface IncubatorConfig {
     reserve?: Array<{ tfs?: string[]; markets?: string[]; slots: number }>;
 };
   promote: { maxPerWeek: number; maxFleet: number;
+    /** False removes allocation-count quotas only; evidence and execution risk checks still apply. Omitted preserves legacy caps. */
+    countLimitsEnabled?: boolean;
     /** Decision 106: no more live cells than this on one market, or for one scanner, so the fleet spreads across pairs. */
     maxPerMarket?: number; maxPerScanner?: number;
     /** Promote gate proposals into the fleet without the owner's click, within maxPerWeek and maxFleet (decision 55). */
@@ -645,7 +647,7 @@ export const DEFAULT_CONFIG: AppConfig = {
     },
     admit: { rotation: { enabled: false, maxPerDay: 12, idleDaysByTf: { '15m': 7, '1h': 14, '4h': 28 }, cooldownDays: 3 }, cohortMarkets: { default: 5, '1h': 8, '4h': 12 }, minCohortMarkets: 3,
       reserve: [{ tfs: ['4h'], markets: ['BTCUSD', 'ETHUSD', 'SOLUSD', 'XRPUSD'], slots: 80 }, { tfs: ['4h'], slots: 200 }] },
-    promote: { maxPerWeek: 2, maxFleet: 20, auto: false, maxPerMarket: 2, maxPerScanner: 6, reviewMinutes: 15 },
+    promote: { maxPerWeek: 2, maxFleet: 20, countLimitsEnabled: true, auto: false, maxPerMarket: 2, maxPerScanner: 6, reviewMinutes: 15 },
     demote: { window: 50, minTrades: 30, maxPfR: 0.9, silentDays: 14, silentDaysByTf: { '1h': 30, '4h': 60 }, marketOutDays: 3, costStarvedRefusals: 5, costStarvedDays: 14 },
     cooldownDays: 30,
     mirror: { enabled: false, minTrades: 5, minNetR: 0, minTurnoverUsd: 2_000_000 },
@@ -981,6 +983,7 @@ export function validateConfig(c: AppConfig): string[] {
     if (inc.gate?.staleDaysByTf !== undefined && !Object.values(inc.gate.staleDaysByTf).every(v => v > 0 && v <= 365)) errs.push('incubator.gate.staleDaysByTf values must be 1..365 days');
     if (inc.screen?.retryPerNight !== undefined && !(Number.isInteger(inc.screen.retryPerNight) && inc.screen.retryPerNight >= 0 && inc.screen.retryPerNight <= 200)) errs.push('incubator.screen.retryPerNight must be 0..200');
     if (!(inc.promote?.maxPerWeek >= 0 && inc.promote?.maxFleet >= 1)) errs.push('incubator.promote needs maxPerWeek ≥ 0 and maxFleet ≥ 1');
+    if (inc.promote?.countLimitsEnabled !== undefined && typeof inc.promote.countLimitsEnabled !== 'boolean') errs.push('incubator.promote.countLimitsEnabled must be boolean');
     if(inc.promote?.reviewMinutes!==undefined&&(!Number.isInteger(inc.promote.reviewMinutes)||inc.promote.reviewMinutes<5||inc.promote.reviewMinutes>1440))errs.push('incubator.promote.reviewMinutes must be an integer from 5 to 1440');
     if (!(inc.screen?.slices >= 1 && inc.screen?.slices <= 31)) errs.push('incubator.screen.slices must be 1..31');
   }
@@ -1121,7 +1124,7 @@ export class ConfigStore {
     const cellsOf = (v: ScannerConfig) => scannerPairs(v,this.cfg.timeframes).length;
     const cells = Object.entries({ ...this.cfg.scanners, [id]: next }).filter(([, v]) => v.enabled && !v.hidden).reduce((n, [, v]) => n + cellsOf(v), 0);
     const cap = this.cfg.incubator?.promote?.maxFleet ?? 20;
-    if (cells > cap) throw Object.assign(new Error(`refused: the live fleet would have ${cells} cells, above incubator.promote.maxFleet (${cap}); raise the limit deliberately or add fewer pairs`), { status: 400 });
+    if (this.cfg.incubator?.promote?.countLimitsEnabled !== false && cells > cap) throw Object.assign(new Error(`refused: the live fleet would have ${cells} cells, above incubator.promote.maxFleet (${cap}); raise the limit deliberately or add fewer pairs`), { status: 400 });
     this.cfg = { ...this.cfg, scanners: { ...this.cfg.scanners, [id]: next } };
     this.save();
     return next;

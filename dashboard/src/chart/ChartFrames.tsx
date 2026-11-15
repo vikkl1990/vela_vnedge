@@ -9,7 +9,7 @@ import { VelaChart, type ChartScript } from './VelaChart'
 /**
  * One market on several timeframes at once, every frame drawing the same scripts, so a scanner's
  * drawing can be read across the frames it is traded on. Each frame is its own Vela instance
- * (its own data and its own Pine run); four is the practical ceiling on a laptop.
+ * (its own data and its own Pine run). The user can select every supported timeframe.
  */
 export function ChartFrames({
   symbol,
@@ -76,7 +76,7 @@ export function ChartFrames({
   )
 }
 
-/** The timeframe picker for the frames view: two to four of Delta's timeframes, in chart order. */
+/** Any non-empty selection of supported timeframes, in chart order. */
 export function FramePicker({ value, onChange }: { value: string[]; onChange: (tfs: string[]) => void }) {
   const [warn, setWarn] = useState('')
   return (
@@ -87,10 +87,6 @@ export function FramePicker({ value, onChange }: { value: string[]; onChange: (t
         value={value}
         onChange={(v) => {
           const ordered = DELTA_TIMEFRAMES.filter((t) => v.includes(t))
-          if (ordered.length > 4) {
-            setWarn('four frames at most')
-            return
-          }
           if (ordered.length < 1) {
             setWarn('keep one frame')
             return

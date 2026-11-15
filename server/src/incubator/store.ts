@@ -329,12 +329,16 @@ export class IncubatorStore {
   copyRefusal(cell:{scannerId:string;symbol:string;tf:string},mirror:AppConfig['incubator']['mirror'],turnover:number|null,at=Date.now(),{readOnly=false}={}) {
     const quarantine=this.quarantineReason(cell.scannerId);
     if(quarantine)return `scanner quarantined: ${quarantine}`;
+    // The evidence-only gate is also used for restoration enrollment. Keep that
+    // independent of market availability, but never label an unverified copy ready.
+    const marketMissing=(mirror?.minTurnoverUsd??0)>0&&(turnover===null||!Number.isFinite(turnover))
+      ?'market data unavailable: 24h turnover not verified for copy':null;
     if(readOnly){
       const r=this.restoration(cell,at);
       if(r&&!r.passed)return `restored cell in forward shadow evaluation: ${r.reasons.join('; ')}`;
-      return mirrorRefusal(mirror,qualifiedEvidence(this.db,cell,this.policyFor?.(cell),{at}),turnover);
+      return marketMissing??mirrorRefusal(mirror,qualifiedEvidence(this.db,cell,this.policyFor?.(cell),{at}),turnover);
     }
-    return this.restorationRefusal(cell,at)??mirrorRefusal(mirror,this.qualifiedTrades(cell.scannerId,cell.symbol,cell.tf,2,at),turnover);
+    return this.restorationRefusal(cell,at)??marketMissing??mirrorRefusal(mirror,this.qualifiedTrades(cell.scannerId,cell.symbol,cell.tf,2,at),turnover);
   }
   policyEvidence(cell:{scannerId:string;symbol:string;tf:string},at=Date.now()) {
     if(!this.policyFor)return {mode:'unconfigured' as const};

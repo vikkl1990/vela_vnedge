@@ -284,7 +284,13 @@ export interface IncubatorView {
       minDaysByTf?: Record<string, number>
       maxDaysByTf?: Record<string, number>
     }
-    promote: { maxPerWeek: number; maxFleet: number; auto?: boolean; reviewMinutes?: number }
+    promote: {
+      maxPerWeek: number
+      maxFleet: number
+      countLimitsEnabled?: boolean
+      auto?: boolean
+      reviewMinutes?: number
+    }
     demote: {
       window: number
       minTrades: number
