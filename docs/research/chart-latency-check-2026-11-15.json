@@ -1,0 +1,400 @@
+{
+  "verifiedAt": "2026-11-15T05:06:04.949000+00:00",
+  "method": "Read-only SQLite and systemd journal. Account books 0/-1; fills classified from saved liquidity, not the price-source label. Run logs include warm-up/manual runs.",
+  "windows": {
+    "7": {
+      "from": "2026-11-08T05:06:04.949000+00:00",
+      "runs": {
+        "15m": {
+          "allCloseToLogged": {
+            "n": 10564,
+            "medianSeconds": 5.819,
+            "p90Seconds": 15.337,
+            "maxSeconds": 869.518
+          },
+          "withinFiveMinutes": {
+            "n": 10395,
+            "medianSeconds": 5.774,
+            "p90Seconds": 13.605,
+            "maxSeconds": 287.245
+          },
+          "runtime": {
+            "n": 10564,
+            "medianSeconds": 0.671,
+            "p90Seconds": 3.996,
+            "maxSeconds": 7.102
+          }
+        },
+        "1h": {
+          "allCloseToLogged": {
+            "n": 4250,
+            "medianSeconds": 11.951,
+            "p90Seconds": 37.41,
+            "maxSeconds": 3428.796
+          },
+          "withinFiveMinutes": {
+            "n": 3969,
+            "medianSeconds": 11.512,
+            "p90Seconds": 29.905,
+            "maxSeconds": 285.647
+          },
+          "runtime": {
+            "n": 4250,
+            "medianSeconds": 0.879,
+            "p90Seconds": 4.54,
+            "maxSeconds": 11.961
+          }
+        },
+        "4h": {
+          "allCloseToLogged": {
+            "n": 55,
+            "medianSeconds": 37.631,
+            "p90Seconds": 8779.885,
+            "maxSeconds": 14228.384
+          },
+          "withinFiveMinutes": {
+            "n": 42,
+            "medianSeconds": 34.886,
+            "p90Seconds": 44.892,
+            "maxSeconds": 50.895
+          },
+          "runtime": {
+            "n": 55,
+            "medianSeconds": 8.245,
+            "p90Seconds": 8.99,
+            "maxSeconds": 10.112
+          }
+        }
+      },
+      "fillsBySourceAndLiquidity": [
+        {
+          "source": "depth",
+          "liquidity": "taker",
+          "count": 169,
+          "signalToFill": {
+            "n": 169,
+            "medianSeconds": 2.792,
+            "p90Seconds": 3.218,
+            "maxSeconds": 30.167
+          },
+          "publishedSignalPrice": 17,
+          "retainedReferencePrice": 64
+        },
+        {
+          "source": "quote",
+          "liquidity": "maker",
+          "count": 45,
+          "signalToFill": {
+            "n": 45,
+            "medianSeconds": 103.254,
+            "p90Seconds": 2843.321,
+            "maxSeconds": 4801.478
+          },
+          "publishedSignalPrice": 1,
+          "retainedReferencePrice": 0
+        },
+        {
+          "source": "limit-candle-model",
+          "liquidity": "maker",
+          "count": 35,
+          "signalToFill": {
+            "n": 35,
+            "medianSeconds": 79.374,
+            "p90Seconds": 658.389,
+            "maxSeconds": 1399.182
+          },
+          "publishedSignalPrice": 2,
+          "retainedReferencePrice": 35
+        }
+      ],
+      "entrySignalAge": {
+        "15m": {
+          "n": 188,
+          "medianSeconds": 6.557,
+          "p90Seconds": 17.581,
+          "maxSeconds": 50.019
+        },
+        "1h": {
+          "n": 51,
+          "medianSeconds": 16.125,
+          "p90Seconds": 39.771,
+          "maxSeconds": 56.593
+        },
+        "4h": {
+          "n": 10,
+          "medianSeconds": 40.192,
+          "p90Seconds": 53.44,
+          "maxSeconds": 53.44
+        }
+      },
+      "marketSignalsOlderThanFiveMinutes": [],
+      "quoteMakerPendingProof": 45,
+      "systemdStarts": 53,
+      "lateRunsCount": 463,
+      "lateRunsWithinThreeMinutesOfStart": 461,
+      "lateCloseExamples": [
+        {
+          "tf": "1h",
+          "barOpened": "2026-11-08T05:00:00+00:00",
+          "count": 25,
+          "firstLogged": "2026-11-08T06:37:19.685000+00:00",
+          "lastLogged": "2026-11-08T06:37:28.542000+00:00",
+          "nearestPriorStart": "2026-11-08T06:37:04.447000+00:00"
+        },
+        {
+          "tf": "1h",
+          "barOpened": "2026-11-08T17:00:00+00:00",
+          "count": 25,
+          "firstLogged": "2026-11-08T18:35:48.909000+00:00",
+          "lastLogged": "2026-11-08T18:35:57.772000+00:00",
+          "nearestPriorStart": "2026-11-08T18:35:33.780000+00:00"
+        },
+        {
+          "tf": "1h",
+          "barOpened": "2026-11-09T17:00:00+00:00",
+          "count": 25,
+          "firstLogged": "2026-11-09T18:27:19.549000+00:00",
+          "lastLogged": "2026-11-09T18:27:28.362000+00:00",
+          "nearestPriorStart": "2026-11-09T18:27:03.129000+00:00"
+        },
+        {
+          "tf": "1h",
+          "barOpened": "2026-11-10T15:00:00+00:00",
+          "count": 25,
+          "firstLogged": "2026-11-10T16:42:10.142000+00:00",
+          "lastLogged": "2026-11-10T16:42:20.120000+00:00",
+          "nearestPriorStart": "2026-11-10T16:41:56.585000+00:00"
+        },
+        {
+          "tf": "1h",
+          "barOpened": "2026-11-11T03:00:00+00:00",
+          "count": 24,
+          "firstLogged": "2026-11-11T04:32:29.378000+00:00",
+          "lastLogged": "2026-11-11T04:32:39.116000+00:00",
+          "nearestPriorStart": "2026-11-11T04:32:10.462000+00:00"
+        },
+        {
+          "tf": "1h",
+          "barOpened": "2026-11-11T12:00:00+00:00",
+          "count": 24,
+          "firstLogged": "2026-11-11T13:23:06.933000+00:00",
+          "lastLogged": "2026-11-11T13:23:15.727000+00:00",
+          "nearestPriorStart": "2026-11-11T13:22:48.460000+00:00"
+        },
+        {
+          "tf": "1h",
+          "barOpened": "2026-11-12T12:00:00+00:00",
+          "count": 23,
+          "firstLogged": "2026-11-12T13:24:07.291000+00:00",
+          "lastLogged": "2026-11-12T13:24:16.098000+00:00",
+          "nearestPriorStart": "2026-11-12T13:23:52.954000+00:00"
+        },
+        {
+          "tf": "1h",
+          "barOpened": "2026-11-13T17:00:00+00:00",
+          "count": 22,
+          "firstLogged": "2026-11-13T18:35:27.163000+00:00",
+          "lastLogged": "2026-11-13T18:35:37.762000+00:00",
+          "nearestPriorStart": "2026-11-13T18:35:05.539000+00:00"
+        }
+      ]
+    },
+    "14": {
+      "from": "2026-11-01T05:06:04.949000+00:00",
+      "runs": {
+        "15m": {
+          "allCloseToLogged": {
+            "n": 21733,
+            "medianSeconds": 4.732,
+            "p90Seconds": 11.154,
+            "maxSeconds": 878.259
+          },
+          "withinFiveMinutes": {
+            "n": 21419,
+            "medianSeconds": 4.681,
+            "p90Seconds": 10.631,
+            "maxSeconds": 287.245
+          },
+          "runtime": {
+            "n": 21733,
+            "medianSeconds": 0.571,
+            "p90Seconds": 4.088,
+            "maxSeconds": 15.58
+          }
+        },
+        "1h": {
+          "allCloseToLogged": {
+            "n": 8725,
+            "medianSeconds": 9.1,
+            "p90Seconds": 32.776,
+            "maxSeconds": 3576.613
+          },
+          "withinFiveMinutes": {
+            "n": 8169,
+            "medianSeconds": 8.587,
+            "p90Seconds": 18.38,
+            "maxSeconds": 285.647
+          },
+          "runtime": {
+            "n": 8725,
+            "medianSeconds": 0.931,
+            "p90Seconds": 4.614,
+            "maxSeconds": 12.677
+          }
+        },
+        "4h": {
+          "allCloseToLogged": {
+            "n": 108,
+            "medianSeconds": 29.77,
+            "p90Seconds": 7667.55,
+            "maxSeconds": 14228.384
+          },
+          "withinFiveMinutes": {
+            "n": 84,
+            "medianSeconds": 23.454,
+            "p90Seconds": 41.763,
+            "maxSeconds": 50.895
+          },
+          "runtime": {
+            "n": 108,
+            "medianSeconds": 8.321,
+            "p90Seconds": 9.386,
+            "maxSeconds": 11.861
+          }
+        }
+      },
+      "fillsBySourceAndLiquidity": [
+        {
+          "source": "depth",
+          "liquidity": "taker",
+          "count": 294,
+          "signalToFill": {
+            "n": 294,
+            "medianSeconds": 2.79,
+            "p90Seconds": 3.131,
+            "maxSeconds": 30.167
+          },
+          "publishedSignalPrice": 27,
+          "retainedReferencePrice": 64
+        },
+        {
+          "source": "quote",
+          "liquidity": "maker",
+          "count": 99,
+          "signalToFill": {
+            "n": 99,
+            "medianSeconds": 114.625,
+            "p90Seconds": 2909.417,
+            "maxSeconds": 7642.115
+          },
+          "publishedSignalPrice": 6,
+          "retainedReferencePrice": 0
+        },
+        {
+          "source": "limit-candle-model",
+          "liquidity": "maker",
+          "count": 35,
+          "signalToFill": {
+            "n": 35,
+            "medianSeconds": 79.374,
+            "p90Seconds": 658.389,
+            "maxSeconds": 1399.182
+          },
+          "publishedSignalPrice": 2,
+          "retainedReferencePrice": 35
+        }
+      ],
+      "entrySignalAge": {
+        "15m": {
+          "n": 325,
+          "medianSeconds": 5.897,
+          "p90Seconds": 16.414,
+          "maxSeconds": 50.655
+        },
+        "1h": {
+          "n": 89,
+          "medianSeconds": 12.991,
+          "p90Seconds": 24.184,
+          "maxSeconds": 56.593
+        },
+        "4h": {
+          "n": 14,
+          "medianSeconds": 37.456,
+          "p90Seconds": 51.728,
+          "maxSeconds": 53.44
+        }
+      },
+      "marketSignalsOlderThanFiveMinutes": [],
+      "quoteMakerPendingProof": 97,
+      "systemdStarts": 73,
+      "lateRunsCount": 894,
+      "lateRunsWithinThreeMinutesOfStart": 892,
+      "lateCloseExamples": [
+        {
+          "tf": "1h",
+          "barOpened": "2026-11-01T17:00:00+00:00",
+          "count": 50,
+          "firstLogged": "2026-11-01T18:07:37.845000+00:00",
+          "lastLogged": "2026-11-01T18:43:32.125000+00:00",
+          "nearestPriorStart": "2026-11-01T18:07:24.890000+00:00"
+        },
+        {
+          "tf": "1h",
+          "barOpened": "2026-11-02T12:00:00+00:00",
+          "count": 25,
+          "firstLogged": "2026-11-02T13:20:12.744000+00:00",
+          "lastLogged": "2026-11-02T13:20:24.211000+00:00",
+          "nearestPriorStart": "2026-11-02T13:19:58.438000+00:00"
+        },
+        {
+          "tf": "1h",
+          "barOpened": "2026-11-02T15:00:00+00:00",
+          "count": 25,
+          "firstLogged": "2026-11-02T16:38:48.365000+00:00",
+          "lastLogged": "2026-11-02T16:38:59.880000+00:00",
+          "nearestPriorStart": "2026-11-02T16:38:35.173000+00:00"
+        },
+        {
+          "tf": "1h",
+          "barOpened": "2026-11-03T14:00:00+00:00",
+          "count": 25,
+          "firstLogged": "2026-11-03T15:27:06.707000+00:00",
+          "lastLogged": "2026-11-03T15:27:15.504000+00:00",
+          "nearestPriorStart": "2026-11-03T15:26:52.705000+00:00"
+        },
+        {
+          "tf": "1h",
+          "barOpened": "2026-11-05T15:00:00+00:00",
+          "count": 25,
+          "firstLogged": "2026-11-05T16:17:14.567000+00:00",
+          "lastLogged": "2026-11-05T16:17:23.582000+00:00",
+          "nearestPriorStart": "2026-11-05T16:16:59.335000+00:00"
+        },
+        {
+          "tf": "1h",
+          "barOpened": "2026-11-05T16:00:00+00:00",
+          "count": 25,
+          "firstLogged": "2026-11-05T17:10:53.709000+00:00",
+          "lastLogged": "2026-11-05T17:11:02.992000+00:00",
+          "nearestPriorStart": "2026-11-05T17:10:34.767000+00:00"
+        },
+        {
+          "tf": "1h",
+          "barOpened": "2026-11-06T00:00:00+00:00",
+          "count": 25,
+          "firstLogged": "2026-11-06T01:46:36.516000+00:00",
+          "lastLogged": "2026-11-06T01:46:46.510000+00:00",
+          "nearestPriorStart": "2026-11-06T01:46:23.362000+00:00"
+        },
+        {
+          "tf": "1h",
+          "barOpened": "2026-11-06T15:00:00+00:00",
+          "count": 25,
+          "firstLogged": "2026-11-06T16:59:27.851000+00:00",
+          "lastLogged": "2026-11-06T16:59:36.613000+00:00",
+          "nearestPriorStart": "2026-11-06T16:59:12.750000+00:00"
+        }
+      ]
+    }
+  }
+}

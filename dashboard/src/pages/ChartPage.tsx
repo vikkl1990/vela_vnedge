@@ -1,5 +1,5 @@
 import type { ScriptRun } from '@luxalgo/vela'
-import { useQueries } from '@tanstack/react-query'
+import { useInfiniteQuery, useQueries } from '@tanstack/react-query'
 import { useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { api } from '../api/client'
@@ -17,6 +17,14 @@ import { CryptoComparison } from '../chart/CryptoComparison'
 import { decisionMarks } from '../chart/decisionMarks'
 import { OrderFlowPanel } from '../chart/OrderFlowPanel'
 import { positionOverlay } from '../chart/positionOverlay'
+import { TradeComparisonPanel } from '../chart/TradeComparisonPanel'
+import {
+  authorTradeMarks,
+  botTradeMarks,
+  scriptContextKey,
+  type AuthorLedger,
+} from '../chart/tradeComparison'
+import { REFRESH } from '../api/refreshPolicy'
 import { ScriptReadout } from '../chart/ScriptReadout'
 import { snapshotRun, type ScriptSnapshot } from '../chart/scriptSnapshot'
 import { VelaChart, type ChartScript } from '../chart/VelaChart'
@@ -93,6 +101,17 @@ export function ChartPage() {
   const [scriptErrors, setScriptErrors] = useState<Record<string, string>>({})
   const [runs, setRuns] = useState<Record<string, ScriptSnapshot>>({})
   const [readoutOpen, setReadoutOpen] = useState(false)
+  const [showClosed, setShowClosed] = useState(true)
+  const [showAuthors, setShowAuthors] = useState(true)
+  const [journalBook, setJournalBook] = useState<'paper' | 'shadow'>('paper')
+  const [tradeDays, setTradeDays] = useState('7')
+  const [ledgers, setLedgers] = useState<Record<string, AuthorLedger>>({})
+  const recordLedger = (ledger: AuthorLedger) =>
+    setLedgers((prev) => {
+      const next = { ...prev, [`${ledger.symbol}:${ledger.tf}:${ledger.id}`]: ledger }
+      if (Object.keys(next).length > 64) delete next[Object.keys(next)[0]]
+      return next
+    })
   const [comparisonOpen, setComparisonOpen] = useState(false)
 
   const symbolOptions = useMemo(() => {
@@ -217,7 +236,50 @@ export function ChartPage() {
     () => (position ? positionSignals.data?.[0] : undefined),
     [positionSignals.data, position],
   )
-  const marks = useMemo(() => decisionMarks(signals.data ?? []), [signals.data])
+  const tradeFrom =
+    tradeDays === 'all' ? undefined : Math.floor(now / 86400000) * 86400000 - Number(tradeDays) * 86400000
+  const journalQuery = {
+    book: journalBook,
+    symbol,
+    tf: view === 'frames' ? undefined : tf,
+    status: 'closed',
+    scope: 'all',
+    history: 'all',
+    dateBy: 'exit',
+    sort: 'newest',
+    from: tradeFrom,
+    limit: 200,
+  }
+  const closedTrades = useInfiniteQuery({
+    queryKey: ['journal', 'chart', journalQuery],
+    queryFn: ({ pageParam }) => api.journal({ ...journalQuery, offset: pageParam }),
+    initialPageParam: 0,
+    getNextPageParam: (last) =>
+      last.offset + last.rows.length < last.total ? last.offset + last.rows.length : undefined,
+    enabled: showClosed || showAuthors,
+    refetchInterval: REFRESH.normal,
+    retry: 1,
+  })
+  const tradeRows = useMemo(
+    () => [
+      ...new Map((closedTrades.data?.pages.flatMap((p) => p.rows) ?? []).map((r) => [r.id, r])).values(),
+    ],
+    [closedTrades.data],
+  )
+  const shownLedgers = Object.values(ledgers).filter(
+    (l) =>
+      l.symbol === symbol &&
+      (view === 'frames' ? frames.includes(l.tf) : l.tf === tf) &&
+      !scriptErrors[l.id] &&
+      scripts.some((s) => s.id === l.id && scriptContextKey(s) === l.contextKey),
+  )
+  const marksFor = (frame: string) => [
+    ...decisionMarks((signals.data ?? []).filter((s) => allSignalFrames || s.tf === frame)),
+    ...(showClosed ? botTradeMarks(tradeRows.filter((r) => r.tf === frame)) : []),
+    ...(showAuthors ? authorTradeMarks(shownLedgers.filter((l) => l.tf === frame)) : []),
+  ]
+  const marks = marksFor(tf)
+
   const positionBadge =
     showPosition && position ? (
       <details className="panel chart-position-summary">
@@ -304,9 +366,7 @@ export function ChartPage() {
             <p key={s.id} className="mono">
               {s.title} · source {s.sourceHash ?? 'unknown'} · bot timezone {s.timezone ?? 'UTC'} · inputs{' '}
               {JSON.stringify(s.inputs ?? {})}
-              {s.timezone && s.timezone !== 'UTC'
-                ? ' · Chart metadata uses UTC; this custom timezone is not reproduced.'
-                : ''}
+              {' · Applied separately to this script’s execution; chart display clock is independent.'}
             </p>
           ))}
         </details>
@@ -486,6 +546,65 @@ export function ChartPage() {
         </div>
       </div>
 
+      <Section title="Trade layers" variant="panel">
+        <Toolbar>
+          <label className="field-inline">
+            <input type="checkbox" checked={showClosed} onChange={(e) => setShowClosed(e.target.checked)} />{' '}
+            Recorded bot fills
+          </label>
+          <label className="field-inline">
+            <input type="checkbox" checked={showAuthors} onChange={(e) => setShowAuthors(e.target.checked)} />{' '}
+            Author comparison
+          </label>
+          <label className="field-inline">
+            Trade book{' '}
+            <select
+              className="select"
+              aria-label="Chart trade book"
+              value={journalBook}
+              onChange={(e) => setJournalBook(e.target.value as 'paper' | 'shadow')}
+            >
+              <option value="paper">Paper</option>
+              <option value="shadow">Shadow · includes research plans</option>
+            </select>
+          </label>
+          <label className="field-inline">
+            Closed trades{' '}
+            <select
+              className="select"
+              aria-label="Chart trade window"
+              value={tradeDays}
+              onChange={(e) => setTradeDays(e.target.value)}
+            >
+              <option value="7">Last 7 UTC days + today</option>
+              <option value="30">Last 30 UTC days + today</option>
+              <option value="all">All retained history</option>
+            </select>
+          </label>
+        </Toolbar>
+        <p className="small muted">
+          {tradeRows.length} of {closedTrades.data?.pages[0]?.total ?? '…'} closed {journalBook} trades
+          loaded, including reset archives. B = bot entry · P = partial exit · X = final exit · A/x = author
+          simulation. Click timeline marks for prices, fees, net R and exit reasons.
+        </p>
+        {closedTrades.isError && (
+          <p role="alert">
+            Trade journal unavailable: {closedTrades.error.message}{' '}
+            <button className="btn btn-sm" onClick={() => void closedTrades.refetch()}>
+              Retry trades
+            </button>
+          </p>
+        )}
+        {closedTrades.hasNextPage && (
+          <button
+            className="btn btn-sm"
+            disabled={closedTrades.isFetchingNextPage}
+            onClick={() => void closedTrades.fetchNextPage()}
+          >
+            {closedTrades.isFetchingNextPage ? 'Loading…' : 'Load more closed trades'}
+          </button>
+        )}
+      </Section>
       {positionBadge}
       <div className={`chart-layout ${view === 'frames' ? 'chart-layout-frames' : ''}`}>
         <div className="chart-main" style={{ position: 'relative' }}>
@@ -493,7 +612,9 @@ export function ChartPage() {
             <ChartFrames
               key={`${symbol}:${frames.join(',')}`}
               onScriptRun={recordRun}
-              marks={marks}
+              marksByFrame={Object.fromEntries(frames.map((frame) => [frame, marksFor(frame)]))}
+              captureLedger={showAuthors}
+              onAuthorLedger={recordLedger}
               symbol={symbol}
               tfs={frames}
               scripts={allScripts}
@@ -510,6 +631,9 @@ export function ChartPage() {
             />
           ) : symbol ? (
             <VelaChart
+              key={`${symbol}:${tf}`}
+              captureLedger={showAuthors}
+              onAuthorLedger={recordLedger}
               onScriptRun={(r) => recordRun(tf, r)}
               marks={marks}
               symbol={symbol}
@@ -570,6 +694,15 @@ export function ChartPage() {
           </QueryState>
         </Section>
       </div>
+      {showAuthors && (
+        <TradeComparisonPanel
+          rows={tradeRows}
+          ledgers={shownLedgers}
+          selectedCount={scripts.length}
+          loading={closedTrades.isLoading}
+          error={closedTrades.error?.message}
+        />
+      )}
       <ScriptReadout
         open={readoutOpen}
         onOpenChange={setReadoutOpen}

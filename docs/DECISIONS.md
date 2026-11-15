@@ -7744,3 +7744,9 @@ no new endpoint, and no control that arms live.
   thresholds are a proposed rule, labelled as such, until the model beats taking every signal on unseen weeks).
 
 - **Release corrections (15 November).** Book selection follows route changes and browser history through `bookScope`, while existing catalogue and journal filters keep their meanings. Journal tabs and the global selector agree. Runtime status and book navigation have regression coverage. No server, execution, risk, capital or evidence configuration changed.
+
+## 266. Compare chart simulations with recorded bot fills without changing evidence (15 November 2026)
+
+Apply each scanner's configured timezone to its own Vela execution metadata; do not change the shared market feed or display clock. Escape generated Pine labels. Draw retained closed bot fills, partial exits and outcomes alongside explicitly labelled author strategy simulations. Forming-bar fills, missing/changed source versions, edited chart inputs and ambiguous matches cannot masquerade as exact parity. Indicators have no invented strategy ledger. Journal records expose their retained source identity; chart comparisons never write promotion or sizing evidence.
+
+The latency check also corrects a classification error: all 99 quote-labelled entries in the rolling 14-day account sample have saved maker fills. Most retain explicit resting-limit placement traces. Almost all very late run-log rows occur immediately after restarts, before the existing stale-entry check. No execution, risk, capital, scanner or evidence configuration is changed. See `research/chart-comparison-2026-11-15.md` and the dated measurement JSON.
