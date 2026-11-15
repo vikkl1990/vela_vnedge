@@ -87,7 +87,7 @@ export interface Learning {
   at: number
   live: BookLearning
   shadow: BookLearning
-  /** The account's trades made under the settings that are live now (decision 90). */
+  /** Exact account policies plus readiness-compatible expansions of global count ceilings (decision 272). */
   current?: BookLearning
   funnel: {
     stages: Record<string, number>

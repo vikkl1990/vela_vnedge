@@ -2,7 +2,7 @@ import {candleReplayBlock} from './paper/basket.ts';
 import {copyRecoveryRefusal} from './incubator/copyRecovery.ts';
 import {bindScalperConnection} from './connections/scalperOffer.ts';
 import {productFees,withProductFees} from './paper/productFees.ts';
-import {currentPolicyIds,policyHealth} from './analytics/policyHealth.ts';
+import {currentPolicyEvidence,policyHealth} from './analytics/policyHealth.ts';
 import {BoundExits} from './scanners/boundExits.ts';
 import { createValidation, type ValidationModule } from './validation/runtime.ts';
 import { PlanComparisons } from './paper/planComparisons.ts';
@@ -774,8 +774,8 @@ export class App {
     const since = Date.now() - 30 * 86_400_000;
     const liveAll = this.paper.trades({ limit: 5000 }).map(toLearn(this.paper.book));
     const live = learnBook(liveAll);
-    // the book under the settings that are live now (decision 90): the only part of the journal a change today can be judged on
-    const currentIds=currentPolicyIds(this.db,this.paper);
+    // Exact policies plus capacity-only compatibility (decision 272); recorded P&L is never rewritten.
+    const policyEvidence=currentPolicyEvidence(this.db,this.paper),currentIds=policyEvidence.ids;
     const current=learnBook(this.paper.trades({limit:5000}).filter(t=>currentIds.has(t.id)).map(toLearn(this.paper.book)));
     const shadow = learnBook(this.shadow.trades({ limit: 20000 }).filter(t => !t.scannerId.startsWith('plan:') && (t.exitAt ?? 0) >= since).map(toLearn(this.shadow.book)));
     this.enricher.flush();
@@ -797,6 +797,12 @@ export class App {
       // the risk actually taken, not the configured intention: quality sizing and the stop cap set the size, so measure risk_amount against equity at entry (decision 69)
       tradesPerDay: liveTrades.length / Math.max(1, span), riskPct: this.realisedRiskPct(readinessIds) ?? cfg.paper.riskPerTradePct, dailyLossPct: cfg.risk.maxDailyLossPct, maxLossPct: cfg.risk.maxWeeklyLossPct || 30,
       drawdownAlertPct: cfg.alerts.drawdownPct, lb90: readyBook.lb90, haltsInWindow: halts, alertsConfigured: this.ops.alerts.configured,
+    });
+    const capacityCompatible=liveTrades.filter(t=>policyEvidence.capacityCompatibleIds.has(t.id)).length;
+    if(capacityCompatible)golive.advisories.push({
+      key:'capacity-evidence',label:'Readiness evidence in the last 30 days',
+      value:`${liveTrades.length-capacityCompatible} exact + ${capacityCompatible} capacity-compatible trades`,
+      note:'Compatible trades differ only in stricter global position-count ceilings. Their actual fills, costs, size, exits and returns are retained. All other policy settings and evidence exclusions must match. This history does not establish performance at higher concurrency; promotion and leverage rules are unchanged.',
     });
     return { at: Date.now(), live, current, shadow: { ...shadow, windowDays: 30 }, funnel, golive };
   }
