@@ -7756,3 +7756,9 @@ The latency check also corrects a classification error: all 99 quote-labelled en
 The user's VELA_Delta_BOT repository has the same Stealth and AlgoAlpha Pine sources already installed here, plus a missing Python trend-continuation model. Port the latter into the shared Pine runtime with pinned-source Python parity tests, retaining its 48-close breakout, regime/volatility filters, 2×SMA-ATR stop and single 2R target. Explicitly identify its missing funding input. Add a separate source-pinned Stealth lifecycle reader with native milestones, causal break-even amendments and old-side flip/reentry handling; leave the original reader and evidence intact.
 
 Six prospective experimental plans cover BTC/ETH/SOL: Stealth 15m and Trend Continuation 1h. Increase only research capacity from 73 to 79; do not change paper limits, margin, risk caps or evidence rules. Experiments remain excluded from promotion. Reference parity and synthetic-depth lifecycle replays prove implementation mechanics, not profitability. See `research/vnedge-import-2026-11-15.md`.
+
+## 268. Synchronize saved shadow allocations without waiting for the timer (15 November 2026)
+
+Config refresh now synchronizes shadow sources and their realtime subscriptions; a concurrent refresh during candle loading requests a fresh pass instead of silently sharing an outdated pass. Fresh-close recovery remains subject to the same candle-integrity, deduplication, priority and signal-age checks. No stale entry or historical fill is invented.
+
+The six newly imported cells' first 60 scans match their source strategies: Stealth has no new confirmed flip after activation, and Trend Continuation has no qualifying breakout under its volatility/regime filters. Activation latency is a separate confirmed gap, not the cause of those quiet scans. All scanner policies, risk caps, evidence identities and experimental exclusions remain unchanged. See `research/vnedge-import-signal-audit-2026-11-15.md`.

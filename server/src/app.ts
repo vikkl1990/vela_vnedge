@@ -433,8 +433,12 @@ export class App {
     this.candles.setMaxBars(cfg.historyBars + 50);
     await this.resolveUniverse();
     this.feed.subscribe('v2/ticker', this.resolvedSymbols);
-    subscribeRealtime(this);
     await this.scanners.refresh();
+    // Config saves can add research plans without changing account scanners.
+    // Join the shadow schedule now, while the existing fresh-close budget still
+    // permits recovery, and subscribe their entry-price streams in this refresh.
+    await this.incubator.sync();
+    subscribeRealtime(this);
     if (cfg.risk.marketGate?.enabled && this.marketGate.needsRefresh()) {
       const own=[...new Set([...this.resolvedSymbols,...this.incubator.symbols()])];
       await this.marketGate.refresh(await this.marketGate.universe(own),undefined,own);
