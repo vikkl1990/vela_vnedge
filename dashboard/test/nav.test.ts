@@ -1,6 +1,12 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { ACCOUNT_PAGES, GROUPS, PHONE_TABS, routeMeta, visibleGroups } from '../src/components/shell/navModel.ts'
+import {
+  ACCOUNT_PAGES,
+  GROUPS,
+  PHONE_TABS,
+  routeMeta,
+  visibleGroups,
+} from '../src/components/shell/navModel.ts'
 
 const all = [...GROUPS.flatMap((g) => g.items), ...ACCOUNT_PAGES]
 
@@ -16,16 +22,49 @@ test('single-key shortcuts used elsewhere (t, d, [, ?, /) never collide with a c
 })
 
 test('the navigation keeps the three groups and every page that existed before the redesign', () => {
-  assert.deepEqual(GROUPS.map((g) => g.label), ['Work', 'Markets', 'Lab', 'Control'])
+  assert.deepEqual(
+    GROUPS.map((g) => g.label),
+    ['Work', 'Markets', 'Lab', 'Control'],
+  )
   const routes = new Set(all.map((n) => n.to))
-  for (const r of ['/', '/overview', '/strategies', '/lab', '/live', '/signals', '/radar', '/monitor', '/trades', '/chart', '/scanners', '/library', '/incubator', '/trackers', '/analytics', '/daily', '/learn', '/decisions', '/gates', '/exchange', '/settings', '/logs', '/profile', '/users']) {
+  for (const r of [
+    '/',
+    '/overview',
+    '/strategies',
+    '/lab',
+    '/live',
+    '/signals',
+    '/radar',
+    '/monitor',
+    '/trades',
+    '/chart',
+    '/scanners',
+    '/library',
+    '/incubator',
+    '/trackers',
+    '/analytics',
+    '/daily',
+    '/learn',
+    '/decisions',
+    '/gates',
+    '/exchange',
+    '/settings',
+    '/logs',
+    '/profile',
+    '/users',
+  ]) {
     assert.ok(routes.has(r), `${r} is still reachable`)
   }
 })
 
 test('Users is hidden from anyone who is not an administrator', () => {
   assert.ok(ACCOUNT_PAGES.find((p) => p.to === '/users')?.adminOnly)
-  assert.equal(visibleGroups(false).flatMap((g) => g.items).some((n) => n.adminOnly), false)
+  assert.equal(
+    visibleGroups(false)
+      .flatMap((g) => g.items)
+      .some((n) => n.adminOnly),
+    false,
+  )
 })
 
 test('route titles come from the navigation, scanner pages from the scanner', () => {
@@ -34,8 +73,16 @@ test('route titles come from the navigation, scanner pages from the scanner', ()
   assert.deepEqual(routeMeta('/live'), { title: 'Live control', section: 'Control' })
   assert.deepEqual(routeMeta('/settings'), { title: 'Settings', section: 'Control' })
   assert.deepEqual(routeMeta('/profile'), { title: 'Profile', section: 'Account' })
-  assert.deepEqual(routeMeta('/scanners/abc', 'Trend Lines'), { title: 'Trend Lines', section: 'Lab', parent: { label: 'Scanners', to: '/scanners' } })
-  assert.deepEqual(routeMeta('/trades/42/replay'), { title: 'Trade #42 replay', section: 'Work', parent: { label: 'Trades', to: '/trades' } })
+  assert.deepEqual(routeMeta('/scanners/abc', 'Trend Lines'), {
+    title: 'Trend Lines',
+    section: 'Lab',
+    parent: { label: 'Scanners', to: '/scanners' },
+  })
+  assert.deepEqual(routeMeta('/trades/42/replay'), {
+    title: 'Trade #42 replay',
+    section: 'Work',
+    parent: { label: 'Trades', to: '/trades' },
+  })
   assert.deepEqual(routeMeta('/nope'), { title: 'Not found', section: null })
 })
 

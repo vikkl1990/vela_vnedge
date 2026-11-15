@@ -80,11 +80,11 @@ export function fmtPct(v: number | null | undefined, decimals = 1, signed = fals
   return `${s}%`
 }
 
-export function fmtR(v: number | null | undefined): string {
+export function fmtR(v: number | null | undefined, decimals = 2): string {
   if (!isNum(v)) return '–'
-  const s = fmt(2, 2).format(Math.abs(v))
+  const s = fmt(decimals, decimals).format(Math.abs(v))
   // a value that rounds to 0.00 carries no sign: "−0.00R" reads as a loss that is not there
-  const sign = s === '0.00' ? '' : v > 0 ? '+' : '−'
+  const sign = Number(s.replaceAll(',', '')) === 0 ? '' : v > 0 ? '+' : '−'
   return `${sign}${s}R`
 }
 
@@ -234,4 +234,27 @@ export function clamp(v: number, lo: number, hi: number): number {
 export function fmtProfitFactor(v: number | null | undefined): string {
   if (v === 999 || v === Infinity) return 'No gross losses'
   return fmtNum(v)
+}
+
+/** Currency values keep missing observations distinct from a measured zero. */
+export function fmtUsd(v: number | null | undefined, decimals = 2): string {
+  return isNum(v) ? `${v < 0 ? '−' : ''}$${fmtMoney(Math.abs(v), decimals)}` : '–'
+}
+export function fmtPnlUsd(v: number | null | undefined, decimals = 2): string {
+  if (!isNum(v)) return '–'
+  const rounded = Number(Math.abs(v).toFixed(decimals))
+  return `${rounded === 0 ? '' : v > 0 ? '+' : '−'}$${fmtMoney(Math.abs(v), decimals)}`
+}
+export function fmtFractionPct(v: number | null | undefined, decimals = 1): string {
+  return fmtPct(isNum(v) ? v * 100 : v, decimals)
+}
+export function fmtRecordedMoney(v: number | null | undefined): string {
+  return isNum(v) ? fmtMoney(v) : 'Unknown'
+}
+export function fmtCompactUsd(v: number | null | undefined): string {
+  if (!isNum(v)) return '–'
+  const magnitude = Math.abs(v)
+  const scale = magnitude >= 1e9 ? 1e9 : magnitude >= 1e6 ? 1e6 : magnitude >= 1e3 ? 1e3 : 1
+  const unit = scale === 1e9 ? 'B' : scale === 1e6 ? 'M' : scale === 1e3 ? 'k' : ''
+  return fmtUsd(v / scale, scale === 1 ? 2 : 1) + unit
 }

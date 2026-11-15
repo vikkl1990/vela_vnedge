@@ -5,7 +5,7 @@
 
 /* ---------- page ---------- */
 .page { max-width: var(--content-max); gap: var(--gap-page); }
-.page-title h1 { font-size: var(--fs-xl); font-weight: 750; letter-spacing: -0.02em; }
+ { font-size: var(--fs-xl); font-weight: 750; letter-spacing: -0.02em; }
 .page-sub { font-size: var(--fs-sm); line-height: 1.5; max-width: 78ch; }
 
 /* ---------- panels and cards ---------- */
@@ -24,14 +24,14 @@
 .panel-body { padding: var(--pad-panel); }
 
 /* ---------- KPI tiles ---------- */
-.kpi { background: var(--surface-2); border-radius: var(--radius); box-shadow: var(--shadow-1); }
-.kpi::before { opacity: 0.22; }
-.kpi-label { font-size: var(--fs-2xs); letter-spacing: var(--tracking-label); }
-.kpi-value { font-size: 24px; font-weight: 600; letter-spacing: -0.02em; }
-.kpi-sub { font-size: var(--fs-xs); color: var(--muted); }
+ { background: var(--surface-2); border-radius: var(--radius); box-shadow: var(--shadow-1); }
+ { opacity: 0.22; }
+ { font-size: var(--fs-2xs); letter-spacing: var(--tracking-label); }
+ { font-size: 24px; font-weight: 600; letter-spacing: -0.02em; }
+ { font-size: var(--fs-xs); color: var(--muted); }
 
 /* ---------- pills ---------- */
-.pill { padding: 2px 9px; font-size: 10.5px; letter-spacing: 0.07em; background: color-mix(in srgb, var(--text) 5%, transparent); }
+.pill { padding: 2px 9px; font-size: var(--fs-2xs); letter-spacing: 0.07em; background: color-mix(in srgb, var(--text) 5%, transparent); }
 .pill-info { color: var(--info); background: var(--info-soft); border-color: transparent; }
 
 /* ---------- buttons ---------- */
@@ -44,9 +44,9 @@
 .btn:active:not(:disabled) { transform: translateY(0.5px); box-shadow: none; }
 .btn-sm { min-height: 28px; padding: 0 11px; font-size: 11.5px; }
 .btn-xs { min-height: 22px; padding: 0 8px; font-size: 11px; }
-.btn-primary, .btn-cta { background: var(--gradient-accent); border-color: transparent; color: #fff; box-shadow: 0 1px 0 rgba(255,255,255,0.18) inset, 0 4px 14px color-mix(in srgb, var(--accent) 35%, transparent); }
-.btn-primary:hover:not(:disabled), .btn-cta:hover:not(:disabled) { background: linear-gradient(135deg, #2386ff 0%, #66b0ff 100%); border-color: transparent; }
-.btn-danger { background: linear-gradient(135deg, #c0334a, #d9475f); border-color: transparent; color: #fff; }
+.btn-primary, .btn-cta { background: var(--gradient-accent); border-color: transparent; color: var(--on-solid); box-shadow: 0 1px 0 var(--overlay-white-180) inset, 0 4px 14px color-mix(in srgb, var(--accent) 35%, transparent); }
+.btn-primary:hover:not(:disabled), .btn-cta:hover:not(:disabled) { background: linear-gradient(135deg, var(--gradient-hover-start) 0%, var(--gradient-hover-end) 100%); border-color: transparent; }
+.btn-danger { background: linear-gradient(135deg, var(--gradient-danger-start), var(--gradient-danger-end)); border-color: transparent; color: var(--on-solid); }
 .btn-danger-outline { background: transparent; box-shadow: none; border-color: color-mix(in srgb, var(--loss) 45%, transparent); }
 .iconbtn { width: 32px; height: 32px; border-radius: var(--radius-sm); background: transparent; border-color: transparent; transition: background var(--dur-1), color var(--dur-1), border-color var(--dur-1); }
 .iconbtn:hover { background: color-mix(in srgb, var(--text) 8%, transparent); color: var(--text); border-color: var(--border); }
@@ -81,7 +81,7 @@ thead.sticky th { background: var(--surface-glass); -webkit-backdrop-filter: blu
 
 /* ---------- dialogs and toasts ---------- */
 .dialog { border-radius: var(--radius-lg); box-shadow: var(--shadow-3); padding: 20px 22px; animation: pop-in var(--dur-2) var(--ease) both; }
-.dialog::backdrop { background: color-mix(in srgb, #02060f 62%, transparent); -webkit-backdrop-filter: blur(4px); backdrop-filter: blur(4px); }
+.dialog::backdrop { background: color-mix(in srgb, var(--backdrop-base) 62%, transparent); -webkit-backdrop-filter: blur(4px); backdrop-filter: blur(4px); }
 .dialog h3 { font-size: var(--fs-lg); }
 .toast { border-radius: var(--radius); box-shadow: var(--shadow-3); }
 .toast-stack { z-index: var(--z-toast); }
@@ -101,7 +101,7 @@ thead.sticky th { background: var(--surface-glass); -webkit-backdrop-filter: blu
 }
 .auth-card { border-radius: var(--radius-lg); box-shadow: var(--shadow-2); background: var(--surface); }
 .auth-layout { border-radius: 20px; box-shadow: var(--shadow-3); border-color: var(--border-strong); }
-.auth-identity { background: linear-gradient(155deg, #16264a 0%, #0c1530 55%, #0a1020 100%); position: relative; overflow: hidden; }
-.auth-identity::before { content: ''; position: absolute; inset: -30% -20% auto auto; width: 70%; height: 70%; background: radial-gradient(closest-side, rgba(68, 153, 255, 0.28), transparent); pointer-events: none; }
+.auth-identity { background: linear-gradient(155deg, var(--auth-start) 0%, var(--auth-middle) 55%, var(--auth-end) 100%); position: relative; overflow: hidden; }
+.auth-identity::before { content: ''; position: absolute; inset: -30% -20% auto auto; width: 70%; height: 70%; background: radial-gradient(closest-side, var(--overlay-rgb-68-153-255-280), transparent); pointer-events: none; }
 .auth-identity > * { position: relative; }
 .auth-layout .auth-submit { border-radius: var(--radius-sm); }

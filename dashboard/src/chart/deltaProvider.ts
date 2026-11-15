@@ -1,10 +1,9 @@
 import type { DataProvider } from '@luxalgo/vela'
 import { api } from '../api/client'
 import type { Candle, Market } from '../api/types'
-import { CandleStream } from './candleStream'
-import { tfMs } from '../lib/timeframes'
-import { velaToDeltaTf } from '../lib/timeframes'
+import { tfMs, velaToDeltaTf } from '../lib/timeframes'
 import { sseBus } from '../sse/bus'
+import { CandleStream } from './candleStream'
 
 /**
  * Vela `DataProvider` backed by the VNEdge server:

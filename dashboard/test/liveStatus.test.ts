@@ -8,8 +8,14 @@ test('production is detected from the runtime transport even with the legacy tes
 })
 
 test('production dry run and missing authentication never appear armed', () => {
-  assert.equal(liveStatus({ mode: 'dry-run', host: 'production', hasKeys: true, dryRun: true }).label, 'Dry run')
-  assert.equal(liveStatus({ mode: 'testnet', host: 'production', hasKeys: false, dryRun: false }).label, 'Unknown')
+  assert.equal(
+    liveStatus({ mode: 'dry-run', host: 'production', hasKeys: true, dryRun: true }).label,
+    'Dry run',
+  )
+  assert.equal(
+    liveStatus({ mode: 'testnet', host: 'production', hasKeys: false, dryRun: false }).label,
+    'Unknown',
+  )
 })
 
 test('unknown status is not an assurance that real money is off', () => {

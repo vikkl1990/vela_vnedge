@@ -1,19 +1,75 @@
 /* Gates: the table keeps its fixed layout on wide screens and stacks into labelled rows on a phone. */
-.gates-page .gates-table-v2 { table-layout: fixed; width: 100%; }
-.gates-page .gates-table-v2 th, .gates-page .gates-table-v2 td { white-space: normal; overflow-wrap: anywhere; vertical-align: top; text-align: left; }
-.gates-page .gate-name { font-weight: 700; color: var(--text); text-transform: none; letter-spacing: 0; font-size: var(--fs-md); background: none; }
-.gates-page .gates-table-v2 thead th { text-transform: uppercase; }
+.gates-page .gates-table-v2 {
+  table-layout: fixed;
+  width: 100%;
+}
+.gates-page .gates-table-v2 th,
+.gates-page .gates-table-v2 td {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  vertical-align: top;
+  text-align: left;
+}
+.gates-page .gate-name {
+  font-weight: 700;
+  color: var(--text);
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: var(--fs-md);
+  background: none;
+}
+.gates-page .gates-table-v2 thead th {
+  text-transform: uppercase;
+}
 @media (min-width: 721px) and (max-width: 900px) {
   /* the rule is the least urgent column; keep it reachable on narrow screens by showing it under the gate */
-  .gates-page .gates-table-v2 th:nth-child(4), .gates-page .gates-table-v2 td:nth-child(4) { display: table-cell; }
+  .gates-page .gates-table-v2 th:nth-child(4),
+  .gates-page .gates-table-v2 td:nth-child(4) {
+    display: table-cell;
+  }
 }
 @media (max-width: 720px) {
-  .gates-page .gates-table-v2, .gates-page .gates-table-v2 tbody, .gates-page .gates-table-v2 tr { display: block; width: 100%; }
-  .gates-page .gates-table-v2 thead { display: none; }
-  .gates-page .gates-table-v2 tr { padding: 10px 14px; border-bottom: 1px solid var(--border); }
-  .gates-page .gates-table-v2 tr:last-child { border-bottom: 0; }
-  .gates-page .gates-table-v2 th, .gates-page .gates-table-v2 td { display: flex; justify-content: space-between; gap: 12px; padding: 3px 0; border: 0; width: 100%; text-align: right; }
-  .gates-page .gates-table-v2 td[data-label]::before, .gates-page .gates-table-v2 th[data-label]::before { content: attr(data-label); color: var(--muted); font-size: var(--fs-2xs); letter-spacing: var(--tracking-label); text-transform: uppercase; font-weight: 700; flex: none; padding-top: 2px; }
-  .gates-page .gate-name { font-size: var(--fs-md); }
+  .gates-page .gates-table-v2,
+  .gates-page .gates-table-v2 tbody,
+  .gates-page .gates-table-v2 tr {
+    display: block;
+    width: 100%;
+  }
+  .gates-page .gates-table-v2 thead {
+    display: none;
+  }
+  .gates-page .gates-table-v2 tr {
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+  }
+  .gates-page .gates-table-v2 tr:last-child {
+    border-bottom: 0;
+  }
+  .gates-page .gates-table-v2 th,
+  .gates-page .gates-table-v2 td {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 3px 0;
+    border: 0;
+    width: 100%;
+    text-align: right;
+  }
+  .gates-page .gates-table-v2 td[data-label]::before,
+  .gates-page .gates-table-v2 th[data-label]::before {
+    content: attr(data-label);
+    color: var(--muted);
+    font-size: var(--fs-2xs);
+    letter-spacing: var(--tracking-label);
+    text-transform: uppercase;
+    font-weight: 700;
+    flex: none;
+    padding-top: 2px;
+  }
+  .gates-page .gate-name {
+    font-size: var(--fs-md);
+  }
 }
-.gates-page .row-loss > :first-child { box-shadow: inset 3px 0 0 var(--loss); }
+.gates-page .row-loss > :first-child {
+  box-shadow: inset 3px 0 0 var(--loss);
+}

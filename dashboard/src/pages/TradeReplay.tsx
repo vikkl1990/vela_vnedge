@@ -1,14 +1,15 @@
+import type { Vela as VelaType } from '@luxalgo/vela'
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import type { Vela as VelaType } from '@luxalgo/vela'
 import { usePositionPath } from '../api/queries'
 import type { PathPoint } from '../api/types'
 import { VelaChart } from '../chart/VelaChart'
 import { replayOverlay } from '../chart/replayOverlay'
-import { Pill, QueryState } from '../components/ui'
-import { Callout, PageHeader } from '../components/kit'
+import { Callout, PageHeader, Pill, QueryState } from '../components/kit'
+import { fmtDateTime, fmtPrice, fmtR } from '../lib/format'
+
 import '../styles/pages/trades.css'
-import { fmtDateTime, fmtPrice } from '../lib/format'
+
 import { tfMs as tfToMs } from '../lib/timeframes'
 
 /**
@@ -25,8 +26,19 @@ const SPEEDS = [
   { ms: 150, label: '7 bar/s' },
   { ms: 50, label: '20 bar/s' },
 ]
-const fmtR = (r: number | null | undefined) => (r == null || !Number.isFinite(r) ? '–' : `${r >= 0 ? '+' : '−'}${Math.abs(r).toFixed(2)}R`)
-const EVENT_LABEL: Record<string, string> = { tp1: 'target 1 hit', tp2: 'target 2 hit', tp3: 'target 3 hit', sl: 'stopped out', be: 'stop to break even', trail: 'trail exit', 'stop moved': 'stop moved', reversal: 'reversed', script_exit: 'script exit', liquidation: 'liquidated', manual: 'closed by hand' }
+const EVENT_LABEL: Record<string, string> = {
+  tp1: 'target 1 hit',
+  tp2: 'target 2 hit',
+  tp3: 'target 3 hit',
+  sl: 'stopped out',
+  be: 'stop to break even',
+  trail: 'trail exit',
+  'stop moved': 'stop moved',
+  reversal: 'reversed',
+  script_exit: 'script exit',
+  liquidation: 'liquidated',
+  manual: 'closed by hand',
+}
 
 export function TradeReplay() {
   const { id } = useParams()
@@ -35,14 +47,32 @@ export function TradeReplay() {
   return (
     <div className="page replay-page">
       <QueryState {...q} data={q.data} skeleton="chart" empty="No such trade." onRetry={() => q.refetch()}>
-        {(d) => <ReplayBody key={`${id}:${resolution}`} lv={d.position} path={d.path} execution={resolution === 'execution'} onResolution={setResolution} />}
+        {(d) => (
+          <ReplayBody
+            key={`${id}:${resolution}`}
+            lv={d.position}
+            path={d.path}
+            execution={resolution === 'execution'}
+            onResolution={setResolution}
+          />
+        )}
       </QueryState>
     </div>
   )
 }
 
-function ReplayBody({ lv, path, execution, onResolution }: { execution: boolean; onResolution: (value: 'strategy' | 'execution') => void; lv: NonNullable<ReturnType<typeof usePositionPath>['data']>['position']; path: PathPoint[] }) {
-  const tf = execution ? '1m' : lv.tf ?? '15m'
+function ReplayBody({
+  lv,
+  path,
+  execution,
+  onResolution,
+}: {
+  execution: boolean
+  onResolution: (value: 'strategy' | 'execution') => void
+  lv: NonNullable<ReturnType<typeof usePositionPath>['data']>['position']
+  path: PathPoint[]
+}) {
+  const tf = execution ? '1m' : (lv.tf ?? '15m')
   const barMs = tfToMs(tf)
   const barOf = (t: number) => Math.floor(t / barMs) * barMs
   const entryBar = barOf(lv.entryAt)
@@ -50,7 +80,8 @@ function ReplayBody({ lv, path, execution, onResolution }: { execution: boolean;
   const startT = entryBar - LEAD_BARS * barMs
   const [openedAt] = useState(() => Date.now())
   const endT = (exitBar ?? barOf(openedAt)) + TAIL_BARS * barMs
-  const finalR = lv.status === 'closed' && lv.riskAmount ? ((lv.realizedPnl ?? 0) - (lv.fees ?? 0)) / lv.riskAmount : null
+  const finalR =
+    lv.status === 'closed' && lv.riskAmount ? ((lv.realizedPnl ?? 0) - (lv.fees ?? 0)) / lv.riskAmount : null
   const overlay = useMemo(() => replayOverlay(lv, path, barMs, finalR), [lv, path, barMs, finalR])
   const scripts = useMemo(() => [overlay], [overlay])
 
@@ -62,39 +93,87 @@ function ReplayBody({ lv, path, execution, onResolution }: { execution: boolean;
   const [scrub, setScrub] = useState<number | null>(null)
   const startedRef = useRef(false)
 
-  const seek = useCallback(async (from: number) => {
-    if (!chart) return
-    try { setEnded(false); await chart.replay.start({ from }) } catch (e) { console.warn('[replay] start failed', e) }
-    // frame the trade: its lead-in, its life and a little after, so a trade of a few bars is not a speck on the right edge
-    try { chart.setVisibleRange({ from: startT, to: endT }) } catch (e) { console.warn('[replay] setVisibleRange failed', e) }
-  }, [chart, startT, endT])
+  const seek = useCallback(
+    async (from: number) => {
+      if (!chart) return
+      try {
+        setEnded(false)
+        await chart.replay.start({ from })
+      } catch (e) {
+        console.warn('[replay] start failed', e)
+      }
+      // frame the trade: its lead-in, its life and a little after, so a trade of a few bars is not a speck on the right edge
+      try {
+        chart.setVisibleRange({ from: startT, to: endT })
+      } catch (e) {
+        console.warn('[replay] setVisibleRange failed', e)
+      }
+    },
+    [chart, startT, endT],
+  )
 
   // enter replay once, rewound to before the entry, and follow the chart's replay events
   useEffect(() => {
     if (!chart) return
     const offs = [
-      chart.on('replay:start', (e) => { setCursor(e.cursorTime); setEnded(false) }),
+      chart.on('replay:start', (e) => {
+        setCursor(e.cursorTime)
+        setEnded(false)
+      }),
       chart.on('replay:step', (e) => setCursor(e.cursorTime)),
       chart.on('replay:play', () => setPlaying(true)),
       chart.on('replay:pause', () => setPlaying(false)),
-      chart.on('replay:end', () => { setPlaying(false); setEnded(true) }),
+      chart.on('replay:end', () => {
+        setPlaying(false)
+        setEnded(true)
+      }),
     ]
-    if (!startedRef.current) { startedRef.current = true; void seek(startT) }
-    return () => { offs.forEach((off) => { try { off() } catch { /* chart gone */ } }) }
+    if (!startedRef.current) {
+      startedRef.current = true
+      void seek(startT)
+    }
+    return () => {
+      offs.forEach((off) => {
+        try {
+          off()
+        } catch {
+          /* chart gone */
+        }
+      })
+    }
   }, [chart, seek, startT])
 
-  const play = () => { if (!chart) return; if (ended) { void seek(startT).then(() => chart.replay.play(speed)); return } chart.replay.play(speed) }
+  const play = () => {
+    if (!chart) return
+    if (ended) {
+      void seek(startT).then(() => chart.replay.play(speed))
+      return
+    }
+    chart.replay.play(speed)
+  }
   const pause = () => chart?.replay.pause()
-  const step = () => { if (chart && !ended) chart.replay.step() }
-  useEffect(() => { if (chart && playing) chart.replay.play(speed) }, [speed]) // eslint-disable-line react-hooks/exhaustive-deps
+  const step = () => {
+    if (chart && !ended) chart.replay.step()
+  }
+  useEffect(() => {
+    if (chart && playing) chart.replay.play(speed)
+  }, [speed]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // keys: space plays or pauses, the right arrow steps, Home rewinds
   useEffect(() => {
     const on = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement && e.target.type !== 'range') return
-      if (e.key === ' ') { e.preventDefault(); if (playing) pause(); else play() }
-      else if (e.key === 'ArrowRight') { e.preventDefault(); step() }
-      else if (e.key === 'Home') { e.preventDefault(); void seek(startT) }
+      if (e.key === ' ') {
+        e.preventDefault()
+        if (playing) pause()
+        else play()
+      } else if (e.key === 'ArrowRight') {
+        e.preventDefault()
+        step()
+      } else if (e.key === 'Home') {
+        e.preventDefault()
+        void seek(startT)
+      }
     }
     window.addEventListener('keydown', on)
     return () => window.removeEventListener('keydown', on)
@@ -108,12 +187,13 @@ function ReplayBody({ lv, path, execution, onResolution }: { execution: boolean;
   const risk = Math.abs(lv.entryPrice - orig) || 1
   const rOf = (price: number) => ((price - lv.entryPrice) * (lv.side === 'long' ? 1 : -1)) / risk
   const last = seen[seen.length - 1]
-  const rNow = phase === 'closed' ? finalR ?? last?.r ?? null : last?.r ?? null
+  const rNow = phase === 'closed' ? (finalR ?? last?.r ?? null) : (last?.r ?? null)
   const peak = seen.length ? Math.max(...seen.map((p) => p.r)) : null
   const worst = seen.length ? Math.min(...seen.map((p) => p.r)) : null
   const stopNow = [...seen].reverse().find((p) => p.sl != null)?.sl ?? (phase !== 'before' ? orig : null)
   const events = seen.filter((p) => p.event)
-  const progress = cursor != null ? Math.max(0, Math.min(1, (cursor - startT) / Math.max(1, endT - startT))) : 0
+  const progress =
+    cursor != null ? Math.max(0, Math.min(1, (cursor - startT) / Math.max(1, endT - startT))) : 0
 
   const phaseLabel = phase === 'before' ? 'Before the entry' : phase === 'open' ? 'In the trade' : 'Closed'
   const rTone = (r: number | null) => (r == null ? '' : r >= 0 ? 'gain' : 'loss')
@@ -121,47 +201,169 @@ function ReplayBody({ lv, path, execution, onResolution }: { execution: boolean;
   return (
     <div className="replay">
       <PageHeader
-        title={<>#{lv.id} {lv.symbol} <span className="muted">{tf}</span> <span className={`side-${lv.side}`}>{lv.side}</span></>}
-        subtitle={<>
-          {lv.scannerId ? <Link to={`/scanners/${encodeURIComponent(lv.scannerId)}`} className="link">{lv.scannerName ?? lv.scannerId}</Link> : 'scanner'}
-          {lv.book ? ` · ${lv.book} book` : ''} · opened {fmtDateTime(lv.entryAt)}{lv.exitAt ? ` · closed ${fmtDateTime(lv.exitAt)}` : ' · still open'}
-        </>}
-        meta={finalR != null ? <Pill tone={finalR >= 0 ? 'ok' : 'danger'}>{lv.exitReason ?? 'closed'} {fmtR(finalR)}</Pill> : <Pill tone="accent">still open</Pill>}
-        actions={<>
-          <label className="field-inline replay-detail">Replay detail <select className="select select-sm" aria-label="Replay detail" value={execution ? 'execution' : 'strategy'} onChange={(e) => onResolution(e.target.value as 'strategy' | 'execution')}><option value="execution">Execution · 1m</option><option value="strategy">Strategy candle overview</option></select></label>
-          <Link className="btn btn-sm" to="/trades">← Trades</Link>
-        </>}
+        title={
+          <>
+            #{lv.id} {lv.symbol} <span className="muted">{tf}</span>{' '}
+            <span className={`side-${lv.side}`}>{lv.side}</span>
+          </>
+        }
+        subtitle={
+          <>
+            {lv.scannerId ? (
+              <Link to={`/scanners/${encodeURIComponent(lv.scannerId)}`} className="link">
+                {lv.scannerName ?? lv.scannerId}
+              </Link>
+            ) : (
+              'scanner'
+            )}
+            {lv.book ? ` · ${lv.book} book` : ''} · opened {fmtDateTime(lv.entryAt)}
+            {lv.exitAt ? ` · closed ${fmtDateTime(lv.exitAt)}` : ' · still open'}
+          </>
+        }
+        meta={
+          finalR != null ? (
+            <Pill tone={finalR >= 0 ? 'ok' : 'danger'}>
+              {lv.exitReason ?? 'closed'} {fmtR(finalR)}
+            </Pill>
+          ) : (
+            <Pill tone="accent">still open</Pill>
+          )
+        }
+        actions={
+          <>
+            <label className="field-inline replay-detail">
+              Replay detail{' '}
+              <select
+                className="select select-sm"
+                aria-label="Replay detail"
+                value={execution ? 'execution' : 'strategy'}
+                onChange={(e) => onResolution(e.target.value as 'strategy' | 'execution')}
+              >
+                <option value="execution">Execution · 1m</option>
+                <option value="strategy">Strategy candle overview</option>
+              </select>
+            </label>
+            <Link className="btn btn-sm" to="/trades">
+              ← Trades
+            </Link>
+          </>
+        }
       />
 
-      <Callout tone="info">Trade timeframe {lv.tf ?? '15m'}, replay {tf}. Recorded path samples and candle bars cannot show tick order or exact hypothetical fills.</Callout>
-      {lv.execution && <details className="panel replay-exec"><summary>Paper execution · model {lv.execution.version}</summary>
-        <p className="muted small">Market exits use observed depth after the configured latency. Reports below are simulated fills, not exchange confirmations.</p>
-        {lv.execution.pending && <p role="status">Exit {lv.execution.pending.status} · {lv.execution.pending.reason} · {lv.execution.pending.last_error ?? 'awaiting executable depth'}. Remaining quantity and margin are still held.</p>}
-        {lv.execution.desiredStop != null && <p>Requested stop {fmtPrice(lv.execution.desiredStop)}; active stop {fmtPrice(lv.sl)}.</p>}
-        {(lv.executionReports ?? []).map((r,i)=><p className="mono small" key={`${r.at}:${i}`}>{fmtDateTime(r.at)} · {r.reason} · {r.qty} contracts @ {fmtPrice(r.price)} · {((r.at-r.trigger_at)/1000).toFixed(2)}s after trigger</p>)}
-      </details>}
+      <Callout tone="info">
+        Trade timeframe {lv.tf ?? '15m'}, replay {tf}. Recorded path samples and candle bars cannot show tick
+        order or exact hypothetical fills.
+      </Callout>
+      {lv.execution && (
+        <details className="panel replay-exec">
+          <summary>Paper execution · model {lv.execution.version}</summary>
+          <p className="muted small">
+            Market exits use observed depth after the configured latency. Reports below are simulated fills,
+            not exchange confirmations.
+          </p>
+          {lv.execution.pending && (
+            <p role="status">
+              Exit {lv.execution.pending.status} · {lv.execution.pending.reason} ·{' '}
+              {lv.execution.pending.last_error ?? 'awaiting executable depth'}. Remaining quantity and margin
+              are still held.
+            </p>
+          )}
+          {lv.execution.desiredStop != null && (
+            <p>
+              Requested stop {fmtPrice(lv.execution.desiredStop)}; active stop {fmtPrice(lv.sl)}.
+            </p>
+          )}
+          {(lv.executionReports ?? []).map((r, i) => (
+            <p className="mono small" key={`${r.at}:${i}`}>
+              {fmtDateTime(r.at)} · {r.reason} · {r.qty} contracts @ {fmtPrice(r.price)} ·{' '}
+              {((r.at - r.trigger_at) / 1000).toFixed(2)}s after trigger
+            </p>
+          ))}
+        </details>
+      )}
 
       <div className="replay-bar" role="group" aria-label="Replay controls">
         <div className="replay-controls">
-          <button className="btn btn-sm" onClick={() => void seek(startT)} disabled={!chart} title="Back to before the entry (Home)" aria-label="Rewind to before the entry">⏮</button>
-          <button className="btn btn-sm" onClick={() => void seek(entryBar - barMs)} disabled={!chart} title="To the bar before the entry">Entry</button>
-          {playing
-            ? <button className="btn btn-sm btn-primary" onClick={pause} title="Pause (space)">Pause</button>
-            : <button className="btn btn-sm btn-primary" onClick={play} disabled={!chart} title="Play (space)">Play</button>}
-          <button className="btn btn-sm" onClick={step} disabled={!chart || ended} title="One bar (→)">Step</button>
-          {exitBar != null && <button className="btn btn-sm" onClick={() => void seek(exitBar)} disabled={!chart} title="To the exit bar">Exit</button>}
-          <select className="select select-sm" value={speed} onChange={(e) => setSpeed(Number(e.target.value))} aria-label="Speed">
-            {SPEEDS.map((s) => <option key={s.ms} value={s.ms}>{s.label}</option>)}
+          <button
+            className="btn btn-sm"
+            onClick={() => void seek(startT)}
+            disabled={!chart}
+            title="Back to before the entry (Home)"
+            aria-label="Rewind to before the entry"
+          >
+            ⏮
+          </button>
+          <button
+            className="btn btn-sm"
+            onClick={() => void seek(entryBar - barMs)}
+            disabled={!chart}
+            title="To the bar before the entry"
+          >
+            Entry
+          </button>
+          {playing ? (
+            <button className="btn btn-sm btn-primary" onClick={pause} title="Pause (space)">
+              Pause
+            </button>
+          ) : (
+            <button className="btn btn-sm btn-primary" onClick={play} disabled={!chart} title="Play (space)">
+              Play
+            </button>
+          )}
+          <button className="btn btn-sm" onClick={step} disabled={!chart || ended} title="One bar (→)">
+            Step
+          </button>
+          {exitBar != null && (
+            <button
+              className="btn btn-sm"
+              onClick={() => void seek(exitBar)}
+              disabled={!chart}
+              title="To the exit bar"
+            >
+              Exit
+            </button>
+          )}
+          <select
+            className="select select-sm"
+            value={speed}
+            onChange={(e) => setSpeed(Number(e.target.value))}
+            aria-label="Speed"
+          >
+            {SPEEDS.map((s) => (
+              <option key={s.ms} value={s.ms}>
+                {s.label}
+              </option>
+            ))}
           </select>
         </div>
         <label className="replay-scrub">
           <span className="sr-only">Position in the replay</span>
-          <input type="range" min={startT} max={endT} step={barMs} value={scrub ?? cursor ?? startT}
+          <input
+            type="range"
+            min={startT}
+            max={endT}
+            step={barMs}
+            value={scrub ?? cursor ?? startT}
             onChange={(e) => setScrub(Number(e.target.value))}
-            onPointerUp={() => { if (scrub != null) { void seek(scrub); setScrub(null) } }}
-            onKeyUp={() => { if (scrub != null) { void seek(scrub); setScrub(null) } }}
-            disabled={!chart} aria-label="Scrub the replay" />
-          <span className="muted small mono">{cursor != null && !ended ? fmtDateTime(cursor + barMs) : ended ? 'replay finished' : '–'} · {Math.round(progress * 100)}%</span>
+            onPointerUp={() => {
+              if (scrub != null) {
+                void seek(scrub)
+                setScrub(null)
+              }
+            }}
+            onKeyUp={() => {
+              if (scrub != null) {
+                void seek(scrub)
+                setScrub(null)
+              }
+            }}
+            disabled={!chart}
+            aria-label="Scrub the replay"
+          />
+          <span className="muted small mono">
+            {cursor != null && !ended ? fmtDateTime(cursor + barMs) : ended ? 'replay finished' : '–'} ·{' '}
+            {Math.round(progress * 100)}%
+          </span>
         </label>
         <span className="muted small replay-keys">Space plays or pauses · → steps · Home rewinds</span>
       </div>
@@ -172,30 +374,82 @@ function ReplayBody({ lv, path, execution, onResolution }: { execution: boolean;
         </div>
 
         <aside className="replay-side" aria-label="The trade at the cursor">
-          <div className={`replay-phase ${phase}`} role="status">{phaseLabel}</div>
+          <div className={`replay-phase ${phase}`} role="status">
+            {phaseLabel}
+          </div>
           <div className="replay-r" role="group" aria-label="R so far">
-            <div><span className="replay-r-k">R now</span><span className={`replay-r-v mono ${rTone(rNow)}`}>{phase === 'before' ? '–' : fmtR(rNow)}</span></div>
-            <div><span className="replay-r-k">Best</span><span className="replay-r-v mono gain">{phase === 'before' ? '–' : fmtR(peak)}</span></div>
-            <div><span className="replay-r-k">Worst</span><span className="replay-r-v mono loss">{phase === 'before' ? '–' : fmtR(worst)}</span></div>
+            <div>
+              <span className="replay-r-k">R now</span>
+              <span className={`replay-r-v mono ${rTone(rNow)}`}>
+                {phase === 'before' ? '–' : fmtR(rNow)}
+              </span>
+            </div>
+            <div>
+              <span className="replay-r-k">Best</span>
+              <span className="replay-r-v mono gain">{phase === 'before' ? '–' : fmtR(peak)}</span>
+            </div>
+            <div>
+              <span className="replay-r-k">Worst</span>
+              <span className="replay-r-v mono loss">{phase === 'before' ? '–' : fmtR(worst)}</span>
+            </div>
           </div>
           <dl className="replay-facts">
-            <dt>Stop</dt><dd className="mono">{stopNow != null && phase !== 'before' ? `${fmtPrice(stopNow)} (${fmtR(rOf(stopNow))})` : '–'}</dd>
-            <dt>Entry</dt><dd className="mono">{fmtPrice(lv.entryPrice)}</dd>
-            <dt>Stop at entry</dt><dd className="mono">{fmtPrice(orig)} <span className="muted">−1R{lv.levelsSource ? ` · ${lv.levelsSource === 'atr-fallback' ? 'ATR' : 'script'}` : ''}</span></dd>
-            {(lv.tp ?? []).map((tp, i) => <Fragment key={i}><dt>Target {i + 1}</dt><dd className="mono">{fmtPrice(tp)} <span className="muted">{fmtR(rOf(tp))}</span></dd></Fragment>)}
-            {lv.exitPrice != null && <><dt>Exit</dt><dd className="mono">{fmtPrice(lv.exitPrice)} <span className="muted">{lv.exitReason}</span></dd></>}
+            <dt>Stop</dt>
+            <dd className="mono">
+              {stopNow != null && phase !== 'before' ? `${fmtPrice(stopNow)} (${fmtR(rOf(stopNow))})` : '–'}
+            </dd>
+            <dt>Entry</dt>
+            <dd className="mono">{fmtPrice(lv.entryPrice)}</dd>
+            <dt>Stop at entry</dt>
+            <dd className="mono">
+              {fmtPrice(orig)}{' '}
+              <span className="muted">
+                −1R{lv.levelsSource ? ` · ${lv.levelsSource === 'atr-fallback' ? 'ATR' : 'script'}` : ''}
+              </span>
+            </dd>
+            {(lv.tp ?? []).map((tp, i) => (
+              <Fragment key={i}>
+                <dt>Target {i + 1}</dt>
+                <dd className="mono">
+                  {fmtPrice(tp)} <span className="muted">{fmtR(rOf(tp))}</span>
+                </dd>
+              </Fragment>
+            ))}
+            {lv.exitPrice != null && (
+              <>
+                <dt>Exit</dt>
+                <dd className="mono">
+                  {fmtPrice(lv.exitPrice)} <span className="muted">{lv.exitReason}</span>
+                </dd>
+              </>
+            )}
           </dl>
 
           <div className="replay-events">
             <h3>What happened</h3>
-            {phase === 'before' && <p className="muted small">The signal fires at {fmtDateTime(lv.entryAt)}. Press Play or step.</p>}
-            {phase !== 'before' && events.length === 0 && <p className="muted small">Nothing yet: no target, stop move or exit.</p>}
+            {phase === 'before' && (
+              <p className="muted small">
+                The signal fires at {fmtDateTime(lv.entryAt)}. Press Play or step.
+              </p>
+            )}
+            {phase !== 'before' && events.length === 0 && (
+              <p className="muted small">Nothing yet: no target, stop move or exit.</p>
+            )}
             <ul>
               {events.map((p, i) => (
-                <li key={i}><span className="mono small muted">{fmtDateTime(p.at)}</span> <span>{EVENT_LABEL[p.event!] ?? p.event}</span> <span className={`mono small ${p.r >= 0 ? 'gain' : 'loss'}`}>{fmtR(p.r)}</span>{p.note ? <span className="muted small"> · {p.note}</span> : null}</li>
+                <li key={i}>
+                  <span className="mono small muted">{fmtDateTime(p.at)}</span>{' '}
+                  <span>{EVENT_LABEL[p.event!] ?? p.event}</span>{' '}
+                  <span className={`mono small ${p.r >= 0 ? 'gain' : 'loss'}`}>{fmtR(p.r)}</span>
+                  {p.note ? <span className="muted small"> · {p.note}</span> : null}
+                </li>
               ))}
             </ul>
-            {path.length < 2 && <p className="muted small">No minute path was recorded for this trade, so only its levels are drawn.</p>}
+            {path.length < 2 && (
+              <p className="muted small">
+                No minute path was recorded for this trade, so only its levels are drawn.
+              </p>
+            )}
           </div>
         </aside>
       </div>

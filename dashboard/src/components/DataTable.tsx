@@ -1,4 +1,19 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+} from 'react'
+import { useMediaQuery } from '../lib/useMediaQuery'
+import { usePagination } from '../lib/usePagination'
+import { Pagination } from './kit/Pagination'
+import { EmptyState } from './kit/primitives'
+import { TableSkeleton } from './Skeleton'
 
 export interface Column<T> {
   key: string
@@ -6,6 +21,9 @@ export interface Column<T> {
   /** Accessor used for sorting (and default rendering). */
   value?: (row: T) => string | number | null | undefined | boolean
   render?: (row: T) => ReactNode
+  mobileRender?: (row: T) => ReactNode
+  /** Secondary data stays available in each phone card without crowding its summary. */
+  mobile?: 'primary' | 'detail' | 'hidden'
   align?: 'left' | 'right' | 'center'
   width?: string | number
   sortable?: boolean
@@ -39,6 +57,11 @@ interface Props<T> {
   rowHeight?: number
   /** Accessible table caption (visually hidden). */
   caption?: string
+  /** Bounded rendering by default. Set zero only for an explicitly windowed fixed-height list. */
+  pageSize?: number
+  loading?: boolean
+  mobileCards?: boolean
+  filterKey?: string
 }
 
 const DEFAULT_VIRTUAL_HEIGHT = 560
@@ -58,7 +81,8 @@ function sortRows<T>(rows: T[], columns: Column<T>[], sort: SortState | null): T
       if (av == null) return 1
       if (bv == null) return -1
       if (typeof av === 'number' && typeof bv === 'number') return (av - bv) * dir || a.i - b.i
-      if (typeof av === 'boolean' && typeof bv === 'boolean') return (Number(av) - Number(bv)) * dir || a.i - b.i
+      if (typeof av === 'boolean' && typeof bv === 'boolean')
+        return (Number(av) - Number(bv)) * dir || a.i - b.i
       return String(av).localeCompare(String(bv), undefined, { numeric: true }) * dir || a.i - b.i
     })
     .map((x) => x.r)
@@ -78,10 +102,19 @@ function RowInner<T>({ row, columns, className, onRowClick, height }: RowProps<T
   return (
     <tr
       className={className}
-      onClick={onRowClick ? (e) => {
-        if ((e.target as HTMLElement).closest('a, button, input, select, textarea, summary, [role="button"]')) return
-        onRowClick(row)
-      } : undefined}
+      onClick={
+        onRowClick
+          ? (e) => {
+              if (
+                (e.target as HTMLElement).closest(
+                  'a, button, input, select, textarea, summary, [role="button"]',
+                )
+              )
+                return
+              onRowClick(row)
+            }
+          : undefined
+      }
       style={height ? { height } : undefined}
       tabIndex={onRowClick ? 0 : undefined}
       onKeyDown={
@@ -128,9 +161,17 @@ export function DataTable<T>({
   virtualizeAfter = 300,
   rowHeight = 38,
   caption,
+  pageSize = 50,
+  loading = false,
+  mobileCards = true,
+  filterKey = '',
 }: Props<T>) {
+  const mobile = useMediaQuery('(max-width: 640px)')
   const [sort, setSort] = useState<SortState | null>(defaultSort ?? null)
   const sorted = useMemo(() => sortRows(rows, columns, sort), [rows, sort, columns])
+  const size = pageSize > 0 ? (mobile ? Math.min(10, pageSize) : pageSize) : Math.max(1, sorted.length)
+  const paging = usePagination(sorted.length, size, `${filterKey}:${sort?.key}:${sort?.dir}:${size}`)
+  const paged = pageSize > 0 ? sorted.slice(paging.start, paging.end) : sorted
 
   const toggleSort = useCallback((c: Column<T>) => {
     if (c.sortable === false || !c.value) return
@@ -171,7 +212,7 @@ export function DataTable<T>({
   })
 
   // ---- windowing ----
-  const virtual = sorted.length > virtualizeAfter
+  const virtual = pageSize === 0 && !mobile && sorted.length > virtualizeAfter
   const wrapRef = useRef<HTMLDivElement>(null)
   const [scrollTop, setScrollTop] = useState(0)
   const [viewport, setViewport] = useState(0)
@@ -186,89 +227,200 @@ export function DataTable<T>({
   }, [virtual])
 
   let start = 0
-  let end = sorted.length
+  let end = paged.length
   if (virtual) {
     const overscan = 10
-    start = Math.max(0, Math.floor(scrollTop / rowHeight) - overscan)
+    start = Math.min(
+      Math.max(0, sorted.length - overscan),
+      Math.max(0, Math.floor(scrollTop / rowHeight) - overscan),
+    )
     end = Math.min(sorted.length, Math.ceil((scrollTop + viewport) / rowHeight) + overscan)
   }
   const topPad = start * rowHeight
   const bottomPad = Math.max(0, (sorted.length - end) * rowHeight)
-  const visible = virtual ? sorted.slice(start, end) : sorted
+  const visible = virtual ? sorted.slice(start, end) : paged
 
   const wrapStyle: CSSProperties | undefined =
     maxHeight || virtual ? { maxHeight: maxHeight ?? DEFAULT_VIRTUAL_HEIGHT, overflow: 'auto' } : undefined
 
+  const pager =
+    pageSize > 0 && sorted.length > size ? (
+      <Pagination {...paging} total={sorted.length} onChange={paging.setPage} label={caption ?? 'Rows'} />
+    ) : null
+  if (loading)
+    return (
+      <div aria-busy="true" aria-label={`Loading ${caption ?? 'rows'}`}>
+        <TableSkeleton rows={5} cols={columns.length} />
+      </div>
+    )
+  if (mobile && mobileCards)
+    return (
+      <div className="data-cards" aria-label={caption}>
+        {columns.some((c) => c.value && c.sortable !== false) && (
+          <div className="data-card-sort">
+            <label>
+              Sort
+              <select
+                className="select"
+                aria-label={`Sort ${caption ?? 'rows'}`}
+                value={sort?.key ?? ''}
+                onChange={(e) => setSort(e.target.value ? { key: e.target.value, dir: 'asc' } : null)}
+              >
+                <option value="">Original order</option>
+                {columns
+                  .filter((c) => c.value && c.sortable !== false)
+                  .map((c) => (
+                    <option key={c.key} value={c.key}>
+                      {typeof c.header === 'string' ? c.header : c.key}
+                    </option>
+                  ))}
+              </select>
+            </label>
+            {sort && (
+              <button
+                type="button"
+                className="btn"
+                onClick={() => setSort({ ...sort, dir: sort.dir === 'asc' ? 'desc' : 'asc' })}
+              >
+                {sort.dir === 'asc' ? 'Ascending' : 'Descending'}
+              </button>
+            )}
+          </div>
+        )}
+        {paged.length ? (
+          paged.map((row) => (
+            <article key={rowKey(row)} className={`data-card ${rowClass?.(row) ?? ''}`}>
+              <dl>
+                {columns
+                  .filter((c) => !c.mobile || c.mobile === 'primary')
+                  .map((c) => (
+                    <div key={c.key}>
+                      <dt>{c.header}</dt>
+                      <dd>
+                        {c.mobileRender
+                          ? c.mobileRender(row)
+                          : c.render
+                            ? c.render(row)
+                            : String(c.value?.(row) ?? '')}
+                      </dd>
+                    </div>
+                  ))}
+              </dl>
+              {columns.some((c) => c.mobile === 'detail') && (
+                <details className="data-card-details">
+                  <summary>More details</summary>
+                  <dl>
+                    {columns
+                      .filter((c) => c.mobile === 'detail')
+                      .map((c) => (
+                        <div key={c.key}>
+                          <dt>{c.header}</dt>
+                          <dd>
+                            {c.mobileRender
+                              ? c.mobileRender(row)
+                              : c.render
+                                ? c.render(row)
+                                : String(c.value?.(row) ?? '')}
+                          </dd>
+                        </div>
+                      ))}
+                  </dl>
+                </details>
+              )}
+              {onRowClick && (
+                <button type="button" className="btn" onClick={() => onRowClick(row)}>
+                  Open details
+                </button>
+              )}
+            </article>
+          ))
+        ) : (
+          <EmptyState title={emptyLabel} />
+        )}
+        {pager}
+      </div>
+    )
   return (
-    <div
-      className="table-wrap"
-      style={wrapStyle}
-      ref={wrapRef}
-      onScroll={virtual ? (e) => setScrollTop(e.currentTarget.scrollTop) : undefined}
-    >
-      <table className={`table ${dense ? 'table-dense' : ''} ${virtual ? 'table-virtual' : ''}`}>
-        {caption && <caption className="sr-only">{caption}</caption>}
-        <thead className={stickyHeader ? 'sticky' : ''}>
-          <tr ref={theadRef}>
-            {columns.map((c) => {
-              const sortable = c.sortable !== false && !!c.value
-              const active = sort?.key === c.key
-              const align = c.numeric ? 'right' : (c.align ?? 'left')
-              return (
-                <th
-                  key={c.key}
-                  data-key={c.key}
-                  scope="col"
-                  style={{ width: c.width }}
-                  className={`${sortable ? 'sortable' : ''} ${active ? 'sorted' : ''} ${align === 'right' ? 'ta-r' : align === 'center' ? 'ta-c' : ''} ${c.className ?? ''}`}
-                  aria-sort={active ? (sort!.dir === 'asc' ? 'ascending' : 'descending') : sortable ? 'none' : undefined}
-                  title={c.title}
-                >
-                  {sortable ? (
-                    <button type="button" className="th-btn" onClick={() => toggleSort(c)}>
-                      <span>{c.header}</span>
-                      <span className={`sort-ind ${active ? 'sort-on' : ''}`} aria-hidden>
-                        {active ? (sort!.dir === 'asc' ? '▲' : '▼') : '⇅'}
-                      </span>
-                    </button>
-                  ) : (
-                    c.header
-                  )}
-                </th>
-              )
-            })}
-          </tr>
-        </thead>
-        <tbody>
-          {sorted.length === 0 && (
-            <tr className="row-empty">
-              <td colSpan={columns.length} className="muted center">
-                {emptyLabel}
-              </td>
+    <>
+      <div
+        className="table-wrap"
+        style={wrapStyle}
+        ref={wrapRef}
+        onScroll={virtual ? (e) => setScrollTop(e.currentTarget.scrollTop) : undefined}
+      >
+        <table className={`table ${dense ? 'table-dense' : ''} ${virtual ? 'table-virtual' : ''}`}>
+          {caption && <caption className="sr-only">{caption}</caption>}
+          <thead className={stickyHeader ? 'sticky' : ''}>
+            <tr ref={theadRef}>
+              {columns.map((c) => {
+                const sortable = c.sortable !== false && !!c.value
+                const active = sort?.key === c.key
+                const align = c.numeric ? 'right' : (c.align ?? 'left')
+                return (
+                  <th
+                    key={c.key}
+                    data-key={c.key}
+                    scope="col"
+                    style={{ width: c.width }}
+                    className={`${sortable ? 'sortable' : ''} ${active ? 'sorted' : ''} ${align === 'right' ? 'ta-r' : align === 'center' ? 'ta-c' : ''} ${c.className ?? ''}`}
+                    aria-sort={
+                      active
+                        ? sort!.dir === 'asc'
+                          ? 'ascending'
+                          : 'descending'
+                        : sortable
+                          ? 'none'
+                          : undefined
+                    }
+                    title={c.title}
+                  >
+                    {sortable ? (
+                      <button type="button" className="th-btn" onClick={() => toggleSort(c)}>
+                        <span>{c.header}</span>
+                        <span className={`sort-ind ${active ? 'sort-on' : ''}`} aria-hidden>
+                          {active ? (sort!.dir === 'asc' ? '▲' : '▼') : '⇅'}
+                        </span>
+                      </button>
+                    ) : (
+                      c.header
+                    )}
+                  </th>
+                )
+              })}
             </tr>
-          )}
-          {virtual && topPad > 0 && (
-            <tr aria-hidden className="row-spacer">
-              <td colSpan={columns.length} style={{ height: topPad, padding: 0, border: 0 }} />
-            </tr>
-          )}
-          {visible.map((r) => (
-            <Row
-              key={rowKey(r)}
-              row={r}
-              columns={columns}
-              className={`${rowClass?.(r) ?? ''} ${onRowClick ? 'clickable' : ''}`.trim()}
-              onRowClick={onRowClick}
-              height={virtual ? rowHeight : undefined}
-            />
-          ))}
-          {virtual && bottomPad > 0 && (
-            <tr aria-hidden className="row-spacer">
-              <td colSpan={columns.length} style={{ height: bottomPad, padding: 0, border: 0 }} />
-            </tr>
-          )}
-        </tbody>
-      </table>
-    </div>
+          </thead>
+          <tbody>
+            {sorted.length === 0 && (
+              <tr className="row-empty">
+                <td colSpan={columns.length} className="muted center">
+                  {emptyLabel}
+                </td>
+              </tr>
+            )}
+            {virtual && topPad > 0 && (
+              <tr aria-hidden className="row-spacer">
+                <td colSpan={columns.length} style={{ height: topPad, padding: 0, border: 0 }} />
+              </tr>
+            )}
+            {visible.map((r) => (
+              <Row
+                key={rowKey(r)}
+                row={r}
+                columns={columns}
+                className={`${rowClass?.(r) ?? ''} ${onRowClick ? 'clickable' : ''}`.trim()}
+                onRowClick={onRowClick}
+                height={virtual ? rowHeight : undefined}
+              />
+            ))}
+            {virtual && bottomPad > 0 && (
+              <tr aria-hidden className="row-spacer">
+                <td colSpan={columns.length} style={{ height: bottomPad, padding: 0, border: 0 }} />
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+      {pager}
+    </>
   )
 }

@@ -11,7 +11,9 @@ import { useEffect, useState } from 'react'
  * layout is the default and nothing is hidden by accident.
  */
 export function useMediaQuery(query: string): boolean {
-  const [matches, setMatches] = useState(() => (typeof window !== 'undefined' && window.matchMedia ? window.matchMedia(query).matches : false))
+  const [matches, setMatches] = useState(() =>
+    typeof window !== 'undefined' && window.matchMedia ? window.matchMedia(query).matches : false,
+  )
 
   useEffect(() => {
     if (typeof window === 'undefined' || !window.matchMedia) return

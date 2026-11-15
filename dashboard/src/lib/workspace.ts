@@ -11,16 +11,20 @@ export function inHorizon(tf: string, horizon: TradingHorizon): boolean {
 }
 
 export function workspaceSignals(rows: Signal[], horizon: TradingHorizon, symbol?: string): Signal[] {
-  return rows.filter(s => s.kind === 'entry' && inHorizon(s.tf, horizon) && (!symbol || s.symbol === symbol))
+  return rows
+    .filter((s) => s.kind === 'entry' && inHorizon(s.tf, horizon) && (!symbol || s.symbol === symbol))
     .sort((a, b) => b.at - a.at || b.id - a.id)
 }
 
 /** Missing margin metadata is unknown, never zero available capital. */
 export function openCapital(positions: Position[]) {
-  let margin = 0, unknown = 0, risk = 0
+  let margin = 0,
+    unknown = 0,
+    risk = 0
   for (const p of positions) {
     const leverage = p.marginLeverage
-    const amount = p.margin ?? (leverage && leverage > 0 ? p.qtyOpen * p.contractValue * p.entryPrice / leverage : null)
+    const amount =
+      p.margin ?? (leverage && leverage > 0 ? (p.qtyOpen * p.contractValue * p.entryPrice) / leverage : null)
     if (amount !== null && Number.isFinite(amount) && amount >= 0) margin += amount
     else unknown++
     if (Number.isFinite(p.riskAmount) && p.riskAmount >= 0) risk += p.riskAmount

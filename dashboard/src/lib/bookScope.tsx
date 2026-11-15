@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
-import { parseScope, type BookScope } from './books'
 import { useLocation, useNavigate } from 'react-router-dom'
-import { scopeFromLocation, scopeLocation, rememberScopeLocation } from './bookNavigation'
+import { rememberScopeLocation, scopeFromLocation, scopeLocation } from './bookNavigation'
+import { parseScope, type BookScope } from './books'
 
 const SCOPE_KEY = 'vnedge.book'
 const LENS_KEY = 'vnedge.mllens'
@@ -45,16 +45,30 @@ export function BookProvider({ children }: { children: ReactNode }) {
   }, [navigate, location.pathname, location.search, location.hash, scope])
   const [mlLens, setLens] = useState<boolean>(readLens)
   useEffect(() => {
-    try { localStorage.setItem(SCOPE_KEY, scope) } catch { /* ignore */ }
+    try {
+      localStorage.setItem(SCOPE_KEY, scope)
+    } catch {
+      /* ignore */
+    }
   }, [scope])
   useEffect(() => {
-    try { localStorage.setItem(LENS_KEY, mlLens ? 'on' : 'off') } catch { /* ignore */ }
+    try {
+      localStorage.setItem(LENS_KEY, mlLens ? 'on' : 'off')
+    } catch {
+      /* ignore */
+    }
   }, [mlLens])
-  const setScope = useCallback((s: BookScope) => {
-    navigate(scopeLocation(location.pathname, location.search, location.hash, s))
-  }, [navigate, location.pathname, location.search, location.hash])
+  const setScope = useCallback(
+    (s: BookScope) => {
+      navigate(scopeLocation(location.pathname, location.search, location.hash, s))
+    },
+    [navigate, location.pathname, location.search, location.hash],
+  )
   const toggleMlLens = useCallback(() => setLens((v) => !v), [])
-  const value = useMemo(() => ({ scope, setScope, mlLens, toggleMlLens }), [scope, setScope, mlLens, toggleMlLens])
+  const value = useMemo(
+    () => ({ scope, setScope, mlLens, toggleMlLens }),
+    [scope, setScope, mlLens, toggleMlLens],
+  )
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>
 }
 

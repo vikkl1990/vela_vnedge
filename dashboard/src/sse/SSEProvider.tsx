@@ -1,5 +1,15 @@
+import { batchedInvalidation } from '../lib/batchedInvalidation'
 import { useQueryClient } from '@tanstack/react-query'
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react'
 import { qk } from '../api/queries'
 import type {
   Health,
@@ -93,20 +103,11 @@ export function SSEProvider({ children }: { children: ReactNode }) {
       }
     }
 
-    // ---- debounced invalidation (coalesce SSE bursts into one refetch) -----
-    const invTimers = new Map<string, number>()
-    const invalidate = (key: readonly unknown[]) => {
-      const k = JSON.stringify(key)
-      const prev = invTimers.get(k)
-      if (prev) window.clearTimeout(prev)
-      invTimers.set(
-        k,
-        window.setTimeout(() => {
-          invTimers.delete(k)
-          void qc.invalidateQueries({ queryKey: key })
-        }, INVALIDATE_DEBOUNCE_MS),
-      )
-    }
+    // ---- bounded invalidation (coalesce SSE bursts into one refetch) -----
+    const invalidations = batchedInvalidation((key) => {
+      void qc.invalidateQueries({ queryKey: key })
+    }, INVALIDATE_DEBOUNCE_MS)
+    const invalidate = invalidations.request
     const bumpStats = () => invalidate(qk.stats)
 
     // ---- query-cache integration -----------------------------------------
@@ -116,7 +117,21 @@ export function SSEProvider({ children }: { children: ReactNode }) {
         qc.setQueryData(qk.health, d.health)
       }),
       sseBus.on('health', (h: Health) => qc.setQueryData(qk.health, h)),
-      sseBus.on('accounting', () => { for (const key of [['trades'], ['equity'], qk.positions, qk.orders, qk.stats, qk.analytics, ['daily'], ['execution-quality']]) invalidate(key) }),
+      sseBus.on('accounting', () => {
+        for (const key of [
+          ['trades'],
+          ['journal'],
+          ['journal-detail'],
+          ['equity'],
+          qk.positions,
+          qk.orders,
+          qk.stats,
+          qk.analytics,
+          ['daily'],
+          ['execution-quality'],
+        ])
+          invalidate(key)
+      }),
       sseBus.on('stats', (s: Stats) => qc.setQueryData(qk.stats, s)),
       sseBus.on('tick', (t: TickEvent) => {
         pendingPrices.set(t.symbol, t)
@@ -129,7 +144,11 @@ export function SSEProvider({ children }: { children: ReactNode }) {
       }),
       sseBus.on('signal', (s: Signal) => {
         setLiveSignal(s)
-        invalidate(['signals']); invalidate(['signal-activity'])
+        invalidate(['signals'])
+        invalidate(['signal-activity'])
+        invalidate(['radar'])
+        invalidate(['gates'])
+        invalidate(['scanner-pipeline'])
         invalidate(qk.scanners)
       }),
       sseBus.on('position', (e: PositionEvent) => {
@@ -147,6 +166,12 @@ export function SSEProvider({ children }: { children: ReactNode }) {
       }),
       sseBus.on('trade', () => {
         invalidate(['trades'])
+        invalidate(['journal'])
+        invalidate(['journal-detail'])
+        invalidate(['incubator'])
+        invalidate(['learning'])
+        invalidate(['trade-monitor'])
+        invalidate(['daily'])
         invalidate(qk.orders)
         invalidate(['equity'])
         invalidate(qk.scanners)
@@ -223,7 +248,8 @@ export function SSEProvider({ children }: { children: ReactNode }) {
       attemptsRef.current += 1
       setAttempts(attemptsRef.current)
       setStatus(attemptsRef.current > 3 ? 'offline' : 'reconnecting')
-      const delay = Math.min(MAX_BACKOFF, 1000 * 2 ** Math.min(6, attemptsRef.current - 1)) + Math.random() * 500
+      const delay =
+        Math.min(MAX_BACKOFF, 1000 * 2 ** Math.min(6, attemptsRef.current - 1)) + Math.random() * 500
       if (timerRef.current) window.clearTimeout(timerRef.current)
       timerRef.current = window.setTimeout(connect, delay)
     }
@@ -243,7 +269,7 @@ export function SSEProvider({ children }: { children: ReactNode }) {
       if (timerRef.current) window.clearTimeout(timerRef.current)
       if (priceTimer != null) window.clearTimeout(priceTimer)
       if (eventAtTimer != null) window.clearTimeout(eventAtTimer)
-      for (const t of invTimers.values()) window.clearTimeout(t)
+      invalidations.dispose()
       esRef.current?.close()
       esRef.current = null
       offs.forEach((f) => f())

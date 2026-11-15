@@ -2,18 +2,19 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import App from './App'
-import './styles/tokens.css'
-import './styles/base.css'
-import './styles/shell.css'
-import './styles/components.css'
-import './styles/kit.css'
-import './styles/polish.css'
-import './styles/pages.css'
-import './terminal.css'
 import { DensityProvider } from './lib/density'
 import { ThemeProvider } from './lib/theme'
 import { ToastProvider } from './lib/toast'
 import { SSEProvider } from './sse/SSEProvider'
+import './styles/base.css'
+import './styles/components.css'
+import './styles/data-views.css'
+import './styles/kit.css'
+import './styles/pages.css'
+import './styles/polish.css'
+import './styles/shell.css'
+import './styles/tokens.css'
+import './terminal.css'
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -35,9 +36,9 @@ createRoot(document.getElementById('root')!).render(
       <ThemeProvider>
         <DensityProvider>
           <ToastProvider>
-              <SSEProvider>
-                <App />
-              </SSEProvider>
+            <SSEProvider>
+              <App />
+            </SSEProvider>
           </ToastProvider>
         </DensityProvider>
       </ThemeProvider>

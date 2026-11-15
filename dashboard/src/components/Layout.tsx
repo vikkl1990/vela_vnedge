@@ -2,27 +2,39 @@ import { useQuery } from '@tanstack/react-query'
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { api } from '../api/client'
-import { useBackendOnline, useHealth, useKill, useResetPaper, useResume, useRisk, useScannerIndex, useStats } from '../api/queries'
+import {
+  useBackendOnline,
+  useHealth,
+  useKill,
+  useResetPaper,
+  useResume,
+  useRisk,
+  useScannerIndex,
+  useStats,
+} from '../api/queries'
+import { REFRESH } from '../api/refreshPolicy'
 import { useAuth } from '../auth/AuthGate'
-import { useDensity } from '../lib/density'
 import type { PaletteItem } from '../lib/commandSearch'
+import { useDensity } from '../lib/density'
 import { fmtAge } from '../lib/format'
 import { useHotkeys, type Hotkey } from '../lib/hotkeys'
-import { useMediaQuery } from '../lib/useMediaQuery'
-import { useNow } from '../lib/useNow'
+import { legacyPath } from '../lib/routeHubs'
 import { useTheme } from '../lib/theme'
 import { useToast } from '../lib/toast'
+import { useMediaQuery } from '../lib/useMediaQuery'
+import { useNow } from '../lib/useNow'
 import { useSSE } from '../sse/SSEProvider'
 import { ContextBar } from './ContextBar'
 import { RouteErrorBoundary } from './ErrorBoundary'
+import { ConfirmDialog, Loading, StatusDot } from './kit'
 import { QueryFreshness } from './QueryFreshness'
 import { RiskBanner } from './RiskBanner'
-import { Loading, StatusDot, ConfirmDialog } from './ui'
-import { WorkflowGuide } from './WorkflowGuide'
 import { CommandPalette } from './shell/CommandPalette'
+import { HubNav } from './shell/HubNav'
 import { ACCOUNT_PAGES, PHONE_TABS, routeMeta, visibleGroups } from './shell/nav'
 import { Sidebar, type Connection } from './shell/Sidebar'
 import { Topbar } from './shell/Topbar'
+import { WorkflowGuide } from './WorkflowGuide'
 
 const STALE_AFTER_MS = 60_000
 const SIDE_KEY = 'vnedge.sidebar'
@@ -44,7 +56,8 @@ function StaleBanner({ getLastEventAt, enabled }: { getLastEventAt: () => number
   if (silentMs == null || silentMs <= STALE_AFTER_MS) return null
   return (
     <div className="banner banner-warn" role="status">
-      <StatusDot tone="warn" /> Data may be stale (last update {fmtAge(silentMs)} ago) — the event stream is connected but silent.
+      <StatusDot tone="warn" /> Data may be stale (last update {fmtAge(silentMs)} ago) — the event stream is
+      connected but silent.
     </div>
   )
 }
@@ -73,7 +86,10 @@ export function Layout() {
   const loc = useLocation()
   const auth = useAuth()
   const groups = useMemo(() => visibleGroups(auth.isAdmin), [auth.isAdmin])
-  const nav = useMemo(() => [...groups.flatMap((g) => g.items), ...ACCOUNT_PAGES.filter((p) => !p.adminOnly || auth.isAdmin)], [groups, auth.isAdmin])
+  const nav = useMemo(
+    () => [...groups.flatMap((g) => g.items), ...ACCOUNT_PAGES.filter((p) => !p.adminOnly || auth.isAdmin)],
+    [groups, auth.isAdmin],
+  )
 
   // ---- sidebar: collapsed to icons on a desktop (remembered), a drawer on a phone ----
   const [collapsed, setCollapsed] = useState(readSidebar)
@@ -100,13 +116,27 @@ export function Layout() {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') setDrawer(false)
       if (e.key !== 'Tab') return
-      const items = Array.from(sidebarRef.current?.querySelectorAll<HTMLElement>('a[href], button:not(:disabled), input:not(:disabled)') ?? []).filter((el) => el.getClientRects().length > 0)
-      const first = items[0], last = items[items.length - 1]
-      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last?.focus() }
-      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first?.focus() }
+      const items = Array.from(
+        sidebarRef.current?.querySelectorAll<HTMLElement>(
+          'a[href], button:not(:disabled), input:not(:disabled)',
+        ) ?? [],
+      ).filter((el) => el.getClientRects().length > 0)
+      const first = items[0],
+        last = items[items.length - 1]
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault()
+        last?.focus()
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault()
+        first?.focus()
+      }
     }
     window.addEventListener('keydown', onKey)
-    return () => { window.removeEventListener('keydown', onKey); document.body.style.overflow = priorOverflow; menuButton?.focus() }
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      document.body.style.overflow = priorOverflow
+      menuButton?.focus()
+    }
   }, [drawer, mobile])
 
   const h = health.data
@@ -117,8 +147,10 @@ export function Layout() {
   const s = stats.data
 
   // ---- route meta: document.title + breadcrumb ----
-  const scannerId = /^\/scanners\/([^/]+)/.exec(loc.pathname)?.[1]
-  const scannerName = scannerId ? scanners.data?.find((x) => x.id === decodeURIComponent(scannerId))?.name : undefined
+  const scannerId = /^\/scanners\/([^/]+)/.exec(legacyPath(loc.pathname))?.[1]
+  const scannerName = scannerId
+    ? scanners.data?.find((x) => x.id === decodeURIComponent(scannerId))?.name
+    : undefined
   const meta = routeMeta(loc.pathname, scannerName)
   useEffect(() => {
     document.title = `VN EDGE · ${meta.title}`
@@ -127,39 +159,120 @@ export function Layout() {
   // ---- connection state ----
   const stream: Connection = {
     tone: sse.status === 'connected' ? 'ok' : sse.status === 'offline' ? 'danger' : 'warn',
-    label: sse.status === 'connected' ? 'Stream live' : sse.status === 'connecting' ? 'Stream connecting' : sse.status === 'reconnecting' ? `Stream reconnecting (${sse.attempts})` : 'Stream offline',
+    label:
+      sse.status === 'connected'
+        ? 'Stream live'
+        : sse.status === 'connecting'
+          ? 'Stream connecting'
+          : sse.status === 'reconnecting'
+            ? `Stream reconnecting (${sse.attempts})`
+            : 'Stream offline',
   }
   const backendDown = checked && !online
   const streamInterrupted = sse.status === 'offline' || sse.status === 'reconnecting'
   // Freshness is time-derived, so it lives in leaf components with their own 1 s clock.
   const live = sse.status === 'connected' && feedConnected
-  const feed: Connection = { tone: !feedKnown ? 'neutral' : live ? 'ok' : 'warn', label: !feedKnown ? 'Feed connecting' : live ? 'Feed connected' : 'Feed unavailable' }
+  const feed: Connection = {
+    tone: !feedKnown ? 'neutral' : live ? 'ok' : 'warn',
+    label: !feedKnown ? 'Feed connecting' : live ? 'Feed connected' : 'Feed unavailable',
+  }
 
   // ---- what waits for a decision: a small count on the Decisions link (the same cached query the page uses) ----
-  const incubator = useQuery({ queryKey: ['incubator'], queryFn: api.incubator, refetchInterval: 60_000, staleTime: 20_000 })
-  const proposals = incubator.data?.pairs.filter((p) => p.stage === 'proposed' || p.stage === 'demote_proposed').length ?? 0
+  const incubator = useQuery({
+    queryKey: ['incubator'],
+    queryFn: api.incubator,
+    refetchInterval: REFRESH.slow,
+    staleTime: 20_000,
+  })
+  const proposals =
+    incubator.data?.pairs.filter((p) => p.stage === 'proposed' || p.stage === 'demote_proposed').length ?? 0
   const badges = useMemo(
-    () => ({ '/decisions': proposals > 0 ? { n: proposals, tone: 'warn' as const, title: `${proposals} proposal${proposals === 1 ? '' : 's'} waiting` } : undefined }),
+    () => ({
+      '/strategies':
+        proposals > 0
+          ? {
+              n: proposals,
+              tone: 'warn' as const,
+              title: `${proposals} proposal${proposals === 1 ? '' : 's'} waiting`,
+            }
+          : undefined,
+    }),
     [proposals],
   )
 
   // ---- command palette: pages, actions, then scanners once someone types ----
   const palette = useMemo<PaletteItem[]>(() => {
-    const pages: PaletteItem[] = nav.map((n) => ({ id: `page:${n.to}`, kind: 'page', title: n.label, subtitle: n.blurb, keywords: n.keywords, to: n.to, hint: `g ${n.key}` }))
+    const pages: PaletteItem[] = nav.map((n) => ({
+      id: `page:${n.to}`,
+      kind: 'page',
+      title: n.label,
+      subtitle: n.blurb,
+      keywords: n.keywords,
+      to: n.to,
+      hint: `g ${n.key}`,
+    }))
     const acts: PaletteItem[] = [
-      { id: 'act:theme', kind: 'action', title: theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme', keywords: 'appearance colour mode', hint: 't' },
-      { id: 'act:density', kind: 'action', title: density === 'compact' ? 'Switch to comfortable density' : 'Switch to compact density', keywords: 'rows tight spacing', hint: 'd' },
-      { id: 'act:sidebar', kind: 'action', title: collapsed ? 'Expand the sidebar' : 'Collapse the sidebar', keywords: 'navigation menu', hint: '[' },
+      {
+        id: 'act:theme',
+        kind: 'action',
+        title: theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme',
+        keywords: 'appearance colour mode',
+        hint: 't',
+      },
+      {
+        id: 'act:density',
+        kind: 'action',
+        title: density === 'compact' ? 'Switch to comfortable density' : 'Switch to compact density',
+        keywords: 'rows tight spacing',
+        hint: 'd',
+      },
+      {
+        id: 'act:sidebar',
+        kind: 'action',
+        title: collapsed ? 'Expand the sidebar' : 'Collapse the sidebar',
+        keywords: 'navigation menu',
+        hint: '[',
+      },
       { id: 'act:keys', kind: 'action', title: 'Show keyboard shortcuts', hint: '?' },
     ]
     if (auth.canTrade) {
-      acts.push(paused
-        ? { id: 'act:resume', kind: 'action', title: 'Resume entries…', subtitle: 'Asks for confirmation', keywords: 'kill switch halt' }
-        : { id: 'act:pause', kind: 'action', title: 'Pause entries…', subtitle: 'Asks for confirmation', keywords: 'kill switch halt stop' })
-      if (h?.mode === 'paper') acts.push({ id: 'act:reset', kind: 'action', title: 'Reset paper account…', subtitle: 'Asks for confirmation', keywords: 'restart equity' })
+      acts.push(
+        paused
+          ? {
+              id: 'act:resume',
+              kind: 'action',
+              title: 'Resume entries…',
+              subtitle: 'Asks for confirmation',
+              keywords: 'kill switch halt',
+            }
+          : {
+              id: 'act:pause',
+              kind: 'action',
+              title: 'Pause entries…',
+              subtitle: 'Asks for confirmation',
+              keywords: 'kill switch halt stop',
+            },
+      )
+      if (h?.mode === 'paper')
+        acts.push({
+          id: 'act:reset',
+          kind: 'action',
+          title: 'Reset paper account…',
+          subtitle: 'Asks for confirmation',
+          keywords: 'restart equity',
+        })
     }
     acts.push({ id: 'act:signout', kind: 'action', title: 'Sign out' })
-    const sc: PaletteItem[] = (scanners.data ?? []).filter((x) => !x.hidden).map((x) => ({ id: `scanner:${x.id}`, kind: 'scanner', title: x.name, subtitle: x.enabled ? 'enabled' : x.status === 'ok' ? 'scanner' : x.status, keywords: `${x.id} ${x.category ?? ''}`, to: `/scanners/${x.id}` }))
+    const sc: PaletteItem[] = (scanners.data ?? [])
+      .filter((x) => !x.hidden)
+      .map((x) => ({
+        id: `scanner:${x.id}`,
+        kind: 'scanner',
+        title: x.name,
+        subtitle: x.enabled ? 'enabled' : x.status === 'ok' ? 'scanner' : x.status,
+        keywords: `${x.id} ${x.category ?? ''}`,
+        to: `/scanners/${x.id}`,
+      }))
     return [...pages, ...acts, ...sc]
   }, [nav, theme, density, collapsed, auth.canTrade, paused, h?.mode, scanners.data])
   const paletteActions = useMemo<Record<string, () => void>>(
@@ -189,7 +302,11 @@ export function Layout() {
   // ---- hotkeys ----
   const hotkeys = useMemo<Hotkey[]>(
     () => [
-      { keys: '/', label: 'Search pages, scanners and actions (also ⌘K / Ctrl+K)', run: () => setShowPalette(true) },
+      {
+        keys: '/',
+        label: 'Search pages, scanners and actions (also ⌘K / Ctrl+K)',
+        run: () => setShowPalette(true),
+      },
       ...nav.map((n) => ({ keys: `g ${n.key}`, label: `Go to ${n.label}`, run: () => navigate(n.to) })),
       { keys: '[', label: 'Collapse / expand the sidebar', run: toggleSidebar },
       { keys: 't', label: 'Toggle light / dark theme', run: toggle },
@@ -256,13 +373,25 @@ export function Layout() {
 
         {backendDown && (
           <div className="banner banner-danger" role="alert">
-            <StatusDot tone="danger" /> Backend offline — reconnecting{sse.attempts > 0 ? ` (attempt ${sse.attempts})` : ''}…
-            <span className="muted"> Showing the last received data. Trading status cannot be confirmed until the server responds.</span>
+            <StatusDot tone="danger" /> Backend offline — reconnecting
+            {sse.attempts > 0 ? ` (attempt ${sse.attempts})` : ''}…
+            <span className="muted">
+              {' '}
+              Showing the last received data. Trading status cannot be confirmed until the server responds.
+            </span>
             {health.error?.message ? <span className="muted"> ({health.error.message})</span> : null}
           </div>
         )}
-        {!backendDown && streamInterrupted && <div className="banner banner-warn" role="status">Live updates interrupted — reconnecting. The server may still be running; displayed prices can be delayed.</div>}
-        <StaleBanner getLastEventAt={sse.getLastEventAt} enabled={!backendDown && sse.status === 'connected'} />
+        {!backendDown && streamInterrupted && (
+          <div className="banner banner-warn" role="status">
+            Live updates interrupted — reconnecting. The server may still be running; displayed prices can be
+            delayed.
+          </div>
+        )}
+        <StaleBanner
+          getLastEventAt={sse.getLastEventAt}
+          enabled={!backendDown && sse.status === 'connected'}
+        />
         {h?.lastError && (
           <div className="banner banner-warn" role="status">
             Server last error: <code>{h.lastError}</code>
@@ -276,6 +405,7 @@ export function Layout() {
           <RouteErrorBoundary>
             <Suspense fallback={<Loading kind="cards" label="Loading the page" />}>
               <div className="route" key={loc.pathname}>
+                <HubNav />
                 <Outlet />
               </div>
             </Suspense>
@@ -284,40 +414,80 @@ export function Layout() {
         {/* decision 121: on a phone the four views an operator checks in on sit in a bar at the bottom */}
         <nav className="bottombar" aria-label="Phone">
           {PHONE_TABS.map((t) => (
-            <NavLink key={t.to} to={t.to} end={t.end} className={({ isActive }) => `bottombar-item ${isActive ? 'on' : ''}`}>{t.label}</NavLink>
+            <NavLink
+              key={t.to}
+              to={t.to}
+              end={t.end}
+              className={({ isActive }) => `bottombar-item ${isActive ? 'on' : ''}`}
+            >
+              {t.label}
+            </NavLink>
           ))}
-          <button type="button" className="bottombar-item" onClick={() => setDrawer(true)} aria-controls="primary-sidebar" aria-expanded={drawer}>More</button>
+          <button
+            type="button"
+            className="bottombar-item"
+            onClick={() => setDrawer(true)}
+            aria-controls="primary-sidebar"
+            aria-expanded={drawer}
+          >
+            More
+          </button>
         </nav>
       </div>
 
-      <CommandPalette open={showPalette} onClose={() => setShowPalette(false)} items={palette} actions={paletteActions} />
+      <CommandPalette
+        open={showPalette}
+        onClose={() => setShowPalette(false)}
+        items={palette}
+        actions={paletteActions}
+      />
 
       <ConfirmDialog
         open={confirmResume}
         title="Resume entries and reset loss windows?"
-        body={<p>Current halt: {risk.data?.haltReason ?? 'risk limit'}. Resuming clears the halt and starts new daily and weekly loss windows from current equity. Open positions continue their existing exits.</p>}
+        body={
+          <p>
+            Current halt: {risk.data?.haltReason ?? 'risk limit'}. Resuming clears the halt and starts new
+            daily and weekly loss windows from current equity. Open positions continue their existing exits.
+          </p>
+        }
         confirmLabel="Resume entries"
         busy={resume.isPending}
         onCancel={() => setConfirmResume(false)}
-        onConfirm={() => resume.mutate(undefined, { onSuccess: () => setConfirmResume(false), onError: (e) => toast.error('Could not resume entries', e.message) })}
+        onConfirm={() =>
+          resume.mutate(undefined, {
+            onSuccess: () => setConfirmResume(false),
+            onError: (e) => toast.error('Could not resume entries', e.message),
+          })
+        }
       />
       <ConfirmDialog
         open={confirmPause}
         title="Pause all new entries?"
-        body={<p>The kill switch. No scanner opens a position until you resume; open positions keep running their stops, trails and targets. Nothing is closed.</p>}
+        body={
+          <p>
+            The kill switch. No scanner opens a position until you resume; open positions keep running their
+            stops, trails and targets. Nothing is closed.
+          </p>
+        }
         confirmLabel="Pause entries"
         danger
         busy={kill.isPending}
         onCancel={() => setConfirmPause(false)}
-        onConfirm={() => { kill.mutate({ reason: `paused by ${auth.user.username}` }, { onSettled: () => setConfirmPause(false) }) }}
+        onConfirm={() => {
+          kill.mutate(
+            { reason: `paused by ${auth.user.username}` },
+            { onSettled: () => setConfirmPause(false) },
+          )
+        }}
       />
       <ConfirmDialog
         open={confirmReset}
         title="Reset paper account?"
         body={
           <p>
-            Open positions are closed at market, the record is archived (kept for forensics, hidden from every live view) and the
-            account restarts at the configured initial equity. Signals are kept.
+            Open positions are closed at market, the record is archived (kept for forensics, hidden from every
+            live view) and the account restarts at the configured initial equity. Signals are kept.
           </p>
         }
         confirmLabel="Reset account"
@@ -340,7 +510,15 @@ export function Layout() {
   )
 }
 
-function HotkeysDialog({ open, onClose, hotkeys }: { open: boolean; onClose: () => void; hotkeys: Hotkey[] }) {
+function HotkeysDialog({
+  open,
+  onClose,
+  hotkeys,
+}: {
+  open: boolean
+  onClose: () => void
+  hotkeys: Hotkey[]
+}) {
   return (
     <ConfirmDialog
       open={open}

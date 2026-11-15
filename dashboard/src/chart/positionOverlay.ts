@@ -30,9 +30,14 @@ export function positionOverlay(p: Position, peakR?: number | null): ChartScript
   const rOf = (price: number) => ((price - p.entryPrice) * dir) / risk
 
   const levels: Level[] = [{ price: p.entryPrice, label: 'entry', role: 'entry' }]
-  if (p.slOriginal != null) levels.push({ price: p.slOriginal, label: 'stop −1R', role: 'stop', dashed: true })
+  if (p.slOriginal != null)
+    levels.push({ price: p.slOriginal, label: 'stop −1R', role: 'stop', dashed: true })
   if (p.sl != null && (p.slOriginal == null || Math.abs(p.sl - p.slOriginal) > 1e-12))
-    levels.push({ price: p.sl, label: `stop now ${rOf(p.sl) >= 0 ? '+' : ''}${rOf(p.sl).toFixed(2)}R`, role: 'stop' })
+    levels.push({
+      price: p.sl,
+      label: `stop now ${rOf(p.sl) >= 0 ? '+' : ''}${rOf(p.sl).toFixed(2)}R`,
+      role: 'stop',
+    })
   p.tp?.forEach((tp, i) => {
     if (tp == null) return
     const funded = (p.legs?.[i] ?? 1) > 0
@@ -44,7 +49,13 @@ export function positionOverlay(p: Position, peakR?: number | null): ChartScript
       dashed: !funded,
     })
   })
-  if (peakR != null && peakR > 0.05) levels.push({ price: p.entryPrice + dir * peakR * risk, label: `peak +${peakR.toFixed(2)}R`, role: 'peak', dashed: true })
+  if (peakR != null && peakR > 0.05)
+    levels.push({
+      price: p.entryPrice + dir * peakR * risk,
+      label: `peak +${peakR.toFixed(2)}R`,
+      role: 'peak',
+      dashed: true,
+    })
 
   const body = levels
     .map((l) => {

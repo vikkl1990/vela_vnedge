@@ -16,7 +16,10 @@ export interface PaletteItem {
 }
 
 const norm = (s: string) => s.toLowerCase().normalize('NFKD').replace(/[̀-ͯ]/g, '')
-const tokens = (q: string) => norm(q).split(/[\s/·,-]+/).filter(Boolean)
+const tokens = (q: string) =>
+  norm(q)
+    .split(/[\s/·,-]+/)
+    .filter(Boolean)
 
 /** Every character of `needle` appears in `hay` in order, with a small bonus for runs. 0 when it does not. */
 function subsequence(hay: string, needle: string): number {
@@ -65,7 +68,11 @@ export function scoreItem(query: string, item: PaletteItem): number {
  * Rank `items` for `query`. With no query the recently used items come first (in the order given), then pages and
  * actions in their listed order; scanners only appear once someone types.
  */
-export function rankItems(items: PaletteItem[], query: string, opts: { limit?: number; recent?: string[] } = {}): PaletteItem[] {
+export function rankItems(
+  items: PaletteItem[],
+  query: string,
+  opts: { limit?: number; recent?: string[] } = {},
+): PaletteItem[] {
   const limit = opts.limit ?? 40
   const recent = opts.recent ?? []
   if (!tokens(query).length) {
@@ -79,7 +86,11 @@ export function rankItems(items: PaletteItem[], query: string, opts: { limit?: n
   return items
     .map((item, order) => ({ item, order, s: scoreItem(query, item) }))
     .filter((x) => x.s > 0)
-    .sort((a, b) => b.s + (recentRank.get(b.item.id) ?? 0) * 0.5 - (a.s + (recentRank.get(a.item.id) ?? 0) * 0.5) || a.order - b.order)
+    .sort(
+      (a, b) =>
+        b.s + (recentRank.get(b.item.id) ?? 0) * 0.5 - (a.s + (recentRank.get(a.item.id) ?? 0) * 0.5) ||
+        a.order - b.order,
+    )
     .slice(0, limit)
     .map((x) => x.item)
 }

@@ -35,7 +35,9 @@ export function useHotkeys(list: Hotkey[]) {
       const now = Date.now()
       if (pending && now - pending.at > CHORD_MS) pending = null
       const chord = pending ? `${pending.key} ${key}` : null
-      const hit = ref.current.find((h) => h.keys === chord) ?? (!pending ? ref.current.find((h) => h.keys === key) : undefined)
+      const hit =
+        ref.current.find((h) => h.keys === chord) ??
+        (!pending ? ref.current.find((h) => h.keys === key) : undefined)
       if (hit) {
         e.preventDefault()
         pending = null

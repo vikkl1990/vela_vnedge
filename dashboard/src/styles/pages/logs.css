@@ -1,6 +1,16 @@
 /* Logs: the search box takes the room the toolbar leaves, and the tail never forces the page to scroll sideways. */
-.logs-page .logs-search { min-width: 220px; flex: 1 1 220px; max-width: 360px; }
-.logs-page .logbox { max-width: 100%; }
+.logs-page .logs-search {
+  min-width: 220px;
+  flex: 1 1 220px;
+  max-width: 360px;
+}
+.logs-page .logbox {
+  max-width: 100%;
+}
 @media (max-width: 640px) {
-  .logs-page .logs-search { min-width: 0; max-width: none; flex-basis: 100%; }
+  .logs-page .logs-search {
+    min-width: 0;
+    max-width: none;
+    flex-basis: 100%;
+  }
 }

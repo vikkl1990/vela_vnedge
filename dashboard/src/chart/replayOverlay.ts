@@ -7,7 +7,12 @@ import type { ChartScript } from './VelaChart'
  * follows every move the engine recorded (the floor and the trail ratcheting), and the entry and exit bars are
  * marked. Each bar shows the stop as it stood when that bar closed, so a replay never shows a move before it happened.
  */
-export function replayOverlay(lv: PathLevels, path: PathPoint[], tfMs: number, finalR: number | null): ChartScript {
+export function replayOverlay(
+  lv: PathLevels,
+  path: PathPoint[],
+  tfMs: number,
+  finalR: number | null,
+): ChartScript {
   const long = lv.side === 'long'
   const barOf = (t: number) => Math.floor(t / tfMs) * tfMs
   const entryBar = barOf(lv.entryAt)
@@ -18,16 +23,23 @@ export function replayOverlay(lv: PathLevels, path: PathPoint[], tfMs: number, f
 
   // the stop's change points: where it opened, then every recorded move (consecutive repeats dropped)
   const changes: Array<[number, number]> = [[lv.entryAt, orig]]
-  for (const p of path) if (p.sl != null && Math.abs(p.sl - changes[changes.length - 1][1]) > 1e-12) changes.push([p.at, p.sl])
+  for (const p of path)
+    if (p.sl != null && Math.abs(p.sl - changes[changes.length - 1][1]) > 1e-12) changes.push([p.at, p.sl])
   const times = changes.map(([t]) => t).join(', ')
   const stops = changes.map(([, v]) => v).join(', ')
 
   const num = (v: number) => (Number.isFinite(v) ? String(v) : 'na')
   const tps = (lv.tp ?? []).filter((t) => t != null && Number.isFinite(t))
   const tpLines = tps
-    .map((tp, i) => `plot(inTrade ? ${num(tp)} : na, "TP${i + 1} ${rOf(tp) >= 0 ? '+' : ''}${rOf(tp).toFixed(1)}R", color = color.new(#3fb950, ${(lv.tpHit?.[i] ?? 0) > 0 ? 0 : 35}), style = plot.style_linebr, linewidth = 1)`)
+    .map(
+      (tp, i) =>
+        `plot(inTrade ? ${num(tp)} : na, "TP${i + 1} ${rOf(tp) >= 0 ? '+' : ''}${rOf(tp).toFixed(1)}R", color = color.new(#3fb950, ${(lv.tpHit?.[i] ?? 0) > 0 ? 0 : 35}), style = plot.style_linebr, linewidth = 1)`,
+    )
     .join('\n')
-  const exitText = lv.exitAt != null ? `exit ${lv.exitReason ?? ''}${finalR != null ? ` ${finalR >= 0 ? '+' : ''}${finalR.toFixed(2)}R` : ''}`.trim() : ''
+  const exitText =
+    lv.exitAt != null
+      ? `exit ${lv.exitReason ?? ''}${finalR != null ? ` ${finalR >= 0 ? '+' : ''}${finalR.toFixed(2)}R` : ''}`.trim()
+      : ''
   const exitColor = finalR == null ? '#8f8f98' : finalR >= 0 ? '#3fb950' : '#e5484d'
 
   const source = `//@version=5

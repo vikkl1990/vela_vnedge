@@ -1,22 +1,92 @@
 /* Performance: one filter bar, two book cards, then the tabs. Uses only tokens. */
-.perf-filterbar { display: flex; flex-direction: column; gap: 10px; padding: 12px 14px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); }
-.perf-field { display: flex; flex-direction: column; gap: 4px; font-size: var(--fs-xs); font-weight: 600; color: var(--muted); min-width: 0; }
-.perf-field .select, .perf-field .input { min-width: 150px; }
-.perf-scope { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; text-align: right; }
-.perf-scope b { color: var(--text); font-weight: 600; }
-.perf-filterbar .performance-scanner { grid-column: auto; border-top: 1px solid var(--border); padding-top: 6px; }
-.perf-scanner-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-top: 6px; }
-.perf-filterbar .performance-dates { grid-column: auto; }
-.perf-filterbar .toolbar-row { align-items: flex-end; }
-.perf-more { margin: -4px 4px 0; max-width: 90ch; }
-.perf-more summary { cursor: pointer; padding: 4px 0; }
-.perf-more summary:focus-visible { outline: 2px solid var(--accent-2); outline-offset: 2px; border-radius: 4px; }
-.perf-more p { margin: 4px 0 0; line-height: 1.6; }
+.perf-filterbar {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.perf-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  color: var(--muted);
+  min-width: 0;
+}
+.perf-field .select,
+.perf-field .input {
+  min-width: 150px;
+}
+.perf-scope {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  text-align: right;
+}
+.perf-scope b {
+  color: var(--text);
+  font-weight: 600;
+}
+.perf-filterbar .performance-scanner {
+  grid-column: auto;
+  border-top: 1px solid var(--border);
+  padding-top: 6px;
+}
+.perf-scanner-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 12px;
+  margin-top: 6px;
+}
+.perf-filterbar .performance-dates {
+  grid-column: auto;
+}
+.perf-filterbar .toolbar-row {
+  align-items: flex-end;
+}
+.perf-more {
+  margin: -4px 4px 0;
+  max-width: 90ch;
+}
+.perf-more summary {
+  cursor: pointer;
+  padding: 4px 0;
+}
+.perf-more summary:focus-visible {
+  outline: 2px solid var(--accent-2);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+.perf-more p {
+  margin: 4px 0 0;
+  line-height: 1.6;
+}
 /* the book cards: the headline number leads, costs stay quiet */
-.performance-page .performance-book { box-shadow: var(--shadow-1); }
+.performance-page .performance-book {
+  box-shadow: var(--shadow-1);
+}
 @media (max-width: 760px) {
-  .perf-scope { align-items: flex-start; text-align: left; }
-  .perf-filterbar .toolbar-main { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); width: 100%; }
-  .perf-field .select, .perf-field .input { min-width: 0; width: 100%; }
-  .perf-filterbar .toolbar-end { margin-left: 0; width: 100%; }
+  .perf-scope {
+    align-items: flex-start;
+    text-align: left;
+  }
+  .perf-filterbar .toolbar-main {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    width: 100%;
+  }
+  .perf-field .select,
+  .perf-field .input {
+    min-width: 0;
+    width: 100%;
+  }
+  .perf-filterbar .toolbar-end {
+    margin-left: 0;
+    width: 100%;
+  }
 }

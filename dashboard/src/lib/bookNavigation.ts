@@ -1,7 +1,9 @@
 import { parseScope, SCOPES, type BookScope } from './books.ts'
+import { legacyPath } from './routeHubs.ts'
 
 /** Show controls only on pages that actually consume them. Other pages keep their own labelled filters. */
 export function bookControlsForPath(pathname: string) {
+  pathname = legacyPath(pathname)
   return {
     scope: ['/overview', '/strategies', '/trades'].includes(pathname),
     mlLens: pathname === '/strategies' || /^\/scanners\/[^/]+$/.test(pathname),
@@ -12,7 +14,8 @@ export function bookControlsForPath(pathname: string) {
 export function scopeFromLocation(path: string, search: string, fallback: BookScope): BookScope {
   const p = new URLSearchParams(search)
   if (p.has('bookScope')) return parseScope(p.get('bookScope'))
-  if (['/trades', '/strategies', '/overview'].includes(path) && SCOPES.includes(p.get('book') as BookScope)) return parseScope(p.get('book'))
+  if (['/trades', '/strategies', '/overview'].includes(path) && SCOPES.includes(p.get('book') as BookScope))
+    return parseScope(p.get('book'))
   return fallback
 }
 

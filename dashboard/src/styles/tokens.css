@@ -102,7 +102,7 @@
   --surface-2: #f6f9fd;
   --surface-3: #e9f0f8;
   --surface-glass: color-mix(in srgb, var(--bg) 82%, transparent);
-  --border: rgba(20, 40, 80, 0.10);
+  --border: rgba(20, 40, 80, 0.1);
   --border-strong: rgba(20, 40, 80, 0.18);
   --border-subtle: rgba(20, 40, 80, 0.05);
   --text: #14233a;
@@ -120,11 +120,11 @@
   --loss: hsl(354 70% 42%);
   --warn: #8a6512;
   --info: #145fb0;
-  --accent-soft: rgba(24, 120, 242, 0.10);
+  --accent-soft: rgba(24, 120, 242, 0.1);
   --accent-glow: rgba(44, 169, 244, 0.14);
   --gain-soft: hsla(146, 45%, 40%, 0.12);
-  --loss-soft: hsla(354, 80%, 50%, 0.10);
-  --info-soft: rgba(20, 95, 176, 0.10);
+  --loss-soft: hsla(354, 80%, 50%, 0.1);
+  --info-soft: rgba(20, 95, 176, 0.1);
   --shadow: 0 1px 2px rgba(16, 24, 40, 0.06);
   --shadow-1: 0 1px 2px rgba(16, 24, 40, 0.06);
   --shadow-2: 0 4px 14px rgba(16, 24, 40, 0.09);
@@ -151,4 +151,50 @@
   --pad-cell: 3px 8px;
   --pad-kpi: 8px 12px;
   --gap-page: 10px;
+}
+
+/* Fixed brand surfaces and neutral overlays shared across component styles. */
+:root {
+  --on-solid: #fff;
+  --overlay-white-40: rgba(255, 255, 255, 0.04);
+  --overlay-white-80: rgba(255, 255, 255, 0.08);
+  --overlay-black-80: rgba(0, 0, 0, 0.08);
+  --overlay-black-50: rgba(0, 0, 0, 0.05);
+  --danger-action: #b72e42;
+  --danger-action-hover: #992339;
+  --overlay-white-18: rgba(255, 255, 255, 0.018);
+  --overlay-black-18: rgba(0, 0, 0, 0.018);
+  --overlay-black-35: rgba(0, 0, 0, 0.035);
+  --overlay-rgb-24-120-242-350: rgba(24, 120, 242, 0.35);
+  --overlay-white-30: rgba(255, 255, 255, 0.03);
+  --overlay-black-30: rgba(0, 0, 0, 0.03);
+  --black: #000;
+  --overlay-white-15: rgba(255, 255, 255, 0.015);
+  --overlay-black-40: rgba(0, 0, 0, 0.04);
+  --overlay-white-50: rgba(255, 255, 255, 0.05);
+  --overlay-white-100: rgba(255, 255, 255, 0.1);
+  --overlay-black-100: rgba(0, 0, 0, 0.1);
+  --overlay-black-600: rgba(0, 0, 0, 0.6);
+  --overlay-black-400: rgba(0, 0, 0, 0.4);
+  --chart-error-surface: #252939;
+  --chart-error-text: #c6cddd;
+  --chart-error-accent: #ff6b6b;
+  --overlay-rgb-255-107-107-80: rgba(255, 107, 107, 0.08);
+  --chart-warning: #d98f00;
+  --chart-danger: #e5484d;
+  --overlay-black-500: rgba(0, 0, 0, 0.5);
+  --native-level: #d9aa62;
+  --native-level-light: #a87836;
+  --overlay-white-180: rgba(255, 255, 255, 0.18);
+  --gradient-hover-start: #2386ff;
+  --gradient-hover-end: #66b0ff;
+  --gradient-danger-start: #c0334a;
+  --gradient-danger-end: #d9475f;
+  --backdrop-base: #02060f;
+  --auth-start: #16264a;
+  --auth-middle: #0c1530;
+  --auth-end: #0a1020;
+  --overlay-rgb-68-153-255-280: rgba(68, 153, 255, 0.28);
+  --overlay-rgb-20-40-80-50: rgba(20, 40, 80, 0.05);
+  --overlay-black-550: rgba(0, 0, 0, 0.55);
 }

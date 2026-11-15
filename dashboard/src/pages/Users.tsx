@@ -1,10 +1,22 @@
-import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useState } from 'react'
 import { api } from '../api/client'
-import { useAuth, ROLE_HELP } from '../auth/AuthGate'
 import type { Me, Role, ShareLink } from '../api/types'
-import { ConfirmDialog, Panel, Pill, QueryState } from '../components/ui'
-import { Callout, EmptyState, PageHeader, Stat, StatGrid, TabPanel, Tabs } from '../components/kit'
+import { ROLE_HELP, useAuth } from '../auth/AuthGate'
+import {
+  Callout,
+  ConfirmDialog,
+  EmptyState,
+  PageHeader,
+  Pill,
+  QueryState,
+  Section,
+  Stat,
+  StatGrid,
+  TabPanel,
+  Tabs,
+} from '../components/kit'
+
 import '../styles/pages/account.css'
 
 /** Administration: who has an account, and what each one is allowed to do. */
@@ -15,11 +27,20 @@ export default function Users() {
   const invalidate = () => void qc.invalidateQueries({ queryKey: ['users'] })
 
   const create = useMutation({ mutationFn: api.createUser, onSuccess: invalidate })
-  const update = useMutation({ mutationFn: (v: { id: number; body: Parameters<typeof api.updateUser>[1] }) => api.updateUser(v.id, v.body), onSuccess: invalidate })
+  const update = useMutation({
+    mutationFn: (v: { id: number; body: Parameters<typeof api.updateUser>[1] }) =>
+      api.updateUser(v.id, v.body),
+    onSuccess: invalidate,
+  })
   const remove = useMutation({ mutationFn: api.deleteUser, onSuccess: invalidate })
   const revoke = useMutation({ mutationFn: api.revokeSessions, onSuccess: invalidate })
 
-  const [newUser, setNewUser] = useState({ username: '', password: '', role: 'viewer' as Role, displayName: '' })
+  const [newUser, setNewUser] = useState({
+    username: '',
+    password: '',
+    role: 'viewer' as Role,
+    displayName: '',
+  })
   const [confirmDelete, setConfirmDelete] = useState<Me | null>(null)
   const [resetting, setResetting] = useState<Me | null>(null)
   const [resetPassword, setResetPassword] = useState('')
@@ -34,7 +55,13 @@ export default function Users() {
   const [newLink, setNewLink] = useState({ label: '', hours: 48 })
   const [minted, setMinted] = useState<{ url: string; link: ShareLink } | null>(null)
   const [now] = useState(() => Date.now())
-  const mint = useMutation({ mutationFn: api.createShareLink, onSuccess: (r) => { setMinted(r); invalidateShare() } })
+  const mint = useMutation({
+    mutationFn: api.createShareLink,
+    onSuccess: (r) => {
+      setMinted(r)
+      invalidateShare()
+    },
+  })
   const unshare = useMutation({ mutationFn: api.revokeShareLink, onSuccess: invalidateShare })
 
   const userList = users.data?.users ?? []
@@ -48,61 +75,133 @@ export default function Users() {
       <PageHeader
         title="Users"
         subtitle="Who has an account, what each one may do, and the read-only links you have shared."
-        actions={<button className="btn btn-primary" aria-expanded={adding} aria-controls="add-account" onClick={() => { setTab('accounts'); setAdding((v) => !v) }}>{adding ? 'Close' : 'Add account'}</button>}
+        actions={
+          <button
+            className="btn btn-primary"
+            aria-expanded={adding}
+            aria-controls="add-account"
+            onClick={() => {
+              setTab('accounts')
+              setAdding((v) => !v)
+            }}
+          >
+            {adding ? 'Close' : 'Add account'}
+          </button>
+        }
       />
 
       <StatGrid min={170}>
-        <Stat label="Accounts" value={userList.length} sub={users.isLoading ? 'loading' : `${userList.length - disabledN} active`} />
+        <Stat
+          label="Accounts"
+          value={userList.length}
+          sub={users.isLoading ? 'loading' : `${userList.length - disabledN} active`}
+        />
         <Stat label="Administrators" value={admins} sub="the last one cannot be removed" />
         <Stat label="Disabled" value={disabledN} tone={disabledN ? 'warn' : undefined} sub="cannot sign in" />
         <Stat label="Live share links" value={liveLinks} sub={`${links.length} made in all`} />
       </StatGrid>
 
-      <Tabs value={tab} onChange={setTab} idPrefix="usr" label="Users sections" items={[{ id: 'accounts', label: 'Accounts', count: userList.length }, { id: 'share', label: 'Share links', count: liveLinks }]} />
+      <Tabs
+        value={tab}
+        onChange={setTab}
+        idPrefix="usr"
+        label="Users sections"
+        items={[
+          { id: 'accounts', label: 'Accounts', count: userList.length },
+          { id: 'share', label: 'Share links', count: liveLinks },
+        ]}
+      />
 
       <TabPanel id="accounts" value={tab} idPrefix="usr">
         <div className="stack">
           {adding && (
-            <Panel title="Add an account" right={<button className="btn btn-sm" onClick={() => setAdding(false)}>Cancel</button>}>
+            <Section
+              variant="panel"
+              title="Add an account"
+              actions={
+                <button className="btn btn-sm" onClick={() => setAdding(false)}>
+                  Cancel
+                </button>
+              }
+            >
               <div id="add-account">
                 <form
                   className="user-new"
                   onSubmit={(e) => {
                     e.preventDefault()
-                    create.mutate({ ...newUser, username: newUser.username.trim(), displayName: newUser.displayName.trim() || undefined }, {
-                      onSuccess: () => { setNewUser({ username: '', password: '', role: 'viewer', displayName: '' }); setAdding(false) },
-                    })
+                    create.mutate(
+                      {
+                        ...newUser,
+                        username: newUser.username.trim(),
+                        displayName: newUser.displayName.trim() || undefined,
+                      },
+                      {
+                        onSuccess: () => {
+                          setNewUser({ username: '', password: '', role: 'viewer', displayName: '' })
+                          setAdding(false)
+                        },
+                      },
+                    )
                   }}
                 >
                   <label className="auth-field">
                     <span>Username</span>
-                    <input className="input" value={newUser.username} onChange={(e) => setNewUser({ ...newUser, username: e.target.value })} required />
+                    <input
+                      className="input"
+                      value={newUser.username}
+                      onChange={(e) => setNewUser({ ...newUser, username: e.target.value })}
+                      required
+                    />
                   </label>
                   <label className="auth-field">
                     <span>Display name</span>
-                    <input className="input" value={newUser.displayName} placeholder="optional" onChange={(e) => setNewUser({ ...newUser, displayName: e.target.value })} />
+                    <input
+                      className="input"
+                      value={newUser.displayName}
+                      placeholder="optional"
+                      onChange={(e) => setNewUser({ ...newUser, displayName: e.target.value })}
+                    />
                   </label>
                   <label className="auth-field">
                     <span>Temporary password</span>
-                    <input className="input" type="password" autoComplete="new-password" value={newUser.password} onChange={(e) => setNewUser({ ...newUser, password: e.target.value })} required />
+                    <input
+                      className="input"
+                      type="password"
+                      autoComplete="new-password"
+                      value={newUser.password}
+                      onChange={(e) => setNewUser({ ...newUser, password: e.target.value })}
+                      required
+                    />
                   </label>
                   <label className="auth-field">
                     <span>Access</span>
-                    <select className="select" value={newUser.role} onChange={(e) => setNewUser({ ...newUser, role: e.target.value as Role })}>
-                      {roles.map((r) => (<option key={r.role} value={r.role}>{r.label}</option>))}
+                    <select
+                      className="select"
+                      value={newUser.role}
+                      onChange={(e) => setNewUser({ ...newUser, role: e.target.value as Role })}
+                    >
+                      {roles.map((r) => (
+                        <option key={r.role} value={r.role}>
+                          {r.label}
+                        </option>
+                      ))}
                     </select>
                   </label>
-                  <button className="btn btn-primary" type="submit" disabled={create.isPending || !newUser.username || !newUser.password}>
+                  <button
+                    className="btn btn-primary"
+                    type="submit"
+                    disabled={create.isPending || !newUser.username || !newUser.password}
+                  >
                     {create.isPending ? 'Creating…' : 'Create account'}
                   </button>
                 </form>
                 {create.isError && <Callout tone="danger">{(create.error as Error).message}</Callout>}
                 <p className="muted small mt">{ROLE_HELP[newUser.role]}</p>
               </div>
-            </Panel>
+            </Section>
           )}
 
-          <Panel title="Accounts" pad={false}>
+          <Section variant="panel" title="Accounts" pad={false}>
             <QueryState {...users} data={users.data} empty="No accounts." onRetry={() => users.refetch()}>
               {(d) =>
                 d.users.length === 0 ? (
@@ -128,7 +227,10 @@ export default function Users() {
                             <tr key={u.id}>
                               <td>
                                 <strong>{u.displayName || u.username}</strong>
-                                <div className="muted small mono">{u.username}{isMe ? ' · you' : ''}</div>
+                                <div className="muted small mono">
+                                  {u.username}
+                                  {isMe ? ' · you' : ''}
+                                </div>
                               </td>
                               <td>
                                 <select
@@ -136,24 +238,61 @@ export default function Users() {
                                   aria-label={`Access level for ${u.username}`}
                                   value={u.role}
                                   disabled={update.isPending || isMe}
-                                  title={isMe ? 'Change your own access from another administrator account' : ROLE_HELP[u.role]}
-                                  onChange={(e) => update.mutate({ id: u.id, body: { role: e.target.value as Role } })}
+                                  title={
+                                    isMe
+                                      ? 'Change your own access from another administrator account'
+                                      : ROLE_HELP[u.role]
+                                  }
+                                  onChange={(e) =>
+                                    update.mutate({ id: u.id, body: { role: e.target.value as Role } })
+                                  }
                                 >
-                                  {roles.map((r) => (<option key={r.role} value={r.role}>{r.label}</option>))}
+                                  {roles.map((r) => (
+                                    <option key={r.role} value={r.role}>
+                                      {r.label}
+                                    </option>
+                                  ))}
                                 </select>
                               </td>
                               <td className="mono small">{fmt(u.createdAt)}</td>
                               <td className="mono small">{fmt(u.lastLoginAt)}</td>
-                              <td><Pill tone={u.disabled ? 'danger' : tone(u.role)}>{u.disabled ? 'Disabled' : 'Active'}</Pill></td>
+                              <td>
+                                <Pill tone={u.disabled ? 'danger' : tone(u.role)}>
+                                  {u.disabled ? 'Disabled' : 'Active'}
+                                </Pill>
+                              </td>
                               <td className="row-actions">
-                                <button className="btn btn-sm" disabled={update.isPending || isMe} onClick={() => update.mutate({ id: u.id, body: { disabled: !u.disabled } })}>
+                                <button
+                                  className="btn btn-sm"
+                                  disabled={update.isPending || isMe}
+                                  onClick={() => update.mutate({ id: u.id, body: { disabled: !u.disabled } })}
+                                >
                                   {u.disabled ? 'Enable' : 'Disable'}
                                 </button>
-                                <button className="btn btn-sm" disabled={revoke.isPending} onClick={() => revoke.mutate(u.id)} title="Sign this account out everywhere">
+                                <button
+                                  className="btn btn-sm"
+                                  disabled={revoke.isPending}
+                                  onClick={() => revoke.mutate(u.id)}
+                                  title="Sign this account out everywhere"
+                                >
                                   Sign out
                                 </button>
-                                <button className="btn btn-sm" onClick={() => { setResetting(u); setResetPassword('') }}>Set password</button>
-                                <button className="btn btn-sm btn-danger" disabled={isMe} onClick={() => setConfirmDelete(u)}>Delete</button>
+                                <button
+                                  className="btn btn-sm"
+                                  onClick={() => {
+                                    setResetting(u)
+                                    setResetPassword('')
+                                  }}
+                                >
+                                  Set password
+                                </button>
+                                <button
+                                  className="btn btn-sm btn-danger"
+                                  disabled={isMe}
+                                  onClick={() => setConfirmDelete(u)}
+                                >
+                                  Delete
+                                </button>
                               </td>
                             </tr>
                           )
@@ -164,12 +303,16 @@ export default function Users() {
                 )
               }
             </QueryState>
-          </Panel>
+          </Section>
           {(update.isError || remove.isError || revoke.isError) && (
-            <Callout tone="danger">{((update.error ?? remove.error ?? revoke.error) as Error).message}</Callout>
+            <Callout tone="danger">
+              {((update.error ?? remove.error ?? revoke.error) as Error).message}
+            </Callout>
           )}
           <p className="muted small">
-            The server checks access on every request, so an account that may not trade cannot do so by any route, not only by hiding the buttons. The last administrator cannot be deleted, demoted or disabled.
+            The server checks access on every request, so an account that may not trade cannot do so by any
+            route, not only by hiding the buttons. The last administrator cannot be deleted, demoted or
+            disabled.
           </p>
         </div>
       </TabPanel>
@@ -177,41 +320,108 @@ export default function Users() {
       <TabPanel id="share" value={tab} idPrefix="usr">
         <div className="stack">
           <Callout tone="info" title="Read-only, expiring, revocable">
-            A link signs its visitor in as the read-only guest account: every page, no actions, not even a backtest. The link is shown once, when you make it. Revoking it ends every guest session. (Decision 117.)
+            A link signs its visitor in as the read-only guest account: every page, no actions, not even a
+            backtest. The link is shown once, when you make it. Revoking it ends every guest session.
+            (Decision 117.)
           </Callout>
-          <Panel title="Make a link">
+          <Section variant="panel" title="Make a link">
             <form
               className="share-form"
-              onSubmit={(e) => { e.preventDefault(); mint.mutate({ label: newLink.label.trim(), hours: newLink.hours }) }}
+              onSubmit={(e) => {
+                e.preventDefault()
+                mint.mutate({ label: newLink.label.trim(), hours: newLink.hours })
+              }}
             >
-              <label>Label (who it is for)<input className="input" placeholder="for example, a reviewer" value={newLink.label} onChange={(e) => setNewLink({ ...newLink, label: e.target.value })} maxLength={80} /></label>
-              <label>Valid for (hours)<input className="input" type="number" min={1} max={share.data?.maxHours ?? 336} value={newLink.hours} onChange={(e) => setNewLink({ ...newLink, hours: Number(e.target.value) })} style={{ width: 110 }} /></label>
-              <button className="btn btn-primary" type="submit" disabled={mint.isPending}>{mint.isPending ? 'Making…' : 'Make a link'}</button>
+              <label>
+                Label (who it is for)
+                <input
+                  className="input"
+                  placeholder="for example, a reviewer"
+                  value={newLink.label}
+                  onChange={(e) => setNewLink({ ...newLink, label: e.target.value })}
+                  maxLength={80}
+                />
+              </label>
+              <label>
+                Valid for (hours)
+                <input
+                  className="input"
+                  type="number"
+                  min={1}
+                  max={share.data?.maxHours ?? 336}
+                  value={newLink.hours}
+                  onChange={(e) => setNewLink({ ...newLink, hours: Number(e.target.value) })}
+                  style={{ width: 110 }}
+                />
+              </label>
+              <button className="btn btn-primary" type="submit" disabled={mint.isPending}>
+                {mint.isPending ? 'Making…' : 'Make a link'}
+              </button>
             </form>
             {mint.isError && <Callout tone="danger">{(mint.error as Error).message}</Callout>}
             {minted && (
               <Callout tone="warn" title={`Link for ${minted.link.label || 'unnamed'}`}>
                 Valid until {fmt(minted.link.expiresAt)}. Copy it now; it will not be shown again.
-                <span className="share-url"><code className="mono small">{minted.url}</code> <button className="btn btn-xs" onClick={() => void navigator.clipboard?.writeText(minted.url)}>Copy</button></span>
+                <span className="share-url">
+                  <code className="mono small">{minted.url}</code>{' '}
+                  <button
+                    className="btn btn-xs"
+                    onClick={() => void navigator.clipboard?.writeText(minted.url)}
+                  >
+                    Copy
+                  </button>
+                </span>
               </Callout>
             )}
-          </Panel>
-          <Panel title="Links made" pad={false}>
+          </Section>
+          <Section variant="panel" title="Links made" pad={false}>
             {links.length === 0 ? (
-              <EmptyState title="No share links" hint="Make one for a reviewer who needs to look but not touch." />
+              <EmptyState
+                title="No share links"
+                hint="Make one for a reviewer who needs to look but not touch."
+              />
             ) : (
               <div className="table-wrap">
                 <table className="table small">
-                  <thead><tr><th>label</th><th>made</th><th>expires</th><th className="num">opened</th><th>last opened</th><th>state</th><th><span className="sr-only">Actions</span></th></tr></thead>
+                  <thead>
+                    <tr>
+                      <th>label</th>
+                      <th>made</th>
+                      <th>expires</th>
+                      <th className="num">opened</th>
+                      <th>last opened</th>
+                      <th>state</th>
+                      <th>
+                        <span className="sr-only">Actions</span>
+                      </th>
+                    </tr>
+                  </thead>
                   <tbody>
                     {links.map((l) => {
                       const live = !l.revokedAt && l.expiresAt > now
                       return (
                         <tr key={l.id}>
-                          <td>{l.label || <span className="muted">unnamed</span>}</td><td className="muted">{fmt(l.createdAt)}</td><td>{fmt(l.expiresAt)}</td>
-                          <td className="num mono">{l.uses}</td><td className="muted">{fmt(l.lastUsedAt)}</td>
-                          <td><Pill tone={live ? 'ok' : 'muted'}>{l.revokedAt ? 'revoked' : live ? 'live' : 'expired'}</Pill></td>
-                          <td className="num">{live && <button className="btn btn-xs" onClick={() => unshare.mutate(l.id)} disabled={unshare.isPending}>Revoke</button>}</td>
+                          <td>{l.label || <span className="muted">unnamed</span>}</td>
+                          <td className="muted">{fmt(l.createdAt)}</td>
+                          <td>{fmt(l.expiresAt)}</td>
+                          <td className="num mono">{l.uses}</td>
+                          <td className="muted">{fmt(l.lastUsedAt)}</td>
+                          <td>
+                            <Pill tone={live ? 'ok' : 'muted'}>
+                              {l.revokedAt ? 'revoked' : live ? 'live' : 'expired'}
+                            </Pill>
+                          </td>
+                          <td className="num">
+                            {live && (
+                              <button
+                                className="btn btn-xs"
+                                onClick={() => unshare.mutate(l.id)}
+                                disabled={unshare.isPending}
+                              >
+                                Revoke
+                              </button>
+                            )}
+                          </td>
                         </tr>
                       )
                     })}
@@ -219,7 +429,7 @@ export default function Users() {
                 </table>
               </div>
             )}
-          </Panel>
+          </Section>
         </div>
       </TabPanel>
 
@@ -228,14 +438,37 @@ export default function Users() {
         title={`Set a new password for ${resetting?.username ?? ''}?`}
         body={
           <>
-            <p className="muted small">This signs the account out everywhere. Tell them the new password over a channel you trust.</p>
-            <input className="input" type="password" autoComplete="new-password" placeholder="New password" value={resetPassword} onChange={(e) => setResetPassword(e.target.value)} />
+            <p className="muted small">
+              This signs the account out everywhere. Tell them the new password over a channel you trust.
+            </p>
+            <input
+              className="input"
+              type="password"
+              autoComplete="new-password"
+              placeholder="New password"
+              value={resetPassword}
+              onChange={(e) => setResetPassword(e.target.value)}
+            />
           </>
         }
         confirmLabel="Set password"
         busy={update.isPending}
-        onConfirm={() => { if (resetting) update.mutate({ id: resetting.id, body: { password: resetPassword } }, { onSuccess: () => { setResetting(null); setResetPassword('') } }) }}
-        onCancel={() => { setResetting(null); setResetPassword('') }}
+        onConfirm={() => {
+          if (resetting)
+            update.mutate(
+              { id: resetting.id, body: { password: resetPassword } },
+              {
+                onSuccess: () => {
+                  setResetting(null)
+                  setResetPassword('')
+                },
+              },
+            )
+        }}
+        onCancel={() => {
+          setResetting(null)
+          setResetPassword('')
+        }}
       />
 
       <ConfirmDialog
@@ -244,7 +477,9 @@ export default function Users() {
         body={<p className="muted small">The account and its sessions are removed. This cannot be undone.</p>}
         confirmLabel="Delete account"
         busy={remove.isPending}
-        onConfirm={() => { if (confirmDelete) remove.mutate(confirmDelete.id, { onSuccess: () => setConfirmDelete(null) }) }}
+        onConfirm={() => {
+          if (confirmDelete) remove.mutate(confirmDelete.id, { onSuccess: () => setConfirmDelete(null) })
+        }}
         onCancel={() => setConfirmDelete(null)}
       />
     </div>

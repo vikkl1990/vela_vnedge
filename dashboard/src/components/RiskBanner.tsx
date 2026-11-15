@@ -17,27 +17,46 @@ export function RiskBanner() {
 
   const items: Item[] = []
   const r = risk.data
-  if (r?.halted) items.push({ tone: 'danger', text: `Entries halted — ${r.haltReason ?? 'risk limit'}`, hint: 'Open positions still run to their exits. A daily or weekly trip resets at the next UTC period, or now with “Resume entries” in the top bar.' })
-  if (r && !r.halted && r.day?.tripped) items.push({ tone: 'warn', text: `Daily loss limit reached (${fmtPct(r.day.pnlPct, 1, true)} of ${r.day.limitPct}%)` })
+  if (r?.halted)
+    items.push({
+      tone: 'danger',
+      text: `Entries halted — ${r.haltReason ?? 'risk limit'}`,
+      hint: 'Open positions still run to their exits. A daily or weekly trip resets at the next UTC period, or now with “Resume entries” in the top bar.',
+    })
+  if (r && !r.halted && r.day?.tripped)
+    items.push({
+      tone: 'warn',
+      text: `Daily loss limit reached (${fmtPct(r.day.pnlPct, 1, true)} of ${r.day.limitPct}%)`,
+    })
   // the drawdown size scaling is a standing rule, not an alarm: it shows as a quiet "Size" stat in the top bar
 
   const e = exec.data
   if (e && e.mode !== 'paper') {
     const drift = e.lastReconcile?.drift ?? []
-    if (drift.length) items.push({ tone: 'danger', text: `Exchange out of step with the book: ${drift.length} difference${drift.length > 1 ? 's' : ''}`, hint: 'The paper book and the exchange account disagree. Reconcile before trading further.' })
-    if (e.lastReconcile?.error) items.push({ tone: 'warn', text: `Reconciliation failed: ${e.lastReconcile.error}` })
-    if (e.bracket) {
-      const unprotected = (positions.data ?? []).filter((p) => !e.brackets.some((b) => b.positionId === p.id && b.stop))
-      if (unprotected.length) items.push({
+    if (drift.length)
+      items.push({
         tone: 'danger',
-        text: `${unprotected.length} position${unprotected.length > 1 ? 's' : ''} without a stop order on ${e.host ?? 'the exchange'}: ${unprotected.map((p) => p.symbol).join(', ')}`,
-        hint: 'The paper stop still applies, but nothing protects the exchange position if this bot stops.',
+        text: `Exchange out of step with the book: ${drift.length} difference${drift.length > 1 ? 's' : ''}`,
+        hint: 'The paper book and the exchange account disagree. Reconcile before trading further.',
       })
+    if (e.lastReconcile?.error)
+      items.push({ tone: 'warn', text: `Reconciliation failed: ${e.lastReconcile.error}` })
+    if (e.bracket) {
+      const unprotected = (positions.data ?? []).filter(
+        (p) => !e.brackets.some((b) => b.positionId === p.id && b.stop),
+      )
+      if (unprotected.length)
+        items.push({
+          tone: 'danger',
+          text: `${unprotected.length} position${unprotected.length > 1 ? 's' : ''} without a stop order on ${e.host ?? 'the exchange'}: ${unprotected.map((p) => p.symbol).join(', ')}`,
+          hint: 'The paper stop still applies, but nothing protects the exchange position if this bot stops.',
+        })
     }
   }
 
   const feed = health.data?.feed
-  if (health.data && feed && !feed.connected) items.push({ tone: 'danger', text: 'Market data feed disconnected — prices and P&L are not live' })
+  if (health.data && feed && !feed.connected)
+    items.push({ tone: 'danger', text: 'Market data feed disconnected — prices and P&L are not live' })
 
   if (!items.length) return null
   return (
@@ -46,7 +65,11 @@ export function RiskBanner() {
         <div key={i} className={`risk-banner-item risk-${it.tone}`}>
           <strong>{it.text}</strong>
           {it.hint && <span className="muted small"> {it.hint}</span>}
-          {i === 0 && <Link className="link small ml" to="/settings">Settings</Link>}
+          {i === 0 && (
+            <Link className="link small ml" to="/settings">
+              Settings
+            </Link>
+          )}
         </div>
       ))}
     </div>
