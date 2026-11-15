@@ -86,6 +86,33 @@ test('live jobs dispatch before queued background work', async t => {
   await Promise.all([bg1, bg2]);
 });
 
+test('decision 268: a higher-ranked live job overtakes queued lower-ranked ones; equal ranks keep arrival order', async t => {
+  const { pool, workers } = setup(); t.after(() => pool.stop());
+  const run = (id: string, rank?: number) => pool.run({ ...job, scannerId: id }, { priority: 'live', ...(rank === undefined ? {} : { rank }) });
+  // a bar close queues every timeframe that ended at that instant, the shortest first: 15m, 15m, 1h, unranked, 4h, 1h
+  const all = [run('a15', 900), run('b15', 900), run('c1h', 3600), run('plain'), run('d4h', 14400), run('e1h', 3600)];
+  workers[0].ready();
+  for (let i = 0; i < 6; i++) workers[0].finish();
+  await Promise.all(all);
+  assert.deepEqual(workers[0].jobs.map(j => j.scannerId), ['d4h', 'c1h', 'e1h', 'a15', 'b15', 'plain']);
+});
+
+test('decision 268: rank does not lift a live job past its deadline, nor past the mirror and background queues', async t => {
+  t.mock.timers.enable({ apis: ['Date', 'setInterval'], now: 1_000 });
+  const { pool, workers } = setup(); t.after(() => pool.stop());
+  const bg = pool.run({ ...job, scannerId: 'bg' });
+  const mirror = pool.run({ ...job, scannerId: 'mirror' }, { priority: 'mirror' });
+  const old = pool.run({ ...job, scannerId: 'old4h' }, { priority: 'live', rank: 14400, deadlineMs: 5_000 });
+  t.mock.timers.tick(6_000);
+  const fresh = pool.run({ ...job, scannerId: 'fresh15m' }, { priority: 'live', rank: 900 });
+  workers[0].ready();
+  assert.equal((await old).ok, false, 'the old job was dropped, not run late');
+  assert.equal(workers[0].jobs[0].scannerId, 'fresh15m', 'live still precedes mirror and background');
+  workers[0].finish(); workers[0].finish(); workers[0].finish();
+  await Promise.all([bg, mirror, fresh]);
+  assert.deepEqual(workers[0].jobs.map(j => j.scannerId), ['fresh15m', 'mirror', 'bg']);
+});
+
 test('a live job that waited past its deadline is dropped, not run late', async t => {
   t.mock.timers.enable({ apis: ['Date', 'setInterval'], now: 1_000 });
   const { pool, workers } = setup(); t.after(() => pool.stop());
