@@ -27,7 +27,7 @@ test('six import plans retain 73 existing plans and every capital, evidence and 
  assert.deepEqual({...after,executionPlans:raw.executionPlans},raw);
  assert.deepEqual(after.executionPlans.slice(0,73),raw.executionPlans);
  assert.equal(enableVnedgeImportShadow(file).changed,false);
- after.executionPlans.push({...raw.executionPlans[0],id:'overflow'});fs.writeFileSync(file,JSON.stringify(after));
+ while(after.executionPlans.length<=MAX_RESEARCH_PLANS)after.executionPlans.push({...raw.executionPlans[0],id:`overflow-${after.executionPlans.length}`});fs.writeFileSync(file,JSON.stringify(after));
  assert.throws(()=>enableVnedgeImportShadow(file),new RegExp(String(MAX_RESEARCH_PLANS)));
 });
 test('new native policies remain disabled for paper and preserve economics with no invented targets or trailing',t=>{
