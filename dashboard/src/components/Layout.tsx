@@ -31,7 +31,7 @@ import { QueryFreshness } from './QueryFreshness'
 import { RiskBanner } from './RiskBanner'
 import { CommandPalette } from './shell/CommandPalette'
 import { HubNav } from './shell/HubNav'
-import { ACCOUNT_PAGES, PHONE_TABS, routeMeta, visibleGroups } from './shell/nav'
+import { ACCOUNT_PAGES, PHONE_TABS, routeMeta, visibleGroups, visibleModel } from './shell/nav'
 import { Sidebar, type Connection } from './shell/Sidebar'
 import { Topbar } from './shell/Topbar'
 import { WorkflowGuide } from './WorkflowGuide'
@@ -87,8 +87,11 @@ export function Layout() {
   const auth = useAuth()
   const groups = useMemo(() => visibleGroups(auth.isAdmin), [auth.isAdmin])
   const nav = useMemo(
-    () => [...groups.flatMap((g) => g.items), ...ACCOUNT_PAGES.filter((p) => !p.adminOnly || auth.isAdmin)],
-    [groups, auth.isAdmin],
+    () => [
+      ...visibleModel(auth.isAdmin).flatMap((g) => g.items),
+      ...ACCOUNT_PAGES.filter((p) => !p.adminOnly || auth.isAdmin),
+    ],
+    [auth.isAdmin],
   )
 
   // ---- sidebar: collapsed to icons on a desktop (remembered), a drawer on a phone ----

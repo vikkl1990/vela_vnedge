@@ -51,6 +51,9 @@ test('Grouped signals expose one inspector and real filter buttons', async ({ pa
   await expect(page.locator('#signal-cell-details')).toBeVisible()
   await page.getByRole('tab', { name: 'What became of them' }).click()
   await expect(page.getByRole('tabpanel')).toContainText('What became of the last 206 signals')
+  await page.keyboard.press('g')
+  await page.keyboard.press('s')
+  await expect(page).toHaveURL(/\/strategies\/scanners/)
 })
 
 test('Heatmap pages every pair with keyboard selection and one detail pane', async ({
