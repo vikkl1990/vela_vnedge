@@ -1,0 +1,46 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 VNEDGE contributors. See scripts/licenses/vnedge-MIT.txt.
+// Pine port of vnedge trend_continuation_v1 at f8a2505843c9aaa04a7cf210db433879d44c0d90.
+// Matches VELA_Delta_BOT's OHLC-only adapter: funding is not supplied (assumed zero).
+// Funding charges and all admission/risk checks remain the execution engine's responsibility.
+//@version=6
+indicator("VN EDGE Trend Continuation v1 (OHLC)", overlay=true, max_bars_back=500)
+erTrendMin = input.float(0.30, "erTrendMin", minval=0.0, maxval=1.0)
+maxAtrPercentile = input.float(0.90, "maxAtrPercentile", minval=0.0, maxval=1.0)
+
+// pandas ewm(adjust=False): first-close seed, not SMA or Wilder smoothing.
+var float fast = na
+var float slow = na
+fast := na(fast[1]) ? close : (2.0 / 25.0) * close + (23.0 / 25.0) * fast[1]
+slow := na(slow[1]) ? close : (2.0 / 97.0) * close + (95.0 / 97.0) * slow[1]
+tr = bar_index == 0 ? na : math.max(high-low, math.max(math.abs(high-close[1]), math.abs(low-close[1])))
+atr = ta.sma(tr, 24)
+pathLength = math.sum(math.abs(ta.change(close)), 48)
+er = pathLength > 0 ? math.abs(close-close[48]) / pathLength : na
+priorHigh = ta.highest(close[1], 48)
+priorLow = ta.lowest(close[1], 48)
+// Midrank includes the current value; ties contribute half. Warmup includes first TR=na.
+float rank = na
+if bar_index >= 263 and not na(atr[239])
+    float less = 0
+    float equal = 0
+    for j = 0 to 239
+        less += atr[j] < atr ? 1 : 0
+        equal += atr[j] == atr ? 1 : 0
+    rank := (less + 0.5 * equal) / 240.0
+ready = barstate.isconfirmed and bar_index >= 263 and not na(er) and not na(rank) and atr > 0
+buy = ready and er >= erTrendMin and fast > slow and close > priorHigh and rank <= maxAtrPercentile
+sell = ready and er >= erTrendMin and fast < slow and close < priorLow and rank <= maxAtrPercentile
+direction = buy ? 1 : sell ? -1 : 0
+stop = direction == 0 ? na : close-direction*2.0*atr
+target = direction == 0 ? na : close+direction*4.0*atr
+plot(fast, "EMA 24", color=color.teal)
+plot(slow, "EMA 96", color=color.orange)
+plotshape(buy, "Confirmed long", shape.triangleup, location.belowbar, color=color.lime)
+plotshape(sell, "Confirmed short", shape.triangledown, location.abovebar, color=color.red)
+plot(direction, "VNEDGE lifecycle v1 entry", display=display.none)
+plot(nz(stop, 0), "VNEDGE lifecycle v1 stop", display=display.none)
+plot(nz(target, 0), "VNEDGE lifecycle v1 tp1", display=display.none)
+plot(er, "Efficiency ratio", display=display.none)
+plot(rank, "ATR midrank", display=display.none)
+plot(atr, "ATR SMA 24", display=display.none)

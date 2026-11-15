@@ -1,0 +1,352 @@
+{
+  "verifiedAt": "2026-11-15T06:32:19.335Z",
+  "scope": "mechanics only: synthetic OHLC tape/depth; NOT executable historical fills or profitability evidence",
+  "simulation": {
+    "fillSource": "tape",
+    "latencyMs": 1500,
+    "marginPerTrade": 150,
+    "maxStopLossPct": 3,
+    "referenceEquity": 1000,
+    "quoteRequirement": false,
+    "spreadModel": "synthetic 2 bps bid/ask",
+    "contractValue": 0.01,
+    "tickSize": 0.05,
+    "admissionContext": "offline; market regime/liquidity callback not replayed",
+    "funding": "not replayed",
+    "purpose": "Lifecycle mechanics only, not profit or deploy-to-paper evidence"
+  },
+  "continuousActivation": "six isolated research plans; no account/risk/evidence changes",
+  "reports": [
+    {
+      "id": "stealthtrail-supertrend-author-native-v1",
+      "symbol": "BTCUSD",
+      "tf": "15m",
+      "bars": 1500,
+      "from": 1793369700000,
+      "to": 1794718800000,
+      "control": "stealthtrail-supertrend",
+      "sourceHash": "eadb4d436ef6e77db58a171a90021c785bf8b2b67856b4dba3eecf1017186377",
+      "currentReading": {
+        "entries": 50,
+        "exits": 24,
+        "stopAmendments": 0
+      },
+      "candidateReading": {
+        "entries": 50,
+        "exits": 69,
+        "stopAmendments": 16
+      },
+      "prefixChecks": 5,
+      "restarts": 8,
+      "filled": 13,
+      "closed": 13,
+      "open": 0,
+      "maxRisk": 12.335355643355006,
+      "eligible": 0,
+      "admission": [
+        {
+          "action": "opened",
+          "reason": null,
+          "n": 13
+        },
+        {
+          "action": "rejected",
+          "reason": "native re-entry refused; existing close retained: risk budget too small for one contract",
+          "n": 1
+        },
+        {
+          "action": "rejected",
+          "reason": "risk budget too small for one contract",
+          "n": 12
+        },
+        {
+          "action": "rejected",
+          "reason": "stop too tight for fees (0.21% stop vs 0.12% round-trip cost; need \u2265 4\u00d7)",
+          "n": 1
+        },
+        {
+          "action": "rejected",
+          "reason": "stop too tight for fees (0.22% stop vs 0.12% round-trip cost; need \u2265 4\u00d7)",
+          "n": 3
+        },
+        {
+          "action": "rejected",
+          "reason": "stop too tight for fees (0.23% stop vs 0.12% round-trip cost; need \u2265 4\u00d7)",
+          "n": 1
+        },
+        {
+          "action": "rejected",
+          "reason": "stop too tight for fees (0.25% stop vs 0.12% round-trip cost; need \u2265 4\u00d7)",
+          "n": 1
+        },
+        {
+          "action": "rejected",
+          "reason": "stop too tight for fees (0.31% stop vs 0.12% round-trip cost; need \u2265 4\u00d7)",
+          "n": 1
+        },
+        {
+          "action": "rejected",
+          "reason": "stop too tight for fees (0.33% stop vs 0.12% round-trip cost; need \u2265 4\u00d7)",
+          "n": 2
+        },
+        {
+          "action": "rejected",
+          "reason": "stop too tight for fees (0.40% stop vs 0.12% round-trip cost; need \u2265 4\u00d7)",
+          "n": 1
+        },
+        {
+          "action": "rejected",
+          "reason": "stop too wide for the 3% max stop-loss cap",
+          "n": 1
+        }
+      ]
+    },
+    {
+      "id": "vnedge-trend-continuation-v1",
+      "symbol": "BTCUSD",
+      "tf": "1h",
+      "bars": 1500,
+      "from": 1789318800000,
+      "to": 1794715200000,
+      "sourceHash": "85fc01649a64de815b917807ed9088ea262da5cea9793a7bc018bef352fd4f8b",
+      "currentReading": {
+        "entries": 0,
+        "exits": 0,
+        "stopAmendments": 0
+      },
+      "candidateReading": {
+        "entries": 32,
+        "exits": 0,
+        "stopAmendments": 0
+      },
+      "prefixChecks": 4,
+      "restarts": 8,
+      "filled": 5,
+      "closed": 5,
+      "open": 0,
+      "maxRisk": 14.058569193291932,
+      "eligible": 0,
+      "admission": [
+        {
+          "action": "ignored",
+          "reason": "already in position",
+          "n": 6
+        },
+        {
+          "action": "opened",
+          "reason": null,
+          "n": 5
+        },
+        {
+          "action": "rejected",
+          "reason": "risk budget too small for one contract",
+          "n": 18
+        },
+        {
+          "action": "rejected",
+          "reason": "stop too tight for fees (0.40% stop vs 0.12% round-trip cost; need \u2265 4\u00d7)",
+          "n": 1
+        },
+        {
+          "action": "rejected",
+          "reason": "stop too tight for fees (0.43% stop vs 0.12% round-trip cost; need \u2265 4\u00d7)",
+          "n": 2
+        }
+      ]
+    },
+    {
+      "id": "stealthtrail-supertrend-author-native-v1",
+      "symbol": "ETHUSD",
+      "tf": "15m",
+      "bars": 1500,
+      "from": 1793369700000,
+      "to": 1794718800000,
+      "control": "stealthtrail-supertrend",
+      "sourceHash": "eadb4d436ef6e77db58a171a90021c785bf8b2b67856b4dba3eecf1017186377",
+      "currentReading": {
+        "entries": 36,
+        "exits": 15,
+        "stopAmendments": 0
+      },
+      "candidateReading": {
+        "entries": 36,
+        "exits": 53,
+        "stopAmendments": 11
+      },
+      "prefixChecks": 4,
+      "restarts": 8,
+      "filled": 24,
+      "closed": 23,
+      "open": 1,
+      "maxRisk": 29.214451482527984,
+      "eligible": 0,
+      "admission": [
+        {
+          "action": "opened",
+          "reason": null,
+          "n": 24
+        },
+        {
+          "action": "rejected",
+          "reason": "native re-entry refused; existing close retained: stop too tight for fees (0.45% stop vs 0.12% round-trip cost; need \u2265 4\u00d7)",
+          "n": 1
+        },
+        {
+          "action": "rejected",
+          "reason": "stop too tight for fees (0.21% stop vs 0.12% round-trip cost; need \u2265 4\u00d7)",
+          "n": 1
+        },
+        {
+          "action": "rejected",
+          "reason": "stop too tight for fees (0.32% stop vs 0.12% round-trip cost; need \u2265 4\u00d7)",
+          "n": 1
+        },
+        {
+          "action": "rejected",
+          "reason": "stop too tight for fees (0.33% stop vs 0.12% round-trip cost; need \u2265 4\u00d7)",
+          "n": 1
+        },
+        {
+          "action": "rejected",
+          "reason": "stop too tight for fees (0.35% stop vs 0.12% round-trip cost; need \u2265 4\u00d7)",
+          "n": 1
+        },
+        {
+          "action": "rejected",
+          "reason": "stop too tight for fees (0.36% stop vs 0.12% round-trip cost; need \u2265 4\u00d7)",
+          "n": 1
+        },
+        {
+          "action": "rejected",
+          "reason": "stop too tight for fees (0.40% stop vs 0.12% round-trip cost; need \u2265 4\u00d7)",
+          "n": 1
+        },
+        {
+          "action": "rejected",
+          "reason": "stop too tight for fees (0.44% stop vs 0.12% round-trip cost; need \u2265 4\u00d7)",
+          "n": 1
+        },
+        {
+          "action": "rejected",
+          "reason": "stop too tight for fees (0.46% stop vs 0.12% round-trip cost; need \u2265 4\u00d7)",
+          "n": 1
+        }
+      ]
+    },
+    {
+      "id": "vnedge-trend-continuation-v1",
+      "symbol": "ETHUSD",
+      "tf": "1h",
+      "bars": 1500,
+      "from": 1789318800000,
+      "to": 1794715200000,
+      "sourceHash": "85fc01649a64de815b917807ed9088ea262da5cea9793a7bc018bef352fd4f8b",
+      "currentReading": {
+        "entries": 0,
+        "exits": 0,
+        "stopAmendments": 0
+      },
+      "candidateReading": {
+        "entries": 39,
+        "exits": 0,
+        "stopAmendments": 0
+      },
+      "prefixChecks": 4,
+      "restarts": 8,
+      "filled": 14,
+      "closed": 14,
+      "open": 0,
+      "maxRisk": 18.275624902976954,
+      "eligible": 0,
+      "admission": [
+        {
+          "action": "ignored",
+          "reason": "already in position",
+          "n": 25
+        },
+        {
+          "action": "opened",
+          "reason": null,
+          "n": 14
+        }
+      ]
+    },
+    {
+      "id": "stealthtrail-supertrend-author-native-v1",
+      "symbol": "SOLUSD",
+      "tf": "15m",
+      "bars": 1500,
+      "from": 1793369700000,
+      "to": 1794718800000,
+      "control": "stealthtrail-supertrend",
+      "sourceHash": "eadb4d436ef6e77db58a171a90021c785bf8b2b67856b4dba3eecf1017186377",
+      "currentReading": {
+        "entries": 42,
+        "exits": 16,
+        "stopAmendments": 0
+      },
+      "candidateReading": {
+        "entries": 42,
+        "exits": 54,
+        "stopAmendments": 10
+      },
+      "prefixChecks": 4,
+      "restarts": 8,
+      "filled": 30,
+      "closed": 29,
+      "open": 1,
+      "maxRisk": 29.765357001468722,
+      "eligible": 0,
+      "admission": [
+        {
+          "action": "opened",
+          "reason": null,
+          "n": 30
+        },
+        {
+          "action": "rejected",
+          "reason": "stop too tight for fees (0.38% stop vs 0.12% round-trip cost; need \u2265 4\u00d7)",
+          "n": 1
+        }
+      ]
+    },
+    {
+      "id": "vnedge-trend-continuation-v1",
+      "symbol": "SOLUSD",
+      "tf": "1h",
+      "bars": 1500,
+      "from": 1789318800000,
+      "to": 1794715200000,
+      "sourceHash": "85fc01649a64de815b917807ed9088ea262da5cea9793a7bc018bef352fd4f8b",
+      "currentReading": {
+        "entries": 0,
+        "exits": 0,
+        "stopAmendments": 0
+      },
+      "candidateReading": {
+        "entries": 22,
+        "exits": 0,
+        "stopAmendments": 0
+      },
+      "prefixChecks": 3,
+      "restarts": 8,
+      "filled": 10,
+      "closed": 9,
+      "open": 1,
+      "maxRisk": 24.631879583765215,
+      "eligible": 0,
+      "admission": [
+        {
+          "action": "ignored",
+          "reason": "already in position",
+          "n": 12
+        },
+        {
+          "action": "opened",
+          "reason": null,
+          "n": 10
+        }
+      ]
+    }
+  ]
+}
