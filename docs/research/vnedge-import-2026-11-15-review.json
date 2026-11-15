@@ -1,0 +1,92 @@
+{
+  "schema": 1,
+  "generatedAt": "2026-11-15T06:33:57.082191+00:00",
+  "scripts": {
+    "vnedge-trend-continuation-v1": {
+      "file": "VNEDGE-Trend-Continuation-v1.pine",
+      "publication": "github:vikkl1990/vnedge:f8a2505843c9aaa04a7cf210db433879d44c0d90:trend_continuation_v1",
+      "integrationNotes": [
+        "Imported from VELA_Delta_BOT 537ecec, which pins vnedge f8a2505843c9aaa04a7cf210db433879d44c0d90.",
+        "Funding signal filter is inactive in source adapter; current execution funding accounting remains active.",
+        "Experimental shadow only; source correctness is not profitability evidence."
+      ]
+    }
+  },
+  "sources": {
+    "VNEDGE-Trend-Continuation-v1.pine": {
+      "sha256": "25c75b0320b34efc287dd923d5ffa3edb4c3e1035d25614d657aa34d486aed65",
+      "reviewedAt": "2026-11-15T06:33:57.082191+00:00",
+      "type": "complete-strategy",
+      "idea": "Closed-bar trend-following breakout of prior 48 closes, gated by EMA 24/96 alignment, efficiency ratio and ATR midrank. Native 2x SMA ATR stop and full 2R target.",
+      "reviewScope": "Pinned upstream Python prepare/signal, regime and indicator functions; Pine port replayed against Python reference. Execution is the existing VN EDGE engine, not the upstream backtester.",
+      "entries": [
+        {
+          "marker": "Confirmed long",
+          "channel": "derived",
+          "side": "long",
+          "line": 32,
+          "condition": "After 264 bars: ER48 >= 0.30; EMA24 > EMA96; close exceeds the previous 48 closes (current excluded); SMA ATR24 midrank over 240 values <= 0.90; closed bar only."
+        },
+        {
+          "marker": "Confirmed short",
+          "channel": "derived",
+          "side": "short",
+          "line": 33,
+          "condition": "After 264 bars: ER48 >= 0.30; EMA24 < EMA96; close below previous 48 closes; ATR midrank <= 0.90; closed bar only."
+        }
+      ],
+      "notEntries": [
+        {
+          "marker": "EMA 24 / EMA 96",
+          "channel": "plot",
+          "role": "Regime context, never standalone entries",
+          "line": 37
+        }
+      ],
+      "stop": {
+        "has": true,
+        "how": "Signal close minus/plus 2 times 24-bar simple-average true range. First true range is undefined; never substituted with Wilder ATR."
+      },
+      "targets": {
+        "has": true,
+        "how": "One full-position target at 2 initial risk units, fixed from the signal close. No 6R fallback or partial ladder."
+      },
+      "exit": {
+        "has": true,
+        "how": "Native protective stop or full target; no source reversal, trailing or timed exit. Any execution-layer liquidation remains authoritative."
+      },
+      "timing": {
+        "knownAtClose": true,
+        "pivotLagBars": 0,
+        "lookahead": "Only prior closes and trailing windows, prefix-tested.",
+        "repaints": false,
+        "note": "EMA uses first-close initialization. Signals depend on supplied history. Port matches the OHLC-only adapter: funding input is absent, not verified zero funding. Exchange fills are causal engine observations, not assumed candle-close fills."
+      },
+      "claims": []
+    }
+  },
+  "publications": {
+    "github:vikkl1990/vnedge:f8a2505843c9aaa04a7cf210db433879d44c0d90:trend_continuation_v1": {
+      "url": "https://github.com/vikkl1990/vnedge/blob/f8a2505843c9aaa04a7cf210db433879d44c0d90/src/vnedge/strategy/trend_continuation.py",
+      "author": "VNEDGE contributors",
+      "retrievedAt": "2026-11-15T06:33:57.082191+00:00",
+      "updatedAt": null,
+      "version": 1,
+      "reviewedAt": "2026-11-15T06:33:57.082191+00:00",
+      "role": "Complete strategy",
+      "summary": "Closed-bar trend-following breakout of prior 48 closes, gated by EMA 24/96 alignment, efficiency ratio and ATR midrank. Native 2x SMA ATR stop and full 2R target.",
+      "requirements": "Source adapter provides no funding data, so the upstream funding-entry filter is inactive. Execution still charges funding. New scanner identity and separate shadow evidence; unchanged admission, fee and risk gates. Preserve MIT attribution.",
+      "reviewVersion": 1,
+      "reviewUpdatedAt": null,
+      "reconciliation": {
+        "pageSha256": "482ff28d51faf46383bcd2b98578e7ebc61ce8a5e8778f21f8baaf2d9bc3f7c7",
+        "sourceChecked": true,
+        "sourceHashes": {
+          "VNEDGE-Trend-Continuation-v1.pine": "25c75b0320b34efc287dd923d5ffa3edb4c3e1035d25614d657aa34d486aed65"
+        },
+        "scope": "Author explanation in pinned Python module docstring and source, not a TradingView publication. Port parity and native bracket semantics.",
+        "findings": []
+      }
+    }
+  }
+}

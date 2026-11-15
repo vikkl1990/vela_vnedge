@@ -6,6 +6,7 @@ import { applyPatches } from '../pine/patches.ts';
 import { familyFor, originOf } from '../library/families.ts';
 import { variantCompatibleSource } from './variantCompat.ts';
 import { markitTickSourceError } from './markitTick.ts';
+import {TREND_CONTINUATION} from './plotLifecycle.ts';
 
 /** `removed`: retired from the library for good (decision 127); the row stays in the manifest so the library sync never re-imports it, the source file is gone, and the registry never loads it. */
 export type ScannerStatus = 'ok' | 'incompatible' | 'unavailable' | 'removed';
@@ -115,8 +116,15 @@ export class ScannerRegistry {
       if (m.status === 'removed') continue;
       const file = path.join(m.__dir, m.file);
       const source = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
-      const { source: compatible, applied } = source ? applyPatches(source, m.file) : { source: '', applied: [] };
+      let observed=source, observationPatch:string|undefined, observationError:string|undefined;
+      if(m.id===TREND_CONTINUATION){
+        try{const result=variantCompatibleSource(m.id,source);observed=result.source;observationPatch=result.patch;}
+        catch(error){observationError=(error as Error).message;}
+      }
+      const { source: compatible, applied } = observed ? applyPatches(observed, m.file) : { source: '', applied: [] };
+      if(observationPatch)applied.unshift(observationPatch);
       let { status, reason } = reviewedStatus(m, report[m.id]);
+      if(observationError){status='incompatible';reason=observationError;}
       const nativeSourceError=markitTickSourceError(m.id,source);
       if(nativeSourceError){status='incompatible';reason=nativeSourceError;}
       let patched = compatible;

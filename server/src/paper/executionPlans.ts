@@ -1,5 +1,5 @@
 import {MARKITTICK_NATIVE} from '../scanners/markitTick.ts';
-import {plotLifecycle} from '../scanners/plotLifecycle.ts';
+import {plotLifecycle,TREND_CONTINUATION} from '../scanners/plotLifecycle.ts';
 import {nativeReentry} from '../scanners/nativeLifecycle.ts';
 import {BASKET_SCANNER,BASKET_ACCOUNTING_VERSION} from './basket.ts';
 /** Versioned, explicit research plans. One source event feeds every plan in a cell. */
@@ -17,9 +17,9 @@ import { exitConfigFor } from './logic.ts';
 import { scannerExitPolicy, entryPolicy } from './policy.ts';
 import { adaptPlan } from './planStudy.ts';
 
-// Bounded research capacity: 37 existing plans plus up to 18 paired exit studies.
+// Bounded research capacity: 73 existing plans plus six VNEDGE/Stealth import cells.
 // This does not change account positions, allocation or risk limits.
-export const MAX_RESEARCH_PLANS = 73;
+export const MAX_RESEARCH_PLANS = 79;
 /** Explicit TP experiment; original stop and sizing stay fixed. Trail changes are opt-in and labeled. */
 export interface TakeProfitPlan {
   mode: 'native' | 'r';
@@ -79,6 +79,7 @@ export interface ExecutionPlanSnapshot {
   nativeReentryVersion?: 1;
 }
 export function takeProfitLabel(p: Pick<ExecutionPlanSnapshot,'paper'|'takeProfit'|'basket'> & Partial<Pick<ExecutionPlanSnapshot,'sourceScannerId'|'exitPolicy'>>): string {
+  if(p.sourceScannerId===TREND_CONTINUATION)return 'Native 2×ATR stop · one 2R target · no trailing stop';
   if(plotLifecycle(p.sourceScannerId))return p.sourceScannerId?.startsWith('machine-learning')?'Native Supertrend stop and flip exit · no fixed TP':'Native stop and TP1/TP2 milestones · closes at TP3';
   if(p.basket)return 'Basket: up to 3 entries · $150 total margin · 4% shared target · 3% below lowest fill stop';
   const c=p.paper, ladder=c.fallbackRR.join('/'), allocation=c.tpSplit.map(x=>`${Math.round(x*100)}%`).join('/');

@@ -39,7 +39,7 @@ function fixture(t:any,id='synapse-trail-pro-author-native',corrected=true){
  return {c,p,db,entry,tick,settle,exit,held,get e(){return e;},restart:()=>{e=new PaperEngine(db,()=>c,{book:2,now:()=>now});e.causalExits=true;}};
 }
 
-for(const id of NATIVE_REENTRY_SCANNERS)test(`${id}: full-close then same-side entry waits; baseline drops it`,t=>{
+for(const id of [...NATIVE_REENTRY_SCANNERS,'stealthtrail-supertrend-author-native-v1'])test(`${id}: full-close then same-side entry waits; baseline drops it`,t=>{
  const old=fixture(t,id,false),x=fixture(t,id);
  old.exit('sl');x.exit('sl');
  assert.equal(old.entry('long',T+2000).action,'ignored');
@@ -57,7 +57,7 @@ for(const id of NATIVE_REENTRY_SCANNERS)test(`${id}: full-close then same-side e
  assert.equal(x.held.fills.some(f=>f.reason==='reversal'),false,'original close owns every exit fill');
 });
 
-for(const id of ['structure-anchored-vwap-upstream-2-0','synapse-trail-pro-author-native','liquidity-trail-matrix-author-native'])
+for(const id of ['structure-anchored-vwap-upstream-2-0','synapse-trail-pro-author-native','liquidity-trail-matrix-author-native','stealthtrail-supertrend-author-native-v1'])
 test(`${id}: opposite entry without explicit close survives causal reversal latency`,t=>{
  const old=fixture(t,id,false),x=fixture(t,id);
  old.tick(T+2000,100.5);x.tick(T+2000,100.5);
