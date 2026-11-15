@@ -22,7 +22,18 @@ interface Props<T> {
  * overscan) using top/bottom spacers. No measurement — heights must be known,
  * which keeps it cheap and jitter-free.
  */
-export function WindowedList<T>({ items, height, itemHeight, render, itemKey, overscan = 8, className = '', scrollRef, onScroll, empty }: Props<T>) {
+export function WindowedList<T>({
+  items,
+  height,
+  itemHeight,
+  render,
+  itemKey,
+  overscan = 8,
+  className = '',
+  scrollRef,
+  onScroll,
+  empty,
+}: Props<T>) {
   const [scrollTop, setScrollTop] = useState(0)
   const [viewport, setViewport] = useState(0)
   const elRef = useRef<HTMLDivElement | null>(null)

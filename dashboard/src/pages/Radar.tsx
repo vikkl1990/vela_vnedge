@@ -1,32 +1,75 @@
-import { choice, researchHref } from '../lib/researchNavigation'
-import { useResearchFilters } from '../lib/useResearchFilters'
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useRadar } from '../api/queries'
 import type { RadarCell, RadarMarket } from '../api/types'
-import { PageTitle, Panel, QueryState } from '../components/ui'
-import { EmptyState, Stat, StatGrid, TabPanel, Tabs, Toolbar } from '../components/kit'
-import '../styles/pages/radar.css'
+import {
+  EmptyState,
+  QueryState,
+  RouteHeader,
+  Section,
+  Stat,
+  StatGrid,
+  TabPanel,
+  Tabs,
+  Toolbar,
+} from '../components/kit'
+import { fmtCompactUsd as money, fmtPnl as r1 } from '../lib/format'
+import { choice, researchHref } from '../lib/researchNavigation'
+import { useResearchFilters } from '../lib/useResearchFilters'
+
 import { PairAgentsPanel } from '../components/PairAgentsPanel'
+import '../styles/pages/radar.css'
 
 /**
  * Decision 183: the signal radar. Where the scanners sit (pairs by stage) and what they produce (signals, entries,
  * stops, net R) for every market × timeframe, over the last day by default. A cell's shade is its entries per pair; its
  * bars are the window in slices, entries up and stops down; a quiet cell names the refusal that silenced it.
  */
-const MAJORS = new Set(['BTCUSD', 'ETHUSD', 'SOLUSD', 'XRPUSD', 'BNBUSD', 'DOGEUSD', 'ADAUSD', 'AVAXUSD', 'LINKUSD', 'SUIUSD'])
-const r1 = (x: number) => `${x >= 0 ? '+' : ''}${x.toFixed(1)}`
-const money = (x: number | null) => (x === null ? '–' : x >= 1e9 ? `$${(x / 1e9).toFixed(1)}B` : x >= 1e6 ? `$${(x / 1e6).toFixed(x >= 1e7 ? 0 : 1)}M` : `$${(x / 1e3).toFixed(0)}k`)
+const MAJORS = new Set([
+  'BTCUSD',
+  'ETHUSD',
+  'SOLUSD',
+  'XRPUSD',
+  'BNBUSD',
+  'DOGEUSD',
+  'ADAUSD',
+  'AVAXUSD',
+  'LINKUSD',
+  'SUIUSD',
+])
 const pairs = (c: RadarCell) => c.live + c.shadow + c.candidate + c.tracked
 
-function Cell({ c, symbol, tf, maxDensity }: { c: RadarCell | null; symbol: string; tf: string; maxDensity: number }) {
-  if (!c || (pairs(c) === 0 && c.signals === 0 && c.shadowSignals === 0 && c.opened === 0)) return <td className="radar-td"><div className="radar-cell radar-empty">–</div></td>
-  const density = (c.live + c.shadow) > 0 ? c.opened / (c.live + c.shadow) : 0
+function Cell({
+  c,
+  symbol,
+  tf,
+  maxDensity,
+}: {
+  c: RadarCell | null
+  symbol: string
+  tf: string
+  maxDensity: number
+}) {
+  if (!c || (pairs(c) === 0 && c.signals === 0 && c.shadowSignals === 0 && c.opened === 0))
+    return (
+      <td className="radar-td">
+        <div className="radar-cell radar-empty">–</div>
+      </td>
+    )
+  const density = c.live + c.shadow > 0 ? c.opened / (c.live + c.shadow) : 0
   const level = maxDensity > 0 ? Math.min(3, Math.ceil((density / maxDensity) * 3)) : 0
   const peak = Math.max(1, ...c.bins.map((b) => Math.max(b.opened, b.stops)))
   return (
     <td className="radar-td">
-      <Link className={`radar-cell radar-l${level}`} to={researchHref('/incubator', { symbol, tf, section: c.shadow > 0 ? 'shadow' : c.live > 0 ? 'account' : 'candidates' })} title={`${symbol} ${tf}: ${c.signals} account signals, ${c.shadowSignals} shadow signals, ${c.opened} entries, ${c.stops} stops, ${r1(c.netR)}R`}>
+      <Link
+        className={`radar-cell radar-l${level}`}
+        to={researchHref('/incubator', {
+          symbol,
+          tf,
+          section: c.shadow > 0 ? 'shadow' : c.live > 0 ? 'account' : 'candidates',
+        })}
+        title={`${symbol} ${tf}: ${c.signals} account signals, ${c.shadowSignals} shadow signals, ${c.opened} entries, ${c.stops} stops, ${r1(c.netR)}R`}
+      >
         <div className="radar-chips">
           {c.live > 0 && <span className="radar-chip radar-live">{c.live} account</span>}
           {c.shadow > 0 && <span className="radar-chip radar-shadow">{c.shadow} shadow</span>}
@@ -42,8 +85,26 @@ function Cell({ c, symbol, tf, maxDensity }: { c: RadarCell | null; symbol: stri
           ))}
         </div>
         <div className="radar-line mono">
-          {c.signals} acct · {c.shadowHistoryCapped ? '≥' : ''}{c.shadowSignals} shadow · {c.opened} in · {c.stops} sl{c.closes > 0 && <> · <span className={c.netR > 0 ? 'gain' : c.netR < 0 ? 'loss' : ''}>{r1(c.netR)}R</span></>}
-          {c.opened === 0 && <span className="muted"> · {c.refusal ?? (c.live + c.shadow + c.tracked === 0 ? 'awaiting assignment' : c.signals + c.shadowSignals === 0 ? 'no entry event' : 'no fill')}</span>}
+          {c.signals} acct · {c.shadowHistoryCapped ? '≥' : ''}
+          {c.shadowSignals} shadow · {c.opened} in · {c.stops} sl
+          {c.closes > 0 && (
+            <>
+              {' '}
+              · <span className={c.netR > 0 ? 'gain' : c.netR < 0 ? 'loss' : ''}>{r1(c.netR)}R</span>
+            </>
+          )}
+          {c.opened === 0 && (
+            <span className="muted">
+              {' '}
+              ·{' '}
+              {c.refusal ??
+                (c.live + c.shadow + c.tracked === 0
+                  ? 'awaiting assignment'
+                  : c.signals + c.shadowSignals === 0
+                    ? 'no entry event'
+                    : 'no fill')}
+            </span>
+          )}
         </div>
       </Link>
     </td>
@@ -62,30 +123,79 @@ export default function Radar() {
   const view = useMemo(() => {
     const v = q.data
     if (!v) return null
-    const score = (m: RadarMarket, f: (c: RadarCell) => number) => v.tfs.reduce((a, tf) => a + (m.cells[tf] ? f(m.cells[tf]!) : 0), 0)
-    let ms = v.markets.filter((m) => (group === 'all' || (group === 'majors') === MAJORS.has(m.symbol)))
-    if (onlyActive) ms = ms.filter((m) => score(m, (c) => c.live + c.shadow + c.tracked + c.opened + c.signals + c.shadowSignals) > 0)
-    const key = sort === 'turnover' ? (m: RadarMarket) => m.turnoverUsd ?? -1 : sort === 'signals' ? (m: RadarMarket) => score(m, (c) => c.signals + c.shadowSignals) : sort === 'netR' ? (m: RadarMarket) => score(m, (c) => c.netR) : (m: RadarMarket) => score(m, (c) => c.live + c.shadow)
+    const score = (m: RadarMarket, f: (c: RadarCell) => number) =>
+      v.tfs.reduce((a, tf) => a + (m.cells[tf] ? f(m.cells[tf]!) : 0), 0)
+    let ms = v.markets.filter((m) => group === 'all' || (group === 'majors') === MAJORS.has(m.symbol))
+    if (onlyActive)
+      ms = ms.filter(
+        (m) => score(m, (c) => c.live + c.shadow + c.tracked + c.opened + c.signals + c.shadowSignals) > 0,
+      )
+    const key =
+      sort === 'turnover'
+        ? (m: RadarMarket) => m.turnoverUsd ?? -1
+        : sort === 'signals'
+          ? (m: RadarMarket) => score(m, (c) => c.signals + c.shadowSignals)
+          : sort === 'netR'
+            ? (m: RadarMarket) => score(m, (c) => c.netR)
+            : (m: RadarMarket) => score(m, (c) => c.live + c.shadow)
     ms = [...ms].sort((a, b) => key(b) - key(a))
-    const maxDensity = Math.max(0, ...v.markets.flatMap((m) => v.tfs.map((tf) => { const c = m.cells[tf]; return c && c.live + c.shadow > 0 ? c.opened / (c.live + c.shadow) : 0 })))
+    const maxDensity = Math.max(
+      0,
+      ...v.markets.flatMap((m) =>
+        v.tfs.map((tf) => {
+          const c = m.cells[tf]
+          return c && c.live + c.shadow > 0 ? c.opened / (c.live + c.shadow) : 0
+        }),
+      ),
+    )
     return { ...v, markets: ms, maxDensity }
   }, [q.data, group, sort, onlyActive])
-  const reserved = (tf: string) => (q.data?.reserve ?? []).filter((r) => !r.tfs?.length || r.tfs.includes(tf)).reduce((a, r) => a + r.slots, 0)
+  const reserved = (tf: string) =>
+    (q.data?.reserve ?? [])
+      .filter((r) => !r.tfs?.length || r.tfs.includes(tf))
+      .reduce((a, r) => a + r.slots, 0)
   return (
     <div className="page radar-page">
-      <PageTitle
+      <RouteHeader
         sub="Where the scanners sit and what they produce, for every market and timeframe. Counts combine account and ordinary shadow trades; experimental plans and unfilled orders are left out."
         actions={
           <label className="radar-window small muted">
             Window
-            <select className="select select-sm" value={hours} onChange={(e) => set({ hours: e.target.value })} aria-label="Window">{[6, 24, 72, 168].map((h) => <option key={h} value={h}>{h < 48 ? `last ${h} h` : `last ${h / 24} d`}</option>)}</select>
+            <select
+              className="select select-sm"
+              value={hours}
+              onChange={(e) => set({ hours: e.target.value })}
+              aria-label="Window"
+            >
+              {[6, 24, 72, 168].map((h) => (
+                <option key={h} value={h}>
+                  {h < 48 ? `last ${h} h` : `last ${h / 24} d`}
+                </option>
+              ))}
+            </select>
           </label>
         }
       />
-      <Tabs label="Radar views" idPrefix="radar" value={tab} onChange={setTab} items={[{ id: 'radar', label: 'Radar' }, { id: 'agents', label: 'Pair agents' }]} />
-      <TabPanel id="agents" value={tab} idPrefix="radar"><PairAgentsPanel /></TabPanel>
+      <Tabs
+        label="Radar views"
+        idPrefix="radar"
+        value={tab}
+        onChange={setTab}
+        items={[
+          { id: 'radar', label: 'Radar' },
+          { id: 'agents', label: 'Pair agents' },
+        ]}
+      />
+      <TabPanel id="agents" value={tab} idPrefix="radar">
+        <PairAgentsPanel />
+      </TabPanel>
       <TabPanel id="radar" value={tab} idPrefix="radar">
-        <QueryState {...q} data={view ?? undefined} empty="No markets in the book." onRetry={() => q.refetch()}>
+        <QueryState
+          {...q}
+          data={view ?? undefined}
+          empty="No markets in the book."
+          onRetry={() => q.refetch()}
+        >
           {(v) => (
             <div className="radar-stack">
               <StatGrid min={230}>
@@ -99,9 +209,18 @@ export default function Radar() {
                       value={`${t.live + t.shadow} pairs`}
                       sub={
                         <>
-                          <span>{t.live} live · {t.candidate} waiting{t.tracked ? ` · ${t.tracked} tracked` : ''}{res ? ` · ${res} reserved` : ''}</span>
+                          <span>
+                            {t.live} live · {t.candidate} waiting{t.tracked ? ` · ${t.tracked} tracked` : ''}
+                            {res ? ` · ${res} reserved` : ''}
+                          </span>
                           <br />
-                          <span className="mono">{t.signals} account · {v.shadowHistoryCapped ? '≥' : ''}{t.shadowSignals} shadow signals · {t.opened} entries · {t.stops} stops · <span className={t.netR > 0 ? 'gain' : t.netR < 0 ? 'loss' : ''}>{r1(t.netR)}R</span></span>
+                          <span className="mono">
+                            {t.signals} account · {v.shadowHistoryCapped ? '≥' : ''}
+                            {t.shadowSignals} shadow signals · {t.opened} entries · {t.stops} stops ·{' '}
+                            <span className={t.netR > 0 ? 'gain' : t.netR < 0 ? 'loss' : ''}>
+                              {r1(t.netR)}R
+                            </span>
+                          </span>
                         </>
                       }
                     />
@@ -109,32 +228,107 @@ export default function Radar() {
                 })}
               </StatGrid>
               <Toolbar end={<span className="muted small">{v.markets.length} markets</span>}>
-                <select className="select select-sm" value={group} onChange={(e) => set({ group: e.target.value })} aria-label="Markets"><option value="all">All markets</option><option value="majors">Majors</option><option value="alts">Alts</option></select>
-                <select className="select select-sm" value={sort} onChange={(e) => set({ sort: e.target.value })} aria-label="Sort"><option value="turnover">By turnover</option><option value="signals">By signals</option><option value="netR">By net R</option><option value="pairs">By pairs</option></select>
-                <label className="small muted radar-check"><input type="checkbox" checked={onlyActive} onChange={(e) => set({ active: e.target.checked ? null : '0' })} /> Active only</label>
+                <select
+                  className="select select-sm"
+                  value={group}
+                  onChange={(e) => set({ group: e.target.value })}
+                  aria-label="Markets"
+                >
+                  <option value="all">All markets</option>
+                  <option value="majors">Majors</option>
+                  <option value="alts">Alts</option>
+                </select>
+                <select
+                  className="select select-sm"
+                  value={sort}
+                  onChange={(e) => set({ sort: e.target.value })}
+                  aria-label="Sort"
+                >
+                  <option value="turnover">By turnover</option>
+                  <option value="signals">By signals</option>
+                  <option value="netR">By net R</option>
+                  <option value="pairs">By pairs</option>
+                </select>
+                <label className="small muted radar-check">
+                  <input
+                    type="checkbox"
+                    checked={onlyActive}
+                    onChange={(e) => set({ active: e.target.checked ? null : '0' })}
+                  />{' '}
+                  Active only
+                </label>
               </Toolbar>
-              <Panel pad={false}>
+              <Section variant="panel" pad={false}>
                 {v.markets.length === 0 ? (
-                  <EmptyState title="No markets match" hint="Nothing is active in this window. Untick Active only or choose a longer window." action={<button type="button" className="btn btn-sm" onClick={() => set({ active: '0' })}>Show inactive markets</button>} />
+                  <EmptyState
+                    title="No markets match"
+                    hint="Nothing is active in this window. Untick Active only or choose a longer window."
+                    action={
+                      <button type="button" className="btn btn-sm" onClick={() => set({ active: '0' })}>
+                        Show inactive markets
+                      </button>
+                    }
+                  />
                 ) : (
-                  <div className="table-wrap"><table className="table small radar-table" style={{ minWidth: 140 + v.tfs.length * 220 }}><caption className="sr-only">Market coverage by timeframe; signals are separate from fills</caption>
-                    <thead><tr><th>Market</th>{v.tfs.map((tf) => <th key={tf}>{tf}</th>)}</tr></thead>
-                    <tbody>{v.markets.map((m) => (
-                      <tr key={m.symbol}>
-                        <td className="radar-market"><b>{m.symbol.replace(/USD$/, '')}</b><div className="muted small mono">{money(m.turnoverUsd)}{m.atrPct !== null ? ` · ATR ${m.atrPct.toFixed(2)}%` : ''}{m.allowed === false ? ' · gate off' : ''}</div></td>
-                        {v.tfs.map((tf) => <Cell key={tf} c={m.cells[tf]} symbol={m.symbol} tf={tf} maxDensity={v.maxDensity} />)}
-                      </tr>
-                    ))}</tbody>
-                  </table></div>
+                  <div className="table-wrap">
+                    <table className="table small radar-table" style={{ minWidth: 140 + v.tfs.length * 220 }}>
+                      <caption className="sr-only">
+                        Market coverage by timeframe; signals are separate from fills
+                      </caption>
+                      <thead>
+                        <tr>
+                          <th>Market</th>
+                          {v.tfs.map((tf) => (
+                            <th key={tf}>{tf}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {v.markets.map((m) => (
+                          <tr key={m.symbol}>
+                            <td className="radar-market">
+                              <b>{m.symbol.replace(/USD$/, '')}</b>
+                              <div className="muted small mono">
+                                {money(m.turnoverUsd)}
+                                {m.atrPct !== null ? ` · ATR ${m.atrPct.toFixed(2)}%` : ''}
+                                {m.allowed === false ? ' · gate off' : ''}
+                              </div>
+                            </td>
+                            {v.tfs.map((tf) => (
+                              <Cell
+                                key={tf}
+                                c={m.cells[tf]}
+                                symbol={m.symbol}
+                                tf={tf}
+                                maxDensity={v.maxDensity}
+                              />
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
                 )}
-              </Panel>
+              </Section>
               <div className="radar-legend small muted" role="note">
-                <span><span className="radar-chip radar-live">live</span> the account trades it</span>
-                <span><span className="radar-chip radar-shadow">shadow</span> evidence</span>
-                <span><span className="radar-chip radar-cand">candidate</span> passed the screen, waiting for a slot</span>
-                <span><span className="radar-chip radar-trk">tracked</span> watch-only</span>
+                <span>
+                  <span className="radar-chip radar-live">live</span> the account trades it
+                </span>
+                <span>
+                  <span className="radar-chip radar-shadow">shadow</span> evidence
+                </span>
+                <span>
+                  <span className="radar-chip radar-cand">candidate</span> passed the screen, waiting for a
+                  slot
+                </span>
+                <span>
+                  <span className="radar-chip radar-trk">tracked</span> watch-only
+                </span>
                 <span>A cell's shade is entries per pair. A quiet cell names what silenced it.</span>
-                <span>Bars: {v.bins} slices of {v.hours} h, <span className="gain">entries</span> up, <span className="loss">stops</span> down.</span>
+                <span>
+                  Bars: {v.bins} slices of {v.hours} h, <span className="gain">entries</span> up,{' '}
+                  <span className="loss">stops</span> down.
+                </span>
                 <span>A copied signal can appear in both books. ≥ means retained history is capped.</span>
               </div>
             </div>

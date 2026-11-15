@@ -1,6 +1,14 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { choice, patchSearch, researchHref, sectionFromUrl, sectionLocation, signalSectionFromUrl, scannerSectionFromUrl } from '../src/lib/researchNavigation.ts'
+import {
+  choice,
+  patchSearch,
+  researchHref,
+  sectionFromUrl,
+  sectionLocation,
+  signalSectionFromUrl,
+  scannerSectionFromUrl,
+} from '../src/lib/researchNavigation.ts'
 
 test('changing a research view keeps market filters and clearing filters keeps the view', () => {
   const original = new URLSearchParams('symbol=ETHUSD&tf=15m&section=shadow')
@@ -14,7 +22,12 @@ test('changing a research view keeps market filters and clearing filters keeps t
 
 test('old disclosure bookmarks open their new views, unknown sections fall back safely', () => {
   const sections = ['directory', 'readiness', 'contributions'] as const
-  assert.equal(sectionFromUrl(new URLSearchParams('section=directory'), '#readiness', sections, 'directory', { '#readiness': 'readiness' }), 'readiness')
+  assert.equal(
+    sectionFromUrl(new URLSearchParams('section=directory'), '#readiness', sections, 'directory', {
+      '#readiness': 'readiness',
+    }),
+    'readiness',
+  )
   assert.equal(sectionFromUrl(new URLSearchParams('section=unknown'), '', sections, 'directory'), 'directory')
   assert.equal(choice('bad', ['', 'entry', 'exit', 'info'], ''), '')
 })
@@ -25,9 +38,11 @@ test('market links carry encoded cell filters without losing symbols or injectin
   assert.equal(url.pathname, '/incubator')
   assert.equal(url.searchParams.get('symbol'), 'ETHUSD')
   assert.equal(url.searchParams.get('tf'), '15m')
-  assert.equal(new URL(researchHref('/scanners', { q: 'A&B / trend', book: 'account' }), url).searchParams.get('q'), 'A&B / trend')
+  assert.equal(
+    new URL(researchHref('/scanners', { q: 'A&B / trend', book: 'account' }), url).searchParams.get('q'),
+    'A&B / trend',
+  )
 })
-
 
 test('signals follow tab links and history, including legacy diagnostics bookmarks', () => {
   const p = (query: string) => new URLSearchParams(query)
@@ -56,6 +71,11 @@ test('leaving an Incubator anchor preserves filters and allows the default tab',
   assert.equal(next.pathname, '/incubator')
   assert.equal(next.hash, '')
   assert.equal(next.search, '?symbol=ETHUSD&tf=15m')
-  assert.equal(sectionFromUrl(new URLSearchParams(next.search), next.hash, ['shadow', 'operations'], 'shadow', { '#screen-queue': 'operations' }), 'shadow')
+  assert.equal(
+    sectionFromUrl(new URLSearchParams(next.search), next.hash, ['shadow', 'operations'], 'shadow', {
+      '#screen-queue': 'operations',
+    }),
+    'shadow',
+  )
   assert.equal(search.get('section'), 'operations')
 })

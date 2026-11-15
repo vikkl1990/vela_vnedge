@@ -1,10 +1,42 @@
 /* Trackers: one block per tracker, tabs for its three tables, a compact funnel for each paper trial. */
-.trackers-page .trk-block { min-width: 0; }
-.trackers-page .trk-block .section { gap: 12px; }
-.trackers-page .trk-foot { margin: 0; padding: 8px 12px; border-top: 1px solid var(--border); }
-.trackers-page .trk-trial { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
-.trackers-page .trk-trial p { margin: 0; overflow-wrap: anywhere; }
-.trackers-page .trk-result { font-size: var(--fs-md); }
-.trackers-page .trk-counts { display: grid; grid-template-columns: repeat(auto-fit, minmax(108px, 1fr)); gap: 8px; }
-.trackers-page .trk-counts > span { display: flex; flex-direction: column; gap: 2px; padding: 8px 10px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm); }
-.trackers-page .trk-counts .mono { font-size: var(--fs-lg); }
+.trackers-page .trk-block {
+  min-width: 0;
+}
+.trackers-page .trk-block .section {
+  gap: 12px;
+}
+.trackers-page .trk-foot {
+  margin: 0;
+  padding: 8px 12px;
+  border-top: 1px solid var(--border);
+}
+.trackers-page .trk-trial {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+.trackers-page .trk-trial p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.trackers-page .trk-result {
+  font-size: var(--fs-md);
+}
+.trackers-page .trk-counts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(108px, 1fr));
+  gap: 8px;
+}
+.trackers-page .trk-counts > span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.trackers-page .trk-counts .mono {
+  font-size: var(--fs-lg);
+}

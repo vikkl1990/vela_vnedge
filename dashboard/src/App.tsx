@@ -1,8 +1,9 @@
-import { BookProvider } from './lib/bookScope'
 import { lazy, type ComponentType, type ReactNode } from 'react'
-import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
+import { BrowserRouter, Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import { AuthGate, useAuth } from './auth/AuthGate'
 import { Layout } from './components/Layout'
+import { BookProvider } from './lib/bookScope'
+import { canonicalPath, HUB_ROUTES } from './lib/routeHubs'
 import { Terminal } from './pages/Terminal'
 
 /**
@@ -45,40 +46,50 @@ export default function App() {
   return (
     <BrowserRouter>
       <BookProvider>
-      <AuthGate>
-      <Routes>
-        <Route element={<Layout />}>
-          <Route index element={<Terminal />} />
-          <Route path="overview" element={<Overview />} />
-          <Route path="strategies" element={<Strategies />} />
-          <Route path="lab" element={<Lab />} />
-          <Route path="live" element={<Live />} />
-          <Route path="scanners" element={<Scanners />} />
-          <Route path="scanners/:id" element={<ScannerDetail />} />
-          <Route path="signals" element={<Signals />} />
-          <Route path="radar" element={<Radar />} />
-          <Route path="monitor" element={<TradeMonitor />} />
-          <Route path="trades" element={<Trades />} />
-          <Route path="trades/:id/replay" element={<TradeReplay />} />
-          <Route path="chart" element={<ChartPage />} />
-          <Route path="analytics" element={<Analytics />} />
-          <Route path="daily" element={<Daily />} />
-          <Route path="trackers" element={<Trackers />} />
-          <Route path="library" element={<Library />} />
-          <Route path="incubator" element={<Incubator />} />
-          <Route path="decisions" element={<Decisions />} />
-          <Route path="gates" element={<Gates />} />
-          <Route path="learn" element={<Learn />} />
-          <Route path="settings" element={<Settings />} />
-          <Route path="exchange" element={<Exchange />} />
-          <Route path="logs" element={<Logs />} />
-          <Route path="profile" element={<Profile />} />
-          <Route path="users" element={<AdminOnly><Users /></AdminOnly>} />
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </Route>
-      </Routes>
-      </AuthGate>
-    </BookProvider>
+        <AuthGate>
+          <Routes>
+            <Route element={<Layout />}>
+              <Route index element={<Terminal />} />
+              <Route path="overview" element={<Overview />} />
+              <Route path="strategies" element={<Strategies />} />
+              <Route path="lab" element={<Lab />} />
+              <Route path="live" element={<Live />} />
+              <Route path="strategies/scanners" element={<Scanners />} />
+              <Route path="strategies/scanners/:id" element={<ScannerDetail />} />
+              <Route path="signals" element={<Signals />} />
+              <Route path="signals/radar" element={<Radar />} />
+              <Route path="monitor" element={<TradeMonitor />} />
+              <Route path="trades" element={<Trades />} />
+              <Route path="trades/:id/replay" element={<TradeReplay />} />
+              <Route path="chart" element={<ChartPage />} />
+              <Route path="analytics" element={<Analytics />} />
+              <Route path="analytics/daily" element={<Daily />} />
+              <Route path="strategies/trackers" element={<Trackers />} />
+              <Route path="strategies/library" element={<Library />} />
+              <Route path="strategies/incubator" element={<Incubator />} />
+              <Route path="strategies/decisions" element={<Decisions />} />
+              <Route path="signals/gates" element={<Gates />} />
+              <Route path="lab/learn" element={<Learn />} />
+              <Route path="settings" element={<Settings />} />
+              <Route path="exchange" element={<Exchange />} />
+              <Route path="settings/logs" element={<Logs />} />
+              <Route path="profile" element={<Profile />} />
+              <Route
+                path="users"
+                element={
+                  <AdminOnly>
+                    <Users />
+                  </AdminOnly>
+                }
+              />
+              {Object.keys(HUB_ROUTES).map((path) => (
+                <Route key={path} path={`${path.slice(1)}/*`} element={<LegacyRedirect />} />
+              ))}
+              <Route path="*" element={<Navigate to="/" replace />} />
+            </Route>
+          </Routes>
+        </AuthGate>
+      </BookProvider>
     </BrowserRouter>
   )
 }
@@ -87,4 +98,14 @@ export default function App() {
 function AdminOnly({ children }: { children: ReactNode }) {
   const auth = useAuth()
   return auth.isAdmin ? <>{children}</> : <Navigate to="/profile" replace />
+}
+
+function LegacyRedirect() {
+  const location = useLocation()
+  return (
+    <Navigate
+      replace
+      to={{ pathname: canonicalPath(location.pathname), search: location.search, hash: location.hash }}
+    />
+  )
 }

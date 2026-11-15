@@ -2,7 +2,17 @@ import type { CSSProperties } from 'react'
 
 /** Loading skeletons (no spinners). All respect prefers-reduced-motion via CSS. */
 
-export function Skeleton({ w = '100%', h = 12, className = '', style }: { w?: number | string; h?: number | string; className?: string; style?: CSSProperties }) {
+export function Skeleton({
+  w = '100%',
+  h = 12,
+  className = '',
+  style,
+}: {
+  w?: number | string
+  h?: number | string
+  className?: string
+  style?: CSSProperties
+}) {
   return <span className={`sk ${className}`} style={{ width: w, height: h, ...style }} aria-hidden />
 }
 

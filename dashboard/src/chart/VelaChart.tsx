@@ -1,14 +1,14 @@
+import type { IndicatorHandle, ScriptRun, TimelineMark, Vela as VelaType } from '@luxalgo/vela'
 import { useEffect, useRef, useState } from 'react'
-import type { IndicatorHandle, TimelineMark, ScriptRun, Vela as VelaType } from '@luxalgo/vela'
 import { api } from '../api/client'
-import { venueSymbol, type ChartVenue } from './venues'
-import { createLibraryResolver } from './libraryResolver'
-import { scriptInputs } from './scriptInputs'
-import { deltaProvider } from './deltaProvider'
-import { FallbackChart } from './FallbackChart'
+import { useTheme } from '../lib/theme'
 import { deltaToVelaTf, tfMs } from '../lib/timeframes'
 import { toastExternal } from '../lib/toast'
-import { useTheme } from '../lib/theme'
+import { deltaProvider } from './deltaProvider'
+import { FallbackChart } from './FallbackChart'
+import { createLibraryResolver } from './libraryResolver'
+import { scriptInputs } from './scriptInputs'
+import { venueSymbol, type ChartVenue } from './venues'
 
 export interface ChartScript {
   /** Stable id, e.g. scanner id. */
@@ -46,10 +46,12 @@ type PineModule = typeof import('@luxalgo/vela-pinets')
 let libsPromise: Promise<{ vela: VelaModule; pine: PineModule }> | null = null
 function loadLibs() {
   if (!libsPromise) {
-    libsPromise = Promise.all([import('@luxalgo/vela'), import('@luxalgo/vela-pinets')]).then(([vela, pine]) => ({
-      vela,
-      pine,
-    }))
+    libsPromise = Promise.all([import('@luxalgo/vela'), import('@luxalgo/vela-pinets')]).then(
+      ([vela, pine]) => ({
+        vela,
+        pine,
+      }),
+    )
     libsPromise.catch(() => {
       libsPromise = null
     })
@@ -61,16 +63,32 @@ function loadLibs() {
  * Vela chart wrapper. Every call into Vela is guarded; on an unrecoverable
  * failure the component swaps to `FallbackChart` so the page never breaks.
  */
-export function VelaChart({ symbol, tf, venue = 'delta', height = 520, scripts = [], onScriptError, onScriptReady, tickSize, onChartReady, onScriptRun, marks }: Props) {
+export function VelaChart({
+  symbol,
+  tf,
+  venue = 'delta',
+  height = 520,
+  scripts = [],
+  onScriptError,
+  onScriptReady,
+  tickSize,
+  onChartReady,
+  onScriptRun,
+  marks,
+}: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<VelaType | null>(null)
-  const handlesRef = useRef(new Map<string, { handle: IndicatorHandle; source: string; inputs: string; offs: (() => void)[] }>())
+  const handlesRef = useRef(
+    new Map<string, { handle: IndicatorHandle; source: string; inputs: string; offs: (() => void)[] }>(),
+  )
   const [failed, setFailed] = useState<string | null>(null)
   const [ready, setReady] = useState(false)
   const [loading, setLoading] = useState(true)
   const { theme } = useTheme()
   const librarySourcesRef = useRef<string[]>([])
-  useEffect(() => { librarySourcesRef.current = scripts.map(script => script.source) }, [scripts])
+  useEffect(() => {
+    librarySourcesRef.current = scripts.map((script) => script.source)
+  }, [scripts])
   const cbRef = useRef({ onScriptError, onScriptReady, onChartReady, onScriptRun })
   useEffect(() => {
     cbRef.current = { onScriptError, onScriptReady, onChartReady, onScriptRun }
@@ -89,9 +107,14 @@ export function VelaChart({ symbol, tf, venue = 'delta', height = 520, scripts =
 
     loadLibs()
       .then(async ({ vela, pine }) => {
-        const provider = venue === 'binance' ? new (await import('@luxalgo/vela/providers/binance')).BinanceProvider()
-          : venue === 'hyperliquid' ? new (await import('@luxalgo/vela/providers/hyperliquid')).HyperliquidProvider()
-          : venue === 'coinbase' ? new (await import('@luxalgo/vela/providers/coinbase')).CoinbaseProvider() : deltaProvider
+        const provider =
+          venue === 'binance'
+            ? new (await import('@luxalgo/vela/providers/binance')).BinanceProvider()
+            : venue === 'hyperliquid'
+              ? new (await import('@luxalgo/vela/providers/hyperliquid')).HyperliquidProvider()
+              : venue === 'coinbase'
+                ? new (await import('@luxalgo/vela/providers/coinbase')).CoinbaseProvider()
+                : deltaProvider
         if (cancelled) return
         try {
           chart = new vela.Vela(el, {
@@ -109,10 +132,17 @@ export function VelaChart({ symbol, tf, venue = 'delta', height = 520, scripts =
             throw new Error(`registerProvider failed: ${(e as Error).message}`)
           }
           try {
-            chart.registerEngine('pine', new pine.PineWorkerEngine({ props: 'none',
-              importResolver: createLibraryResolver(() => librarySourcesRef.current, api.pineLibrary),
-              footprints: venue === 'delta' ? (s, timeframe, range) => api.footprints(s, timeframe, range) : undefined,
-            }))
+            chart.registerEngine(
+              'pine',
+              new pine.PineWorkerEngine({
+                props: 'none',
+                importResolver: createLibraryResolver(() => librarySourcesRef.current, api.pineLibrary),
+                footprints:
+                  venue === 'delta'
+                    ? (s, timeframe, range) => api.footprints(s, timeframe, range)
+                    : undefined,
+              }),
+            )
           } catch (e) {
             console.warn('[vela] registerEngine failed', e)
             toastExternal('warn', 'Pine engine unavailable', (e as Error).message)
@@ -121,7 +151,7 @@ export function VelaChart({ symbol, tf, venue = 'delta', height = 520, scripts =
           if (import.meta.env.DEV) (window as unknown as { __vnChart?: VelaType }).__vnChart = chart
           const offStart = chart.on('load:start', () => setLoading(true))
           const offEnd = chart.on('load:end', () => setLoading(false))
-          const offRun = chart.on('script:run', run => cbRef.current.onScriptRun?.(run))
+          const offRun = chart.on('script:run', (run) => cbRef.current.onScriptRun?.(run))
           chart.renderer.set('scalePriceOnly', true)
           chart
             .ready()
@@ -191,11 +221,13 @@ export function VelaChart({ symbol, tf, venue = 'delta', height = 520, scripts =
     marketRef.current = { symbol, tf }
     // `loading` is driven by Vela's own load:start / load:end events.
     try {
-      chart.setMarket({ symbol: venueSymbol(symbol, venue), timeframe: deltaToVelaTf(tf) }).catch((e: unknown) => {
-        console.error('[vela] setMarket failed', e)
-        toastExternal('error', 'Failed to switch market', (e as Error)?.message)
-        setLoading(false)
-      })
+      chart
+        .setMarket({ symbol: venueSymbol(symbol, venue), timeframe: deltaToVelaTf(tf) })
+        .catch((e: unknown) => {
+          console.error('[vela] setMarket failed', e)
+          toastExternal('error', 'Failed to switch market', (e as Error)?.message)
+          setLoading(false)
+        })
     } catch (e) {
       console.error('[vela] setMarket threw', e)
       toastExternal('error', 'Failed to switch market', (e as Error)?.message)
@@ -239,7 +271,9 @@ export function VelaChart({ symbol, tf, venue = 'delta', height = 520, scripts =
       if (existing) {
         const inputKey = JSON.stringify(s.inputs ?? {})
         if (existing.inputs !== inputKey) {
-          existing.handle.setInputs(scriptInputs(existing.handle.inputs, s.inputs) as Parameters<IndicatorHandle['setInputs']>[0])
+          existing.handle.setInputs(
+            scriptInputs(existing.handle.inputs, s.inputs) as Parameters<IndicatorHandle['setInputs']>[0],
+          )
           existing.inputs = inputKey
         }
         if (existing.source !== s.source) {
@@ -250,7 +284,11 @@ export function VelaChart({ symbol, tf, venue = 'delta', height = 520, scripts =
             .then((res) => {
               const r = res as { ok?: boolean; error?: unknown } | undefined
               if (r?.ok) {
-                existing.handle.setInputs(scriptInputs(existing.handle.inputs, s.inputs) as Parameters<IndicatorHandle['setInputs']>[0])
+                existing.handle.setInputs(
+                  scriptInputs(existing.handle.inputs, s.inputs) as Parameters<
+                    IndicatorHandle['setInputs']
+                  >[0],
+                )
                 cbRef.current.onScriptReady?.(s.id)
               }
               if (r && r.ok === false) {
@@ -288,17 +326,23 @@ export function VelaChart({ symbol, tf, venue = 'delta', height = 520, scripts =
             }),
           )
           let normalized = false
-          offs.push(handle.on('ready', () => {
-            if (!normalized) {
-              normalized = true
-              const desired = scriptInputs(handle.inputs, s.inputs)
-              const current = handle.inputValues()
-              if (Object.entries(desired).some(([key, value]) => JSON.stringify(current[key]) !== JSON.stringify(value))) {
-                handle.setInputs(desired as Parameters<IndicatorHandle['setInputs']>[0])
+          offs.push(
+            handle.on('ready', () => {
+              if (!normalized) {
+                normalized = true
+                const desired = scriptInputs(handle.inputs, s.inputs)
+                const current = handle.inputValues()
+                if (
+                  Object.entries(desired).some(
+                    ([key, value]) => JSON.stringify(current[key]) !== JSON.stringify(value),
+                  )
+                ) {
+                  handle.setInputs(desired as Parameters<IndicatorHandle['setInputs']>[0])
+                }
               }
-            }
-            cbRef.current.onScriptReady?.(s.id)
-          }))
+              cbRef.current.onScriptReady?.(s.id)
+            }),
+          )
         } catch (e) {
           console.warn('[vela] handle.on failed', e)
         }
@@ -315,7 +359,7 @@ export function VelaChart({ symbol, tf, venue = 'delta', height = 520, scripts =
   // A measured footprint arrives after the candle closes. The Pine live session
   // refreshes only its forming tail, so replay these indicators after settlement
   // to replace the previously unavailable closed bar (and rebuild cumulative values).
-  const hasFootprints = scripts.some(s => /\brequest\.footprint\s*\(/.test(s.source))
+  const hasFootprints = scripts.some((s) => /\brequest\.footprint\s*\(/.test(s.source))
   useEffect(() => {
     if (!ready || venue !== 'delta' || !hasFootprints) return
     let revision = Math.floor((Date.now() - 15000) / tfMs(tf))
@@ -323,10 +367,14 @@ export function VelaChart({ symbol, tf, venue = 'delta', height = 520, scripts =
       const next = Math.floor((Date.now() - 15000) / tfMs(tf))
       if (next === revision || chartRef.current?.replay.state.active) return
       revision = next
-      for (const {handle, source} of handlesRef.current.values()) {
+      for (const { handle, source } of handlesRef.current.values()) {
         if (!handle.visible || !/\brequest\.footprint\s*\(/.test(source)) continue
-        try { handle.setVisible(false); handle.setVisible(true) }
-        catch (e) { console.warn('[vela] footprint refresh failed', e) }
+        try {
+          handle.setVisible(false)
+          handle.setVisible(true)
+        } catch (e) {
+          console.warn('[vela] footprint refresh failed', e)
+        }
       }
     }, 5000)
     return () => window.clearInterval(timer)
@@ -338,8 +386,14 @@ export function VelaChart({ symbol, tf, venue = 'delta', height = 520, scripts =
     chartRef.current.marks.set(marks ?? [])
   }, [marks, ready, symbol, tf])
 
-  if (failed) return venue === 'delta' ? <FallbackChart symbol={symbol} tf={tf} height={height} reason={failed} tickSize={tickSize} />
-    : <div role="alert" className="panel">{venue} data unavailable: {failed}</div>
+  if (failed)
+    return venue === 'delta' ? (
+      <FallbackChart symbol={symbol} tf={tf} height={height} reason={failed} tickSize={tickSize} />
+    ) : (
+      <div role="alert" className="panel">
+        {venue} data unavailable: {failed}
+      </div>
+    )
 
   return (
     <div className="vela-wrap" style={{ height }}>

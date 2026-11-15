@@ -10,9 +10,9 @@ test('probability gate and scanner-score fallback are independent switches', () 
   assert.equal(score.label, 'Score only')
   assert.equal(score.gate, false)
   assert.match(score.detail, /only when the scanner has no score/)
-  assert.equal(mlState({ minProb: .6, useAsScore: false }).label, 'Gate only')
-  assert.equal(mlState({ minProb: .6, useAsScore: true }).label, 'Gate + score')
-  assert.match(mlState({ minProb: .6, useAsScore: false }).detail, /60.0%/)
+  assert.equal(mlState({ minProb: 0.6, useAsScore: false }).label, 'Gate only')
+  assert.equal(mlState({ minProb: 0.6, useAsScore: true }).label, 'Gate + score')
+  assert.match(mlState({ minProb: 0.6, useAsScore: false }).detail, /60.0%/)
 })
 
 test('missing or invalid settings cannot be displayed as an off gate', () => {
@@ -25,6 +25,6 @@ test('missing or invalid settings cannot be displayed as an off gate', () => {
 test('missing AUC is distinct from no separation and high AUC is not gate approval', () => {
   assert.match(aucEvidence(undefined), /No held-out/)
   assert.match(aucEvidence(NaN), /No held-out/)
-  assert.match(aucEvidence(.5), /No positive ranking separation/)
-  assert.match(aucEvidence(.8), /does not establish a profitable gate/)
+  assert.match(aucEvidence(0.5), /No positive ranking separation/)
+  assert.match(aucEvidence(0.8), /does not establish a profitable gate/)
 })

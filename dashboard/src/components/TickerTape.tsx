@@ -29,7 +29,9 @@ export function TickerTape() {
     )
   }
   if (isError || !data || data.length === 0) {
-    return <div className="tape tape-empty muted small mono">{isError ? 'markets unavailable' : 'no markets'}</div>
+    return (
+      <div className="tape tape-empty muted small mono">{isError ? 'markets unavailable' : 'no markets'}</div>
+    )
   }
   const items = data.map((m) => <TapeItem key={m.symbol} m={m} />)
   return (

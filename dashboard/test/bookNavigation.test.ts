@@ -1,6 +1,11 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { scopeFromLocation, scopeLocation, rememberScopeLocation, bookControlsForPath } from '../src/lib/bookNavigation.ts'
+import {
+  scopeFromLocation,
+  scopeLocation,
+  rememberScopeLocation,
+  bookControlsForPath,
+} from '../src/lib/bookNavigation.ts'
 
 test('client navigation and browser history resolve each explicit book link independently', () => {
   assert.equal(scopeFromLocation('/strategies', '?book=shadow', 'paper'), 'shadow')
@@ -19,7 +24,12 @@ test('legacy catalogue and journal scope filters keep their original meanings', 
 })
 
 test('changing journal book clears a selected trade and pagination but preserves research filters', () => {
-  const loc = scopeLocation('/trades', '?book=paper&trade=42&page=4&symbol=ETHUSD&period=7d&scope=all', '', 'shadow')
+  const loc = scopeLocation(
+    '/trades',
+    '?book=paper&trade=42&page=4&symbol=ETHUSD&period=7d&scope=all',
+    '',
+    'shadow',
+  )
   const p = new URLSearchParams(loc.search)
   assert.equal(p.get('book'), 'shadow')
   assert.equal(p.get('bookScope'), 'shadow')
@@ -54,7 +64,16 @@ test('global book and lens controls are shown only where the page applies them',
   assert.deepEqual(bookControlsForPath('/strategies'), { scope: true, mlLens: true })
   assert.deepEqual(bookControlsForPath('/overview'), { scope: true, mlLens: false })
   assert.deepEqual(bookControlsForPath('/scanners/abc'), { scope: false, mlLens: true })
-  for (const route of ['/daily', '/lab', '/live', '/learn', '/signals', '/scanners', '/incubator', '/trades/1/replay']) {
+  for (const route of [
+    '/daily',
+    '/lab',
+    '/live',
+    '/learn',
+    '/signals',
+    '/scanners',
+    '/incubator',
+    '/trades/1/replay',
+  ]) {
     assert.deepEqual(bookControlsForPath(route), { scope: false, mlLens: false })
   }
 })

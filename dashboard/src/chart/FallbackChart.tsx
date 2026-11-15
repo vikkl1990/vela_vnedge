@@ -2,8 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useCandles } from '../api/queries'
 import type { Candle } from '../api/types'
 import { fmtPrice, fmtTime } from '../lib/format'
-import { sseBus } from '../sse/bus'
 import { useTheme } from '../lib/theme'
+import { sseBus } from '../sse/bus'
 
 /**
  * Minimal canvas candlestick chart used when Vela cannot initialise (WebGL
@@ -72,8 +72,9 @@ export function FallbackChart({
       const ctx = canvas.getContext('2d')
       if (!ctx) return
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
-      const dark = theme === 'dark'
-      ctx.fillStyle = dark ? '#131d2e' : '#ffffff'
+      const tokens = getComputedStyle(document.documentElement)
+      const color = (name: string) => tokens.getPropertyValue(name).trim()
+      ctx.fillStyle = color('--surface')
       ctx.fillRect(0, 0, w, h)
       if (!bars.length) return
       const padR = 64
@@ -95,8 +96,8 @@ export function FallbackChart({
       const range = hi - lo
       const y = (p: number) => padT + (1 - (p - lo) / range) * plotH
       // grid
-      ctx.strokeStyle = dark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.06)'
-      ctx.fillStyle = dark ? '#a5b4c9' : '#666'
+      ctx.strokeStyle = color('--border')
+      ctx.fillStyle = color('--muted')
       ctx.font = '11px "JetBrains Mono", monospace'
       ctx.lineWidth = 1
       for (let i = 0; i <= 5; i++) {
@@ -109,8 +110,8 @@ export function FallbackChart({
         ctx.fillText(fmtPrice(p, tickSize), plotW + 6, yy + 4)
       }
       // candles
-      const up = 'hsl(136 39% 45%)'
-      const dn = 'hsl(7 80% 55%)'
+      const up = color('--gain')
+      const dn = color('--loss')
       for (let i = 0; i < n; i++) {
         const b = bars[i]
         const x = i * cw + cw / 2
@@ -127,7 +128,7 @@ export function FallbackChart({
         ctx.fillRect(x - bw / 2, top, bw, bh)
       }
       // time labels
-      ctx.fillStyle = dark ? '#a5b4c9' : '#666'
+      ctx.fillStyle = color('--muted')
       const step = Math.max(1, Math.floor(n / 6))
       for (let i = 0; i < n; i += step) {
         ctx.fillText(fmtTime(bars[i].time), i * cw, h - 6)
@@ -137,7 +138,7 @@ export function FallbackChart({
         const i = bars.indexOf(hover)
         if (i >= 0) {
           const x = i * cw + cw / 2
-          ctx.strokeStyle = dark ? 'rgba(255,255,255,0.3)' : 'rgba(0,0,0,0.3)'
+          ctx.strokeStyle = color('--muted')
           ctx.setLineDash([3, 3])
           ctx.beginPath()
           ctx.moveTo(x, padT)
@@ -173,11 +174,17 @@ export function FallbackChart({
         </span>
         {hover && (
           <span className="mono small">
-            O {fmtPrice(hover.open, tickSize)} H {fmtPrice(hover.high, tickSize)} L {fmtPrice(hover.low, tickSize)} C {fmtPrice(hover.close, tickSize)}
+            O {fmtPrice(hover.open, tickSize)} H {fmtPrice(hover.high, tickSize)} L{' '}
+            {fmtPrice(hover.low, tickSize)} C {fmtPrice(hover.close, tickSize)}
           </span>
         )}
       </div>
-      <div ref={wrapRef} className="fallback-chart-canvas" onMouseMove={onMove} onMouseLeave={() => setHover(null)}>
+      <div
+        ref={wrapRef}
+        className="fallback-chart-canvas"
+        onMouseMove={onMove}
+        onMouseLeave={() => setHover(null)}
+      >
         {isLoading && <div className="state-overlay">Loading candles…</div>}
         {isError && <div className="state-overlay error">Candles unavailable: {error?.message}</div>}
         {!isLoading && !isError && bars.length === 0 && <div className="state-overlay">No candles</div>}

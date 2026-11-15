@@ -1,17 +1,62 @@
 /* Action menu drawn above the page (components/RowMenu.tsx). */
-.rowmenu-btn { padding: 0 8px; min-width: 28px; justify-content: center; }
-.rowmenu-caret { margin-left: 6px; font-size: 10px; opacity: 0.8; }
+.rowmenu-btn {
+  padding: 0 8px;
+  min-width: 28px;
+  justify-content: center;
+}
+.rowmenu-caret {
+  margin-left: 6px;
+  font-size: var(--fs-2xs);
+  opacity: 0.8;
+}
 .rowmenu {
-  position: fixed; z-index: var(--z-overlay); min-width: 200px; max-width: min(320px, calc(100vw - 16px)); padding: 4px;
-  display: flex; flex-direction: column; background: var(--surface-2); border: 1px solid var(--border-strong);
-  border-radius: var(--radius); box-shadow: var(--shadow-3);
+  max-height: calc(100dvh - 16px);
+  overflow-y: auto;
+  position: fixed;
+  z-index: var(--z-overlay);
+  min-width: 200px;
+  max-width: min(320px, calc(100vw - 16px));
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-3);
 }
 .rowmenu-item {
-  display: flex; align-items: center; gap: 8px; min-height: 32px; padding: 0 10px; border: 0; border-radius: var(--radius-sm);
-  background: transparent; color: var(--text); font: inherit; font-size: var(--fs-sm); text-align: left; text-decoration: none; cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: var(--fs-sm);
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
 }
-.rowmenu-item:hover, .rowmenu-item:focus-visible { background: color-mix(in srgb, var(--text) 8%, transparent); outline: none; }
-.rowmenu-item:focus-visible { box-shadow: var(--ring); }
-.rowmenu-item[aria-disabled='true'] { color: var(--muted-2); cursor: not-allowed; }
-.rowmenu-danger { color: var(--loss); }
-@media (max-width: 700px) { .rowmenu-item { min-height: 40px; } }
+.rowmenu-item:hover,
+.rowmenu-item:focus-visible {
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+  outline: none;
+}
+.rowmenu-item:focus-visible {
+  box-shadow: var(--ring);
+}
+.rowmenu-item[aria-disabled='true'] {
+  color: var(--muted-2);
+  cursor: not-allowed;
+}
+.rowmenu-danger {
+  color: var(--loss);
+}
+@media (max-width: 700px) {
+  .rowmenu-item {
+    min-height: 44px;
+  }
+}

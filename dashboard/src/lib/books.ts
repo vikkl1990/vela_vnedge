@@ -12,9 +12,24 @@ export const SCOPES: BookScope[] = ['all', 'live', 'paper', 'shadow', 'backtest'
 
 export const BOOKS: Record<Book, { label: string; short: string; what: string; color: string }> = {
   live: { label: 'Live', short: 'LIVE', what: 'Real money on the exchange', color: 'var(--book-live)' },
-  paper: { label: 'Paper', short: 'PAPER', what: 'The simulated account on live prices', color: 'var(--book-paper)' },
-  shadow: { label: 'Shadow', short: 'SHADOW', what: 'Research trades on live prices, never money', color: 'var(--book-shadow)' },
-  backtest: { label: 'Backtest', short: 'BACKTEST', what: 'Replay on history', color: 'var(--book-backtest)' },
+  paper: {
+    label: 'Paper',
+    short: 'PAPER',
+    what: 'The simulated account on live prices',
+    color: 'var(--book-paper)',
+  },
+  shadow: {
+    label: 'Shadow',
+    short: 'SHADOW',
+    what: 'Research trades on live prices, never money',
+    color: 'var(--book-shadow)',
+  },
+  backtest: {
+    label: 'Backtest',
+    short: 'BACKTEST',
+    what: 'Replay on history',
+    color: 'var(--book-backtest)',
+  },
 }
 
 export function parseScope(v: string | null | undefined): BookScope {
@@ -64,10 +79,15 @@ export function ladderOf(i: LadderInput): Ladder {
   const steps: Record<Book, StepState> = {
     backtest: screened ? 'done' : 'todo',
     shadow: inShadow && available ? 'now' : inShadow || n(i.shadowTrades) > 0 ? 'done' : 'todo',
-    paper: allocated && i.enabled !== false && available ? 'now' : allocated || n(i.paperTrades) > 0 ? 'done' : 'todo',
+    paper:
+      allocated && i.enabled !== false && available
+        ? 'now'
+        : allocated || n(i.paperTrades) > 0
+          ? 'done'
+          : 'todo',
     live: n(i.liveTrades) > 0 ? 'done' : 'todo',
   }
-  const reached = [...BOOK_ORDER].reverse().find(book => steps[book] !== 'todo') ?? null
+  const reached = [...BOOK_ORDER].reverse().find((book) => steps[book] !== 'todo') ?? null
   return { steps, reached }
 }
 
@@ -77,7 +97,10 @@ export function nextStep(i: LadderInput & { runs?: boolean; quarantined?: boolea
   if (i.runs === false) return 'Does not run'
   const s = i.stages
   if (n(s.proposed) + n(s.demote_proposed) > 0) return 'A decision is waiting'
-  if (n(s.live) > 0) return i.enabled === false ? 'Paper allocation exists; account scanner disabled' : 'Allocated to paper; entries still require admission'
+  if (n(s.live) > 0)
+    return i.enabled === false
+      ? 'Paper allocation exists; account scanner disabled'
+      : 'Allocated to paper; entries still require admission'
   if (n(s.shadow) > 0) return 'Collecting shadow evidence'
   if (n(s.candidate) > 0) return 'Candidate; needs current screening and a shadow slot'
   if (n(s.retired) > 0) return 'Retired from research'

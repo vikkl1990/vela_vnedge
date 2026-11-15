@@ -2,69 +2,240 @@
 
 /* .main scrolls on x only to catch overflow; that makes it the "scrollport" for sticky and the list would never stick.
    `clip` keeps the overflow hidden without making it a scroll container, so sticky follows the window instead. */
-.main:has(.settings-page) { overflow-x: clip; }
+.main:has(.settings-page) {
+  overflow-x: clip;
+}
 
-.settings-layout { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 24px; align-items: start; }
+.settings-layout {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  gap: 24px;
+  align-items: start;
+}
 .settings-nav {
-  position: sticky; top: calc(var(--topbar-h) + 16px); display: flex; flex-direction: column; gap: 14px;
-  max-height: calc(100vh - var(--topbar-h) - 32px); overflow-y: auto; padding-right: 4px; scrollbar-width: thin;
+  position: sticky;
+  top: calc(var(--topbar-h) + 16px);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-height: calc(100vh - var(--topbar-h) - 32px);
+  overflow-y: auto;
+  padding-right: 4px;
+  scrollbar-width: thin;
 }
-.settings-nav-group ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 1px; }
+.settings-nav-group ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
 .settings-nav-head {
-  display: flex; align-items: center; gap: 7px; margin: 0 0 4px; padding: 0 10px; font-size: var(--fs-2xs); font-weight: 700;
-  text-transform: uppercase; letter-spacing: var(--tracking-label); color: var(--muted);
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0 0 4px;
+  padding: 0 10px;
+  font-size: var(--fs-2xs);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-label);
+  color: var(--muted);
 }
-.settings-nav-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted-2); flex: none; }
-.settings-nav-dot.risk-high { background: var(--loss); } .settings-nav-dot.risk-medium { background: var(--warn); } .settings-nav-dot.risk-low { background: var(--muted-2); }
+.settings-nav-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--muted-2);
+  flex: none;
+}
+.settings-nav-dot.risk-high {
+  background: var(--loss);
+}
+.settings-nav-dot.risk-medium {
+  background: var(--warn);
+}
+.settings-nav-dot.risk-low {
+  background: var(--muted-2);
+}
 .settings-nav-link {
-  display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 10px; border-radius: var(--radius-sm);
-  color: var(--muted); font-size: var(--fs-sm); font-weight: 600; text-decoration: none; border-left: 2px solid transparent;
-  transition: background var(--dur-1) var(--ease), color var(--dur-1) var(--ease);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  text-decoration: none;
+  border-left: 2px solid transparent;
+  transition:
+    background var(--dur-1) var(--ease),
+    color var(--dur-1) var(--ease);
 }
-.settings-nav-link:hover { color: var(--text); background: color-mix(in srgb, var(--text) 5%, transparent); }
-.settings-nav-link.on { color: var(--text); background: var(--accent-soft); border-left-color: var(--accent-2); }
-.settings-nav-edited { color: var(--warn); font-size: 10px; line-height: 1; }
+.settings-nav-link:hover {
+  color: var(--text);
+  background: color-mix(in srgb, var(--text) 5%, transparent);
+}
+.settings-nav-link.on {
+  color: var(--text);
+  background: var(--accent-soft);
+  border-left-color: var(--accent-2);
+}
+.settings-nav-edited {
+  color: var(--warn);
+  font-size: var(--fs-2xs);
+  line-height: 1;
+}
 
-.settings-main { display: flex; flex-direction: column; gap: var(--gap-page); min-width: 0; }
-fieldset.settings-groups { display: flex; flex-direction: column; gap: var(--gap-page); border: 0; padding: 0; margin: 0; min-width: 0; }
-.settings-group { min-width: 0; scroll-margin-top: calc(var(--topbar-h) + 16px); }
-.settings-group.risk-high > .panel { border-left: 3px solid var(--loss); }
-.settings-group.risk-medium > .panel { border-left: 3px solid var(--warn); }
-#delta-connection, #fee-audit { scroll-margin-top: calc(var(--topbar-h) + 16px); }
-.settings-intro { margin: 0 0 12px; max-width: 80ch; line-height: 1.55; }
-.settings-group .callout { margin-bottom: 14px; }
-.settings-fields { gap: 14px 20px; }
+.settings-main {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-page);
+  min-width: 0;
+}
+fieldset.settings-groups {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-page);
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+}
+.settings-group {
+  min-width: 0;
+  scroll-margin-top: calc(var(--topbar-h) + 16px);
+}
+.settings-group.risk-high > .panel {
+  border-left: 3px solid var(--loss);
+}
+.settings-group.risk-medium > .panel {
+  border-left: 3px solid var(--warn);
+}
+#delta-connection,
+#fee-audit {
+  scroll-margin-top: calc(var(--topbar-h) + 16px);
+}
+.settings-intro {
+  margin: 0 0 12px;
+  max-width: 80ch;
+  line-height: 1.55;
+}
+.settings-group .callout {
+  margin-bottom: 14px;
+}
+.settings-fields {
+  gap: 14px 20px;
+}
 
 .settings-savebar {
-  position: sticky; bottom: 12px; z-index: var(--z-sticky); display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px 16px;
-  padding: 10px 16px; border-radius: var(--radius); border: 1px solid color-mix(in srgb, var(--warn) 50%, transparent);
-  background: color-mix(in srgb, var(--surface-2) 92%, transparent); backdrop-filter: blur(10px); box-shadow: var(--shadow-3);
+  position: sticky;
+  bottom: 12px;
+  z-index: var(--z-sticky);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  padding: 10px 16px;
+  border-radius: var(--radius);
+  border: 1px solid color-mix(in srgb, var(--warn) 50%, transparent);
+  background: color-mix(in srgb, var(--surface-2) 92%, transparent);
+  backdrop-filter: blur(10px);
+  box-shadow: var(--shadow-3);
 }
-.settings-savebar-text { min-width: 0; flex: 1 1 280px; }
-.settings-savebar-actions { display: flex; gap: 8px; }
+.settings-savebar-text {
+  min-width: 0;
+  flex: 1 1 280px;
+}
+.settings-savebar-actions {
+  display: flex;
+  gap: 8px;
+}
 
 @media (max-width: 960px) {
-  .settings-layout { grid-template-columns: minmax(0, 1fr); gap: 12px; }
-  .settings-nav { position: static; flex-direction: row; max-height: none; overflow-x: auto; overflow-y: hidden; padding: 0 0 4px; gap: 6px; overscroll-behavior-x: contain; }
-  .settings-nav-group, .settings-nav-group ul { display: contents; }
-  .settings-nav-head { display: none; }
-  .settings-nav li { flex: none; }
-  .settings-nav-link { border: 1px solid var(--border); border-left-width: 1px; border-radius: var(--pill); padding: 6px 12px; white-space: nowrap; background: var(--surface-2); min-height: 36px; }
-  .settings-nav-link.on { border-color: var(--accent-2); }
-  .settings-fields { gap: 12px; }
-  .settings-savebar { padding: 10px 12px; }
-  .settings-savebar-actions { width: 100%; }
-  .settings-savebar-actions .btn { flex: 1; justify-content: center; min-height: 44px; }
+  .settings-layout {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 12px;
+  }
+  .settings-nav {
+    position: static;
+    flex-direction: row;
+    max-height: none;
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding: 0 0 4px;
+    gap: 6px;
+    overscroll-behavior-x: contain;
+  }
+  .settings-nav-group,
+  .settings-nav-group ul {
+    display: contents;
+  }
+  .settings-nav-head {
+    display: none;
+  }
+  .settings-nav li {
+    flex: none;
+  }
+  .settings-nav-link {
+    border: 1px solid var(--border);
+    border-left-width: 1px;
+    border-radius: var(--pill);
+    padding: 6px 12px;
+    white-space: nowrap;
+    background: var(--surface-2);
+    min-height: 36px;
+  }
+  .settings-nav-link.on {
+    border-color: var(--accent-2);
+  }
+  .settings-fields {
+    gap: 12px;
+  }
+  .settings-savebar {
+    padding: 10px 12px;
+  }
+  .settings-savebar-actions {
+    width: 100%;
+  }
+  .settings-savebar-actions .btn {
+    flex: 1;
+    justify-content: center;
+    min-height: 44px;
+  }
 }
 
 /* Delta connection panel */
-.delta-connection-grid { margin-top: 14px; gap: 20px; }
-#delta-connection .panel-body > .callout + .callout, #delta-connection .panel-body > .delta-connection-grid + .callout { margin-top: 12px; }
-#delta-connection .row.gap { margin: 10px 0; flex-wrap: wrap; }
+.delta-connection-grid {
+  margin-top: 14px;
+  gap: 20px;
+}
+#delta-connection .panel-body > .callout + .callout,
+#delta-connection .panel-body > .delta-connection-grid + .callout {
+  margin-top: 12px;
+}
+#delta-connection .row.gap {
+  margin: 10px 0;
+  flex-wrap: wrap;
+}
 
 /* Delta connection panel */
-.delta-connection-grid { margin-top: 14px; gap: 20px; }
-#delta-connection .row.gap { margin: 10px 0; flex-wrap: wrap; }
+.delta-connection-grid {
+  margin-top: 14px;
+  gap: 20px;
+}
+#delta-connection .row.gap {
+  margin: 10px 0;
+  flex-wrap: wrap;
+}
 
 /* the phone's bottom bar is fixed at 720px and below: keep the save bar above it */
-@media (max-width: 720px) { .settings-savebar { bottom: calc(66px + env(safe-area-inset-bottom, 0px)); } }
+@media (max-width: 720px) {
+  .settings-savebar {
+    bottom: calc(66px + env(safe-area-inset-bottom, 0px));
+  }
+}

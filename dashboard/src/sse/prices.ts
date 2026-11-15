@@ -18,7 +18,8 @@ const prices = new Map<string, { price: number; at: number }>()
 export const STALE_MS = 90_000
 
 sseBus.on('tick', (t: TickEvent) => {
-  if (t && typeof t.symbol === 'string' && Number.isFinite(t.price)) prices.set(t.symbol, { price: t.price, at: Date.now() })
+  if (t && typeof t.symbol === 'string' && Number.isFinite(t.price))
+    prices.set(t.symbol, { price: t.price, at: Date.now() })
 })
 
 export function getLivePrice(symbol: string, now = Date.now()): number | undefined {
@@ -39,17 +40,22 @@ function read(symbol: string, fallback?: number | null): LivePrice {
   const p = prices.get(symbol)
   const ageMs = p ? Date.now() - p.at : null
   const fresh = p !== undefined && ageMs !== null && ageMs <= STALE_MS
-  return { price: fresh ? p!.price : fallback ?? p?.price ?? undefined, ageMs, stale: !fresh }
+  return { price: fresh ? p!.price : (fallback ?? p?.price ?? undefined), ageMs, stale: !fresh }
 }
 
 /** Latest tick price for `symbol` with its freshness (falls back to the server's value). */
 export function useLiveTick(symbol: string, fallback?: number | null): LivePrice {
   const subscribe = useCallback(
     (onChange: () => void) => {
-      const off = sseBus.on('tick', (t: TickEvent) => { if (t.symbol === symbol) onChange() })
+      const off = sseBus.on('tick', (t: TickEvent) => {
+        if (t.symbol === symbol) onChange()
+      })
       // re-read on a slow clock as well, so a feed that simply stops still turns stale on screen
       const timer = setInterval(onChange, 15_000)
-      return () => { off(); clearInterval(timer) }
+      return () => {
+        off()
+        clearInterval(timer)
+      }
     },
     [symbol],
   )

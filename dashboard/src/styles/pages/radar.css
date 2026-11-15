@@ -1,10 +1,36 @@
 /* Radar page: layout glue only; cell colours stay in pages.css. */
-.radar-page .radar-stack { display: flex; flex-direction: column; gap: var(--gap-page); min-width: 0; }
-.radar-page .radar-window { display: inline-flex; align-items: center; gap: 8px; }
-.radar-page .radar-check { display: inline-flex; align-items: center; gap: 6px; }
-.radar-page .radar-legend { margin-top: 0; }
-.radar-page .stat-sub { overflow-wrap: anywhere; }
+.radar-page .radar-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-page);
+  min-width: 0;
+}
+.radar-page .radar-window {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.radar-page .radar-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.radar-page .radar-legend {
+  margin-top: 0;
+}
+.radar-page .stat-sub {
+  overflow-wrap: anywhere;
+}
 /* equal timeframe columns instead of one cell swallowing the row */
-.radar-page .radar-table { table-layout: fixed; width: 100%; }
-.radar-page .radar-table th:first-child, .radar-page .radar-table td:first-child { width: 140px; }
-.radar-page .radar-line { white-space: normal; overflow-wrap: anywhere; }
+.radar-page .radar-table {
+  table-layout: fixed;
+  width: 100%;
+}
+.radar-page .radar-table th:first-child,
+.radar-page .radar-table td:first-child {
+  width: 140px;
+}
+.radar-page .radar-line {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}

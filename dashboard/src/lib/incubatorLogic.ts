@@ -10,7 +10,18 @@ export function clockRank(p: IncubatorPair, cfg: IncubatorView['config']['demote
   const days = (now - (p.lastTradeAt ?? p.since)) / 86_400_000
   const cap = cfg.silentDaysByTf?.[p.tf] ?? cfg.silentDays
   const silent = !p.accountHolding && cap ? (days >= cap ? 2 : days >= cap / 2 ? 1 : 0) : 0
-  const starved = !p.accountHolding && now - p.since >= (cfg.costStarvedDays ?? 14) * 86_400_000 && (p.lastTradeAt ?? 0) < now - (cfg.costStarvedDays ?? 14) * 86_400_000 && cfg.costStarvedRefusals && p.funnel && p.funnel.opened === 0 && p.funnel.cost > 0 ? (p.funnel.cost >= cfg.costStarvedRefusals ? 2 : 1) : 0
+  const starved =
+    !p.accountHolding &&
+    now - p.since >= (cfg.costStarvedDays ?? 14) * 86_400_000 &&
+    (p.lastTradeAt ?? 0) < now - (cfg.costStarvedDays ?? 14) * 86_400_000 &&
+    cfg.costStarvedRefusals &&
+    p.funnel &&
+    p.funnel.opened === 0 &&
+    p.funnel.cost > 0
+      ? p.funnel.cost >= cfg.costStarvedRefusals
+        ? 2
+        : 1
+      : 0
   return Math.max(out, silent, starved)
 }
 
@@ -21,7 +32,8 @@ export function gateFor(g: Gate, tf: string): Gate {
 }
 /** "≥30 trades over ≥14 days (1h: 20 over 28 · 4h: 12 over 45)": the minimums in words, every timeframe that differs. */
 export function gateMinimums(g: Gate): string {
-  const t = g.minTradesByTf ?? {}, d = g.minDaysByTf ?? {}
+  const t = g.minTradesByTf ?? {},
+    d = g.minDaysByTf ?? {}
   const tfs = [...new Set([...Object.keys(t), ...Object.keys(d)])]
   const extra = tfs.map((tf) => `${tf}: ${t[tf] ?? g.minTrades} over ${d[tf] ?? g.minDays}`).join(' · ')
   return `≥${g.minTrades} shadow trades over ≥${g.minDays} days${extra ? ` (${extra})` : ''}`

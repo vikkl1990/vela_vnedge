@@ -1,0 +1,194 @@
+/* Shared data views. Page data is bounded before it reaches the DOM. */
+.pagination,
+.pagination-controls,
+.data-card-sort {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.pagination {
+  justify-content: space-between;
+  padding: 12px;
+  border-top: 1px solid var(--border);
+  font-size: var(--fs-sm);
+}
+.data-cards {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+.data-card {
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  min-width: 0;
+}
+.data-card dl {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+}
+.data-card dl > div {
+  display: grid;
+  grid-template-columns: minmax(85px, 1fr) minmax(0, 2fr);
+  gap: 12px;
+}
+.data-card dt {
+  color: var(--muted);
+}
+.data-card dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.data-card dd .msg {
+  white-space: normal;
+}
+.data-card-sort {
+  padding: 12px;
+}
+.data-card-sort label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.signal-outcomes {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.signal-cell-details {
+  padding: 16px;
+  border-top: 1px solid var(--border);
+}
+.pair-grid {
+  width: 100%;
+  display: block;
+  overflow: visible;
+}
+.pair-cell {
+  cursor: pointer;
+  outline: none;
+}
+.pair-cell rect {
+  fill: var(--surface);
+  stroke: var(--border);
+}
+.pair-cell.positive rect {
+  fill: var(--gain-soft);
+}
+.pair-cell.negative rect {
+  fill: var(--loss-soft);
+}
+.pair-cell.selected rect,
+.pair-cell:focus rect {
+  stroke: var(--accent);
+  stroke-width: 2;
+}
+.pair-cell text {
+  fill: var(--text);
+  pointer-events: none;
+}
+.pair-cell .pair-symbol {
+  font-size: 15px;
+  font-weight: 650;
+}
+.pair-cell .pair-value {
+  font-size: 14px;
+}
+.pair-inspector {
+  margin-top: 12px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.pair-inspector p {
+  margin: 8px 0 0;
+}
+.hub-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  border-bottom: 1px solid var(--border);
+  padding: 0 0 12px;
+  margin-bottom: 16px;
+}
+.hub-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 36px;
+  padding: 6px 12px;
+  color: var(--muted);
+  border-radius: var(--radius);
+}
+.hub-link[aria-current='page'] {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+@media (max-width: 640px) {
+  :root {
+    --fs-2xs: 11px;
+    --fs-xs: 12px;
+  }
+  button.btn,
+  button.tab,
+  button.seg,
+  button.chip,
+  .hub-link,
+  .th-btn {
+    min-height: 44px;
+  }
+  .input,
+  .select {
+    min-height: 44px;
+    font-size: 16px;
+  }
+  .data-card {
+    font-size: 12px;
+  }
+  .data-card .small,
+  .data-card .pill {
+    font-size: 11px;
+  }
+  .pagination {
+    padding: 12px 0;
+  }
+  .pagination-controls {
+    width: 100%;
+    justify-content: space-between;
+  }
+}
+
+.mb-page {
+  margin-bottom: var(--gap-page);
+}
+.mt-page {
+  margin-top: var(--gap-page);
+}
+.mt-small {
+  margin-top: 6px;
+}
+.sc-author-select {
+  width: auto;
+  max-width: 200px;
+}
+@media (max-width: 640px) {
+  .rowmenu-item,
+  .book-seg,
+  .ml-lens {
+    min-height: 44px;
+  }
+}
+
+.data-card-details {
+  margin-top: 8px;
+  border-top: 1px solid var(--border);
+}
+.data-card-details summary {
+  min-height: 44px;
+  align-content: center;
+  cursor: pointer;
+  color: var(--accent-3);
+}

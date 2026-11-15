@@ -1,19 +1,19 @@
-import {
-  Area,
-  AreaChart,
-  CartesianGrid,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from 'recharts'
+import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import type { EquityPoint } from '../api/types'
 import { fmtDateTime, fmtMoney } from '../lib/format'
 
 const GAIN = 'hsl(136 39% 45%)'
 const LOSS = 'hsl(7 80% 55%)'
 
-export function EquityChart({ data, height = 220, baseline }: { data: EquityPoint[]; height?: number; baseline?: number }) {
+export function EquityChart({
+  data,
+  height = 220,
+  baseline,
+}: {
+  data: EquityPoint[]
+  height?: number
+  baseline?: number
+}) {
   if (!data.length) return <div className="state muted">No equity history yet.</div>
   const first = baseline ?? data[0].equity
   const last = data[data.length - 1].equity
@@ -52,29 +52,66 @@ export function EquityChart({ data, height = 220, baseline }: { data: EquityPoin
           fontFamily="JetBrains Mono, monospace"
         />
         <Tooltip
-          contentStyle={{ background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 8, fontSize: 12 }}
+          contentStyle={{
+            background: 'var(--surface-2)',
+            border: '1px solid var(--border)',
+            borderRadius: 8,
+            fontSize: 12,
+          }}
           labelFormatter={(v) => fmtDateTime(Number(v))}
           formatter={(v, name) => [fmtMoney(Number(v)), String(name)]}
         />
-        <Area type="monotone" dataKey="equity" stroke={color} strokeWidth={1.6} fill="url(#eqfill)" isAnimationActive={false} dot={false} />
+        <Area
+          type="monotone"
+          dataKey="equity"
+          stroke={color}
+          strokeWidth={1.6}
+          fill="url(#eqfill)"
+          isAnimationActive={false}
+          dot={false}
+        />
       </AreaChart>
     </ResponsiveContainer>
   )
 }
 
 /** A small inline line chart: one series, last value on the right, no axes (decision 80 system panel). */
-export function Sparkline({ values, height = 44, width = 240, className = '', format = (v: number) => String(Math.round(v)) }: { values: Array<number | null>; height?: number; width?: number; className?: string; format?: (v: number) => string }) {
-  const pts = values.map((v, i) => (v === null || !Number.isFinite(v) ? null : { i, v })).filter((p): p is { i: number; v: number } => p !== null)
+export function Sparkline({
+  values,
+  height = 44,
+  width = 240,
+  className = '',
+  format = (v: number) => String(Math.round(v)),
+}: {
+  values: Array<number | null>
+  height?: number
+  width?: number
+  className?: string
+  format?: (v: number) => string
+}) {
+  const pts = values
+    .map((v, i) => (v === null || !Number.isFinite(v) ? null : { i, v }))
+    .filter((p): p is { i: number; v: number } => p !== null)
   if (pts.length < 2) return <span className="muted small">no data yet</span>
-  const min = Math.min(...pts.map((p) => p.v)), max = Math.max(...pts.map((p) => p.v))
+  const min = Math.min(...pts.map((p) => p.v)),
+    max = Math.max(...pts.map((p) => p.v))
   const span = max - min || 1
   const x = (i: number) => (i / Math.max(1, values.length - 1)) * (width - 2) + 1
   const y = (v: number) => height - 3 - ((v - min) / span) * (height - 6)
   const d = pts.map((p, k) => `${k === 0 ? 'M' : 'L'}${x(p.i).toFixed(1)},${y(p.v).toFixed(1)}`).join(' ')
   const last = pts[pts.length - 1].v
   return (
-    <span className={`sparkline ${className}`} title={`min ${format(min)} · max ${format(max)} · now ${format(last)}`}>
-      <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`now ${format(last)}`}>
+    <span
+      className={`sparkline ${className}`}
+      title={`min ${format(min)} · max ${format(max)} · now ${format(last)}`}
+    >
+      <svg
+        width={width}
+        height={height}
+        viewBox={`0 0 ${width} ${height}`}
+        role="img"
+        aria-label={`now ${format(last)}`}
+      >
         <path d={d} fill="none" stroke="currentColor" strokeWidth="1.5" />
       </svg>
       <span className="mono small">{format(last)}</span>
