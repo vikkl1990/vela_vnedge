@@ -71,6 +71,7 @@ export interface GoLiveCheck {
 export interface GoLiveVerdict {
   ok: boolean
   checks: GoLiveCheck[]
+  advisories?: Array<{ key: string; label: string; value: string; note: string }>
   sim: {
     paths: number
     days: number

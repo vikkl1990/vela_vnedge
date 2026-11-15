@@ -269,6 +269,19 @@ function ChecksSection({
           </table>
         </div>
       </div>
+      {golive.advisories?.map((item) => (
+        <div className="panel" key={item.key}>
+          <p>
+            <Pill tone="warn">Advisory</Pill>{' '}
+            <strong>
+              {item.label}: {item.value}
+            </strong>
+          </p>
+          <p className="muted small">
+            {item.note} <Link to="/gates">Review risk controls</Link>
+          </p>
+        </div>
+      ))}
       {sim && (
         <div className="live-sim">
           <h3 className="live-sub-title">Simulated through the fleet&rsquo;s halts</h3>
