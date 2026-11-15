@@ -14,6 +14,8 @@ test('Signals render bounded rows, preserve filters, and sort every result', asy
   const before = await rows.first().innerText()
   await page.getByRole('button', { name: 'Next signals page' }).click()
   await expect(rows.first()).not.toHaveText(before)
+  await page.getByLabel('Side', { exact: true }).selectOption('short')
+  await expect(rows.first()).toContainText('Scanner 001')
   await page.getByLabel('Scanner', { exact: true }).selectOption('scanner-205')
   await expect(rows).toHaveCount(1)
   await expect(rows.first()).toContainText('Scanner 205')

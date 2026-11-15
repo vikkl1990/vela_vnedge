@@ -497,9 +497,13 @@ export function Signals() {
             {signals.data &&
               rows.length > 0 &&
               (view === 'flat' ? (
-                <SignalsTable signals={rows} maxHeight="calc(100vh - 300px)" />
+                <SignalsTable
+                  key={`${scanner}:${symbol}:${tf}:${kind}:${side}`}
+                  signals={rows}
+                  maxHeight="calc(100vh - 300px)"
+                />
               ) : (
-                <GroupedSignals signals={rows} />
+                <GroupedSignals key={`${scanner}:${symbol}:${tf}:${kind}:${side}`} signals={rows} />
               ))}
           </Section>
         </div>
