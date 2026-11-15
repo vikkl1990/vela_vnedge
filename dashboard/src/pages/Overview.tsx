@@ -553,7 +553,7 @@ function AlertsStatusLine() {
       <b>Alerts:</b>{' '}
       {ok
         ? `${a.channel ?? 'channel'} configured · ${a.sent ?? 0} sent`
-        : 'not configured — a halt, a stranded position or a hunt result reaches nobody until TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are set in the service environment'}
+        : 'not configured — connect Telegram in Settings so halts, stranded positions and hunt results reach you'}
       {a.lastError ? <span className="text-danger"> · last error: {a.lastError}</span> : null}
       {a.recent?.length ? (
         <span className="muted"> · last: {a.recent[a.recent.length - 1].text.slice(0, 80)}</span>

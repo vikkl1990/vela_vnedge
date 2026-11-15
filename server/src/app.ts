@@ -67,6 +67,9 @@ import { FeatureEnricher } from './ml/enrich.ts';
 import { theCall, yardstick, type YardTrade } from './ml/yardstick.ts';
 import { OpsService } from './ops/service.ts';
 import { WorkerTracker } from './ops/workers.ts';
+import {telegramFromEnv} from './ops/alerts.ts';
+import {TelegramControl} from './telegram/control.ts';
+import {telegramActions} from './telegram/commands.ts';
 
 const log = logger.scoped('app');
 
@@ -123,6 +126,7 @@ export class App {
   readonly risk: RiskManager;
   readonly executor: ExchangeExecutor | null = null;
   readonly ops: OpsService;
+  readonly telegram:TelegramControl;
   /** Decision 174: screens on demand, one at a time, never over the nightly. */
   readonly screenQueue: ScreenQueue;
   readonly pairAgents: PairAgents;
@@ -283,7 +287,10 @@ export class App {
     // flow intelligence from public data, once an hour (decision 101)
     this.context = new ContextCollector({ db: this.db, rest: this.rest, symbols: () => [...new Set([...this.resolvedSymbols, ...this.incubator.symbols()])] });
     this.context.start();
-    this.ops = new OpsService({ cfg, onConfigChange: l => this.config.onChange(l), db: this.db, dataDir: DATA_DIR, feed: this.feed, pool: this.pool, paper: this.paper, marks: this.marks, candles: this.candles, scanners: this.scanners, workers, transport: deps.alertTransport, peakEquity: () => this.risk.peakEquity() });
+    this.ops = new OpsService({ cfg, onConfigChange: l => this.config.onChange(l), db: this.db, dataDir: DATA_DIR, feed: this.feed, pool: this.pool, paper: this.paper, marks: this.marks, candles: this.candles, scanners: this.scanners, workers, transport: deps.alertTransport, peakEquity: () => this.risk.peakEquity(),
+      telegramTarget:()=>this.telegram?this.telegram.deliveryTarget():telegramFromEnv(cfg().alerts.telegram) });
+    this.telegram=new TelegramControl({db:this.db,dataDir:DATA_DIR,actions:telegramActions(this),alerts:()=>this.ops.alerts,manageDelivery:!deps.alertTransport,
+      fallbackTarget:()=>telegramFromEnv(cfg().alerts.telegram),ownerActive:id=>{try{return !!this.db.get("SELECT 1 FROM users WHERE id=? AND role='admin' AND disabled=0",id);}catch{return false;}}});
     this.screenQueue = new ScreenQueue({
       db: this.db, diagDir: path.join(DATA_DIR, 'diag'), serverDir: path.join(ROOT_DIR, 'server'),
       nightlyRunning: () => {
@@ -386,6 +393,7 @@ export class App {
     }, 60_000);
     this.huntTimer.unref?.();
     this.ops.start();
+    this.telegram.start();
     this.screenQueue.start();
     this.pairAgents.start();
     // don't block the API on warm-up
@@ -520,7 +528,7 @@ export class App {
     const gl = l.golive;
     g.push({ key: 'golive', group: 'Real money', name: 'Go-live rule', state: gl.ok ? 'open' : 'blocking', value: `${gl.checks.filter((c: any) => c.ok).length} of ${gl.checks.length} checks pass`, rule: 'Every check with its number; keys stay unset until all are green', next: gl.ok ? 'All green' : `Failing: ${gl.checks.filter((c: any) => !c.ok).map((c: any) => c.name ?? c.label ?? c.key).slice(0, 3).join(', ')}`, href: '/analytics' });
     const alerts = this.ops.alerts.status();
-    g.push({ key: 'alerts', group: 'Real money', name: 'Alert channel', state: alerts.configured ? 'open' : 'attention', value: alerts.configured ? `${alerts.channel ?? 'channel'} · ${alerts.sent ?? 0} sent` : 'not configured', rule: 'A halt, a stranded position or a hunt result must reach a person', next: alerts.configured ? 'Configured' : 'TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in the service environment', href: '/exchange' });
+    g.push({ key: 'alerts', group: 'Real money', name: 'Alert channel', state: alerts.configured ? 'open' : 'attention', value: alerts.configured ? `${alerts.channel ?? 'channel'} · ${alerts.sent ?? 0} sent` : 'not configured', rule: 'A halt, a stranded position or a hunt result must reach a person', next: alerts.configured ? 'Configured' : 'Connect and approve a private Telegram chat in Settings', href: '/settings#telegram-connection' });
     const ex = cfg.execution;
     const live = ex.allowProduction === true && process.env.DELTA_LIVE === '1';
     g.push({ key: 'execution', group: 'Real money', name: 'Execution lock', state: ex.mode === 'paper' ? 'blocking' : live ? 'attention' : 'armed', value: `mode ${ex.mode} · host ${live ? 'production' : 'demo'} · ${ex.bracket ? 'brackets on' : 'market orders, reduce-only exits'}`, rule: 'Production needs allowProduction and DELTA_LIVE=1 both; the mode cannot change at runtime', next: ex.mode === 'paper' ? 'Paper until the go-live rule is green' : 'Keys live only in the service environment', href: '/exchange' });
@@ -1058,6 +1066,7 @@ export class App {
   }
 
   async stop() {
+    await this.telegram.stop();
     this.pairAgents.stop();
     this.scanners.stop();this.boundExits.stop();
     this.validation.stop();

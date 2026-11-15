@@ -326,6 +326,14 @@ export class RiskManager extends EventEmitter implements RiskGate {
     if (closeAll) { const n = this.paper.closeAll('risk-kill', this.now()); log.warn(`requested closure of ${n} position(s) on manual halt`); }
   }
 
+  /** Clear only an operator pause. Never rebase loss windows or clear cooldowns. */
+  resumeManual():{ok:true}|{ok:false;reason:string} {
+    this.tick(this.now());
+    if(this.st.day.tripped||this.st.week.tripped)return {ok:false,reason:'Entries remain paused: an active daily or weekly loss limit cannot be cleared from Telegram.'};
+    if(this.st.manualHalt){this.st.manualHalt=null;this.save();this.db.afterCommit(()=>log.info('manual entry pause cleared; risk windows preserved'));}
+    return {ok:true};
+  }
+
   /** Clear the manual halt, tripped kill switches and cooldowns; restart the period windows from the current equity. */
   reset(): void {
     this.st = this.freshState(this.now());
