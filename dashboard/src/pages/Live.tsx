@@ -40,7 +40,7 @@ const FIX: Record<string, { to?: string; text: string }> = {
   survival: { to: '/learn', text: 'See the simulation on Learn' },
   drawdown: { to: '/learn', text: 'See the simulation on Learn' },
   halts: { to: '/gates', text: 'See the gates' },
-  alerts: { text: 'Set the alert target in server configuration' },
+  alerts: { text: 'Connect Telegram alerts in Settings', to: '/settings#telegram-connection' },
 }
 const fixFor = (key: string) => FIX[key] ?? { to: '/gates', text: 'See the gates' }
 
