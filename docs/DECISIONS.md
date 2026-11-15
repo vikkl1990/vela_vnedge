@@ -7772,3 +7772,11 @@ At the operator's explicit request, remove the halt-free historical-window requi
 Screen both imported strategies across 20 liquid Delta India crypto perpetuals and 15m/1h/4h, then extend every 1h/4h cell to six months without changing strategy inputs or selection thresholds. Only native Stealth ZECUSD 1h and Trend Continuation UNIUSD 1h qualify as new experimental candidates after complete minute-path replay, cost sensitivity and rolling-history entry parity. This is retrospective research, with historical funding/depth limitations, not paper qualification.
 
 Add two isolated shadow plans and raise only research-plan capacity from 79 to 81. Preserve all existing cohorts, paper mode, $150 margin, risk caps and evidence exclusions. No backtest or experiment is promoted automatically. See `research/liquid-import-study-2026-11-15.md` and its complete screening JSON.
+
+## 271. Make account-wide position counts optional without changing capital or evidence rules (15 November 2026)
+
+At the operator's request, allow zero to disable `paper.maxOpenPositions` and `risk.maxPositionsTotal`, and remove both eight-position ceilings on the paper account. Zero is not a full book. Apply the same meaning at setup, market and maker admission, fill-time checks, advisory validation ledgers and UI. An account's current capacity applies to older pending orders; their bound stops, fees, sizing and evidence remain unchanged. Positive count limits retain their existing behavior, including pending reservations and reversal replacement.
+
+Available cash margin, pending reservations, per-trade stop-risk cap, per-market/per-scanner limits, daily/weekly loss limits, cooldowns, evidence gates and paper mode remain unchanged. The guarded migration changes only the two count settings and refuses unexpected starting ceilings. Strategy evidence identity remains stable; exact account policy identity changes, so current-policy readiness accrues under the new settings without relabelling historical trades.
+
+The new ZEC/UNI 1h research allocations were activated at 12:39 UTC, after the preceding hourly close. Loaded histories and live feeds are healthy. Their first prospective bar closes at 13:00 UTC; past bars must not be traded to manufacture activity. Post-close observations are recorded separately from historical replay and synthetic lifecycle tests.

@@ -74,3 +74,12 @@ test('shadow: script exits close the matching position; disabled ledger ignores 
   await s.shadow.onSignal(s.sig(4, { symbol: 'ETHUSD' }));
   assert.equal(s.shadow.snapshot().variants.ungated.openPositions, 0);
 });
+
+test('advisory ledgers treat zero as no count ceiling while finite ceilings still work',async()=>{
+ const s=setup();s.cfg.paper.maxOpenPositions=0;
+ await s.shadow.onSignal(s.sig(1,{mlProb:.9}));
+ assert.equal(s.shadow.snapshot().variants.ungated.openPositions,1);
+ s.cfg.paper.maxOpenPositions=1;
+ await s.shadow.onSignal(s.sig(2,{mlProb:.9,symbol:'ETHUSD'}));
+ assert.equal(s.shadow.snapshot().variants.ungated.openPositions,1);
+});

@@ -251,6 +251,7 @@ export interface PaperConfig {
    * (decision 53). 0 = off (the default); the VM runs 0.5.
    */
   minSizeShare?: number;
+  /** Account-wide count ceiling; 0 disables only this ceiling. */
   maxOpenPositions: number;
   // ---- execution realism (phase 2) ----
   /** `tape`: fill on Delta's trade stream (1m candles only when the tape is silent > tapeFallbackMs). `candles`: legacy 1-minute candle fills. */
@@ -567,6 +568,7 @@ export interface RiskConfig {
   maxWeeklyLossPct: number;
   /** Close every open position when a kill switch trips. */
   closeAllOnKill: boolean;
+  /** Total open + pending count ceiling; 0 disables only this ceiling. */
   maxPositionsTotal: number;
   maxPositionsPerSymbol: number;
   /** Cap |Σ side × notional × corr(symbol, BTCUSD)| as % of equity (0 = off). Correlation over the last `corrBars` closed bars of the entry timeframe. */
@@ -946,7 +948,7 @@ export function validateConfig(c: AppConfig): string[] {
   if (p.quotedSlippageBps !== undefined && !(Number.isFinite(p.quotedSlippageBps) && p.quotedSlippageBps >= 0 && p.quotedSlippageBps < 10_000)) errs.push('paper.quotedSlippageBps must be 0..10000');
   if (!(Number.isFinite(p.slippageBps) && p.slippageBps >= 0 && p.slippageBps < 10_000)) errs.push('paper.slippageBps must be 0..10000');
   if (!(Number.isFinite(p.fallbackAtrSl) && p.fallbackAtrSl > 0)) errs.push('paper.fallbackAtrSl must be positive');
-  if (!(p.maxOpenPositions >= 1)) errs.push('paper.maxOpenPositions must be >= 1');
+  if (!Number.isInteger(p.maxOpenPositions) || p.maxOpenPositions < 0) errs.push('paper.maxOpenPositions must be a non-negative integer (0 disables the cap)');
   if (!['paper', 'dry-run', 'testnet'].includes(c.execution?.mode)) errs.push('execution.mode must be paper|dry-run|testnet');
   if (!(c.ml?.minProb >= 0 && c.ml?.minProb < 1)) errs.push('ml.minProb must be 0..1');
   if (!(c.autoTune?.minTrades >= 1 && c.autoTune?.minProfitFactor >= 0 && c.autoTune?.intervalHours >= 1)) errs.push('autoTune.minTrades ≥ 1, minProfitFactor ≥ 0, intervalHours ≥ 1');
@@ -1004,7 +1006,7 @@ export function validateRealismAndRisk(c: AppConfig): string[] {
   const pct = (v: number, k: string, max = 100) => { if (!(Number.isFinite(v) && v >= 0 && v <= max)) errs.push(`risk.${k} must be 0..${max}`); };
   pct(r.maxDailyLossPct, 'maxDailyLossPct'); pct(r.maxWeeklyLossPct, 'maxWeeklyLossPct'); pct(r.perScannerDailyLossPct, 'perScannerDailyLossPct');
   pct(r.maxBetaExposurePct, 'maxBetaExposurePct', 100_000);
-  if (!(r.maxPositionsTotal >= 1)) errs.push('risk.maxPositionsTotal must be ≥ 1');
+  if (!Number.isInteger(r.maxPositionsTotal) || r.maxPositionsTotal < 0) errs.push('risk.maxPositionsTotal must be a non-negative integer (0 disables the cap)');
   if (!(r.maxPositionsPerSymbol >= 1)) errs.push('risk.maxPositionsPerSymbol must be ≥ 1');
   if (!(r.perScannerMaxPositions >= 1)) errs.push('risk.perScannerMaxPositions must be ≥ 1');
   if (!(r.corrBars >= 5 && r.corrBars <= 500)) errs.push('risk.corrBars must be 5..500');
