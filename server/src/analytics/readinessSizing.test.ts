@@ -60,6 +60,7 @@ test('depth replay reproduces the worse of executable quote and VWAP',t=>{
 });
 const corruptions:Record<string,(f:ReturnType<typeof fixture>)=>void>={
  'missing depth':f=>{f.db.run('DELETE FROM entry_fill_evidence');},
+ 'future depth':f=>{f.depth.receivedAt+=500;f.depth.evaluatedAt+=600;f.db.run('UPDATE entry_fill_evidence SET depth=?',JSON.stringify(f.depth));},
  'wrong order':f=>{f.db.run('UPDATE entry_fill_evidence SET order_id=20');},
  'stale quote':f=>{f.db.run('UPDATE orders SET quote_at=1');},
  'undercharged fee':f=>{f.db.run('UPDATE orders SET fee=0');},

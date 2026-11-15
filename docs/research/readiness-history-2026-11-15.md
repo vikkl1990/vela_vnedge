@@ -37,7 +37,7 @@ Live control identifies exact, capacity-compatible and same-size replay trades. 
 
 ## Validation and limits
 
-- 1,536 server tests pass, including 16 sizing-proof tests: valid loss inclusion, pilot fractions, quote/depth pricing, changed quantity, unknown or stale evidence, mismatched fees/orders, partial entries, changed risk, changed portfolio leverage ceilings and experimental scope.
+- 1,537 server tests pass, including 17 sizing-proof tests: valid loss inclusion, pilot fractions, quote/depth pricing, changed quantity, unknown or stale evidence, mismatched fees/orders, partial entries, changed risk, changed portfolio leverage ceilings and experimental scope.
 - A sizing grid checks old/new equality across account equity, wallet availability, existing exposure, adverse prices and leverage tiers.
 - Server typecheck, dashboard lint/build and four rendered desktop/phone readiness tests pass.
 - The recorded-data audit independently reproduces all 15 previously accepted trades and exactly nine additional trades. The 50 out-of-window rows are counted from the VM; the in-memory replay contains only the 1,041 window rows.

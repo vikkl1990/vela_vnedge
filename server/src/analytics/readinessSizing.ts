@@ -28,7 +28,7 @@ export function proveSameReadinessSize(db:Db,positionId:number,previous:TradePol
     const evidence=db.get<any>('SELECT * FROM entry_fill_evidence WHERE position_id=? AND book=0',r.id);
     if(!order||!evidence||order.at!==r.entry_at||evidence.at!==r.entry_at||evidence.order_id!==entry.orderId||order.qty!==r.qty||evidence.qty!==r.qty||order.price_source!=='depth'||evidence.source!=='depth'||evidence.role!=='taker'||!near(order.price,r.entry_price)||!near(evidence.price,r.entry_price)||!near(order.fee,entry.fee))return missing;
     const depth=JSON.parse(evidence.depth) as EntryDepthSnapshot;
-    if(depth.source!=='l2-rest'||depth.side!==r.side||depth.requestedQty!==r.qty||!positive(depth.evaluatedAt)||depth.evaluatedAt<r.entry_at||depth.evaluatedAt-r.entry_at>1000||!positive(depth.receivedAt)||depth.receivedAt>depth.evaluatedAt||depth.evaluatedAt-depth.receivedAt>previous.paper.quoteMaxAgeMs)return missing;
+    if(depth.source!=='l2-rest'||depth.side!==r.side||depth.requestedQty!==r.qty||!positive(depth.evaluatedAt)||depth.evaluatedAt<r.entry_at||depth.evaluatedAt-r.entry_at>1000||!positive(depth.receivedAt)||depth.receivedAt>r.entry_at||depth.evaluatedAt-depth.receivedAt>previous.paper.quoteMaxAgeMs)return missing;
     const levels=r.side==='long'?depth.asks:depth.bids;
     const priced=depthFill(levels,r.qty,r.side);
     if(priced.coverage<1||!near(priced.vwap!,depth.vwap))return missing;
