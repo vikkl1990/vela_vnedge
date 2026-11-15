@@ -64,9 +64,10 @@ export function PolicyHealthPanel() {
             </p>
           )}
           <p className="small muted">
-            Last {q.data.windowDays} days. Paper matching includes readiness-compatible trades from stricter
-            global position-count ceilings, with all other policy settings identical. Shadow matching uses
-            strategy identity. Promotion and leverage keep their separate evidence rules.
+            Last {q.data.windowDays} days. Paper readiness includes verified compatible history; replayed
+            sizing must reproduce the recorded contracts and stop risk. Shadow matching uses strategy
+            identity. Promotion and leverage keep their separate evidence rules. Historical profits are never
+            scaled up.
           </p>
           <div style={{ overflowX: 'auto' }}>
             <table className="table">
@@ -90,6 +91,12 @@ export function PolicyHealthPanel() {
                       {!!b.capacityCompatible && (
                         <div className="small muted">{b.capacityCompatible} capacity-compatible</div>
                       )}
+                      {!!b.scopeCompatible && (
+                        <div className="small muted">{b.scopeCompatible} unrelated-cell settings</div>
+                      )}
+                      {!!b.sizingCompatible && (
+                        <div className="small muted">{b.sizingCompatible} same-size replay</div>
+                      )}
                     </td>
                     <td>{b.changed}</td>
                     <td>{b.legacy}</td>
@@ -101,6 +108,24 @@ export function PolicyHealthPanel() {
               </tbody>
             </table>
           </div>
+          {q.data.books
+            .filter((b) => b.book === 'paper' && b.exclusions)
+            .map((b) => (
+              <div key={b.book} className="stack" aria-label="Paper readiness exclusions">
+                <h3>Why other paper trades do not count</h3>
+                <p className="small muted">
+                  {b.totalClosed} closed paper trades in the journal; {b.outsideWindow} are outside the{' '}
+                  {q.data.windowDays}-day readiness window. Within the window, {b.matching} qualify.
+                </p>
+                <ul>
+                  {b.exclusions!.map((item) => (
+                    <li key={item.reason}>
+                      {item.label}: <strong>{item.trades}</strong>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ))}
           <p className="small muted">
             {q.data.books.reduce((n, b) => n + b.adoptedOpen, 0)} existing positions/orders adopted at
             migration; their original settings are unknown. {q.data.haltEvents} recorded loss-limit events in
