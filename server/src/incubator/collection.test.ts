@@ -77,3 +77,29 @@ test('research yields to queued account work, mirrored exits and memory pressure
  pool.rssReader=()=>.84;f.runner.dispatch.drain();await flush();assert.deepEqual(f.seen,[CLOSE]);
  assert.equal(f.runner.dispatchStats.timelyTurns,1);assert.equal(f.cfg.paper.marginPerTrade,150);
 });
+
+test('a plan enabled during candle loading is picked up before the concurrent refresh resolves',async t=>{
+ const f=fixture(t),before=structuredClone({paper:f.cfg.paper,risk:f.cfg.risk,incubator:f.cfg.incubator});
+ let release!:()=>void,entered!:()=>void,loaded=false;
+ const loading=new Promise<void>(r=>{entered=r;});
+ f.candles.has=()=>loaded;
+ f.candles.track=async()=>{entered();await new Promise<void>(r=>{release=r;});loaded=true;};
+ const seen:string[]=[];
+ f.runner.run=async(r:any,barAt:number)=>{seen.push(r.scannerId);f.runner.marks.advance(`${r.scannerId}:${r.symbol}:${r.tf}`,barAt-TF);};
+ const first=f.runner.sync();await loading;
+ f.cfg.executionPlans=[{id:'new-plan',scannerId:'new-scanner',symbol:'BTCUSD',tf:'15m',enabled:true,readingOverride:{reader:2}} as any];
+ const second=f.runner.sync();release();await Promise.all([first,second]);await flush();
+ assert.ok(f.runner.active.some((r:any)=>r.scannerId==='new-scanner'));
+ assert.deepEqual(seen.sort(),['new-scanner','s'],'fresh close is processed once for each source');
+ await f.runner.sync();await flush();assert.equal(seen.length,2,'later refresh cannot duplicate the recovered signals');
+ assert.deepEqual({paper:f.cfg.paper,risk:f.cfg.risk,incubator:f.cfg.incubator},before);
+ assert.equal(f.db.get('SELECT count(*) n FROM positions')!.n,0,'refresh and scan receipts cannot mint fills');
+});
+
+test('a newly enabled plan never replays an expired activation bar',async t=>{
+ const f=fixture(t);t.mock.timers.tick(300_000);
+ f.cfg.executionPlans=[{id:'new-plan',scannerId:'new-scanner',symbol:'BTCUSD',tf:'15m',enabled:true} as any];
+ await f.runner.sync();await flush();
+ assert.ok(f.runner.active.some((r:any)=>r.scannerId==='new-scanner'));
+ assert.deepEqual(f.seen,[]);assert.equal(f.runner.scheduledBars.size,0);
+});

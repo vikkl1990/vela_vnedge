@@ -67,6 +67,7 @@ export class ShadowRunner {
   private readingCells:ReadonlySet<string>=new Set();
   private scheduledBars=new Map<string,number>();
   private syncing:Promise<void>|null=null;
+  private syncRequested=false;
   private releaseScheduled(r:PairRow,barAt:number) {
     const key=`${r.scannerId}:${r.symbol}:${r.tf}`;
     if(this.scheduledBars.get(key)===barAt)this.scheduledBars.delete(key);
@@ -218,7 +219,13 @@ export class ShadowRunner {
 
   /** Pick up stage changes made by the daily job or the API, and make sure their candles are live. */
   sync(): Promise<void> {
-    if(!this.syncing)this.syncing=this.syncInside().finally(()=>{this.syncing=null;});
+    this.syncRequested=true;
+    // A config/stage change during asynchronous candle loading needs a fresh
+    // pass. Sharing only the in-flight promise loses that change until the next
+    // five-minute tick, by which time its first close may already be stale.
+    if(!this.syncing)this.syncing=Promise.resolve().then(async()=>{
+      while(this.syncRequested){this.syncRequested=false;await this.syncInside();}
+    }).finally(()=>{this.syncing=null;});
     return this.syncing;
   }
   private async syncInside(): Promise<void> {
