@@ -52,6 +52,8 @@ test('data freshness, burst spacing and cooldown never masquerade as late scanne
   const cases = [
     ['rejected:exchange product status unknown or stale', 'exchange'],
     ['rejected:risk market: fresh depth stale depth', 'depth'],
+    ['rejected:risk market: fresh depth cost exceeds ceiling (0.373% for $148)', 'market'],
+    ['rejected:risk market: fresh depth insufficient depth', 'market'],
     ['rejected:risk burst: same side within 120s', 'burst'],
     ['rejected:risk cooldown', 'cooldown'],
     ['rejected:risk regime: choppy market', 'chop'],

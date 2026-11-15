@@ -15,8 +15,9 @@ const operationalReasons = [
     key: 'depth',
     label: 'fresh depth unavailable',
     tone: 'warn' as const,
-    hint: 'Executable order-book depth was missing or stale at the entry check.',
-    test: (a: string) => /fresh depth|stale depth|depth unavailable/.test(a),
+    hint: 'Executable order-book data was missing, invalid or stale at the entry check.',
+    test: (a: string) =>
+      /(?:stale|missing|future|malformed|crossed) depth|depth (?:unavailable|missing|stale)/.test(a),
   },
   {
     key: 'burst',
