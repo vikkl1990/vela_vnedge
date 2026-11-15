@@ -53,3 +53,63 @@ test('Live readiness separates historical halt advice from its six required chec
   expect(writes).toEqual([])
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
 })
+
+test('Evidence details explain every excluded paper trade and separate same-size replay', async ({
+  page,
+  faults,
+  writes,
+}) => {
+  void faults
+  const { incubator } = await import('./incubatorFixture')
+  await page.route('**/api/incubator', (route) => route.fulfill({ json: incubator }))
+  await page.route('**/api/policy-health', (route) =>
+    route.fulfill({
+      json: {
+        at: Date.now(),
+        windowDays: 30,
+        haltEvents: 1,
+        boundExits: { failures: 0 },
+        allocation: { widthMs: 1000, pending: 0 },
+        books: [
+          {
+            book: 'paper',
+            matching: 24,
+            capacityCompatible: 14,
+            sizingCompatible: 9,
+            scopeCompatible: 0,
+            changed: 271,
+            legacy: 746,
+            quarantined: 0,
+            pending: 0,
+            reservedMargin: 0,
+            adoptedOpen: 0,
+            totalClosed: 1091,
+            outsideWindow: 50,
+            exclusions: [
+              { reason: 'missing-policy', label: 'No bound execution policy', trades: 744 },
+              { reason: 'adopted-policy', label: 'Original policy unknown at adoption', trades: 2 },
+              { reason: 'execution-version', label: 'Different execution model', trades: 163 },
+              {
+                reason: 'different-size',
+                label: 'Recorded size not proven equivalent to current sizing',
+                trades: 51,
+              },
+              {
+                reason: 'missing-sizing-proof',
+                label: 'Insufficient entry evidence to prove unchanged sizing',
+                trades: 57,
+              },
+            ],
+          },
+        ],
+      },
+    }),
+  )
+  await page.goto('/incubator?section=operations#incubator-evidence')
+  await expect(page.getByRole('heading', { name: 'Why other paper trades do not count' })).toBeVisible()
+  await expect(page.getByText('9 same-size replay')).toBeVisible()
+  await expect(page.getByText(/No bound execution policy:.*744/)).toBeVisible()
+  await expect(page.getByText(/1091 closed paper trades.*50 are outside/)).toBeVisible()
+  expect(writes).toEqual([])
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+})

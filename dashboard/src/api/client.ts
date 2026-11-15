@@ -404,6 +404,11 @@ export const api = {
         book: string
         matching: number
         capacityCompatible?: number
+        scopeCompatible?: number
+        sizingCompatible?: number
+        totalClosed?: number
+        outsideWindow?: number
+        exclusions?: Array<{ reason: string; label: string; trades: number }>
         changed: number
         legacy: number
         quarantined: number
