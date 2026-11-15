@@ -19,7 +19,7 @@ import { adaptPlan } from './planStudy.ts';
 
 // Bounded research capacity: 73 existing plans plus six VNEDGE/Stealth import cells.
 // This does not change account positions, allocation or risk limits.
-export const MAX_RESEARCH_PLANS = 79;
+export const MAX_RESEARCH_PLANS = 81;
 /** Explicit TP experiment; original stop and sizing stay fixed. Trail changes are opt-in and labeled. */
 export interface TakeProfitPlan {
   mode: 'native' | 'r';

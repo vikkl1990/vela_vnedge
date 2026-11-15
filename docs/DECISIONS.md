@@ -7766,3 +7766,9 @@ The six newly imported cells' first 60 scans match their source strategies: Stea
 ## 269. Historical halts inform readiness without imposing a waiting period (15 November 2026)
 
 At the operator's explicit request, remove the halt-free historical-window requirement from go-live eligibility. Retain the actual halt records and display their count as advisory history on Live control. The remaining six checks still apply: matching trade count, realized risk, after-cost expectancy, simulated loss-limit survival, drawdown and alert configuration. Active daily/weekly loss limits, drawdown controls, kill switch and production activation locks are unchanged. This is a readiness-policy change only; it does not reset evidence, promote scanners, alter capital or activate real trading.
+
+## 270. Expand imported strategies only to minute-replayed liquid shadow candidates (15 November 2026)
+
+Screen both imported strategies across 20 liquid Delta India crypto perpetuals and 15m/1h/4h, then extend every 1h/4h cell to six months without changing strategy inputs or selection thresholds. Only native Stealth ZECUSD 1h and Trend Continuation UNIUSD 1h qualify as new experimental candidates after complete minute-path replay, cost sensitivity and rolling-history entry parity. This is retrospective research, with historical funding/depth limitations, not paper qualification.
+
+Add two isolated shadow plans and raise only research-plan capacity from 79 to 81. Preserve all existing cohorts, paper mode, $150 margin, risk caps and evidence exclusions. No backtest or experiment is promoted automatically. See `research/liquid-import-study-2026-11-15.md` and its complete screening JSON.
