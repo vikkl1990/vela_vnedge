@@ -61,6 +61,9 @@ test('detail includes signal, fills, timeline, policy, ML and path coverage only
  db.run("INSERT INTO position_path(position_id,at,price,r) VALUES(?,?,110,0.4)",id,T);
  db.run("INSERT INTO decision_trace(at,book,position_id,scanner_id,symbol,tf,stage,snapshot) VALUES(?,0,?,'s','ETHUSD','15m','entry','{}')",T,id);
  const d=j.detail('paper',id);assert.equal(d.row.fills!.length,3);assert.equal(d.policy!.sourceHash,'hash');assert.equal((d.pathCoverage as any).samples,1);assert.equal(d.decisions.length,1);assert.equal(d.signal,null);
+ assert.equal(d.row.sourceHash,'hash');assert.equal(d.row.sourceScannerId,'s');
+ const plan=insert(db,{bt:2,scanner_id:'plan:native',policy_id:'policy-one',fills:JSON.stringify({executionPlan:{sourceScannerId:'native-source'},fills:[]})});
+ const planRow=j.detail('shadow',plan).row;assert.equal(planRow.sourceScannerId,'native-source');assert.equal(planRow.sourceHash,'hash');
  assert.throws(()=>j.detail('shadow',id),/not found/);assert.throws(()=>j.detail('paper',NaN),/Invalid/);
 });
 

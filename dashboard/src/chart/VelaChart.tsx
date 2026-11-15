@@ -8,6 +8,8 @@ import { deltaProvider } from './deltaProvider'
 import { FallbackChart } from './FallbackChart'
 import { createLibraryResolver } from './libraryResolver'
 import { scriptInputs } from './scriptInputs'
+import { withScriptTimezones } from './scriptTimezone'
+import { scriptContextKey, settledTrades, type AuthorLedger } from './tradeComparison'
 import { venueSymbol, type ChartVenue } from './venues'
 
 export interface ChartScript {
@@ -38,6 +40,8 @@ interface Props {
   marks?: TimelineMark[]
   onChartReady?: (chart: VelaType | null) => void
   onScriptRun?: (run: ScriptRun) => void
+  captureLedger?: boolean
+  onAuthorLedger?: (ledger: AuthorLedger) => void
 }
 
 type VelaModule = typeof import('@luxalgo/vela')
@@ -74,28 +78,50 @@ export function VelaChart({
   tickSize,
   onChartReady,
   onScriptRun,
+  captureLedger = false,
+  onAuthorLedger,
   marks,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<VelaType | null>(null)
   const handlesRef = useRef(
-    new Map<string, { handle: IndicatorHandle; source: string; inputs: string; offs: (() => void)[] }>(),
+    new Map<
+      string,
+      { handle: IndicatorHandle; source: string; inputs: string; timezone: string; offs: (() => void)[] }
+    >(),
   )
   const [failed, setFailed] = useState<string | null>(null)
   const [ready, setReady] = useState(false)
   const [loading, setLoading] = useState(true)
   const { theme } = useTheme()
+  const marketRef = useRef({ symbol, tf })
+  const scriptsRef = useRef(scripts)
+  useEffect(() => {
+    scriptsRef.current = scripts
+  }, [scripts])
+  const collectRef = useRef<(() => void) | null>(null)
   const librarySourcesRef = useRef<string[]>([])
   useEffect(() => {
     librarySourcesRef.current = scripts.map((script) => script.source)
   }, [scripts])
-  const cbRef = useRef({ onScriptError, onScriptReady, onChartReady, onScriptRun })
+  const cbRef = useRef({
+    onScriptError,
+    onScriptReady,
+    onChartReady,
+    onScriptRun,
+    onAuthorLedger,
+    captureLedger,
+  })
   useEffect(() => {
-    cbRef.current = { onScriptError, onScriptReady, onChartReady, onScriptRun }
+    cbRef.current = { onScriptError, onScriptReady, onChartReady, onScriptRun, onAuthorLedger, captureLedger }
   })
   useEffect(() => {
     cbRef.current.onChartReady?.(ready ? chartRef.current : null)
   }, [ready])
+
+  useEffect(() => {
+    if (captureLedger) collectRef.current?.()
+  }, [captureLedger])
 
   // ---- create / destroy the chart once -------------------------------------
   useEffect(() => {
@@ -104,6 +130,90 @@ export function VelaChart({
     const handles = handlesRef.current
     let cancelled = false
     let chart: VelaType | null = null
+    let pineEngine: InstanceType<PineModule['PineWorkerEngine']> | null = null
+    let firstBar: (id: string) => number | null = () => null
+    let generation = 0
+    const latestRuns = new Map<string, { run: ScriptRun; contextKey: string }>()
+    const requests = new Map<string, { key: string; serial: number }>()
+    let serial = 0
+    const collect = (run: ScriptRun) => {
+      if (!cbRef.current.captureLedger || cancelled) return
+      const script = scriptsRef.current.find((s) => `vn:${s.id}` === run.id)
+      if (!script) return
+      const contextKey = scriptContextKey(script)
+      const handle = handlesRef.current.get(script.id)?.handle
+      const expected = handle ? scriptInputs(handle.inputs, script.inputs) : {}
+      const actual = handle?.inputValues() ?? {}
+      const inputsChanged = Object.entries(expected).some(
+        ([k, v]) => JSON.stringify(actual[k]) !== JSON.stringify(v),
+      )
+      const from = firstBar(run.id)
+      const st = run.strategy
+      const key = JSON.stringify([
+        contextKey,
+        actual,
+        run.time,
+        run.complete,
+        from,
+        st?.position,
+        st?.avgPrice,
+        st?.wins,
+        st?.losses,
+        st?.even,
+        st?.netPnl,
+        run.cause === 'inputs' ? ++serial : 0,
+      ])
+      if (requests.get(run.id)?.key === key) return
+      const ticket = { key, serial: ++serial }
+      requests.set(run.id, ticket)
+      const epoch = generation
+      const market = { ...marketRef.current }
+      const through = run.forming ? run.time : run.time + tfMs(market.tf)
+      const base = {
+        id: script.id,
+        title: run.title,
+        symbol: market.symbol,
+        tf: market.tf,
+        contextKey,
+        sourceHash: script.sourceHash ?? null,
+        timezone: script.timezone ?? 'UTC',
+        kind: run.kind,
+        from,
+        through,
+        inputsChanged,
+        complete: run.complete,
+        updatedAt: Date.now(),
+      }
+      const current = () =>
+        !cancelled &&
+        epoch === generation &&
+        requests.get(run.id) === ticket &&
+        scriptsRef.current.some((s) => s.id === script.id && scriptContextKey(s) === contextKey)
+      if (run.kind !== 'strategy') {
+        if (current()) cbRef.current.onAuthorLedger?.({ ...base, trades: [] })
+        return
+      }
+      void run
+        .trades()
+        .then((trades) => {
+          if (current()) cbRef.current.onAuthorLedger?.({ ...base, trades: settledTrades(trades, through) })
+        })
+        .catch((error: unknown) => {
+          if (current()) {
+            requests.delete(run.id)
+            cbRef.current.onAuthorLedger?.({
+              ...base,
+              trades: [],
+              error: error instanceof Error ? error.message : String(error),
+            })
+          }
+        })
+    }
+    collectRef.current = () =>
+      latestRuns.forEach(({ run, contextKey }) => {
+        const script = scriptsRef.current.find((s) => `vn:${s.id}` === run.id)
+        if (script && scriptContextKey(script) === contextKey) collect(run)
+      })
 
     loadLibs()
       .then(async ({ vela, pine }) => {
@@ -132,26 +242,37 @@ export function VelaChart({
             throw new Error(`registerProvider failed: ${(e as Error).message}`)
           }
           try {
-            chart.registerEngine(
-              'pine',
-              new pine.PineWorkerEngine({
-                props: 'none',
-                importResolver: createLibraryResolver(() => librarySourcesRef.current, api.pineLibrary),
-                footprints:
-                  venue === 'delta'
-                    ? (s, timeframe, range) => api.footprints(s, timeframe, range)
-                    : undefined,
-              }),
+            pineEngine = new pine.PineWorkerEngine({
+              props: 'none',
+              importResolver: createLibraryResolver(() => librarySourcesRef.current, api.pineLibrary),
+              footprints:
+                venue === 'delta' ? (s, timeframe, range) => api.footprints(s, timeframe, range) : undefined,
+            })
+            const adapter = withScriptTimezones(
+              pineEngine,
+              (id) => scriptsRef.current.find((s) => `vn:${s.id}` === id)?.timezone,
             )
+            firstBar = adapter.firstBar
+            chart.registerEngine('pine', adapter.engine)
           } catch (e) {
             console.warn('[vela] registerEngine failed', e)
             toastExternal('warn', 'Pine engine unavailable', (e as Error).message)
           }
           chartRef.current = chart
           if (import.meta.env.DEV) (window as unknown as { __vnChart?: VelaType }).__vnChart = chart
-          const offStart = chart.on('load:start', () => setLoading(true))
+          const offStart = chart.on('load:start', () => {
+            generation++
+            latestRuns.clear()
+            requests.clear()
+            setLoading(true)
+          })
           const offEnd = chart.on('load:end', () => setLoading(false))
-          const offRun = chart.on('script:run', (run) => cbRef.current.onScriptRun?.(run))
+          const offRun = chart.on('script:run', (run) => {
+            const script = scriptsRef.current.find((s) => `vn:${s.id}` === run.id)
+            if (script) latestRuns.set(run.id, { run, contextKey: scriptContextKey(script) })
+            cbRef.current.onScriptRun?.(run)
+            collect(run)
+          })
           chart.renderer.set('scalePriceOnly', true)
           chart
             .ready()
@@ -189,6 +310,8 @@ export function VelaChart({
 
     return () => {
       cancelled = true
+      generation++
+      collectRef.current = null
       cbRef.current.onChartReady?.(null)
       const c = chartRef.current ?? chart
       chartRef.current = null
@@ -202,6 +325,7 @@ export function VelaChart({
           console.warn('[vela] destroy failed', e)
         }
       }
+      pineEngine?.terminate()
       try {
         el.innerHTML = ''
       } catch {
@@ -213,7 +337,6 @@ export function VelaChart({
   }, [])
 
   // ---- market switch ---------------------------------------------------------
-  const marketRef = useRef({ symbol, tf })
   useEffect(() => {
     const chart = chartRef.current
     if (!chart || !ready) return
@@ -267,7 +390,13 @@ export function VelaChart({
     }
     // add / update
     for (const s of want.values()) {
-      const existing = have.get(s.id)
+      let existing = have.get(s.id)
+      if (existing && existing.timezone !== (s.timezone ?? 'UTC')) {
+        existing.offs.forEach((off) => off())
+        existing.handle.remove()
+        have.delete(s.id)
+        existing = undefined
+      }
       if (existing) {
         const inputKey = JSON.stringify(s.inputs ?? {})
         if (existing.inputs !== inputKey) {
@@ -346,7 +475,13 @@ export function VelaChart({
         } catch (e) {
           console.warn('[vela] handle.on failed', e)
         }
-        have.set(s.id, { handle, source: s.source, inputs: JSON.stringify(s.inputs ?? {}), offs })
+        have.set(s.id, {
+          handle,
+          source: s.source,
+          inputs: JSON.stringify(s.inputs ?? {}),
+          timezone: s.timezone ?? 'UTC',
+          offs,
+        })
       } catch (e) {
         console.error('[vela] addIndicator failed', e)
         const err = e instanceof Error ? e : new Error(String(e))
@@ -383,6 +518,11 @@ export function VelaChart({
   useEffect(() => {
     if (!ready || !chartRef.current) return
     chartRef.current.marks.defineGroup({ id: 'bot-decisions', label: 'Bot journal decisions' })
+    chartRef.current.marks.defineGroup({ id: 'bot-fills', label: 'Recorded bot fills' })
+    chartRef.current.marks.defineGroup({
+      id: 'author-simulation',
+      label: 'Author simulation · not bot fills',
+    })
     chartRef.current.marks.set(marks ?? [])
   }, [marks, ready, symbol, tf])
 

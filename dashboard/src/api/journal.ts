@@ -25,6 +25,8 @@ export interface JournalRow {
   status: string
   scannerId: string
   scannerName: string
+  sourceScannerId?: string
+  sourceHash?: string | null
   symbol: string
   tf: string
   side: string | null

@@ -3,6 +3,7 @@ import { useState, type ReactNode } from 'react'
 import { ChipSelect } from '../components/kit'
 import { DELTA_TIMEFRAMES } from '../lib/timeframes'
 import { useFrameSync } from './useFrameSync'
+import type { AuthorLedger } from './tradeComparison'
 import { VelaChart, type ChartScript } from './VelaChart'
 
 /**
@@ -18,6 +19,9 @@ export function ChartFrames({
   onScriptError,
   onScriptReady,
   onScriptRun,
+  captureLedger,
+  onAuthorLedger,
+  marksByFrame,
   height = '100%',
   marks,
   positionBadge,
@@ -28,6 +32,9 @@ export function ChartFrames({
   tickSize?: number
   height?: number | string
   marks?: TimelineMark[]
+  marksByFrame?: Record<string, TimelineMark[]>
+  captureLedger?: boolean
+  onAuthorLedger?: (ledger: AuthorLedger) => void
   positionBadge?: ReactNode
   onScriptError?: (id: string, err: Error) => void
   onScriptReady?: (id: string) => void
@@ -49,7 +56,9 @@ export function ChartFrames({
               {symbol} · {tf}
             </span>
             <VelaChart
-              marks={marks}
+              marks={marksByFrame?.[tf] ?? marks}
+              captureLedger={captureLedger}
+              onAuthorLedger={onAuthorLedger}
               symbol={symbol}
               tf={tf}
               height="100%"

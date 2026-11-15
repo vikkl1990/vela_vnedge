@@ -1,5 +1,6 @@
 import type { PathLevels, PathPoint } from '../api/types'
 import type { ChartScript } from './VelaChart'
+import { pineString } from './pineString.ts'
 
 /**
  * Decision 156: one trade drawn for a bar replay. A generated Pine overlay, like `positionOverlay`, but bounded to the
@@ -60,7 +61,7 @@ plot(stopNow, "Stop", color = #e5484d, style = plot.style_stepline, linewidth = 
 ${tpLines}
 plotshape(time == entryT, "Entry", ${long ? 'shape.triangleup' : 'shape.triangledown'}, ${long ? 'location.belowbar' : 'location.abovebar'}, color = #1878f2, size = size.small, text = "${long ? 'long' : 'short'}")
 if not na(exitT) and time == exitT
-    label.new(bar_index, ${num(lv.exitPrice ?? lv.entryPrice)}, "${exitText}", color = ${exitColor}, textcolor = color.white, style = ${long ? 'label.style_label_down' : 'label.style_label_up'}, size = size.small)
+    label.new(bar_index, ${num(lv.exitPrice ?? lv.entryPrice)}, ${pineString(exitText)}, color = ${exitColor}, textcolor = color.white, style = ${long ? 'label.style_label_down' : 'label.style_label_up'}, size = size.small)
 `
   return { id: `replay-${lv.id}`, title: `Trade #${lv.id}`, overlay: true, source }
 }

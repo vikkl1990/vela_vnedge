@@ -1,5 +1,6 @@
 import type { Position } from '../api/types'
 import type { ChartScript } from './VelaChart'
+import { pineString } from './pineString.ts'
 
 /** A price the overlay can draw, with its label and colour role. */
 type Level = { price: number; label: string; role: 'entry' | 'stop' | 'target' | 'peak'; dashed?: boolean }
@@ -60,7 +61,7 @@ export function positionOverlay(p: Position, peakR?: number | null): ChartScript
   const body = levels
     .map((l) => {
       const style = l.dashed ? 'hline.style_dashed' : 'hline.style_solid'
-      return `hline(${l.price}, "${l.label}", color = color.new(color.rgb(${hexToRgb(ROLE_COLOR[l.role])}), ${l.dashed ? 45 : 0}), linestyle = ${style}, linewidth = ${l.role === 'entry' ? 2 : 1})`
+      return `hline(${l.price}, ${pineString(l.label)}, color = color.new(color.rgb(${hexToRgb(ROLE_COLOR[l.role])}), ${l.dashed ? 45 : 0}), linestyle = ${style}, linewidth = ${l.role === 'entry' ? 2 : 1})`
     })
     .join('\n')
 
