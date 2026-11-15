@@ -327,6 +327,8 @@ export class IncubatorStore {
     return r&&!r.passed?`restored cell in forward shadow evaluation: ${r.reasons.join('; ')}`:null;
   }
   copyRefusal(cell:{scannerId:string;symbol:string;tf:string},mirror:AppConfig['incubator']['mirror'],turnover:number|null,at=Date.now(),{readOnly=false}={}) {
+    const quarantine=this.quarantineReason(cell.scannerId);
+    if(quarantine)return `scanner quarantined: ${quarantine}`;
     if(readOnly){
       const r=this.restoration(cell,at);
       if(r&&!r.passed)return `restored cell in forward shadow evaluation: ${r.reasons.join('; ')}`;

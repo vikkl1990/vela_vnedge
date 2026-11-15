@@ -358,6 +358,14 @@ export class ShadowRunner {
     let r = rAtStart;
     const s = this.deps.registry.get(r.scannerId);
     if (!s || s.status !== 'ok') {this.deps.store.noteShadowScan?.(r,barAt-TF_SECONDS[r.tf]*1000,'unavailable','scanner unavailable');return;}
+    const quarantine = () => this.deps.store.quarantineReason?.(r.scannerId) ?? null;
+    if (quarantine()) {
+      const held = this.deps.store.rotationHolds?.(r)
+        || this.deps.accountHolds?.(r.scannerId,r.symbol,r.tf)
+        || [...(this.deps.paper.openPositions?.() ?? []), ...(this.deps.paper.pendingEntries?.() ?? [])]
+          .some(p => (p.executionPlan?.sourceScannerId ?? p.scannerId) === r.scannerId && p.symbol === r.symbol && p.tf === r.tf);
+      if (!held) {this.deps.store.noteShadowScan?.(r,barAt-TF_SECONDS[r.tf]*1000,'unavailable',`scanner quarantined: ${quarantine()}`);return;}
+    }
     const cfg = this.deps.cfgRef();
     const scannerCfgAtStart = JSON.stringify(cfg.scanners[s.id] ?? null);
     const bars = this.deps.candles.get(r.symbol, r.tf, { closedOnly: true, limit: cfg.historyBars });
@@ -408,6 +416,7 @@ export class ShadowRunner {
       const at=Date.now(),refPrice=this.deps.paper.mark(r.symbol)??lastBar.close,atr=lastAtr(bars,14);
       try { this.deps.compareScan({scannerId:s.id,scannerName:s.name,symbol:r.symbol,tf:r.tf,result:res,patched:s.patched,variantOf:s.variantOf,
         since:win.since,newLabelKeys,bars,market,at,refPrice,refusal:ev=>{
+          if(ev.kind==='entry' && quarantine())return `scanner quarantined: ${quarantine()}`;
           const g=cfg.paper.trendGate;
           if(g?.enabled&&ev.side){const tf=g.tf&&g.tf!==r.tf?g.tf:r.tf;
             const reason=trendGateReason(ev.side,trendNow(this.deps.candles.get(r.symbol,tf,{closedOnly:true,limit:g.emaLen*4}).map(b=>b.close),g.emaLen),cfg.scanners[s.id]?.trendGate??g.mode);
@@ -419,6 +428,9 @@ export class ShadowRunner {
     this.marks.advance(key, lastBar.time);
     const exitMode = cfg.scanners[s.id]?.exitMode ?? 'both';
     for (const ev of events) {
+      // Quarantine may have arrived while the worker was running. Preserve held
+      // exits, but never offer a new entry to paper, shadow or a comparison plan.
+      if(ev.kind==='entry' && quarantine())continue;
       const id = `${key}:${ev.barTime}:${ev.kind}:${ev.side ?? ''}:${ev.label}`;
       if (this.seen.has(id)) continue;
       this.seen.add(id);
@@ -450,6 +462,7 @@ export class ShadowRunner {
       }
       if (ev.kind === 'entry' && ev.side) {
         if(this.deps.paper.prepareEntryDepth){await this.deps.paper.prepareEntryDepth(r.symbol);now=Date.now();}
+        if(quarantine())continue;
         // the shadow book is evidence for the live fleet, so it is gated exactly as the fleet is
         const g = cfg.paper.trendGate;
         let trendReason:string|null=null;
@@ -496,6 +509,6 @@ export class ShadowRunner {
         this.deps.paper.onScriptExit(s.id, r.symbol, r.tf, ev.exitType ?? 'close', ev.price, now, exitMode, ev.side);
       }
     }
-    this.deps.store.noteShadowScan?.(r,lastBar.time,'scanned',null,events.filter(e=>e.kind==='entry').length);
+    this.deps.store.noteShadowScan?.(r,lastBar.time,'scanned',quarantine()?`exit-only: scanner quarantined: ${quarantine()}`:null,quarantine()?0:events.filter(e=>e.kind==='entry').length);
   }
 }

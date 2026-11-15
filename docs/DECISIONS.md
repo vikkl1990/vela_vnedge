@@ -7832,3 +7832,28 @@ cover explicit watch-cell coverage, silence beyond three requested markets, unch
 and shadow-rescreen scopes, and a passing watched-cell screen remaining outside admission.
 Fresh scanner/pair research runs separately against a private database snapshot; its simulated
 trades never enter the production journals or qualify a cell for paper.
+
+## 277. Release unusable shadow allocations and preserve held exits (15 November 2026)
+
+The promotion audit found six formal shadow cells whose registry status was runnable but whose
+scanner health was quarantined. Admission checked quarantine; allocation retirement, approval
+and copying did not consistently check it. These cells held scarce research slots without a
+valid route to paper.
+
+Retire unheld quarantined formal cells through the normal evaluator and refill their slots
+using the existing ranked admission rules. Preserve watch subscriptions and any allocation
+with an account or shadow position/order. Apply the held-order protection to every automatic
+retirement path. Recheck quarantine at promotion, immediate copy and delayed-copy recovery.
+Unheld quarantined shadow sources do not run; held sources retain exit-only execution. Check
+again after asynchronous worker/depth calls, including reading-comparison entry callbacks.
+
+An identical private VM snapshot at 18:00 UTC admitted 14 candidates with the old code and 20
+with the correction. The six incremental admissions replace exactly the six quarantined cells;
+neither run produced a new paper proposal. Pooling compatible scanner evidence also produced
+no passing cohort, so no pooling rule was changed. Backtests and experimental records remain
+excluded, original trade policies remain immutable, and no historical trade is relabelled.
+
+All 1,567 server tests and TypeScript checking pass. Six regression tests cover slot release,
+held-position retirement protection, promotion/copy denial, delayed-copy revalidation and
+exit-only execution before/during quarantine. Paper mode, $150 margin, risk caps, capacity,
+fees, reader versions, evidence thresholds and live-readiness requirements are unchanged.
