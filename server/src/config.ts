@@ -4,6 +4,7 @@ import {willyNativeReady} from './scanners/willyContracts.ts';
 import {scannerPairs} from './scanners/allocation.ts';
 import { validateExecutionPlans, type ExecutionPlan } from './paper/executionPlans.ts';
 import fs from 'node:fs';
+import {randomUUID} from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -1130,9 +1131,11 @@ export class ConfigStore {
 
   /** Write atomically (temp file + rename), so another process never reads a half-written file. */
   private save() {
-    const tmp = `${this.file}.${process.pid}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(this.cfg, null, 2));
-    fs.renameSync(tmp, this.file);
+    const tmp = `${this.file}.${randomUUID()}.tmp`;
+    try {
+      fs.writeFileSync(tmp, JSON.stringify(this.cfg, null, 2), {mode:0o600,flag:'wx'});
+      fs.renameSync(tmp, this.file);
+    } finally { try { fs.unlinkSync(tmp); } catch { /* already renamed */ } }
     this.seenMtimeMs = fs.statSync(this.file).mtimeMs;
   }
 }
