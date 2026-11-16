@@ -116,3 +116,29 @@ test('trades are grouped and filtered by the asset class of their market', () =>
   assert.throws(() => performanceReport(db, { group: 'bluechip' }, now), /asset group/);
   assert.throws(() => performanceReport(db, { sector: 'nope' }, now), /asset sector/);
 });
+
+test('the standard error of R is clustered by closing day', () => {
+  const db = new Db(':memory:');
+  // two days, same average R (+0.5) but one is steady and one swings: the clustered error reflects day-to-day spread
+  for (const pnl of [6, 6, 6, 6]) insert(db, { pnl, fees: 1, at: start });
+  for (const pnl of [6, 6, 6, 6]) insert(db, { pnl, fees: 1, at: start + DAY });
+  const flat = performanceReport(db, {}, start + 3 * DAY).paper;
+  assert.equal(flat.rDays, 2); assert.equal(flat.seR, 0, 'every day identical: no clustered error');
+  const db2 = new Db(':memory:');
+  for (const pnl of [21, 21, 21, 21]) insert(db2, { pnl, fees: 1, at: start });     // +2R x4 on day one
+  for (const pnl of [-9, -9, -9, -9]) insert(db2, { pnl, fees: 1, at: start + DAY }); // -1R x4 on day two
+  const swing = performanceReport(db2, {}, start + 3 * DAY).paper;
+  assert.equal(swing.avgR, 0.5);
+  // day sums of deviation: +6 and -6, so sqrt(36+36)/8
+  assert.ok(Math.abs((swing.seR ?? 0) - Math.sqrt(72) / 8) < 1e-9);
+  assert.ok((swing.seR ?? 0) > 1, 'four trades a day that all go the same way are not eight independent observations');
+});
+
+test('one closing day gives no clustered error rather than a made-up one', () => {
+  const db = new Db(':memory:');
+  insert(db, { pnl: 11, fees: 1 }); insert(db, { pnl: -9, fees: 1 });
+  const s = performanceReport(db, {}, now).paper;
+  assert.equal(s.rDays, 1); assert.equal(s.seR, null);
+  const none = performanceReport(new Db(':memory:'), {}, now).paper;
+  assert.equal(none.seR, null); assert.equal(none.rDays, 0);
+});

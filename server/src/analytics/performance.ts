@@ -9,6 +9,8 @@ export interface PerformanceStats {
   net: number; commission: number; funding: number; grossTrading: number;
   sumR: number | null; avgR: number | null; winRate: number | null; stopRate: number | null;
   profitFactor: number | null; noLosses: boolean; fundingUnknown: number; avgCommissionR: number | null;
+  /** Standard error of avgR with trades clustered by closing day (trades closed the same day move together), and how many days that is. Null when there are fewer than two days. */
+  seR: number | null; rDays: number;
 }
 export interface PerformanceGroup { key: string; label: string; paper: PerformanceStats; shadow: PerformanceStats }
 export interface PerformanceReport {
@@ -55,7 +57,13 @@ function stats(rows: Trade[]): PerformanceStats {
     if (t.exit_reason === 'trail') trails++;
     if (t.r !== null) { rTrades++; sumR += t.r; commissionR += t.fees / t.risk_amount; }
   }
-  return { trades: rows.length, rTrades, wins, stops, trails, net, commission, funding, grossTrading,
+  // Day-clustered standard error of the mean R: the sum of each day's deviations from the mean, squared, over n. Trades closed
+  // on one day share the market's mood, so treating them as independent would claim more certainty than the data holds.
+  const mean = rTrades ? sumR / rTrades : 0, byDay = new Map<number, number>();
+  for (const t of rows) if (t.r !== null) { const d = Math.floor(t.exit_at / 86_400_000); byDay.set(d, (byDay.get(d) ?? 0) + (t.r - mean)); }
+  let ss = 0; for (const v of byDay.values()) ss += v * v;
+  const seR = rTrades >= 2 && byDay.size >= 2 ? Math.sqrt(ss) / rTrades : null;
+  return { trades: rows.length, rTrades, wins, stops, trails, net, commission, funding, grossTrading, seR, rDays: byDay.size,
     sumR: rTrades ? sumR : null, avgR: rTrades ? sumR / rTrades : null,
     winRate: rows.length ? wins / rows.length * 100 : null, stopRate: rows.length ? stops / rows.length * 100 : null,
     profitFactor: gl > 0 ? gp / gl : null, noLosses: gp > 0 && gl === 0, fundingUnknown, avgCommissionR: rTrades ? commissionR / rTrades : null };
