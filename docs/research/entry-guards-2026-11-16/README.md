@@ -14,7 +14,7 @@ PR #35 proposed switching off the burst guard, the re-entry cooldown and the whi
 | Regime-refused | 179 | +0.022 | -0.134 to +0.173 (long +0.145, short -0.149) |
 
 - **On average the refused entries were no worse than the taken ones.** That agrees with PR #35's measurement.
-- **Correlation is the real cost of the burst guard.** 110 same-side clusters (two or more entries within 120 s, across markets) hold 296 entries, the largest has 6. Taking every entry, a cluster's summed R has a 5th percentile of -2.8R and a worst of -5.2R; with only the entries the account actually took, the same clusters' 5th percentile is -1.1R and the worst -1.1R. Mean R is positive, the tail is five times heavier.
+- **Correlation is the real cost of the burst guard.** 110 same-side clusters (two or more entries within 120 s, across markets) hold 296 entries, the largest has 6. Taking every entry, a cluster's summed R has a 5th percentile of -2.8R and a worst of -5.2R; with only the entries the account actually took, the same clusters' 5th percentile is -1.1R and the worst -1.1R. Mean R is positive; the tail is 2.5 times heavier at the 5th percentile and almost five times at the worst cluster.
 - **The cap that bounded that tail is gone.** `maxPositionsTotal` is 0 on the VM, so only one position a symbol, four a scanner and the 15% daily loss limit remain.
 - The regime gate refused entries that average about zero (neutral -0.002): switching it off adds trades and fees without adding R.
 
