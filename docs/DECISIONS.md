@@ -7933,3 +7933,28 @@ Donchian INIT worsens, Trend Impulse INIT has no demonstrated paper improvement,
 and PARTI lacks usable coverage. Ship no active invalidation rule from this study.
 The evaluator is research-only and cannot enroll evidence or change execution.
 See research/copied-reader-invalidation-2026-11-16.md for coverage and validation.
+
+## 282. Classify every market by asset class, and report, filter and browse by it (16 November 2026)
+
+Every market now has one asset group and one sector, from one classifier (`shared/assetClass.ts`) that the server and
+the dashboard both import. Groups: Majors (BTC, ETH, SOL, XRP), Large-cap alts (a curated list of 29 established coins),
+Alts (every other crypto market), Meme, Stocks & metals (tokenised stocks and ETFs, metals, oil) and Other (anything not
+a USD perpetual). The sector is the second dimension inside a group (store of value, payments, layer 1, layer 2, DeFi,
+AI, gaming & NFT, stocks, metals, energy); a market keeps every secondary label, so an AI meme coin is a Meme coin and
+is also found under AI.
+
+Delta's own `product_specs.tags` and `top_tag` are the primary signal, remembered each time the product list loads, so a
+new listing is classified without a code change. The curated lists decide only the majors, the large-cap split and the
+markets Delta leaves untagged (XRP, TIA and 31 others); a name-based fallback keeps the classification stable when tags
+are not loaded. On the 261 live perpetuals: 4 majors, 26 large-cap alts, 135 alts, 35 meme, 61 stocks and metals, none
+Other.
+
+Surfaces: the performance report gains `byGroup` and `bySector`; the performance, journal and trade endpoints accept
+`group` and `sector` (an unknown value is a 400); `GET /api/markets/classes` returns the class of every live and traded
+market, and `/api/markets` rows carry the group and sector. The dashboard shows a class chip beside every market in the
+journal, open positions, signals and the radar; filters on the journal and Performance (the market list narrows to the
+chosen class); a "By asset class" panel on Performance and Home; class pills on the Workspace market list; and the radar's
+hard-coded ten-coin "majors" list is replaced by these groups.
+
+Reporting only. No scanner, sizing, stop, entry or promotion rule reads the class, and no evidence, identity or stored
+row changes. The large-cap list is a judgement: edit `LARGE_ALTS` and every report and filter follows.

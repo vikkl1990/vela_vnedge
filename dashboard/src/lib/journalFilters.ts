@@ -1,4 +1,5 @@
 import type { TradeQuery } from '../api/types'
+import { isAssetGroup, isAssetSector } from '../../../shared/assetClass'
 
 const DAY = 86_400_000
 export const JOURNAL_PAGE_SIZE = 50
@@ -24,6 +25,8 @@ export function journalFilters(params: URLSearchParams, now: number) {
   const reason = params.get('reason') ?? '',
     tf = params.get('tf') ?? '',
     side = params.get('side') ?? ''
+  const group = params.get('group') ?? '',
+    sector = params.get('sector') ?? ''
   const period = params.get('period') || 'all'
   const start = params.get('start') ?? '',
     end = params.get('end') ?? ''
@@ -50,6 +53,8 @@ export function journalFilters(params: URLSearchParams, now: number) {
     else to = endAt + DAY
   } else if (period !== 'all') error = 'Choose a valid closing period.'
   if (side && side !== 'long' && side !== 'short') error = 'Choose Long, Short, or All directions.'
+  if (group && !isAssetGroup(group)) error = 'Choose an asset class from the list.'
+  if (sector && !isAssetSector(sector)) error = 'Choose a sector from the list.'
   const query: TradeQuery = {
     limit: JOURNAL_PAGE_SIZE,
     offset: page * JOURNAL_PAGE_SIZE,
@@ -58,10 +63,12 @@ export function journalFilters(params: URLSearchParams, now: number) {
     reason: reason || undefined,
     tf: tf || undefined,
     side: side || undefined,
+    group: group || undefined,
+    sector: sector || undefined,
     from,
     to,
   }
-  return { scanner, symbol, reason, tf, side, period, start, end, page, query, error }
+  return { scanner, symbol, reason, tf, side, group, sector, period, start, end, page, query, error }
 }
 
 export function updateJournalFilters(params: URLSearchParams, updates: Record<string, string>) {

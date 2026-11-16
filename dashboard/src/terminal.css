@@ -152,6 +152,32 @@
   font-size: 11px;
   padding: 9px 10px;
 }
+.watchlist-classes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 0 12px 10px;
+}
+.watchlist-classes button {
+  border: 1px solid var(--border);
+  border-radius: var(--pill);
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 3px 9px;
+  cursor: pointer;
+}
+.watchlist-classes button:hover {
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+.watchlist-classes button[aria-pressed='true'] {
+  color: var(--text);
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent-2) 55%, transparent);
+}
 .watchlist-columns {
   display: flex;
   justify-content: space-between;

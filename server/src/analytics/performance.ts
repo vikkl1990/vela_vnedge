@@ -1,7 +1,9 @@
 import type { Db } from '../db.ts';
 import { ACCOUNT_AND_SHADOW_EVIDENCE } from './scope.ts';
+import { classClause, classOf } from '../markets/classes.ts';
+import { isAssetGroup, isAssetSector } from '../../../shared/assetClass.ts';
 
-export interface PerformanceFilter { from?: number; to?: number; scanner?: string; symbol?: string; tf?: string; side?: string; reason?: string }
+export interface PerformanceFilter { from?: number; to?: number; scanner?: string; symbol?: string; tf?: string; side?: string; reason?: string; group?: string; sector?: string }
 export interface PerformanceStats {
   trades: number; rTrades: number; wins: number; stops: number; trails: number;
   net: number; commission: number; funding: number; grossTrading: number;
@@ -13,6 +15,8 @@ export interface PerformanceReport {
   at: number; from: number | null; to: number; firstClose: number | null; lastClose: number | null;
   paper: PerformanceStats; shadow: PerformanceStats;
   daily: PerformanceGroup[]; byTf: PerformanceGroup[]; byScanner: PerformanceGroup[]; bySymbol: PerformanceGroup[]; byExit: PerformanceGroup[];
+  /** Asset class of the market: majors, large-cap alts, alts, meme, stocks & metals, other; and the sector inside it. */
+  byGroup: PerformanceGroup[]; bySector: PerformanceGroup[];
 }
 type Row = { bt: number; scanner_id: string; scanner_name: string; symbol: string; tf: string; side: string; exit_reason: string | null; exit_at: number; realized_pnl: number; fees: number; risk_amount: number; fills: string };
 type Trade = Row & { net: number; r: number | null; funding: number | null };
@@ -21,6 +25,8 @@ export function validatePerformanceFilter(f: PerformanceFilter): void {
   for (const v of [f.from, f.to]) if (v !== undefined && (!Number.isSafeInteger(v) || v < 0 || v > 8.64e15)) throw new Error('Invalid closing date.');
   if (f.from !== undefined && f.to !== undefined && f.from >= f.to) throw new Error('End date must follow the start date.');
   if (f.side && f.side !== 'long' && f.side !== 'short') throw new Error('Invalid direction.');
+  if (f.group && !isAssetGroup(f.group)) throw new Error('Invalid asset group.');
+  if (f.sector && !isAssetSector(f.sector)) throw new Error('Invalid asset sector.');
 }
 
 export function fundingOf(raw: string): number | null {
@@ -66,6 +72,8 @@ export function performanceReport(db: Db, f: PerformanceFilter = {}, now = Date.
   for (const [column, value] of [['scanner_id', f.scanner], ['symbol', f.symbol], ['tf', f.tf], ['side', f.side], ['exit_reason', f.reason]]) {
     if (value) { where.push(`p.${column} = ?`); args.push(value); }
   }
+  const cls = classClause(db, f, 'p.symbol');
+  if (cls) { where.push(cls.sql); args.push(...cls.args); }
   const rows = db.all<Row>(`SELECT p.bt,p.scanner_id,p.scanner_name,p.symbol,p.tf,p.side,p.exit_reason,p.exit_at,p.realized_pnl,p.fees,p.risk_amount,p.fills FROM positions p WHERE ${where.join(' AND ')} ORDER BY p.exit_at,p.id`, ...args);
   const trades: Trade[] = rows.map(t => {
     const net = t.realized_pnl - t.fees, r = t.risk_amount > 0 ? net / t.risk_amount : NaN;
@@ -79,5 +87,6 @@ export function performanceReport(db: Db, f: PerformanceFilter = {}, now = Date.
   };
   return { at: now, from: f.from ?? null, to, firstClose: trades[0]?.exit_at ?? null, lastClose: trades.at(-1)?.exit_at ?? null,
     ...books(trades), daily: groups(t => new Date(t.exit_at).toISOString().slice(0, 10)),
-    byTf: groups(t => t.tf), byScanner: groups(t => t.scanner_id, t => t.scanner_name), bySymbol: groups(t => t.symbol), byExit: groups(t => t.exit_reason ?? 'unknown') };
+    byTf: groups(t => t.tf), byScanner: groups(t => t.scanner_id, t => t.scanner_name), bySymbol: groups(t => t.symbol), byExit: groups(t => t.exit_reason ?? 'unknown'),
+    byGroup: groups(t => classOf(t.symbol).group), bySector: groups(t => classOf(t.symbol).sector) };
 }
