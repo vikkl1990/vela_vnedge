@@ -175,7 +175,7 @@ function perPairEvent(s2: Signal): ScanEvent {
   if (!(risk > 0)) return s2.ev;
   return { ...s2.ev, tp: [t / 2, t * 0.75, t].map(r => price + dir * r * risk) };
 }
-console.log(`\nPORTFOLIO REPLAY · one account, ${pairs.length} pairs · ${TF} · ${signals.length} signals · $${base.paper.initialEquity} start, max ${base.paper.maxOpenPositions} open\n`);
+console.log(`\nPORTFOLIO REPLAY · one account, ${pairs.length} pairs · ${TF} · ${signals.length} signals · $${base.paper.initialEquity} start, ${base.paper.maxOpenPositions>0?`max ${base.paper.maxOpenPositions} open`:"no position-count cap"}\n`);
 console.log(`  ${'target policy'.padEnd(30)} ${'entries'.padStart(8)} ${'blocked'.padStart(8)} ${'trades'.padStart(7)} ${'win%'.padStart(5)} ${'net $'.padStart(9)} ${'PF'.padStart(6)} ${'max DD'.padStart(7)} ${'end equity'.padStart(11)}`);
 for (const [name, patch] of variants) {
   const r = run(name, { ...base.paper, ...patch });

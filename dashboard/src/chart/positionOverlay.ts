@@ -1,5 +1,6 @@
 import type { Position } from '../api/types'
 import type { ChartScript } from './VelaChart'
+import { pineString } from './pineString.ts'
 
 /** A price the overlay can draw, with its label and colour role. */
 type Level = { price: number; label: string; role: 'entry' | 'stop' | 'target' | 'peak'; dashed?: boolean }
@@ -30,9 +31,14 @@ export function positionOverlay(p: Position, peakR?: number | null): ChartScript
   const rOf = (price: number) => ((price - p.entryPrice) * dir) / risk
 
   const levels: Level[] = [{ price: p.entryPrice, label: 'entry', role: 'entry' }]
-  if (p.slOriginal != null) levels.push({ price: p.slOriginal, label: 'stop −1R', role: 'stop', dashed: true })
+  if (p.slOriginal != null)
+    levels.push({ price: p.slOriginal, label: 'stop −1R', role: 'stop', dashed: true })
   if (p.sl != null && (p.slOriginal == null || Math.abs(p.sl - p.slOriginal) > 1e-12))
-    levels.push({ price: p.sl, label: `stop now ${rOf(p.sl) >= 0 ? '+' : ''}${rOf(p.sl).toFixed(2)}R`, role: 'stop' })
+    levels.push({
+      price: p.sl,
+      label: `stop now ${rOf(p.sl) >= 0 ? '+' : ''}${rOf(p.sl).toFixed(2)}R`,
+      role: 'stop',
+    })
   p.tp?.forEach((tp, i) => {
     if (tp == null) return
     const funded = (p.legs?.[i] ?? 1) > 0
@@ -44,12 +50,18 @@ export function positionOverlay(p: Position, peakR?: number | null): ChartScript
       dashed: !funded,
     })
   })
-  if (peakR != null && peakR > 0.05) levels.push({ price: p.entryPrice + dir * peakR * risk, label: `peak +${peakR.toFixed(2)}R`, role: 'peak', dashed: true })
+  if (peakR != null && peakR > 0.05)
+    levels.push({
+      price: p.entryPrice + dir * peakR * risk,
+      label: `peak +${peakR.toFixed(2)}R`,
+      role: 'peak',
+      dashed: true,
+    })
 
   const body = levels
     .map((l) => {
       const style = l.dashed ? 'hline.style_dashed' : 'hline.style_solid'
-      return `hline(${l.price}, "${l.label}", color = color.new(color.rgb(${hexToRgb(ROLE_COLOR[l.role])}), ${l.dashed ? 45 : 0}), linestyle = ${style}, linewidth = ${l.role === 'entry' ? 2 : 1})`
+      return `hline(${l.price}, ${pineString(l.label)}, color = color.new(color.rgb(${hexToRgb(ROLE_COLOR[l.role])}), ${l.dashed ? 45 : 0}), linestyle = ${style}, linewidth = ${l.role === 'entry' ? 2 : 1})`
     })
     .join('\n')
 

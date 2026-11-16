@@ -3,11 +3,21 @@ import { useMarkets } from '../api/queries'
 import type { Signal } from '../api/types'
 import { fmtPrice, truncate } from '../lib/format'
 import { useSSE } from '../sse/SSEProvider'
-import { ScoreBadge, SidePill, StatusDot, Time } from './ui'
 import { BrandMark } from './Brand'
+import { ScoreBadge, SidePill, StatusDot, Time } from './kit'
 
 /** Telegram-bot-style alerts feed: one card per signal. */
-export function AlertsFeed({ signals, limit = 15, title = 'VN EDGE', showActions = false }: { signals: Signal[]; limit?: number; title?: string; showActions?: boolean }) {
+export function AlertsFeed({
+  signals,
+  limit = 15,
+  title = 'VN EDGE',
+  showActions = false,
+}: {
+  signals: Signal[]
+  limit?: number
+  title?: string
+  showActions?: boolean
+}) {
   const { status } = useSSE()
   const { data: markets } = useMarkets()
   const tick = (sym: string) => markets?.find((m) => m.symbol === sym)?.tickSize
@@ -21,7 +31,8 @@ export function AlertsFeed({ signals, limit = 15, title = 'VN EDGE', showActions
         <div>
           <div className="alerts-title">{title}</div>
           <div className="alerts-sub">
-            <StatusDot tone={status === 'connected' ? 'ok' : 'warn'} /> {status === 'connected' ? 'online' : status}
+            <StatusDot tone={status === 'connected' ? 'ok' : 'warn'} />{' '}
+            {status === 'connected' ? 'online' : status}
           </div>
         </div>
       </div>
@@ -44,12 +55,11 @@ export function AlertsFeed({ signals, limit = 15, title = 'VN EDGE', showActions
               <span className="alert-desc">
                 <SidePill side={s.side} /> <span className="muted">{s.kind}</span>
                 {s.sl != null && (
-                  <span className="mono small muted">
-                    {' '}
-                    · SL {fmtPrice(s.sl, tick(s.symbol))}
-                  </span>
+                  <span className="mono small muted"> · SL {fmtPrice(s.sl, tick(s.symbol))}</span>
                 )}
-                {s.tp?.[0] != null && <span className="mono small muted"> · TP {fmtPrice(s.tp[0], tick(s.symbol))}</span>}
+                {s.tp?.[0] != null && (
+                  <span className="mono small muted"> · TP {fmtPrice(s.tp[0], tick(s.symbol))}</span>
+                )}
               </span>
               <ScoreBadge score={s.score} />
             </div>
@@ -58,7 +68,18 @@ export function AlertsFeed({ signals, limit = 15, title = 'VN EDGE', showActions
                 {truncate(s.summary || s.message, 110)}
               </div>
             )}
-            {showActions && <details className="small"><summary>{s.action}</summary><div className="muted">Signal bar: {new Date(s.barTime).toISOString()}<br />Decision: {new Date(s.at).toISOString()}<br />{s.message}</div></details>}
+            {showActions && (
+              <details className="small">
+                <summary>{s.action}</summary>
+                <div className="muted">
+                  Signal bar: {new Date(s.barTime).toISOString()}
+                  <br />
+                  Decision: {new Date(s.at).toISOString()}
+                  <br />
+                  {s.message}
+                </div>
+              </details>
+            )}
             <div className="alert-foot">
               <Time t={s.at} mode="ago" />
               <Link to={`/scanners/${s.scannerId}`} className="link">

@@ -6,7 +6,7 @@ import tseslint from 'typescript-eslint'
 import { defineConfig, globalIgnores } from 'eslint/config'
 
 export default defineConfig([
-  globalIgnores(['dist']),
+  globalIgnores(['dist', 'test-results', 'playwright-report']),
   {
     files: ['**/*.{ts,tsx}'],
     extends: [
@@ -19,6 +19,10 @@ export default defineConfig([
       ecmaVersion: 2022,
       globals: globals.browser,
     },
+  },
+  {
+    files: ['src/pages/**/*.tsx', 'src/components/**/*.tsx'],
+    rules: { 'no-restricted-syntax': [ 'error', { selector: "VariableDeclarator[id.name=/^(money|usd|pct|fmtR|fmtUsd)$/][init.type='ArrowFunctionExpression']", message: 'Import the shared formatter from lib/format instead of defining a local copy.' }, { selector: "FunctionDeclaration[id.name=/^(money|usd|pct|fmtR|fmtUsd)$/]", message: 'Use lib/format for consistent financial formatting.' } ] },
   },
   {
     // Provider modules intentionally export a component plus its hook.

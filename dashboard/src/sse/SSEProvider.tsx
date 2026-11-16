@@ -1,5 +1,17 @@
+import { decisionRefreshKeys } from './decisionRefresh'
+import { mergePositionEvent } from './positionCache'
+import { batchedInvalidation } from '../lib/batchedInvalidation'
 import { useQueryClient } from '@tanstack/react-query'
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react'
 import { qk } from '../api/queries'
 import type {
   Health,
@@ -42,6 +54,7 @@ const EVENTS: SSEEventName[] = [
   'position',
   'trade',
   'order',
+  'pending',
   'scanner',
   'stats',
   'health',
@@ -93,20 +106,11 @@ export function SSEProvider({ children }: { children: ReactNode }) {
       }
     }
 
-    // ---- debounced invalidation (coalesce SSE bursts into one refetch) -----
-    const invTimers = new Map<string, number>()
-    const invalidate = (key: readonly unknown[]) => {
-      const k = JSON.stringify(key)
-      const prev = invTimers.get(k)
-      if (prev) window.clearTimeout(prev)
-      invTimers.set(
-        k,
-        window.setTimeout(() => {
-          invTimers.delete(k)
-          void qc.invalidateQueries({ queryKey: key })
-        }, INVALIDATE_DEBOUNCE_MS),
-      )
-    }
+    // ---- bounded invalidation (coalesce SSE bursts into one refetch) -----
+    const invalidations = batchedInvalidation((key) => {
+      void qc.invalidateQueries({ queryKey: key })
+    }, INVALIDATE_DEBOUNCE_MS)
+    const invalidate = invalidations.request
     const bumpStats = () => invalidate(qk.stats)
 
     // ---- query-cache integration -----------------------------------------
@@ -116,7 +120,21 @@ export function SSEProvider({ children }: { children: ReactNode }) {
         qc.setQueryData(qk.health, d.health)
       }),
       sseBus.on('health', (h: Health) => qc.setQueryData(qk.health, h)),
-      sseBus.on('accounting', () => { for (const key of [['trades'], ['equity'], qk.positions, qk.orders, qk.stats, qk.analytics, ['daily'], ['execution-quality']]) invalidate(key) }),
+      sseBus.on('accounting', () => {
+        for (const key of [
+          ['trades'],
+          ['journal'],
+          ['journal-detail'],
+          ['equity'],
+          qk.positions,
+          qk.orders,
+          qk.stats,
+          qk.analytics,
+          ['daily'],
+          ['execution-quality'],
+        ])
+          invalidate(key)
+      }),
       sseBus.on('stats', (s: Stats) => qc.setQueryData(qk.stats, s)),
       sseBus.on('tick', (t: TickEvent) => {
         pendingPrices.set(t.symbol, t)
@@ -129,31 +147,40 @@ export function SSEProvider({ children }: { children: ReactNode }) {
       }),
       sseBus.on('signal', (s: Signal) => {
         setLiveSignal(s)
-        invalidate(['signals']); invalidate(['signal-activity'])
-        invalidate(qk.scanners)
+        for (const key of decisionRefreshKeys('signal')) invalidate(key)
       }),
       sseBus.on('position', (e: PositionEvent) => {
-        qc.setQueryData<Position[]>(qk.positions, (prev) => {
-          const list = prev ?? []
-          if (e.type === 'closed' || e.type === 'voided') return list.filter((p) => p.id !== e.position.id)
-          const idx = list.findIndex((p) => p.id === e.position.id)
-          if (idx === -1) return [e.position, ...list]
-          // Replace only the changed row so memoized rows keep their identity.
-          const next = list.slice()
-          next[idx] = e.position
-          return next
+        // Never turn one event into an empty/partial account snapshot. Preserve the
+        // last full HTTP refresh time: busy price/stop events do not verify the list.
+        const snapshotAt = qc.getQueryState(qk.positions)?.dataUpdatedAt
+        qc.setQueryData<Position[]>(qk.positions, (prev) => mergePositionEvent(prev, e), {
+          updatedAt: snapshotAt,
         })
+        for (const key of decisionRefreshKeys('position', e.type)) invalidate(key)
         if (e.type !== 'updated') bumpStats()
       }),
       sseBus.on('trade', () => {
+        for (const key of decisionRefreshKeys('trade')) invalidate(key)
         invalidate(['trades'])
+        invalidate(['journal'])
+        invalidate(['journal-detail'])
+        invalidate(['incubator'])
+        invalidate(['learning'])
+        invalidate(['trade-monitor'])
+        invalidate(['daily'])
         invalidate(qk.orders)
         invalidate(['equity'])
         invalidate(qk.scanners)
         invalidate(qk.analytics)
         bumpStats()
       }),
-      sseBus.on('order', () => invalidate(qk.orders)),
+      sseBus.on('order', () => {
+        invalidate(qk.orders)
+        for (const key of decisionRefreshKeys('order')) invalidate(key)
+      }),
+      sseBus.on('pending', () => {
+        for (const key of decisionRefreshKeys('pending')) invalidate(key)
+      }),
       sseBus.on('scanner', (e: ScannerEvent) => {
         qc.setQueryData<Scanner[]>(qk.scanners, (prev) =>
           prev ? prev.map((s) => (s.id === e.id ? { ...s, lastRun: e.lastRun, stats: e.stats } : s)) : prev,
@@ -196,6 +223,7 @@ export function SSEProvider({ children }: { children: ReactNode }) {
         noteEvent()
         // resync anything we may have missed while disconnected
         if (wasReconnect) void qc.invalidateQueries()
+        else invalidate(qk.positions)
       }
       es.onerror = () => {
         // EventSource auto-retries, but we manage backoff ourselves for control.
@@ -223,7 +251,8 @@ export function SSEProvider({ children }: { children: ReactNode }) {
       attemptsRef.current += 1
       setAttempts(attemptsRef.current)
       setStatus(attemptsRef.current > 3 ? 'offline' : 'reconnecting')
-      const delay = Math.min(MAX_BACKOFF, 1000 * 2 ** Math.min(6, attemptsRef.current - 1)) + Math.random() * 500
+      const delay =
+        Math.min(MAX_BACKOFF, 1000 * 2 ** Math.min(6, attemptsRef.current - 1)) + Math.random() * 500
       if (timerRef.current) window.clearTimeout(timerRef.current)
       timerRef.current = window.setTimeout(connect, delay)
     }
@@ -243,7 +272,7 @@ export function SSEProvider({ children }: { children: ReactNode }) {
       if (timerRef.current) window.clearTimeout(timerRef.current)
       if (priceTimer != null) window.clearTimeout(priceTimer)
       if (eventAtTimer != null) window.clearTimeout(eventAtTimer)
-      for (const t of invTimers.values()) window.clearTimeout(t)
+      invalidations.dispose()
       esRef.current?.close()
       esRef.current = null
       offs.forEach((f) => f())

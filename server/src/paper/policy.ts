@@ -69,7 +69,7 @@ export function backtestPolicy(cfg: AppConfig, scannerId: string, tf: string, bo
 }
 
 /**
- * Decision 266 (own exits): a script's own exits, as its author wrote them. Everything the bot adds on top of a script is
+ * Decision 286 (own exits): a script's own exits, as its author wrote them. Everything the bot adds on top of a script is
  * off: no R ladder, trail, profit floor, early cut, early stall, break-even move, trend exit, structure trail or stale
  * close. The only thing the bot keeps is a wide disaster stop so sizing has a basis and a runaway cannot go unbounded
  * (`scriptDisasterStopAtr`, 3 ATR by default). Script targets and script stops are honoured as written.

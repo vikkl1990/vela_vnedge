@@ -1,0 +1,7 @@
+[Service]
+UMask=0077
+Environment="PATH=@RUNTIME@/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+ExecStart=
+ExecStart=/usr/bin/bash /opt/vnedge/ops/service-entrypoint.sh library-sync @RUNTIME@/bin/node @RUNTIME@/lib/node_modules/npm/bin/npm-cli.js run library:sync
+StandardOutput=journal
+StandardError=journal

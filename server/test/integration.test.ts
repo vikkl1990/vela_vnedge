@@ -315,6 +315,12 @@ after(async () => {
 });
 
 test('scanner list: the batched build matches the per-scanner build, and the lite view is a strict subset', async () => {
+  // The remaining cases inspect APIs, after the synthetic feed/reconnect replay.
+  // Stop clock-driven closes and finish its final announced scan before comparing
+  // two HTTP snapshots. Otherwise a legitimate lastRun update races the reads.
+  app.candles.stopMaintenance();
+  const latestClose=Math.max(...[...closedCounts.keys()].filter(k=>k.startsWith('5m:')).map(k=>Number(k.slice(3))));
+  await waitFor(()=>{const run=app.scanners.getLastRun('tiny');return run?.barTime===latestClose&&!!run.funnel&&app.pool.stats.busy===0&&app.pool.stats.queued===0;},'final announced scan before API snapshot comparison');
   const full = await getJson('/api/scanners');
   assert.equal(full.status, 200);
   const list = full.body as any[];

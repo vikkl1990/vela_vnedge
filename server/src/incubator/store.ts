@@ -37,7 +37,7 @@ const toPair = (r: any): PairRow => ({
 });
 
 /** Decision 190: `pending` is an order resting or waiting to fill; it is not an opened trade until it fills, and a lapsed one counts as `other`. */
-export interface SignalFunnel { reasons?: Record<string, number>; entries: number; opened: number; pending: number; regime: number; cost: number; market: number; quote: number; other: number; lastOpenAt: number | null }
+export interface SignalFunnel { historyCapped?: boolean; retainedSince?: number | null; reasons?: Record<string, number>; entries: number; opened: number; pending: number; regime: number; cost: number; market: number; quote: number; other: number; lastOpenAt: number | null }
 /** The gate an entry signal's recorded action names (decision 112); the same words the Signals page shows. */
 export function funnelClass(action: string): 'opened' | 'pending' | 'regime' | 'cost' | 'market' | 'quote' | 'other' {
   if (action === 'opened' || action === 'reversed') return 'opened';
@@ -113,17 +113,29 @@ export class IncubatorStore {
   shadowLastEntryAt(p: Pick<PairRow, 'scannerId' | 'symbol' | 'tf'>, since: number): number | null {
     return this.db.get<{at:number|null}>("SELECT max(entry_at) at FROM positions WHERE bt=2 AND status IN ('open','closed') AND qty>0 AND scanner_id=? AND symbol=? AND tf=? AND entry_at>=?", p.scannerId,p.symbol,p.tf,since)?.at ?? null;
   }
+  shadowLastActivityAt(p: Pick<PairRow, 'scannerId' | 'symbol' | 'tf'>): number | null {
+    return this.db.get<{at:number|null}>("SELECT max(max(entry_at,coalesce(exit_at,entry_at))) at FROM positions WHERE bt=2 AND status IN ('open','closed') AND qty>0 AND scanner_id=? AND symbol=? AND tf=?",p.scannerId,p.symbol,p.tf)?.at ?? null;
+  }
   quarantineReason(id: string): string | null {
     const row = this.db.get<{reason:string|null}>('SELECT reason FROM script_health WHERE scanner_id=? AND quarantined=1',id);
     return row ? row.reason ?? 'scanner quarantined' : null;
   }
   rotationState(): RotationState { return this.db.kvGet<RotationState>('incubator.rotation') ?? emptyRotation(); }
-  rotate(old: PairRow, next: PairRow, state: RotationState, now: number): PairRow {
+  rotationHolds(p: Pick<PairRow, 'scannerId' | 'symbol' | 'tf'>): boolean {
+    return !!this.db.get("SELECT 1 FROM positions WHERE bt IN (0,2) AND scanner_id=? AND symbol=? AND tf=? AND ((status='open' AND qty_open>0) OR status='pending') LIMIT 1", p.scannerId, p.symbol, p.tf);
+  }
+  rotate(old: PairRow, next: PairRow, state: RotationState, now: number, idleSince: number): PairRow {
     return this.db.transaction(() => {
-      if (this.get(old.id)?.stage !== 'shadow' || this.get(next.id)?.stage !== 'candidate' || this.shadowHolds(old) || this.shadowLastEntryAt(old, this.evaluationSince(old,now)) !== null) throw new Error('rotation state changed');
+      const current = this.get(old.id);
+      if (!Number.isFinite(idleSince) || idleSince > now || !current || current.stage !== 'shadow'
+        || current.since !== old.since || idleSince < this.evaluationSince(current,now)
+        || this.get(next.id)?.stage !== 'candidate' || this.rotationHolds(old)
+        || (this.shadowLastActivityAt(old) ?? -Infinity) >= idleSince) throw new Error('rotation state changed');
       const budget = this.rotationState();
       if ((budget.day === state.day ? budget.used : 0) !== state.used - 1) throw new Error('rotation budget changed');
-      const evidence = { replacementId: next.id, until: state.paused[old.id].until, since: old.since, reason: 'no filled shadow trade during observation; research slot rotated, not a performance rejection' };
+      const evidence = { replacementId: next.id, until: state.paused[old.id].until, since: old.since, idleSince,
+        lastEntryAt: this.shadowLastEntryAt(old, old.since), lastActivityAt: this.shadowLastActivityAt(old),
+        reason: 'no shadow entries or closes during configured idle window; research slot rotated, history retained, not a performance rejection' };
       this.moveInside(old, 'candidate', 'rotation', evidence, evidence.reason, now, {keepSince: true});
       const result = this.moveInside(next, 'shadow', 'screen', {rotationFrom: old.id, screen: next.screen}, 'admitted through research rotation', now);
       this.db.kvSet('incubator.rotation', state);
@@ -315,12 +327,18 @@ export class IncubatorStore {
     return r&&!r.passed?`restored cell in forward shadow evaluation: ${r.reasons.join('; ')}`:null;
   }
   copyRefusal(cell:{scannerId:string;symbol:string;tf:string},mirror:AppConfig['incubator']['mirror'],turnover:number|null,at=Date.now(),{readOnly=false}={}) {
+    const quarantine=this.quarantineReason(cell.scannerId);
+    if(quarantine)return `scanner quarantined: ${quarantine}`;
+    // The evidence-only gate is also used for restoration enrollment. Keep that
+    // independent of market availability, but never label an unverified copy ready.
+    const marketMissing=(mirror?.minTurnoverUsd??0)>0&&(turnover===null||!Number.isFinite(turnover))
+      ?'market data unavailable: 24h turnover not verified for copy':null;
     if(readOnly){
       const r=this.restoration(cell,at);
       if(r&&!r.passed)return `restored cell in forward shadow evaluation: ${r.reasons.join('; ')}`;
-      return mirrorRefusal(mirror,qualifiedEvidence(this.db,cell,this.policyFor?.(cell),{at}),turnover);
+      return marketMissing??mirrorRefusal(mirror,qualifiedEvidence(this.db,cell,this.policyFor?.(cell),{at}),turnover);
     }
-    return this.restorationRefusal(cell,at)??mirrorRefusal(mirror,this.qualifiedTrades(cell.scannerId,cell.symbol,cell.tf,2,at),turnover);
+    return this.restorationRefusal(cell,at)??marketMissing??mirrorRefusal(mirror,this.qualifiedTrades(cell.scannerId,cell.symbol,cell.tf,2,at),turnover);
   }
   policyEvidence(cell:{scannerId:string;symbol:string;tf:string},at=Date.now()) {
     if(!this.policyFor)return {mode:'unconfigured' as const};

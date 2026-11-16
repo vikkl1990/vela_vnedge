@@ -29,6 +29,20 @@ test('batch promotion retains both allocations when the config store replaces it
  assert.deepEqual(w.saved().scanners.s.pairs?.map(p=>p.symbol).sort(),['ETHUSD','SOLUSD']);
  assert.deepEqual(w.cfg,before,'caller and risk/evidence settings unchanged');
 });
+test('disabling allocation quotas promotes every qualified proposal but still rejects weak and backtest evidence',async t=>{
+ const {resolveTradePolicy}=await import('../paper/tradePolicy.ts');
+ const w=world();t.after(()=>w.db.db.close());
+ w.cfg.incubator.promote={...w.cfg.incubator.promote,maxPerWeek:0,maxFleet:1,maxPerMarket:1,maxPerScanner:1};
+ const cell={scannerId:'s',symbol:'ETHUSD',tf:'15m'},before=resolveTradePolicy(w.cfg,cell,'source');
+ w.cfg.incubator.promote.countLimitsEnabled=false;
+ assert.deepEqual(resolveTradePolicy(w.cfg,cell,'source'),before,'promotion quotas are not a trade-policy or evidence reset');
+ w.add('ETHUSD');w.add('SOLUSD');w.add('ETHUSD','another');w.add('XRPUSD','weak',3);w.add('BTCUSD','backtest',40,1);
+ const out=autoPromote(w.store,w.cfg,w.setScanner,NOW);
+ assert.equal(out.promoted.length,3,JSON.stringify(out));assert.equal(out.blocked.length,2);
+ assert.equal(w.saved().scanners.s.pairs?.length,2);assert.ok(w.saved().scanners.another);
+ assert.equal(w.saved().scanners.weak,undefined);assert.equal(w.saved().scanners.backtest,undefined);
+ assert.deepEqual(w.saved().risk,w.cfg.risk);assert.deepEqual(w.saved().paper,w.cfg.paper);
+});
 test('fleet and scanner caps include earlier promotions from the same batch',t=>{
  for(const cap of ['maxFleet','maxPerScanner'] as const){
    const w=world();t.after(()=>w.db.db.close());w.cfg.incubator.promote[cap]=1;w.add('ETHUSD');w.add('SOLUSD');

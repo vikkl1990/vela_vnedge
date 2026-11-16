@@ -8,6 +8,7 @@
  * The bot token is never logged; `status()` exposes only whether a target is configured.
  */
 import { logger } from '../log.ts';
+import {telegramClient} from '../telegram/client.ts';
 
 const log = logger.scoped('alerts');
 
@@ -43,24 +44,8 @@ export function telegramFromEnv(cfg?: TelegramTarget | null, env: NodeJS.Process
 
 /** Sends one message through the Bot API. Errors never include the token (the URL is stripped from messages). */
 export function telegramTransport(target: TelegramTarget, fetchImpl: typeof fetch = fetch): Transport {
-  return async (text: string) => {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 10_000);
-    try {
-      const res = await fetchImpl(`https://api.telegram.org/bot${target.botToken}/sendMessage`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: ctrl.signal,
-        body: JSON.stringify({ chat_id: target.chatId, text: text.slice(0, 4000), disable_web_page_preview: true }),
-      });
-      if (!res.ok) {
-        let detail = '';
-        try { const j: any = await res.json(); detail = String(j?.description ?? ''); } catch { /* ignore */ }
-        throw new Error(`telegram ${res.status}${detail ? ' ' + detail : ''}`);
-      }
-    } catch (e: any) {
-      const msg = String(e?.message ?? e).replace(/bot\d+:[A-Za-z0-9_-]+/g, 'bot<redacted>');
-      throw new Error(msg);
-    } finally { clearTimeout(timer); }
-  };
+  const call=telegramClient(target.botToken,fetchImpl);
+  return async text=>{await call('sendMessage',{chat_id:target.chatId,text:text.slice(0,4000),disable_web_page_preview:true,protect_content:true});};
 }
 
 export class AlertManager {

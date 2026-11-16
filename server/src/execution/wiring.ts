@@ -1,6 +1,6 @@
 import { FundingJournal } from './fundingJournal.ts';
 import { MonitorRuntime } from '../research/monitorRuntime.ts';
-import {ReplayArchive} from '../research/replayArchive.ts';
+import {FocusedReplay,EXIT_STUDY_SYMBOLS} from '../research/focusedReplay.ts';
 import path from 'node:path';
 import {PaperExitPump} from './paperExitPump.ts';
 import { AccountAudit } from './accountAudit.ts';
@@ -96,7 +96,7 @@ export function wireRealtime(app: App): void {
     app.feed.unsubscribe('ob_updates', [symbol]); app.feed.subscribe('ob_updates', [symbol]);
   });
   depth.disconnect();
-  const replay=app.replayArchive=new ReplayArchive({dir:path.join(DATA_DIR,'replay')});
+  const replay=app.replayArchive=new FocusedReplay({dir:path.join(DATA_DIR,'replay')});
   app.tradeMonitor=new MonitorRuntime(app,app.advisoryFeedFactory);
   app.tradeMonitor.depth.recorder.setCapture((symbol,kind,payload,at)=>replay.record(symbol,kind,payload,at,'advisory-depth'));
   app.feed.on('depth', (m:unknown) => depth.onDepth(m));
@@ -188,7 +188,7 @@ export function wireRealtime(app: App): void {
 export function subscribeRealtime(app: App): void {
   // A paper allocation can be outside the global universe and the shadow runner.
   // Subscribe before its first order: candles alone cannot price a quoted entry.
-  const symbols = [...new Set([...app.resolvedSymbols, ...app.scanners.requiredSeries().map(p => p.symbol), ...app.paper.openPositions().map(p => p.symbol), ...app.shadow.openPositions().map(p => p.symbol), ...app.paper.pendingEntries().map(p => p.symbol), ...app.shadow.pendingEntries().map(p => p.symbol), ...app.incubator.symbols()])];
+  const symbols = [...new Set([...app.resolvedSymbols, ...app.scanners.requiredSeries().map(p => p.symbol), ...app.paper.openPositions().map(p => p.symbol), ...app.shadow.openPositions().map(p => p.symbol), ...app.paper.pendingEntries().map(p => p.symbol), ...app.shadow.pendingEntries().map(p => p.symbol), ...app.incubator.symbols(),...EXIT_STUDY_SYMBOLS])];
   app.feed.subscribe('ob_updates', app.depthRecorder.symbols);
   if (!symbols.length) return;
   app.feed.subscribe('v2/ticker', symbols);

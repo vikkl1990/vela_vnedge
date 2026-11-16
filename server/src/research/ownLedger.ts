@@ -1,5 +1,5 @@
 /**
- * Own-ledger evaluation (decision 266): grade a `strategy()` script by the trades its own ledger records, exactly as the
+ * Own-ledger evaluation (decision 286): grade a `strategy()` script by the trades its own ledger records, exactly as the
  * author wrote the entries and exits, then charge Delta's costs and stress the result. Nothing here knows the bot's
  * recipe (ATR stop, trail, floor, cap): the question it answers is whether the script's own entry and exit make money.
  *

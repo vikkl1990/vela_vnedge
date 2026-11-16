@@ -1,5 +1,5 @@
 /**
- * Decision 266: propose shadow "own exits" research plans. Read-only: it reads a copy of the config, validates the result with
+ * Decision 286: propose shadow "own exits" research plans. Read-only: it reads a copy of the config, validates the result with
  * the same validator the config save uses, and writes the plans to add as JSON. It never writes the config; applying the
  * file is a separate, deliberate step through the config route.
  *

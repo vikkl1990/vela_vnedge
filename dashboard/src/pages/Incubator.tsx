@@ -1,40 +1,91 @@
-import { sectionFromUrl } from '../lib/researchNavigation'
-import { useResearchFilters } from '../lib/useResearchFilters'
-import { tfMinutes } from '../lib/timeframes'
-import {RestorationPanel} from '../components/RestorationPanel'
-import { Disclosure } from '../components/Disclosure'
-import { PolicyHealthPanel, PolicyHealthStatus } from '../components/PolicyHealth'
-import {ExecutionPlans} from '../components/ExecutionPlans'
-import {ScannerContributions} from '../components/ScannerContributions'
+import { ambiguousScannerNames } from '../lib/scannerNames'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Fragment, useDeferredValue, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api/client'
-import { useAuth } from '../auth/AuthGate'
+import { REFRESH } from '../api/refreshPolicy'
 import type { IncubatorPair, IncubatorView } from '../api/types'
-import { BookBadge, ConfirmDialog, PageTitle, Panel, Pill, QueryState } from '../components/ui'
-import { Callout, EmptyState, Section, TabPanel, Tabs, Toolbar } from '../components/kit'
+import { useAuth } from '../auth/AuthGate'
+import { Disclosure } from '../components/Disclosure'
+import { ExecutionPlans } from '../components/ExecutionPlans'
+import {
+  AccountBadge,
+  BookBadge,
+  Callout,
+  ConfirmDialog,
+  EmptyState,
+  Pill,
+  QueryState,
+  RouteHeader,
+  Section,
+  TabPanel,
+  Tabs,
+  Toolbar,
+} from '../components/kit'
+import { PolicyHealthPanel, PolicyHealthStatus } from '../components/PolicyHealth'
+import { RestorationPanel } from '../components/RestorationPanel'
+import { ScannerContributions } from '../components/ScannerContributions'
+import { sectionFromUrl } from '../lib/researchNavigation'
+import { tfMinutes } from '../lib/timeframes'
+import { useResearchFilters } from '../lib/useResearchFilters'
+
 import { Clocks, Evidence, Funnel, Need } from '../components/incubatorBits'
-import { ScreenQueuePanel } from '../components/ScreenQueuePanel'
 import { OverlapPanel } from '../components/OverlapPanel'
+import { ScreenQueuePanel } from '../components/ScreenQueuePanel'
+import { fmtNum, fmtR, timeAgo } from '../lib/format'
 import { clockRank, gateFor, gateMinimums, pf, r } from '../lib/incubatorLogic'
-import { fmtNum, timeAgo, fmtR } from '../lib/format'
 import '../styles/pages/incubator.css'
 
 type IncTab = 'shadow' | 'candidates' | 'account' | 'experiments' | 'operations'
 
 /** One step of the pipeline: how many pairs sit there, in words, and a way into its tab. */
-function FunnelStage({ n, label, value, sub, title, tone, on, onClick, to }: { n: string; label: string; value: string | number; sub?: string; title?: string; tone?: 'warn'; on: boolean; onClick?: () => void; to?: string }) {
+function FunnelStage({
+  n,
+  label,
+  value,
+  sub,
+  title,
+  tone,
+  on,
+  onClick,
+  to,
+}: {
+  n: string
+  label: string
+  value: string | number
+  sub?: string
+  title?: string
+  tone?: 'warn'
+  on: boolean
+  onClick?: () => void
+  to?: string
+}) {
   const inner = (
     <>
-      <span className="inc-stage-label"><span className="inc-stage-n mono" aria-hidden>{n}</span>{label}</span>
+      <span className="inc-stage-label">
+        <span className="inc-stage-n mono" aria-hidden>
+          {n}
+        </span>
+        {label}
+      </span>
       <span className={`inc-stage-value mono ${tone ? `tone-${tone}` : ''}`}>{value}</span>
       {sub && <span className="inc-stage-sub">{sub}</span>}
     </>
   )
-  if (to) return <Link to={to} className="inc-stage" title={title}>{inner}</Link>
+  if (to)
+    return (
+      <Link to={to} className="inc-stage" title={title}>
+        {inner}
+      </Link>
+    )
   return (
-    <button type="button" className={`inc-stage ${on ? 'on' : ''}`} onClick={onClick} aria-pressed={on} title={title}>
+    <button
+      type="button"
+      className={`inc-stage ${on ? 'on' : ''}`}
+      onClick={onClick}
+      aria-pressed={on}
+      title={title}
+    >
       {inner}
     </button>
   )
@@ -47,8 +98,16 @@ function FunnelStage({ n, label, value, sub, title, tone, on, onClick, to }: { n
 export default function Incubator() {
   const qc = useQueryClient()
   const auth = useAuth()
-  const q = useQuery({ queryKey: ['incubator'], queryFn: api.incubator, refetchInterval: 60_000, staleTime: 20_000 })
-  const invalidate = () => { void qc.invalidateQueries({ queryKey: ['incubator'] }); void qc.invalidateQueries({ queryKey: ['scanners'] }) }
+  const q = useQuery({
+    queryKey: ['incubator'],
+    queryFn: api.incubator,
+    refetchInterval: REFRESH.slow,
+    staleTime: 20_000,
+  })
+  const invalidate = () => {
+    void qc.invalidateQueries({ queryKey: ['incubator'] })
+    void qc.invalidateQueries({ queryKey: ['scanners'] })
+  }
   const decide = useMutation({ mutationFn: api.incubatorDecide, onSuccess: invalidate })
   const [confirm, setConfirm] = useState<{ pair: IncubatorPair; action: 'demote' } | null>(null)
   const [now, setNow] = useState(() => Date.now())
@@ -60,84 +119,239 @@ export default function Incubator() {
   const { params, set, setSection, hash } = useResearchFilters()
   const search = params.get('q') ?? params.get('symbol') ?? ''
   const timeframe = params.get('tf') ?? 'all'
-  const section = sectionFromUrl<IncTab>(params, hash, ['shadow', 'candidates', 'account', 'experiments', 'operations'], 'shadow', { '#execution-plans': 'experiments', '#screen-queue': 'operations', '#overlap': 'operations', '#incubator-evidence': 'operations', '#incubator-contributions': 'operations' })
+  const section = sectionFromUrl<IncTab>(
+    params,
+    hash,
+    ['shadow', 'candidates', 'account', 'experiments', 'operations'],
+    'shadow',
+    {
+      '#execution-plans': 'experiments',
+      '#screen-queue': 'operations',
+      '#overlap': 'operations',
+      '#incubator-evidence': 'operations',
+      '#incubator-contributions': 'operations',
+    },
+  )
   const [shadowLimit, setShadowLimit] = useState(50)
   const [candidateLimit, setCandidateLimit] = useState(50)
   const query = useDeferredValue(search.trim().toLowerCase())
-  const matches = (p: IncubatorPair) => (timeframe === 'all' || p.tf === timeframe) && (!query || `${p.scannerName} ${p.scannerId} ${p.symbol} ${p.tf}`.toLowerCase().includes(query))
-  const resetLimits = () => { setShadowLimit(50); setCandidateLimit(50) }
+  const matches = (p: IncubatorPair) =>
+    (timeframe === 'all' || p.tf === timeframe) &&
+    (!query || `${p.scannerName} ${p.scannerId} ${p.symbol} ${p.tf}`.toLowerCase().includes(query))
+  const resetLimits = () => {
+    setShadowLimit(50)
+    setCandidateLimit(50)
+  }
 
   return (
     <div className="page incubator-page">
-      <PageTitle
+      <RouteHeader
         sub="Follow candidates into shadow, inspect forward evidence and track account allocations. Approvals and demotions are reviewed in Decisions."
-        actions={<Link to="/decisions" className="btn btn-sm">Decisions →</Link>}
+        actions={
+          <>
+            <button
+              className="btn btn-sm"
+              disabled={q.isFetching}
+              onClick={() => {
+                void q.refetch()
+              }}
+            >
+              Refresh incubator
+            </button>
+            <Link to="/decisions" className="btn btn-sm">
+              Decisions →
+            </Link>
+          </>
+        }
       />
       <QueryState {...q} data={q.data} empty="Incubator unavailable." onRetry={() => q.refetch()}>
         {(d) => {
+          const ambiguousNames = ambiguousScannerNames(
+            d.pairs.map((p) => ({ id: p.scannerId, name: p.scannerName })),
+          )
           const by = (st: IncubatorPair['stage']) => d.pairs.filter((p) => p.stage === st)
           const decisions = [...by('proposed'), ...by('demote_proposed')]
           const shadow = by('shadow').sort((a, b) => (b.stats?.trades ?? 0) - (a.stats?.trades ?? 0))
-          const candidates = by('candidate').filter((p) => p.screen?.pass).sort((a, b) => (b.admissionEvidence?.score ?? 0) - (a.admissionEvidence?.score ?? 0) || a.id-b.id)
-          const live = [...by('live'), ...by('demote_proposed')].sort((a, b) => clockRank(b, d.config.demote, now) - clockRank(a, d.config.demote, now) || (b.stats?.trades ?? 0) - (a.stats?.trades ?? 0))
+          const candidates = by('candidate')
+            .filter((p) => p.screen?.pass)
+            .sort(
+              (a, b) => (b.admissionEvidence?.score ?? 0) - (a.admissionEvidence?.score ?? 0) || a.id - b.id,
+            )
+          const live = [...by('live'), ...by('demote_proposed')].sort(
+            (a, b) =>
+              clockRank(b, d.config.demote, now) - clockRank(a, d.config.demote, now) ||
+              (b.stats?.trades ?? 0) - (a.stats?.trades ?? 0),
+          )
           const g = d.config.gate
           // grouped the way the gate judges: by cohort (scanner × timeframe) in cohort mode, one pair at a time in pair mode
           const byCohort = g.pool === 'cohort'
           const cohorts = (() => {
             const groups = new Map<string, IncubatorPair[]>()
-            for (const p of [...shadow, ...by('proposed')]) { const k = byCohort ? `${p.scannerId}|${p.tf}` : `pair:${p.id}`; groups.set(k, [...(groups.get(k) ?? []), p]) }
-            return [...groups.entries()].map(([k, ps]) => {
-              const gate = ps.find((p) => p.gate)?.gate ?? null
-              // The gate owns the evidence sample. All-time journal results can contain
-              // older readers/fills and must not make its sample look complete.
-              const trades = gate?.stats?.trades ?? 0
-              const netR = gate?.stats?.netR ?? 0
-              const days = gate?.stats?.days ?? 0
-              const pos = ps.filter((p) => (p.stats?.trades ?? 0) >= 3 && (p.stats?.avgR ?? 0) > 0).length
-              const judged = ps.filter((p) => (p.stats?.trades ?? 0) >= 3).length
-              const rate = days > 0 ? trades / days : 0
-              // decision 196: the minimums of this timeframe, as the judge applies them (4h needs 45 days, not 14)
-              const gg = gateFor(g, ps[0].tf)
-              const need = Math.max(0, gg.minTrades - trades)
-              const eta = need === 0 ? Math.max(0, gg.minDays - days) : rate > 0 ? Math.max(need / rate, gg.minDays - days) : Infinity
-              return { k, gg, symbol: ps[0].symbol, scanner: ps[0].scannerName, scannerId: ps[0].scannerId, tf: ps[0].tf, members: ps.sort((a, b) => (b.stats?.trades ?? 0) - (a.stats?.trades ?? 0)), trades, avgR: trades ? netR / trades : 0, days, pos, judged, gate, eta }
-            }).sort((a, b) => Number(b.gate?.decision === 'propose') - Number(a.gate?.decision === 'propose') || a.eta - b.eta || b.trades - a.trades)
+            for (const p of [...shadow, ...by('proposed')]) {
+              const k = byCohort ? `${p.scannerId}|${p.tf}` : `pair:${p.id}`
+              groups.set(k, [...(groups.get(k) ?? []), p])
+            }
+            return [...groups.entries()]
+              .map(([k, ps]) => {
+                const gate = ps.find((p) => p.gate)?.gate ?? null
+                // The gate owns the evidence sample. All-time journal results can contain
+                // older readers/fills and must not make its sample look complete.
+                const trades = gate?.stats?.trades ?? 0
+                const netR = gate?.stats?.netR ?? 0
+                const days = gate?.stats?.days ?? 0
+                const pos = ps.filter((p) => (p.stats?.trades ?? 0) >= 3 && (p.stats?.avgR ?? 0) > 0).length
+                const judged = ps.filter((p) => (p.stats?.trades ?? 0) >= 3).length
+                const rate = days > 0 ? trades / days : 0
+                // decision 196: the minimums of this timeframe, as the judge applies them (4h needs 45 days, not 14)
+                const gg = gateFor(g, ps[0].tf)
+                const need = Math.max(0, gg.minTrades - trades)
+                const eta =
+                  need === 0
+                    ? Math.max(0, gg.minDays - days)
+                    : rate > 0
+                      ? Math.max(need / rate, gg.minDays - days)
+                      : Infinity
+                return {
+                  k,
+                  gg,
+                  symbol: ps[0].symbol,
+                  scanner: ps[0].scannerName,
+                  scannerId: ps[0].scannerId,
+                  tf: ps[0].tf,
+                  members: ps.sort((a, b) => (b.stats?.trades ?? 0) - (a.stats?.trades ?? 0)),
+                  trades,
+                  avgR: trades ? netR / trades : 0,
+                  days,
+                  pos,
+                  judged,
+                  gate,
+                  eta,
+                }
+              })
+              .sort(
+                (a, b) =>
+                  Number(b.gate?.decision === 'propose') - Number(a.gate?.decision === 'propose') ||
+                  a.eta - b.eta ||
+                  b.trades - a.trades,
+              )
           })()
           const matchingCohorts = cohorts.filter((c) => c.members.some(matches))
           const matchingCandidates = candidates.filter(matches)
           const matchingLive = live.filter(matches)
-          const timeframes = [...new Set([...d.pairs.map((p) => p.tf), ...(timeframe !== 'all' ? [timeframe] : [])])].sort((a, b) => tfMinutes(a) - tfMinutes(b))
+          const timeframes = [
+            ...new Set([...d.pairs.map((p) => p.tf), ...(timeframe !== 'all' ? [timeframe] : [])]),
+          ].sort((a, b) => tfMinutes(a) - tfMinutes(b))
           const tab: IncTab = section
-          const died = Boolean(d.lastStart && (!d.lastRun || d.lastRun.at < d.lastStart.at) && now - d.lastStart.at > 7 * 3600_000)
+          const died = Boolean(
+            d.lastStart &&
+            (!d.lastRun || d.lastRun.at < d.lastStart.at) &&
+            now - d.lastStart.at > 7 * 3600_000,
+          )
           const stale = Boolean(d.lastRun && now - d.lastRun.at > 2 * 86400_000)
           const shadowN = shadow.length + by('proposed').length
           const shadowCap = d.capacity?.total ?? d.config.maxShadow
-          const capHint = d.capacity ? [`General: ${d.capacity.general.used}/${d.capacity.general.slots}`, ...d.capacity.reserves.map(r=>`${r.tfs?.join(', ') ?? 'All frames'} · ${r.markets?.join(', ') ?? 'all markets'}: ${r.used}/${r.slots}`), `${d.capacity.free} free slots`, ...(d.capacity.overflow ? [`${d.capacity.overflow} allocations exceed general capacity; held positions stay protected.`] : [])].join('\n') : undefined
+          const capHint = d.capacity
+            ? [
+                `General: ${d.capacity.general.used}/${d.capacity.general.slots}`,
+                ...d.capacity.reserves.map(
+                  (r) =>
+                    `${r.tfs?.join(', ') ?? 'All frames'} · ${r.markets?.join(', ') ?? 'all markets'}: ${r.used}/${r.slots}`,
+                ),
+                `${d.capacity.free} free slots`,
+                ...(d.capacity.overflow
+                  ? [
+                      `${d.capacity.overflow} allocations exceed general capacity; held positions stay protected.`,
+                    ]
+                  : []),
+              ].join('\n')
+            : undefined
           const filtering = tab === 'shadow' || tab === 'candidates' || tab === 'account'
           return (
             <>
               {decisions.length > 0 && (
-                <Callout tone="warn" title={`${decisions.length} pair${decisions.length === 1 ? '' : 's'} waiting for your decision`} actions={<Link to="/decisions" className="btn btn-sm btn-primary">Review decisions →</Link>}>
+                <Callout
+                  tone="warn"
+                  title={`${decisions.length} pair${decisions.length === 1 ? '' : 's'} waiting for your decision`}
+                  actions={
+                    <Link to="/decisions" className="btn btn-sm btn-primary">
+                      Review decisions →
+                    </Link>
+                  }
+                >
                   Approvals use the existing evidence rules. Pending demotions stay allocated until resolved.
                 </Callout>
               )}
               <PolicyHealthStatus />
-              {d.paperCopy && <div className="banner small" role="status">
-                <strong>{d.paperCopy.eligible} cells pass paper-copy checks</strong> · {d.paperCopy.enabled ? 'Copying enabled' : 'Copying off'}.
-                {' '}Full promotion is separate: {by('proposed').length} proposals waiting. A copy candidate still needs a new signal and must pass entry pricing, liquidity and account risk checks.
-              </div>}
+              {d.paperCopy && (
+                <div className="banner small" role="status">
+                  <strong>{d.paperCopy.eligible} cells pass paper-copy checks</strong> ·{' '}
+                  {d.paperCopy.enabled ? 'Copying enabled' : 'Copying off'}. Full promotion is separate:{' '}
+                  {by('proposed').length} proposals waiting. A copy candidate still needs a new signal and
+                  must pass entry pricing, liquidity and account risk checks.
+                </div>
+              )}
 
               <ol className="inc-funnel" aria-label="Where pairs are in the pipeline">
-                <li><FunnelStage n="1" label="Candidates" value={candidates.length} sub={candidateLine(d.candidates, d.lastAdmit)} title={candidateHint(d.candidates)} on={tab === 'candidates'} onClick={() => setSection('candidates')} /></li>
-                <li><FunnelStage n="2" label="Shadow book" value={`${shadowN} / ${shadowCap}`} sub={`${d.capacity?.general.slots ?? d.config.maxShadow} general + ${d.capacity?.reserves.reduce((n,r)=>n+r.slots,0) ?? 0} reserved · ${d.runner.entries} entries since restart`} title={capHint} on={tab === 'shadow'} onClick={() => setSection(null)} /></li>
-                <li><FunnelStage n="3" label="Waiting for you" value={decisions.length} tone={decisions.length ? 'warn' : undefined} sub="proposals to approve or reject" on={false} to="/decisions" /></li>
-                <li><FunnelStage n="4" label="In the account" value={`${d.fleet} / ${d.config.promote.maxFleet}`} sub={`${d.promotionsThisWeek}/${d.config.promote.maxPerWeek} promotions this week`} on={tab === 'account'} onClick={() => setSection('account')} /></li>
+                <li>
+                  <FunnelStage
+                    n="1"
+                    label="Candidates"
+                    value={candidates.length}
+                    sub={candidateLine(d.candidates, d.lastAdmit)}
+                    title={candidateHint(d.candidates)}
+                    on={tab === 'candidates'}
+                    onClick={() => setSection('candidates')}
+                  />
+                </li>
+                <li>
+                  <FunnelStage
+                    n="2"
+                    label="Shadow book"
+                    value={`${shadowN} / ${shadowCap}`}
+                    sub={`${d.capacity?.general.slots ?? d.config.maxShadow} general + ${d.capacity?.reserves.reduce((n, r) => n + r.slots, 0) ?? 0} reserved · ${d.runner.entries} entries since restart`}
+                    title={capHint}
+                    on={tab === 'shadow'}
+                    onClick={() => setSection(null)}
+                  />
+                </li>
+                <li>
+                  <FunnelStage
+                    n="3"
+                    label="Waiting for you"
+                    value={decisions.length}
+                    tone={decisions.length ? 'warn' : undefined}
+                    sub="proposals to approve or reject"
+                    on={false}
+                    to="/decisions"
+                  />
+                </li>
+                <li>
+                  <FunnelStage
+                    n="4"
+                    label="In the account"
+                    value={
+                      d.config.promote.countLimitsEnabled === false
+                        ? `${d.fleet} · no count cap`
+                        : `${d.fleet} / ${d.config.promote.maxFleet}`
+                    }
+                    sub={
+                      d.config.promote.countLimitsEnabled === false
+                        ? `${d.promotionsThisWeek} promotions this week · evidence still required`
+                        : `${d.promotionsThisWeek}/${d.config.promote.maxPerWeek} promotions this week`
+                    }
+                    on={tab === 'account'}
+                    onClick={() => setSection('account')}
+                  />
+                </li>
               </ol>
               <p className={`inc-lastscreen small ${died || stale ? 'loss' : 'muted'}`}>
                 {(died || stale) && <b>The daily screen is not running. </b>}
-                {died && `A run started ${timeAgo(d.lastStart!.at)} and never finished; check the service log. `}
+                {died &&
+                  `A run started ${timeAgo(d.lastStart!.at)} and never finished; check the service log. `}
                 Last screen {d.lastRun ? <b>{timeAgo(d.lastRun.at)}</b> : <b>never</b>}
-                {d.lastRun ? ` · slice ${d.lastRun.slice} · ${d.lastRun.runs} runs · ${d.lastRun.passed} passed${d.lastRun.truncated ? ` · ${d.lastRun.truncated} scripts not reached` : ''}` : ' · the daily job has not run yet'}
+                {d.lastRun
+                  ? ` · slice ${d.lastRun.slice} · ${d.lastRun.runs} runs · ${d.lastRun.passed} passed${d.lastRun.truncated ? ` · ${d.lastRun.truncated} scripts not reached` : ''}`
+                  : ' · the daily job has not run yet'}
               </p>
 
               <Tabs
@@ -156,114 +370,522 @@ export default function Incubator() {
 
               {filtering && (
                 <div className="inc-filters">
-                  <Toolbar end={<button className="btn btn-sm" disabled={!search && timeframe === 'all'} onClick={() => { set({ q: null, symbol: null, tf: null }); resetLimits() }}>Clear filters</button>}>
-                    <label className="inc-field" htmlFor="incubator-search">Search scanner or market
-                      <input id="incubator-search" className="input" type="search" value={search} placeholder="Name, ID or symbol" onChange={(e) => { set({ q: e.target.value, symbol: null }, true); resetLimits() }} />
+                  <Toolbar
+                    end={
+                      <button
+                        className="btn btn-sm"
+                        disabled={!search && timeframe === 'all'}
+                        onClick={() => {
+                          set({ q: null, symbol: null, tf: null })
+                          resetLimits()
+                        }}
+                      >
+                        Clear filters
+                      </button>
+                    }
+                  >
+                    <label className="inc-field" htmlFor="incubator-search">
+                      Search scanner or market
+                      <input
+                        id="incubator-search"
+                        className="input"
+                        type="search"
+                        value={search}
+                        placeholder="Name, ID or symbol"
+                        onChange={(e) => {
+                          set({ q: e.target.value, symbol: null }, true)
+                          resetLimits()
+                        }}
+                      />
                     </label>
-                    <label className="inc-field" htmlFor="incubator-timeframe">Timeframe
-                      <select id="incubator-timeframe" aria-label="Timeframe" className="input" value={timeframe} onChange={(e) => { set({ tf: e.target.value === 'all' ? null : e.target.value }); resetLimits() }}>
+                    <label className="inc-field" htmlFor="incubator-timeframe">
+                      Timeframe
+                      <select
+                        id="incubator-timeframe"
+                        aria-label="Timeframe"
+                        className="input"
+                        value={timeframe}
+                        onChange={(e) => {
+                          set({ tf: e.target.value === 'all' ? null : e.target.value })
+                          resetLimits()
+                        }}
+                      >
                         <option value="all">All timeframes</option>
-                        {timeframes.map((tf) => <option key={tf} value={tf}>{tf}</option>)}
+                        {timeframes.map((tf) => (
+                          <option key={tf} value={tf}>
+                            {tf}
+                          </option>
+                        ))}
                       </select>
                     </label>
                   </Toolbar>
-                  <p className="muted small" role="status">{matchingCohorts.length} of {cohorts.length} shadow {byCohort ? 'cohorts' : 'pairs'} · {matchingCandidates.length} of {candidates.length} candidates. Filters apply to the Shadow book and Candidates tabs only; account and proposal totals stay unchanged.{byCohort ? ' Matching cohorts keep all their markets so their gate evidence stays intact.' : ''}</p>
+                  <p className="muted small" role="status">
+                    {matchingCohorts.length} of {cohorts.length} shadow {byCohort ? 'cohorts' : 'pairs'} ·{' '}
+                    {matchingCandidates.length} of {candidates.length} candidates · {matchingLive.length} of{' '}
+                    {live.length} account allocations. Filters narrow these lists; headline totals and gate
+                    evidence stay unchanged.
+                    {byCohort
+                      ? ' Matching cohorts keep all their markets so their gate evidence stays intact.'
+                      : ''}
+                  </p>
                 </div>
               )}
 
               <TabPanel idPrefix="inc" id="account" value={tab}>
-              <Panel title={<span>In the account ({matchingLive.length} / {live.length}) <BookBadge book="account" generic /></span>}>
-                {matchingLive.length === 0 ? <EmptyState title={live.length ? 'No account allocations match this view.' : 'The incubator has not synced the fleet yet.'} /> : (
-                  <div className="table-wrap">
-                    <table className="table">
-                      <caption className="sr-only">Live pairs and their recent record</caption>
-                      <thead><tr><th scope="col">Scanner</th><th scope="col">Market</th><th scope="col">Live record</th><th scope="col" title="Entry signals in the last 14 days: opened, or the gate that refused them (decision 112)">Signals 14d</th><th scope="col" title="The demotion clocks: days the market has been out, days since the last account trade, cost-rule starvation">Clock</th><th scope="col">Health</th><th scope="col"><span className="sr-only">Actions</span></th></tr></thead>
-                      <tbody>
-                        {matchingLive.map((p) => (
-                          <tr key={p.id}>
-                            <td><Link to={`/scanners/${p.scannerId}`}>{p.scannerName}</Link></td>
-                            <td className="mono">{p.symbol} · {p.tf}{p.market && !p.market.allowed && <> <Pill tone="warn">market out</Pill></>}{p.screen && !p.screen.provenance && <> <Pill tone="muted" title="Admitted on a screen from before decision 201: it records no source, reading or policy hash, so it cannot show it measured the strategy traded today. Its live record is the evidence.">legacy screen</Pill></>}</td>
-                            <td className="small">{p.stats ? `${p.stats.trades} trades · PF ${pf(p.stats.pfR)} · ${r(p.stats.netR)} · win ${p.stats.winRatePct.toFixed(0)}%` : '—'}
-                              {p.stats && p.stats.trades > 0 && p.stats.avgLossR ? <span className="muted" title="Decision 186: the payoff shape — average winner over average loser, and the share of trades that ever reached +1R"> · W/L {(p.stats.avgWinR! / p.stats.avgLossR).toFixed(2)}{p.stats.reached1RPct !== undefined ? ` · +1R ${p.stats.reached1RPct.toFixed(0)}%` : ''}</span> : null}</td>
-                            <td className="small"><Funnel f={p.funnel} pair={p} /></td>
-                            <td className="small"><Clocks p={p} cfg={d.config.demote} now={now} /></td>
-                            <td className="small">{(p.stats?.trades ?? 0) < d.config.demote.minTrades ? <span className="muted">collecting ({p.stats?.trades ?? 0}/{d.config.demote.minTrades})</span> : <Pill tone="muted" title="Enough closed trades for the demotion check; this is not a promotion verdict">sample collected</Pill>}</td>
-                            <td className="num">{auth.isAdmin && <button className="btn btn-xs" onClick={() => setConfirm({ pair: p, action: 'demote' })}>To shadow</button>}</td>
+                <Section
+                  variant="panel"
+                  title={
+                    <span>
+                      In the account ({matchingLive.length} / {live.length}) <AccountBadge generic />
+                    </span>
+                  }
+                >
+                  {matchingLive.length === 0 ? (
+                    <EmptyState
+                      title={
+                        live.length
+                          ? 'No account allocations match this view.'
+                          : 'The incubator has not synced the fleet yet.'
+                      }
+                    />
+                  ) : (
+                    <div className="table-wrap">
+                      <table className="table">
+                        <caption className="sr-only">Live pairs and their recent record</caption>
+                        <thead>
+                          <tr>
+                            <th scope="col">Scanner</th>
+                            <th scope="col">Market</th>
+                            <th scope="col">Live record</th>
+                            <th
+                              scope="col"
+                              title="Entry signals in the last 14 days: opened, or the gate that refused them (decision 112)"
+                            >
+                              Signals 14d
+                            </th>
+                            <th
+                              scope="col"
+                              title="The demotion clocks: days the market has been out, days since the last account trade, cost-rule starvation"
+                            >
+                              Clock
+                            </th>
+                            <th scope="col">Health</th>
+                            <th scope="col">
+                              <span className="sr-only">Actions</span>
+                            </th>
                           </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-              </Panel>
+                        </thead>
+                        <tbody>
+                          {matchingLive.map((p) => (
+                            <tr key={p.id}>
+                              <td>
+                                <Link to={`/scanners/${p.scannerId}`}>
+                                  {p.scannerName}
+                                  {ambiguousNames.has(p.scannerName) && (
+                                    <span className="small muted"> · {p.scannerId}</span>
+                                  )}
+                                </Link>
+                              </td>
+                              <td className="mono">
+                                {p.symbol} · {p.tf}
+                                {p.market && !p.market.allowed && (
+                                  <>
+                                    {' '}
+                                    <Pill tone="warn">market out</Pill>
+                                  </>
+                                )}
+                                {p.screen && !p.screen.provenance && (
+                                  <>
+                                    {' '}
+                                    <Pill
+                                      tone="muted"
+                                      title="Admitted on a screen from before decision 201: it records no source, reading or policy hash, so it cannot show it measured the strategy traded today. Its live record is the evidence."
+                                    >
+                                      legacy screen
+                                    </Pill>
+                                  </>
+                                )}
+                              </td>
+                              <td className="small">
+                                {p.stats
+                                  ? `${p.stats.trades} trades · PF ${pf(p.stats.pfR)} · ${r(p.stats.netR)} · win ${p.stats.winRatePct.toFixed(0)}%`
+                                  : '—'}
+                                {p.stats && p.stats.trades > 0 && p.stats.avgLossR ? (
+                                  <span
+                                    className="muted"
+                                    title="Decision 186: the payoff shape — average winner over average loser, and the share of trades that ever reached +1R"
+                                  >
+                                    {' '}
+                                    · W/L {(p.stats.avgWinR! / p.stats.avgLossR).toFixed(2)}
+                                    {p.stats.reached1RPct !== undefined
+                                      ? ` · +1R ${p.stats.reached1RPct.toFixed(0)}%`
+                                      : ''}
+                                  </span>
+                                ) : null}
+                              </td>
+                              <td className="small">
+                                <Funnel f={p.funnel} pair={p} />
+                              </td>
+                              <td className="small">
+                                <Clocks p={p} cfg={d.config.demote} now={now} />
+                              </td>
+                              <td className="small">
+                                {(p.stats?.trades ?? 0) < d.config.demote.minTrades ? (
+                                  <span className="muted">
+                                    collecting ({p.stats?.trades ?? 0}/{d.config.demote.minTrades})
+                                  </span>
+                                ) : (
+                                  <Pill
+                                    tone="muted"
+                                    title="Enough closed trades for the demotion check; this is not a promotion verdict"
+                                  >
+                                    sample collected
+                                  </Pill>
+                                )}
+                              </td>
+                              <td className="num">
+                                {auth.isAdmin && (
+                                  <button
+                                    className="btn btn-xs"
+                                    onClick={() => setConfirm({ pair: p, action: 'demote' })}
+                                  >
+                                    To shadow
+                                  </button>
+                                )}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </Section>
               </TabPanel>
 
               <TabPanel idPrefix="inc" id="shadow" value={tab}>
                 <div className="stack">
-                  <Disclosure id="restored-cells" title="Restored cell evaluation" hint="Prospective evidence and current blockers"><RestorationPanel pairs={d.pairs} /></Disclosure>
-              <Panel title={<span>Brewing in the shadow book ({shadow.length}) <BookBadge book="shadow" short /></span>} right={<span className="muted small">{byCohort ? `grouped by cohort, the unit the gate judges · a verdict needs ${gateMinimums(g)} and the market breadth requirements` : `one row per pair, the unit the gate judges · a verdict needs ${gateMinimums(g)}`}</span>}>
-                {matchingCohorts.length === 0 ? <EmptyState title={shadow.length ? "No shadow pairs match these filters." : "No shadow pairs yet."} hint={shadow.length ? "Clear the search or choose another timeframe." : "The daily screen admits its best candidates here."} /> : (
-                  <div className="table-wrap">
-                    <table className="table">
-                      <caption className="sr-only">Shadow pairs and their progress toward the promotion gate</caption>
-                      <thead><tr><th scope="col">{byCohort ? 'Cohort · market' : 'Pair'}</th><th scope="col">Progress</th><th scope="col" title="Entry signals in the last 14 days: opened, or the gate that refused them (decision 112)">Signals 14d</th><th scope="col">Gate</th><th scope="col">Open</th></tr></thead>
-                      <tbody>
-                        {matchingCohorts.slice(0, shadowLimit).map((c) => (
-                          <Fragment key={c.k}>
-                            <tr className="cohort-row">
-                              <th scope="rowgroup" colSpan={1}><Link to={`/scanners/${c.scannerId}`} className="strong">{c.scanner}</Link> <span className="mono muted">{c.tf}</span> <span className="muted small">· {byCohort ? `${c.members.length} markets` : <span className="mono">{c.symbol}</span>}</span>{!byCohort && c.members[0].stage === 'proposed' && <> <Pill tone="ok">proposed</Pill></>}{!byCohort && c.members[0].market && !c.members[0].market.allowed && <> <Pill tone="warn" title={c.members[0].market.reasons.join(' · ')}>market out</Pill></>}{c.gate?.strategyComparison && <> <Pill tone={c.gate.strategyComparison.preferred === 'script' ? 'ok' : 'muted'} title={c.gate.strategyComparison.reason}>{c.gate.strategyComparison.preferred === 'script' ? 'own exits' : 'fleet exits'}</Pill></>}</th>
-                              <td className="small"><Need have={c.trades} need={c.gg.minTrades} /> trades · <Need have={c.days} need={c.gg.minDays} /> days · <span className={`mono ${c.trades ? (c.avgR >= 0 ? 'gain' : 'loss') : 'muted'}`}>{c.trades ? fmtR(c.avgR) : '–'}</span>/trade · {`PF ${pf(c.gate?.stats?.pfR)}`}<div className="muted">Current gate evidence</div>{!byCohort && c.members[0].paperCopy && <div title={c.members[0].paperCopy.reason??'Evidence and turnover pass; fresh signal and entry checks still required'}>{c.members[0].paperCopy.eligible ? 'Paper-copy candidate' : c.members[0].paperCopy.reason}</div>}</td>
-                              <td className="small muted">{c.members.reduce((a, p) => a + (p.funnel?.entries ?? 0), 0)} signals · {c.members.reduce((a, p) => a + (p.funnel?.opened ?? 0), 0)} opened</td>
-                              <td className="small"><Pill tone={c.gate?.decision === 'propose' ? 'ok' : c.gate?.decision === 'retire' ? 'danger' : 'muted'}>{c.gate?.decision ?? 'brewing'}</Pill> <span className="muted mono" title="Estimated time to trade-count and age minimums only, at the observed trade rate. Profitability and other gate requirements must also pass.">{c.gate?.decision === 'propose' ? 'gate passed' : c.eta === Infinity ? 'collecting evidence' : c.eta <= 0 ? 'sample minimums met' : `sample in ~${Math.ceil(c.eta)}d`}</span>{c.gate?.decision === 'brewing' && c.gate.reasons.length > 0 && <div className="muted">{c.gate.reasons.join('; ')}</div>}</td>
-                              <td className="mono">{c.members.reduce((a, p) => a + (p.openShadow ?? 0), 0) || ''}</td>
+                  <Disclosure
+                    id="restored-cells"
+                    title="Restored cell evaluation"
+                    hint="Prospective evidence and current blockers"
+                  >
+                    <RestorationPanel pairs={d.pairs} />
+                  </Disclosure>
+                  <Section
+                    variant="panel"
+                    title={
+                      <span>
+                        Brewing in the shadow book ({shadow.length}) <BookBadge book="shadow" short />
+                      </span>
+                    }
+                    actions={
+                      <span className="muted small">
+                        {byCohort
+                          ? `grouped by cohort, the unit the gate judges · a verdict needs ${gateMinimums(g)} and the market breadth requirements`
+                          : `one row per pair, the unit the gate judges · a verdict needs ${gateMinimums(g)}`}
+                      </span>
+                    }
+                  >
+                    {matchingCohorts.length === 0 ? (
+                      <EmptyState
+                        title={
+                          shadow.length ? 'No shadow pairs match these filters.' : 'No shadow pairs yet.'
+                        }
+                        hint={
+                          shadow.length
+                            ? 'Clear the search or choose another timeframe.'
+                            : 'The daily screen admits its best candidates here.'
+                        }
+                      />
+                    ) : (
+                      <div className="table-wrap">
+                        <table className="table">
+                          <caption className="sr-only">
+                            Shadow pairs and their progress toward the promotion gate
+                          </caption>
+                          <thead>
+                            <tr>
+                              <th scope="col">{byCohort ? 'Cohort · market' : 'Pair'}</th>
+                              <th scope="col">Progress</th>
+                              <th
+                                scope="col"
+                                title="Entry signals in the last 14 days: opened, or the gate that refused them (decision 112)"
+                              >
+                                Signals 14d
+                              </th>
+                              <th scope="col">Gate</th>
+                              <th scope="col">Open</th>
                             </tr>
-                            {byCohort && c.members.map((p) => (
-                              <tr key={p.id} className="cohort-member">
-                                <td className="mono">{p.symbol}{p.stage === 'proposed' && <> <Pill tone="ok">proposed</Pill></>}{p.market && !p.market.allowed && <> <Pill tone="warn" title={p.market.reasons.join(' · ')}>market out</Pill></>}</td>
-                                <td><Evidence s={p.stats} g={c.gg} /></td>
-                                <td className="small"><Funnel f={p.funnel} pair={p} /></td>
-                                <td className="muted small">{p.gate?.market ? `${p.gate.market.trades} trades · ${r(p.gate.market.avgR)}` : ''}</td>
-                                <td className="mono">{p.openShadow || ''}</td>
-                              </tr>
+                          </thead>
+                          <tbody>
+                            {matchingCohorts.slice(0, shadowLimit).map((c) => (
+                              <Fragment key={c.k}>
+                                <tr className="cohort-row">
+                                  <th scope="rowgroup" colSpan={1}>
+                                    <Link to={`/scanners/${c.scannerId}`} className="strong">
+                                      {c.scanner}
+                                      {ambiguousNames.has(c.scanner) && (
+                                        <span className="small muted"> · {c.scannerId}</span>
+                                      )}
+                                    </Link>{' '}
+                                    <span className="mono muted">{c.tf}</span>{' '}
+                                    <span className="muted small">
+                                      ·{' '}
+                                      {byCohort ? (
+                                        `${c.members.length} markets`
+                                      ) : (
+                                        <span className="mono">{c.symbol}</span>
+                                      )}
+                                    </span>
+                                    {!byCohort && c.members[0].stage === 'proposed' && (
+                                      <>
+                                        {' '}
+                                        <Pill tone="ok">proposed</Pill>
+                                      </>
+                                    )}
+                                    {!byCohort && c.members[0].market && !c.members[0].market.allowed && (
+                                      <>
+                                        {' '}
+                                        <Pill tone="warn" title={c.members[0].market.reasons.join(' · ')}>
+                                          market out
+                                        </Pill>
+                                      </>
+                                    )}
+                                    {c.gate?.strategyComparison && (
+                                      <>
+                                        {' '}
+                                        <Pill
+                                          tone={
+                                            c.gate.strategyComparison.preferred === 'script' ? 'ok' : 'muted'
+                                          }
+                                          title={c.gate.strategyComparison.reason}
+                                        >
+                                          {c.gate.strategyComparison.preferred === 'script'
+                                            ? 'own exits'
+                                            : 'fleet exits'}
+                                        </Pill>
+                                      </>
+                                    )}
+                                  </th>
+                                  <td className="small">
+                                    <Need have={c.trades} need={c.gg.minTrades} /> trades ·{' '}
+                                    <Need have={c.days} need={c.gg.minDays} /> days ·{' '}
+                                    <span
+                                      className={`mono ${c.trades ? (c.avgR >= 0 ? 'gain' : 'loss') : 'muted'}`}
+                                    >
+                                      {c.trades ? fmtR(c.avgR) : '–'}
+                                    </span>
+                                    /trade · {`PF ${pf(c.gate?.stats?.pfR)}`}
+                                    <div className="muted">Current gate evidence</div>
+                                    {!byCohort && c.members[0].paperCopy && (
+                                      <div
+                                        title={
+                                          c.members[0].paperCopy.reason ??
+                                          'Evidence and turnover pass; fresh signal and entry checks still required'
+                                        }
+                                      >
+                                        {c.members[0].paperCopy.eligible
+                                          ? 'Paper-copy candidate'
+                                          : c.members[0].paperCopy.reason}
+                                      </div>
+                                    )}
+                                  </td>
+                                  <td className="small muted">
+                                    {c.members.some((p) => p.funnel?.historyCapped) ? '≥' : ''}
+                                    {c.members.reduce((a, p) => a + (p.funnel?.entries ?? 0), 0)} signals ·{' '}
+                                    {c.members.reduce((a, p) => a + (p.funnel?.opened ?? 0), 0)} opened
+                                    {c.members.some((p) => p.funnel?.historyCapped) && (
+                                      <div className="warn small">
+                                        Retained sample only; older signals are not included.
+                                      </div>
+                                    )}
+                                  </td>
+                                  <td className="small">
+                                    <Pill
+                                      tone={
+                                        c.gate?.decision === 'propose'
+                                          ? 'ok'
+                                          : c.gate?.decision === 'retire'
+                                            ? 'danger'
+                                            : 'muted'
+                                      }
+                                    >
+                                      {c.gate?.decision ?? 'brewing'}
+                                    </Pill>{' '}
+                                    <span
+                                      className="muted mono"
+                                      title="Estimated time to trade-count and age minimums only, at the observed trade rate. Profitability and other gate requirements must also pass."
+                                    >
+                                      {c.gate?.decision === 'propose'
+                                        ? 'gate passed'
+                                        : c.eta === Infinity
+                                          ? 'collecting evidence'
+                                          : c.eta <= 0
+                                            ? 'sample minimums met'
+                                            : `sample in ~${Math.ceil(c.eta)}d`}
+                                    </span>
+                                    {c.gate?.decision === 'brewing' && c.gate.reasons.length > 0 && (
+                                      <div className="muted">{c.gate.reasons.join('; ')}</div>
+                                    )}
+                                  </td>
+                                  <td className="mono">
+                                    {c.members.reduce((a, p) => a + (p.openShadow ?? 0), 0) || ''}
+                                  </td>
+                                </tr>
+                                {byCohort &&
+                                  c.members.map((p) => (
+                                    <tr key={p.id} className="cohort-member">
+                                      <td className="mono">
+                                        {p.symbol}
+                                        {p.stage === 'proposed' && (
+                                          <>
+                                            {' '}
+                                            <Pill tone="ok">proposed</Pill>
+                                          </>
+                                        )}
+                                        {p.market && !p.market.allowed && (
+                                          <>
+                                            {' '}
+                                            <Pill tone="warn" title={p.market.reasons.join(' · ')}>
+                                              market out
+                                            </Pill>
+                                          </>
+                                        )}
+                                      </td>
+                                      <td>
+                                        <Evidence s={p.stats} g={c.gg} />
+                                      </td>
+                                      <td className="small">
+                                        <Funnel f={p.funnel} pair={p} />
+                                      </td>
+                                      <td className="muted small">
+                                        {p.gate?.market
+                                          ? `${p.gate.market.trades} trades · ${r(p.gate.market.avgR)}`
+                                          : ''}
+                                      </td>
+                                      <td className="mono">{p.openShadow || ''}</td>
+                                    </tr>
+                                  ))}
+                              </Fragment>
                             ))}
-                          </Fragment>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-                {matchingCohorts.length > 0 && <div className="incubator-paging"><span className="muted small">Showing {Math.min(shadowLimit, matchingCohorts.length)} of {matchingCohorts.length} {byCohort ? 'cohorts' : 'pairs'}</span>{shadowLimit < matchingCohorts.length && <button className="btn btn-sm" onClick={() => setShadowLimit((n) => n + 50)}>Show 50 more shadow groups</button>}{shadowLimit > 50 && <button className="btn btn-sm" onClick={() => setShadowLimit(50)}>Show fewer shadow groups</button>}</div>}
-              </Panel>
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                    {matchingCohorts.length > 0 && (
+                      <div className="incubator-paging">
+                        <span className="muted small">
+                          Showing {Math.min(shadowLimit, matchingCohorts.length)} of {matchingCohorts.length}{' '}
+                          {byCohort ? 'cohorts' : 'pairs'}
+                        </span>
+                        {shadowLimit < matchingCohorts.length && (
+                          <button className="btn btn-sm" onClick={() => setShadowLimit((n) => n + 50)}>
+                            Show 50 more shadow groups
+                          </button>
+                        )}
+                        {shadowLimit > 50 && (
+                          <button className="btn btn-sm" onClick={() => setShadowLimit(50)}>
+                            Show fewer shadow groups
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </Section>
                 </div>
               </TabPanel>
 
               <TabPanel idPrefix="inc" id="candidates" value={tab}>
-              <Panel title={`Candidates from the screen (${candidates.length})`}>
-                <p className="small muted">Admission ranks screen quality with a bounded discount for slow evidence collection. Estimated days use historical trade frequency, not a promise of future fills. Promotion standards and reserved slots are unchanged.</p>
-                {matchingCandidates.length === 0 ? <EmptyState title={candidates.length ? "No candidates match these filters." : "No candidates waiting."} hint={candidates.length ? "Clear the search or choose another timeframe." : `The screen passes a pair with ≥${d.config.screen.minTrades} backtest trades, PF ≥ ${d.config.screen.minProfitFactor}, ≥${d.config.screen.minWindowsUp}/8 windows up and a profit at ${d.config.screen.stressBps} bps of cost. It is a filter only: luck passes it too, which is why candidates must still prove themselves in the shadow book.`} /> : (
-                  <div className="table-wrap">
-                    <table className="table">
-                      <caption className="sr-only">Pairs that passed the backtest screen</caption>
-                      <thead><tr><th scope="col">Scanner</th><th scope="col">Market</th><th scope="col">Trades</th><th scope="col">PF</th><th scope="col">Windows up</th><th scope="col">Avg R</th><th scope="col">Evidence estimate / rank score</th><th scope="col">Screened</th></tr></thead>
-                      <tbody>
-                        {matchingCandidates.slice(0, candidateLimit).map((p) => (
-                          <tr key={p.id}>
-                            <td><Link to={`/scanners/${p.scannerId}`}>{p.scannerName}</Link></td>
-                            <td className="mono">{p.symbol} · {p.tf}</td>
-                            <td className="mono">{p.screen!.trades}</td>
-                            <td className="mono">{fmtNum(p.screen!.profitFactor)}</td>
-                            <td className="mono">{p.screen!.windowsUp}/8</td>
-                            <td className="mono">{r(p.screen!.avgR)}</td>
-                            <td className="mono small">{p.admissionEvidence?.estimatedDays != null ? `${p.admissionEvidence.estimatedDays.toFixed(0)} d for ${p.admissionEvidence.requiredTrades} trades` : 'Unknown frequency'}<div>{p.admissionEvidence?.score.toFixed(2) ?? '—'}</div></td>
-                            <td className="muted small">{timeAgo(p.screen!.at)}{p.rotationUntil && p.rotationUntil > now && <div><Pill tone="muted">Rotation cooldown</Pill> until {new Date(p.rotationUntil).toLocaleString()}</div>}</td>
+                <Section variant="panel" title={`Candidates from the screen (${candidates.length})`}>
+                  <p className="small muted">
+                    Admission ranks screen quality with a bounded discount for slow evidence collection.
+                    Estimated days use historical trade frequency, not a promise of future fills. Promotion
+                    standards and reserved slots are unchanged.
+                  </p>
+                  {matchingCandidates.length === 0 ? (
+                    <EmptyState
+                      title={
+                        candidates.length ? 'No candidates match these filters.' : 'No candidates waiting.'
+                      }
+                      hint={
+                        candidates.length
+                          ? 'Clear the search or choose another timeframe.'
+                          : `The screen passes a pair with ≥${d.config.screen.minTrades} backtest trades, PF ≥ ${d.config.screen.minProfitFactor}, ≥${d.config.screen.minWindowsUp}/8 windows up and a profit at ${d.config.screen.stressBps} bps of cost. It is a filter only: luck passes it too, which is why candidates must still prove themselves in the shadow book.`
+                      }
+                    />
+                  ) : (
+                    <div className="table-wrap">
+                      <table className="table">
+                        <caption className="sr-only">Pairs that passed the backtest screen</caption>
+                        <thead>
+                          <tr>
+                            <th scope="col">Scanner</th>
+                            <th scope="col">Market</th>
+                            <th scope="col">Trades</th>
+                            <th scope="col">PF</th>
+                            <th scope="col">Windows up</th>
+                            <th scope="col">Avg R</th>
+                            <th scope="col">Evidence estimate / rank score</th>
+                            <th scope="col">Screened</th>
                           </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-                {matchingCandidates.length > 0 && <div className="incubator-paging"><span className="muted small">Showing {Math.min(candidateLimit, matchingCandidates.length)} of {matchingCandidates.length} candidates</span>{candidateLimit < matchingCandidates.length && <button className="btn btn-sm" onClick={() => setCandidateLimit((n) => n + 50)}>Show 50 more candidates</button>}{candidateLimit > 50 && <button className="btn btn-sm" onClick={() => setCandidateLimit(50)}>Show fewer candidates</button>}</div>}
-              </Panel>
+                        </thead>
+                        <tbody>
+                          {matchingCandidates.slice(0, candidateLimit).map((p) => (
+                            <tr key={p.id}>
+                              <td>
+                                <Link to={`/scanners/${p.scannerId}`}>
+                                  {p.scannerName}
+                                  {ambiguousNames.has(p.scannerName) && (
+                                    <span className="small muted"> · {p.scannerId}</span>
+                                  )}
+                                </Link>
+                              </td>
+                              <td className="mono">
+                                {p.symbol} · {p.tf}
+                              </td>
+                              <td className="mono">{p.screen!.trades}</td>
+                              <td className="mono">{fmtNum(p.screen!.profitFactor)}</td>
+                              <td className="mono">{p.screen!.windowsUp}/8</td>
+                              <td className="mono">{r(p.screen!.avgR)}</td>
+                              <td className="mono small">
+                                {p.admissionEvidence?.estimatedDays != null
+                                  ? `${p.admissionEvidence.estimatedDays.toFixed(0)} d for ${p.admissionEvidence.requiredTrades} trades`
+                                  : 'Unknown frequency'}
+                                <div>{p.admissionEvidence?.score.toFixed(2) ?? '—'}</div>
+                              </td>
+                              <td className="muted small">
+                                {timeAgo(p.screen!.at)}
+                                {p.rotationUntil && p.rotationUntil > now && (
+                                  <div>
+                                    <Pill tone="muted">Rotation cooldown</Pill> until{' '}
+                                    {new Date(p.rotationUntil).toLocaleString()}
+                                  </div>
+                                )}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                  {matchingCandidates.length > 0 && (
+                    <div className="incubator-paging">
+                      <span className="muted small">
+                        Showing {Math.min(candidateLimit, matchingCandidates.length)} of{' '}
+                        {matchingCandidates.length} candidates
+                      </span>
+                      {candidateLimit < matchingCandidates.length && (
+                        <button className="btn btn-sm" onClick={() => setCandidateLimit((n) => n + 50)}>
+                          Show 50 more candidates
+                        </button>
+                      )}
+                      {candidateLimit > 50 && (
+                        <button className="btn btn-sm" onClick={() => setCandidateLimit(50)}>
+                          Show fewer candidates
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </Section>
               </TabPanel>
 
               <TabPanel idPrefix="inc" id="experiments" value={tab}>
@@ -272,48 +894,166 @@ export default function Incubator() {
 
               <TabPanel idPrefix="inc" id="operations" value={tab}>
                 <div className="stack">
-              <Panel title="Daily hunt" right={<span className="muted small">{d.lastHunt?.auto ? 'auto-promotion ON: gate proposals go live within the weekly and fleet limits' : 'auto-promotion off: proposals wait for your click'}</span>}>
-                {!d.lastHunt ? (
-                  <p className="muted small">No hunt yet. The screen runs daily; when it finishes the shadow book is judged here and, with auto-promotion on, gate proposals go live.</p>
-                ) : (
-                  <div className="small">
-                    <p><b>{timeAgo(d.lastHunt.at)}</b> by {d.lastHunt.actor}{d.lastHunt.screen ? <> · screen slice {d.lastHunt.screen.slice}: {d.lastHunt.screen.runs} runs, {d.lastHunt.screen.passed} passed, {d.lastHunt.screen.newCandidates} new candidates, {d.lastHunt.screen.quarantined} quarantined, {d.lastHunt.screen.minutes} min</> : null}</p>
-                    <p>admitted to shadow <b>{d.lastHunt.admitted.length}</b> · proposed <b>{d.lastHunt.proposed.length}</b> · promoted <b className={d.lastHunt.promoted.length ? 'gain' : ''}>{d.lastHunt.promoted.length}</b> · retired {d.lastHunt.retired.length} · brewing {d.lastHunt.brewing} · free slots {d.lastHunt.free}</p>
-                    {d.lastHunt.promoted.map((p) => <p key={p} className="mono gain">+ LIVE {p}</p>)}
-                    {d.lastHunt.blocked.map((b) => <p key={b} className="mono muted">! {b}</p>)}
-                    {d.lastHunt.admitted.slice(0, 8).map((p) => <p key={p} className="mono muted">→ shadow {p}</p>)}
-                  </div>
-                )}
-              </Panel>
-                  {d.rotation && <Panel title="Research rotation"><p className="small muted">{d.rotation.enabled ? `${d.rotation.usedToday}/${d.rotation.maxPerDay} slots rotated today (UTC).` : 'Rotation is off.'} Only cells with no filled trade and recent successful scans can rotate. Open positions, pending orders and forward trade evidence are protected. Rotation returns a cell to candidates with a cooldown; it is not a losing verdict.</p>{d.rotation.last.length > 0 && <div className="small">{d.rotation.last.slice(-5).reverse().map(x => {const old=d.pairs.find(p=>p.id===x.out), next=d.pairs.find(p=>p.id===x.in);return <p key={`${x.at}-${x.out}`}><span className="muted">{timeAgo(x.at)}</span> · {old ? `${old.scannerName} ${old.symbol} ${old.tf}` : `Cell ${x.out}`} → {next ? `${next.scannerName} ${next.symbol} ${next.tf}` : `Cell ${x.in}`}</p>})}</div>}</Panel>}
-              <Panel title="History">
-                {d.events.length === 0 ? <EmptyState title="No moves yet." /> : (
-                  <ul className="plain-list small">
-                    {d.events.slice(0, 60).map((e) => (
-                      <li key={e.id}>
-                        <span className="muted mono">{new Date(e.at).toLocaleString()}</span> · <span className="mono">{e.scannerId} {e.symbol}</span> · {e.from ?? 'new'} → <strong>{e.to}</strong> <span className="muted">by {e.actor}</span>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </Panel>
+                  <Section
+                    variant="panel"
+                    title="Daily hunt"
+                    actions={
+                      <span className="muted small">
+                        {d.lastHunt?.auto
+                          ? 'auto-promotion ON: gate proposals go live within the weekly and fleet limits'
+                          : 'auto-promotion off: proposals wait for your click'}
+                      </span>
+                    }
+                  >
+                    {!d.lastHunt ? (
+                      <p className="muted small">
+                        No hunt yet. The screen runs daily; when it finishes the shadow book is judged here
+                        and, with auto-promotion on, gate proposals go live.
+                      </p>
+                    ) : (
+                      <div className="small">
+                        <p>
+                          <b>{timeAgo(d.lastHunt.at)}</b> by {d.lastHunt.actor}
+                          {d.lastHunt.screen ? (
+                            <>
+                              {' '}
+                              · screen slice {d.lastHunt.screen.slice}: {d.lastHunt.screen.runs} runs,{' '}
+                              {d.lastHunt.screen.passed} passed, {d.lastHunt.screen.newCandidates} new
+                              candidates, {d.lastHunt.screen.quarantined} quarantined,{' '}
+                              {d.lastHunt.screen.minutes} min
+                            </>
+                          ) : null}
+                        </p>
+                        <p>
+                          admitted to shadow <b>{d.lastHunt.admitted.length}</b> · proposed{' '}
+                          <b>{d.lastHunt.proposed.length}</b> · promoted{' '}
+                          <b className={d.lastHunt.promoted.length ? 'gain' : ''}>
+                            {d.lastHunt.promoted.length}
+                          </b>{' '}
+                          · retired {d.lastHunt.retired.length} · brewing {d.lastHunt.brewing} · free slots{' '}
+                          {d.lastHunt.free}
+                        </p>
+                        {d.lastHunt.promoted.map((p) => (
+                          <p key={p} className="mono gain">
+                            + LIVE {p}
+                          </p>
+                        ))}
+                        {d.lastHunt.blocked.map((b) => (
+                          <p key={b} className="mono muted">
+                            ! {b}
+                          </p>
+                        ))}
+                        {d.lastHunt.admitted.slice(0, 8).map((p) => (
+                          <p key={p} className="mono muted">
+                            → shadow {p}
+                          </p>
+                        ))}
+                      </div>
+                    )}
+                  </Section>
+                  {d.rotation && (
+                    <Section variant="panel" title="Research rotation">
+                      <p className="small muted">
+                        {d.rotation.enabled
+                          ? `${d.rotation.usedToday}/${d.rotation.maxPerDay} slots rotated today (UTC).`
+                          : 'Rotation is off.'}{' '}
+                        Only cells with no filled trade and recent successful scans can rotate. Open
+                        positions, pending orders and forward trade evidence are protected. Rotation returns a
+                        cell to candidates with a cooldown; it is not a losing verdict.
+                      </p>
+                      {d.rotation.last.length > 0 && (
+                        <div className="small">
+                          {d.rotation.last
+                            .slice(-5)
+                            .reverse()
+                            .map((x) => {
+                              const old = d.pairs.find((p) => p.id === x.out),
+                                next = d.pairs.find((p) => p.id === x.in)
+                              return (
+                                <p key={`${x.at}-${x.out}`}>
+                                  <span className="muted">{timeAgo(x.at)}</span> ·{' '}
+                                  {old ? `${old.scannerName} ${old.symbol} ${old.tf}` : `Cell ${x.out}`} →{' '}
+                                  {next ? `${next.scannerName} ${next.symbol} ${next.tf}` : `Cell ${x.in}`}
+                                </p>
+                              )
+                            })}
+                        </div>
+                      )}
+                    </Section>
+                  )}
+                  <Section variant="panel" title="History">
+                    {d.events.length === 0 ? (
+                      <EmptyState title="No moves yet." />
+                    ) : (
+                      <ul className="plain-list small">
+                        {d.events.slice(0, 60).map((e) => (
+                          <li key={e.id}>
+                            <span className="muted mono">{new Date(e.at).toLocaleString()}</span> ·{' '}
+                            <span className="mono">
+                              {e.scannerId} {e.symbol}
+                            </span>{' '}
+                            · {e.from ?? 'new'} → <strong>{e.to}</strong>{' '}
+                            <span className="muted">by {e.actor}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </Section>
                   <Section title="Research tools" hint="Opened on demand; each loads its own data">
-                    <Disclosure id="screen-queue" title="Screening queue" hint="Candidate coverage and screening progress"><ScreenQueuePanel /></Disclosure>
-                    <Disclosure id="overlap" title="Scanner overlap" hint="Find overlapping research cells"><OverlapPanel /></Disclosure>
-                    <Disclosure id="incubator-evidence" title="Evidence and execution reliability" hint="Policy versions, quarantine counts and reserved margin"><PolicyHealthPanel /></Disclosure>
-                    <Disclosure id="incubator-contributions" title="Scanner contributions" hint="See which scanner families supply paper and shadow activity"><ScannerContributions compact /></Disclosure>
+                    <Disclosure
+                      id="screen-queue"
+                      title="Screening queue"
+                      hint="Candidate coverage and screening progress"
+                    >
+                      <ScreenQueuePanel />
+                    </Disclosure>
+                    <Disclosure id="overlap" title="Scanner overlap" hint="Find overlapping research cells">
+                      <OverlapPanel />
+                    </Disclosure>
+                    <Disclosure
+                      id="incubator-evidence"
+                      title="Evidence and execution reliability"
+                      hint="Policy versions, quarantine counts and reserved margin"
+                    >
+                      <PolicyHealthPanel />
+                    </Disclosure>
+                    <Disclosure
+                      id="incubator-contributions"
+                      title="Scanner contributions"
+                      hint="See which scanner families supply paper and shadow activity"
+                    >
+                      <ScannerContributions compact />
+                    </Disclosure>
                   </Section>
                 </div>
               </TabPanel>
 
               <ConfirmDialog
                 open={confirm !== null}
-                title={confirm ? `Move ${confirm.pair.scannerName} on ${confirm.pair.symbol} ${confirm.pair.tf} to the shadow book?` : ''}
-                body={confirm && <p>The market leaves this scanner's live list now (the scanner is switched off when it was its last market). Open positions keep running their exits. The pair keeps trading in the shadow book and can be promoted again once it earns it.</p>}
+                title={
+                  confirm
+                    ? `Move ${confirm.pair.scannerName} on ${confirm.pair.symbol} ${confirm.pair.tf} to the shadow book?`
+                    : ''
+                }
+                body={
+                  confirm && (
+                    <p>
+                      The market leaves this scanner's live list now (the scanner is switched off when it was
+                      its last market). Open positions keep running their exits. The pair keeps trading in the
+                      shadow book and can be promoted again once it earns it.
+                    </p>
+                  )
+                }
                 confirmLabel="Move to shadow"
                 danger
                 busy={decide.isPending}
-                onConfirm={() => { if (confirm) decide.mutate({ id: confirm.pair.id, action: confirm.action }, { onSettled: () => setConfirm(null) }) }}
+                onConfirm={() => {
+                  if (confirm)
+                    decide.mutate(
+                      { id: confirm.pair.id, action: confirm.action },
+                      { onSettled: () => setConfirm(null) },
+                    )
+                }}
                 onCancel={() => setConfirm(null)}
               />
             </>

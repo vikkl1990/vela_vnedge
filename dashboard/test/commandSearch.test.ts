@@ -3,22 +3,47 @@ import assert from 'node:assert/strict'
 import { pushRecent, rankItems, scoreItem, type PaletteItem } from '../src/lib/commandSearch.ts'
 
 const items: PaletteItem[] = [
-  { id: 'p:overview', kind: 'page', title: 'Overview', subtitle: 'Trade', keywords: 'home dashboard', to: '/' },
+  {
+    id: 'p:overview',
+    kind: 'page',
+    title: 'Overview',
+    subtitle: 'Trade',
+    keywords: 'home dashboard',
+    to: '/',
+  },
   { id: 'p:signals', kind: 'page', title: 'Signals', subtitle: 'Trade', to: '/signals' },
   { id: 'p:scanners', kind: 'page', title: 'Scanners', subtitle: 'Research', to: '/scanners' },
   { id: 'a:theme', kind: 'action', title: 'Toggle light / dark theme', keywords: 'appearance colour' },
-  { id: 's:tic', kind: 'scanner', title: 'Trend Impulse Channels (Zeiierman)', subtitle: 'Zeiierman', to: '/scanners/trend-impulse-channels-zeiierman' },
-  { id: 's:ltm', kind: 'scanner', title: 'Liquidity Trail Matrix', subtitle: 'WillyAlgoTrader', to: '/scanners/liquidity-trail-matrix' },
+  {
+    id: 's:tic',
+    kind: 'scanner',
+    title: 'Trend Impulse Channels (Zeiierman)',
+    subtitle: 'Zeiierman',
+    to: '/scanners/trend-impulse-channels-zeiierman',
+  },
+  {
+    id: 's:ltm',
+    kind: 'scanner',
+    title: 'Liquidity Trail Matrix',
+    subtitle: 'WillyAlgoTrader',
+    to: '/scanners/liquidity-trail-matrix',
+  },
 ]
 
 test('an empty query lists pages and actions, not the scanner long tail', () => {
   const out = rankItems(items, '')
-  assert.deepEqual(out.map((i) => i.id), ['p:overview', 'p:signals', 'p:scanners', 'a:theme'])
+  assert.deepEqual(
+    out.map((i) => i.id),
+    ['p:overview', 'p:signals', 'p:scanners', 'a:theme'],
+  )
 })
 
 test('recent items lead an empty query and drop out when they no longer exist', () => {
   const out = rankItems(items, '', { recent: ['s:ltm', 'gone', 'p:signals'] })
-  assert.deepEqual(out.slice(0, 2).map((i) => i.id), ['s:ltm', 'p:signals'])
+  assert.deepEqual(
+    out.slice(0, 2).map((i) => i.id),
+    ['s:ltm', 'p:signals'],
+  )
   assert.equal(out.filter((i) => i.id === 'p:signals').length, 1)
 })
 
@@ -28,8 +53,14 @@ test('a title prefix beats a substring, and pages beat scanners on a tie', () =>
 })
 
 test('every token has to match, in any field, in any order', () => {
-  assert.deepEqual(rankItems(items, 'zeiierman impulse').map((i) => i.id), ['s:tic'])
-  assert.deepEqual(rankItems(items, 'willy trail').map((i) => i.id), ['s:ltm'])
+  assert.deepEqual(
+    rankItems(items, 'zeiierman impulse').map((i) => i.id),
+    ['s:tic'],
+  )
+  assert.deepEqual(
+    rankItems(items, 'willy trail').map((i) => i.id),
+    ['s:ltm'],
+  )
   assert.deepEqual(rankItems(items, 'impulse nonsense'), [])
 })
 

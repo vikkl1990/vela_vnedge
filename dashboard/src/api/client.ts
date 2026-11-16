@@ -1,43 +1,74 @@
-import type {ExecutionPlansView} from './executionPlans'
-import type {TradeMonitorView} from './tradeMonitor'
+import type { ScannerContractDetail, ScannerReadiness } from '../../../shared/scannerContracts'
 import { fetchJournalCsv } from '../lib/journalExport'
+import type { ContributionDetail, Contributions } from './contributions'
 import type { DeltaConnectionStatus, DeltaEnvironment } from './deltaConnection'
-import type {PairAgentsView} from './pairAgents'
-import type {Footprint, OrderFlowView} from './orderFlow'
-import type {Contributions, ContributionDetail} from './contributions'
-import type {ScannerReadiness, ScannerContractDetail} from '../../../shared/scannerContracts'
+import type { TelegramStatus, TelegramPairing } from './telegram'
+import type { ExecutionPlansView } from './executionPlans'
+import type { Footprint, OrderFlowView } from './orderFlow'
+import type { PairAgentsView } from './pairAgents'
+import type { TradeMonitorView } from './tradeMonitor'
 import type {
-  ReclaimTrialsView,
-  ExecutionStatus,
-  RiskState,
-  IncubatorPair,
-  IncubatorView,
-  ScannerIndexEntry,
+  AllocationAudit,
+  Analytics,
+  AuthStatus,
   BacktestResult,
   Candle,
   CandleQuery,
   Config,
   ConfigPatch,
+  ContextView,
+  DailyRow,
+  DuplicateGroup,
   EquityPoint,
+  ExecutionStatus,
+  GatesView,
   Health,
+  IncubatorPair,
+  IncubatorView,
+  Learning,
+  LibraryDetail,
+  LibraryList,
+  LockStudyView,
   LogEntry,
   LogLevel,
   Market,
+  MarketsToday,
+  Me,
+  MlScannerInsight,
+  MlSnapshot,
+  MlYardstick,
+  OpsMetricRow,
   Order,
+  OverlapCluster,
+  PathLevels,
+  PathPoint,
   Position,
+  ProfileRow,
+  RadarView,
+  ReclaimTrialsView,
+  RiskState,
+  Role,
+  RoleOption,
+  RunHealthRow,
   Scanner,
+  ScannerIndexEntry,
   ScannerOverlay,
   ScannerSource,
   ScannerUpdate,
+  ScreenJob,
+  ScreenQueueView,
+  Session,
+  ShareLink,
   Signal,
   SignalQuery,
   Stats,
+  TapeAuditView,
   Ticker,
+  TrackerView,
   Trade,
-  TradeQuery, TradePage, MlSnapshot,
-  AllocationAudit, MlYardstick, ShareLink, MlScannerInsight, Analytics, Learning, AuthStatus, Me, Session, Role, RoleOption, PathPoint, PathLevels, ProfileRow, MarketsToday, OpsMetricRow, GatesView, ContextView, DailyRow, TrackerView,
-  LibraryDetail,
-  LibraryList, ScreenJob, ScreenQueueView, RadarView, TapeAuditView, DuplicateGroup, OverlapCluster, LockStudyView, RunHealthRow } from './types'
+  TradePage,
+  TradeQuery,
+} from './types'
 
 export class ApiError extends Error {
   readonly status: number
@@ -69,7 +100,11 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       ...init,
       // the session lives in an HttpOnly cookie; without this the API sees an anonymous caller
       credentials: 'include',
-      headers: { Accept: 'application/json', ...(init?.body ? { 'Content-Type': 'application/json' } : {}), ...(init?.headers ?? {}) },
+      headers: {
+        Accept: 'application/json',
+        ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
+        ...(init?.headers ?? {}),
+      },
     })
   } catch (e) {
     throw new ApiError(0, `Backend unreachable (${(e as Error).message})`)
@@ -85,7 +120,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
   if (!res.ok) {
     const msg =
-      (body && typeof body === 'object' && 'error' in body && typeof (body as { error: unknown }).error === 'string'
+      (body &&
+      typeof body === 'object' &&
+      'error' in body &&
+      typeof (body as { error: unknown }).error === 'string'
         ? (body as { error: string }).error
         : null) ?? `${res.status} ${res.statusText}`
     throw new ApiError(res.status, msg, body)
@@ -96,19 +134,42 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 const get = <T>(path: string) => request<T>(path)
 const post = <T>(path: string, body?: unknown) =>
   request<T>(path, { method: 'POST', body: body === undefined ? undefined : JSON.stringify(body) })
-const put = <T>(path: string, body: unknown) => request<T>(path, { method: 'PUT', body: JSON.stringify(body) })
+const put = <T>(path: string, body: unknown) =>
+  request<T>(path, { method: 'PUT', body: JSON.stringify(body) })
 const del = <T>(path: string) => request<T>(path, { method: 'DELETE' })
 
 export const api = {
-  tradeMonitor:()=>get<TradeMonitorView>('/trade-monitor'),
+  tradeMonitor: () => get<TradeMonitorView>('/trade-monitor'),
   deltaConnection: () => get<DeltaConnectionStatus>('/connections/delta'),
-  saveDeltaConnection: (body: { environment: DeltaEnvironment; apiKey: string; apiSecret: string }) => put<DeltaConnectionStatus>('/connections/delta', body),
+  telegramConnection: () => get<TelegramStatus>('/connections/telegram'),
+  saveTelegramConnection: (body: { botToken: string }) => put<TelegramStatus>('/connections/telegram', body),
+  pairTelegram: () => post<TelegramPairing>('/connections/telegram/pair', {}),
+  approveTelegram: (body: { pairId: string }) => post<TelegramStatus>('/connections/telegram/approve', body),
+  testTelegram: () => post<TelegramStatus>('/connections/telegram/test', {}),
+  telegramControls: (enabled: boolean) => put<TelegramStatus>('/connections/telegram/controls', { enabled }),
+  removeTelegramConnection: () => del<TelegramStatus>('/connections/telegram'),
+  saveDeltaConnection: (body: { environment: DeltaEnvironment; apiKey: string; apiSecret: string }) =>
+    put<DeltaConnectionStatus>('/connections/delta', body),
   checkDeltaConnection: () => post<DeltaConnectionStatus>('/connections/delta/check', {}),
   removeDeltaConnection: () => del<DeltaConnectionStatus>('/connections/delta'),
-  pineLibrary: (path: string, hash: string) => request<{path: string; sha256: string; source: string}>(`/pine-library${qs({path, hash})}`),
-  orderFlow: (symbol: string, tf: string) => request<OrderFlowView>(`/order-flow${qs({symbol, tf, limit: 120})}`),
-  footprints: (symbol: string, tf: string, range: {from?: number; to?: number; limit?: number}) => request<Footprint[]>(`/footprints${qs({symbol, tf, ...range})}`),
-  signalActivity: () => get<{at:number;since:number;entries:number;candidates:number;copyHeld:number;held:Array<{reason:string;n:number}>;copyRecordedSince:number|null;paperFilled:number;shadowFilled:number}>('/signals/activity'),
+  pineLibrary: (path: string, hash: string) =>
+    request<{ path: string; sha256: string; source: string }>(`/pine-library${qs({ path, hash })}`),
+  orderFlow: (symbol: string, tf: string) =>
+    request<OrderFlowView>(`/order-flow${qs({ symbol, tf, limit: 120 })}`),
+  footprints: (symbol: string, tf: string, range: { from?: number; to?: number; limit?: number }) =>
+    request<Footprint[]>(`/footprints${qs({ symbol, tf, ...range })}`),
+  signalActivity: () =>
+    get<{
+      at: number
+      since: number
+      entries: number
+      candidates: number
+      copyHeld: number
+      held: Array<{ reason: string; n: number }>
+      copyRecordedSince: number | null
+      paperFilled: number
+      shadowFilled: number
+    }>('/signals/activity'),
   executionQuality: () => get<import('./types').ExecutionQuality>('/execution-quality'),
   // health / config
   health: () => get<Health>('/health'),
@@ -124,7 +185,8 @@ export const api = {
   // scanners
   // ---- authentication ----
   authStatus: () => get<AuthStatus>('/auth/status'),
-  setup: (body: { username: string; password: string; displayName?: string }) => post<{ user: Me }>('/auth/setup', body),
+  setup: (body: { username: string; password: string; displayName?: string }) =>
+    post<{ user: Me }>('/auth/setup', body),
   login: (body: { username: string; password: string }) => post<{ user: Me }>('/auth/login', body),
   logout: () => post<{ ok: true }>('/auth/logout'),
   me: () => get<Session>('/auth/me'),
@@ -135,8 +197,19 @@ export const api = {
   marketsToday: () => get<MarketsToday>('/markets/today'),
   gates: () => get<GatesView>('/gates'),
   context: () => get<ContextView>('/context'),
-  opsMetricsHistory: (hours = 24) => get<{ hours: number; rows: OpsMetricRow[] }>(`/ops/metrics/history?hours=${hours}`),
-  ops: () => get<{ alerts?: { channel?: string; configured?: boolean; sent?: number; lastAt?: number | null; lastError?: string | null; recent?: Array<{ at: number; text: string; delivered: boolean }> } }>('/ops'),
+  opsMetricsHistory: (hours = 24) =>
+    get<{ hours: number; rows: OpsMetricRow[] }>(`/ops/metrics/history?hours=${hours}`),
+  ops: () =>
+    get<{
+      alerts?: {
+        channel?: string
+        configured?: boolean
+        sent?: number
+        lastAt?: number | null
+        lastError?: string | null
+        recent?: Array<{ at: number; text: string; delivered: boolean }>
+      }
+    }>('/ops'),
   refreshMarketsToday: () => post<MarketsToday>('/markets/today/refresh'),
   /** Manual halt: no new entries until resumed; optionally flatten the paper book. */
   riskKill: (reason: string, closeAll = false) => post<RiskState>('/risk/kill', { reason, closeAll }),
@@ -154,31 +227,45 @@ export const api = {
   lockStudy: (days: number) => get<LockStudyView>(`/research/lock?days=${days}`),
   runHealth: (hours: number) => get<RunHealthRow[]>(`/scanners/run-health?hours=${hours}`),
   incubatorOverlap: (days: number) => get<OverlapCluster[]>(`/incubator/overlap?days=${days}`),
-  incubatorDecide: (v: { id: number; action: 'approve' | 'reject' | 'demote'; note?: string }) => post<IncubatorPair>(`/incubator/${v.id}/${v.action}`, v.note ? { note: v.note } : {}),
+  incubatorDecide: (v: { id: number; action: 'approve' | 'reject' | 'demote'; note?: string }) =>
+    post<IncubatorPair>(`/incubator/${v.id}/${v.action}`, v.note ? { note: v.note } : {}),
   incubatorEvaluate: () => post<{ report: unknown }>('/incubator/evaluate'),
   screenQueue: () => get<ScreenQueueView>('/incubator/screen'),
-  screenNow: (body: { ids?: string[]; author?: string; family?: string; tf: string; markets?: string[] }) => post<ScreenJob>('/incubator/screen', body),
+  screenNow: (body: { ids?: string[]; author?: string; family?: string; tf: string; markets?: string[] }) =>
+    post<ScreenJob>('/incubator/screen', body),
   screenCancel: (id: string) => del<ScreenJob>(`/incubator/screen/${encodeURIComponent(id)}`),
   users: () => get<{ users: Me[]; roles: RoleOption[] }>('/users'),
-  createUser: (body: { username: string; password: string; role: Role; displayName?: string }) => post<{ user: Me }>('/users', body),
-  updateUser: (id: number, body: Partial<{ role: Role; displayName: string; disabled: boolean; password: string }>) => post<{ user: Me }>(`/users/${id}`, body),
+  createUser: (body: { username: string; password: string; role: Role; displayName?: string }) =>
+    post<{ user: Me }>('/users', body),
+  updateUser: (
+    id: number,
+    body: Partial<{ role: Role; displayName: string; disabled: boolean; password: string }>,
+  ) => post<{ user: Me }>(`/users/${id}`, body),
   deleteUser: (id: number) => del<{ ok: true }>(`/users/${id}`),
   revokeSessions: (id: number) => post<{ ok: true }>(`/users/${id}/sessions/revoke`),
   shareLinks: () => get<{ links: ShareLink[]; maxHours: number }>('/share'),
-  createShareLink: (body: { label: string; hours: number }) => post<{ link: ShareLink; url: string }>('/share', body),
+  createShareLink: (body: { label: string; hours: number }) =>
+    post<{ link: ShareLink; url: string }>('/share', body),
   revokeShareLink: (id: number) => del<{ link: ShareLink }>(`/share/${id}`),
 
   scanners: () => get<Scanner[]>('/scanners'),
   scannerContributions: () => get<Contributions>('/scanners/contributions'),
-  scannerReadiness: (refresh=false) => get<ScannerReadiness>(`/scanners/readiness${refresh?'?refresh=1':''}`),
-  scannerContract: (id:string,planId?:string|null) => get<ScannerContractDetail>(`/scanners/${encodeURIComponent(id)}/contract${planId?`?plan=${encodeURIComponent(planId)}`:''}`),
-  scannerContribution: (id:string) => get<ContributionDetail>(`/scanners/${encodeURIComponent(id)}/contribution`),
+  scannerReadiness: (refresh = false) =>
+    get<ScannerReadiness>(`/scanners/readiness${refresh ? '?refresh=1' : ''}`),
+  scannerContract: (id: string, planId?: string | null) =>
+    get<ScannerContractDetail>(
+      `/scanners/${encodeURIComponent(id)}/contract${planId ? `?plan=${encodeURIComponent(planId)}` : ''}`,
+    ),
+  scannerContribution: (id: string) =>
+    get<ContributionDetail>(`/scanners/${encodeURIComponent(id)}/contribution`),
   /** id/name/status/category/enabled/hidden only — the full list carries per-scanner stats for ~2000 scripts. */
   scannerIndex: () => get<ScannerIndexEntry[]>('/scanners?view=lite'),
-  updateScanner: (id: string, body: ScannerUpdate) => post<Scanner>(`/scanners/${encodeURIComponent(id)}`, body),
+  updateScanner: (id: string, body: ScannerUpdate) =>
+    post<Scanner>(`/scanners/${encodeURIComponent(id)}`, body),
   runScanner: (id: string) => post<{ queued: number }>(`/scanners/${encodeURIComponent(id)}/run`),
   releaseScanner: (id: string) => post<{ released: boolean }>(`/scanners/${encodeURIComponent(id)}/release`),
-  profileScanner: (id: string, body: { market?: string; tfs?: string[] } = {}) => post<{ rows: ProfileRow[] }>(`/scanners/${encodeURIComponent(id)}/profile`, body),
+  profileScanner: (id: string, body: { market?: string; tfs?: string[] } = {}) =>
+    post<{ rows: ProfileRow[] }>(`/scanners/${encodeURIComponent(id)}/profile`, body),
   scannerProfile: (id: string) => get<{ rows: ProfileRow[] }>(`/scanners/${encodeURIComponent(id)}/profile`),
   scannerSource: (id: string) => get<ScannerSource>(`/scanners/${encodeURIComponent(id)}/source`),
   // decision 153: the Library
@@ -192,11 +279,12 @@ export const api = {
   signals: (q: SignalQuery = {}) => get<Signal[]>(`/signals${qs(q)}`),
   positions: () => get<Position[]>('/positions'),
   closePosition: (id: number) => post<Position>(`/positions/${id}/close`),
-  closeAll: () => post<{requested:number;closed:number;pending:number}>('/paper/close-all'),
+  closeAll: () => post<{ requested: number; closed: number; pending: number }>('/paper/close-all'),
   trades: (q: TradeQuery = {}) => get<Trade[]>(`/trades${qs(q)}`),
   tradesPage: (q: TradeQuery = {}) => get<TradePage>(`/trades/page${qs(q)}`),
   journal: (q: import('./journal').JournalQuery) => get<import('./journal').JournalPage>(`/journal${qs(q)}`),
-  journalDetail: (book: string, id: number) => get<import('./journal').JournalDetail>(`/journal/${id}${qs({book})}`),
+  journalDetail: (book: string, id: number) =>
+    get<import('./journal').JournalDetail>(`/journal/${id}${qs({ book })}`),
   journalExport: fetchJournalCsv,
   positionPath: (id: number) => get<{ position: PathLevels; path: PathPoint[] }>(`/positions/${id}/path`),
   orders: (limit = 200) => get<Order[]>(`/orders${qs({ limit })}`),
@@ -212,18 +300,131 @@ export const api = {
 
   // logs
   logs: (limit = 200, level?: LogLevel) => get<LogEntry[]>(`/logs${qs({ limit, level })}`),
-  autoTune: () => post<{ applied: boolean; tuned: number; disabled: number; report: Array<{ id: string; name: string; before: string[]; after: string[]; disabled: boolean }> }>('/scanners/auto-tune'),
+  autoTune: () =>
+    post<{
+      applied: boolean
+      tuned: number
+      disabled: number
+      report: Array<{ id: string; name: string; before: string[]; after: string[]; disabled: boolean }>
+    }>('/scanners/auto-tune'),
   executionPlans: () => get<ExecutionPlansView>('/execution-plans'),
-  decisionTrace: () => get<Array<{id:number;at:number;symbol:string;tf:string;scanner_id:string;stage:string;reason:string|null;signal_id:number|null;position_id:number|null;snapshot:{risk?:number;notional?:number;entryFee?:number;standardExitFeeAtEntry?:number;offerConfigured?:boolean;offerEligibility?:string;breakEvenPrice?:number;entryLiquidity?:string}}>>('/decision-trace'),
-  scannerPipeline: () => get<{at:number;since:number;entryDepth:{enabled:boolean;requests:number;checks:number;blocked:number;errors:number;inFlight:number;queued:number};quarantined:number;unallocated:Array<{id:string;name:string}>;shadowDispatch:{evidenceTurns?:number;fairTurns?:number;pending:number;inFlight:number;offered:number;replaced:number;expired:number;finished:number;maxWaitMs:number};queue:{queued:number;queuedLive:number;queuedMirror:number;queuedShadow:number};cells:Array<{scannerId:string;symbol:string;tf:string;lastRun:number|null;error:string|null;runs:number;failures:number;entries24h:number;actions:Array<{action:string;n:number}>;latest:{at:number;action:string;label:string}|null}>}>('/scanner-pipeline'),
-  fundingGuard: () => get<{at:number;executionSupported:boolean;settings?:{enabled:boolean;leadMinutes:number;scalpMaxR:number;swingMaxR:number};positions:Array<{id:number;book:string;symbol:string;tf:string;side:string;fresh:boolean;cost:number|null;costR:number|null;limitR:number;nextAt:number|null;ratePct:number|null;near:boolean;trigger:boolean;enabled:boolean}>}>('/funding-guard'),
+  decisionTrace: () =>
+    get<
+      Array<{
+        id: number
+        at: number
+        symbol: string
+        tf: string
+        scanner_id: string
+        stage: string
+        reason: string | null
+        signal_id: number | null
+        position_id: number | null
+        snapshot: {
+          risk?: number
+          notional?: number
+          entryFee?: number
+          standardExitFeeAtEntry?: number
+          offerConfigured?: boolean
+          offerEligibility?: string
+          breakEvenPrice?: number
+          entryLiquidity?: string
+        }
+      }>
+    >('/decision-trace'),
+  scannerPipeline: () =>
+    get<{
+      at: number
+      since: number
+      entryDepth: {
+        enabled: boolean
+        requests: number
+        checks: number
+        blocked: number
+        errors: number
+        inFlight: number
+        queued: number
+      }
+      quarantined: number
+      unallocated: Array<{ id: string; name: string }>
+      shadowDispatch: {
+        evidenceTurns?: number
+        fairTurns?: number
+        pending: number
+        inFlight: number
+        offered: number
+        replaced: number
+        expired: number
+        finished: number
+        maxWaitMs: number
+      }
+      queue: { queued: number; queuedLive: number; queuedMirror: number; queuedShadow: number }
+      cells: Array<{
+        scannerId: string
+        symbol: string
+        tf: string
+        lastRun: number | null
+        error: string | null
+        runs: number
+        failures: number
+        entries24h: number
+        actions: Array<{ action: string; n: number }>
+        latest: { at: number; action: string; label: string } | null
+      }>
+    }>('/scanner-pipeline'),
+  fundingGuard: () =>
+    get<{
+      at: number
+      executionSupported: boolean
+      settings?: { enabled: boolean; leadMinutes: number; scalpMaxR: number; swingMaxR: number }
+      positions: Array<{
+        id: number
+        book: string
+        symbol: string
+        tf: string
+        side: string
+        fresh: boolean
+        cost: number | null
+        costR: number | null
+        limitR: number
+        nextAt: number | null
+        ratePct: number | null
+        near: boolean
+        trigger: boolean
+        enabled: boolean
+      }>
+    }>('/funding-guard'),
   allocationAudit: () => get<AllocationAudit>('/analytics/allocations'),
   analytics: () => get<Analytics>('/analytics'),
-  performance: (q: import('./types').PerformanceFilter) => get<import('./types').PerformanceReport>(`/analytics/performance${qs(q)}`),
+  performance: (q: import('./types').PerformanceFilter) =>
+    get<import('./types').PerformanceReport>(`/analytics/performance${qs(q)}`),
   dailyReport: (days = 30) => get<DailyRow[]>(`/reports/daily?days=${days}`),
   reclaimTrials: () => get<ReclaimTrialsView>('/reclaim-trials'),
   trackers: () => get<TrackerView[]>('/trackers'),
-  policyHealth: () => get<{at:number;windowDays:number;haltEvents:number;boundExits:{failures:number};allocation:{widthMs:number;pending:number};books:Array<{book:string;matching:number;changed:number;legacy:number;quarantined:number;pending:number;reservedMargin:number;adoptedOpen:number}>}>('/policy-health'),
+  policyHealth: () =>
+    get<{
+      at: number
+      windowDays: number
+      haltEvents: number
+      boundExits: { failures: number }
+      allocation: { widthMs: number; pending: number }
+      books: Array<{
+        book: string
+        matching: number
+        capacityCompatible?: number
+        scopeCompatible?: number
+        sizingCompatible?: number
+        totalClosed?: number
+        outsideWindow?: number
+        exclusions?: Array<{ reason: string; label: string; trades: number }>
+        changed: number
+        legacy: number
+        quarantined: number
+        pending: number
+        reservedMargin: number
+        adoptedOpen: number
+      }>
+    }>('/policy-health'),
   learning: () => get<Learning>('/learning'),
   ml: () => get<MlSnapshot>('/ml'),
   mlTrain: () => post<MlSnapshot>('/ml/train'),

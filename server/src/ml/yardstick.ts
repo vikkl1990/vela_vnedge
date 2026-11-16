@@ -95,7 +95,7 @@ export function verdictOf(thresholds: YardThreshold[], n: number): YardVerdict {
   if (!paying.length) {
     if (n < MIN_DROPPED * 2) return { pays: false, minProb: null, text: `${n} trades: too few to judge a gate (need ${MIN_DROPPED * 2})` };
     const best = [...thresholds].sort((a, b) => b.deltaSumR - a.deltaSumR)[0];
-    return { pays: false, minProb: null, text: best && best.dropped ? `no threshold drops a losing set of ${MIN_DROPPED} or more trades; the best, ${pct(best.minProb)}, drops ${best.dropped} trades worth ${fmtR(best.droppedSumR)}` : 'no threshold drops anything' };
+    return { pays: false, minProb: null, text: best && best.dropped ? `no threshold meets all evidence minima: ${MIN_DROPPED} dropped trades, at least ${MIN_DROPPED_SUM_R.toFixed(1)}R lost in total, and mean R at or below ${MIN_DROPPED_AVG_R.toFixed(2)}R. The largest retrospective improvement, at ${pct(best.minProb)}, drops ${best.dropped} trades worth ${fmtR(best.droppedSumR)} (${best.droppedAvgR.toFixed(3)}R per trade)` : 'no threshold drops anything' };
   }
   const best = [...paying].sort((a, b) => b.deltaSumR - a.deltaSumR)[0];
   return { pays: true, minProb: best.minProb, text: `a gate at ${pct(best.minProb)} would have dropped ${best.dropped} trades worth ${fmtR(best.droppedSumR)} (${fmtR(best.droppedAvgR)} each) and kept ${best.kept} at ${fmtR(best.keptAvgR)} each` };
@@ -107,7 +107,7 @@ export function verdictOf(thresholds: YardThreshold[], n: number): YardVerdict {
  * untouched forward test. No configuration recommendation is authorized here.
  */
 export function theCall(live: YardBook, shadow: YardBook): { minProb: number | null; candidateMinProb?:number; text: string } {
-  if (!shadow.verdict.pays || shadow.verdict.minProb === null) return { minProb: null, text: `the shadow book does not pay a gate: ${shadow.verdict.text}` };
+  if (!shadow.verdict.pays || shadow.verdict.minProb === null) return { minProb: null, text: `the shadow book does not qualify a gate candidate: ${shadow.verdict.text}` };
   const at = live.thresholds.find(t => t.minProb === shadow.verdict.minProb);
   if (at && at.dropped >= 5 && at.deltaSumR < -1) return { minProb: null, text: `the shadow book pays a gate at ${pct(shadow.verdict.minProb)} but the account would have lost ${fmtR(-at.deltaSumR)} under it; no gate` };
   return { minProb:null,candidateMinProb:shadow.verdict.minProb,text:`Research candidate ${pct(shadow.verdict.minProb)} from saved entry predictions: ${shadow.verdict.text}. Selected on this window; freeze it and evaluate a new forward window before enabling any gate.` };

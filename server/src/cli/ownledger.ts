@@ -1,5 +1,5 @@
 /**
- * Decision 266: grade scripts by their own ledger. Each `strategy()` script runs exactly as its author wrote it (own entries,
+ * Decision 286: grade scripts by their own ledger. Each `strategy()` script runs exactly as its author wrote it (own entries,
  * stops, targets, exits and default inputs) and its closed and open trades are charged Delta's costs and stressed: open trades
  * marked to market, a one-bar delay, both halves, beyond the market's drift, both sides, t above 2. Read-only on the bot: it
  * fetches public candles, runs the scripts in worker processes and writes one JSON file.

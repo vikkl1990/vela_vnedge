@@ -1,0 +1,11 @@
+/opt/vnedge/data/logs/*.out /opt/vnedge/data/logs/*.err {
+    daily
+    maxsize 50M
+    rotate 7
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+    su ubuntu ubuntu
+}

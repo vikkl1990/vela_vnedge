@@ -234,7 +234,13 @@ export class Db {
 
   constructor(file = path.join(DATA_DIR, 'vnedge.db')) {
     this.file = file;
-    if (file !== ':memory:') fs.mkdirSync(path.dirname(file), { recursive: true });
+    if (file !== ':memory:') {
+      fs.mkdirSync(path.dirname(file), { recursive: true, mode:0o700 });
+      // SQLite creates sidecars with the database's permissions. Protect the
+      // database before enabling WAL, including CLI use outside systemd.
+      const fd=fs.openSync(file,fs.constants.O_CREAT|fs.constants.O_RDWR|fs.constants.O_NOFOLLOW,0o600);
+      try { fs.fchmodSync(fd,0o600); } finally { fs.closeSync(fd); }
+    }
     this.db = new DatabaseSync(file);
     // busy_timeout: the incubator's daily job writes from its own process while the bot runs
     this.db.exec('PRAGMA busy_timeout = 10000; PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON;');
@@ -329,11 +335,14 @@ export class Db {
    * then deletes snapshots in `dir` older than `keepDays`. Names: `vnedge-YYYYMMDD-HHMMSS.db`.
    */
   backup(dir: string, keepDays: number, now = Date.now()): BackupResult {
-    fs.mkdirSync(dir, { recursive: true });
+    fs.mkdirSync(dir, { recursive: true, mode:0o700 });
     const stamp = new Date(now).toISOString().replace(/[-:]/g, '').replace('T', '-').slice(0, 15);
     const file = path.join(dir, `vnedge-${stamp}.db`);
     const t0 = Date.now();
     try { fs.rmSync(file, { force: true }); } catch { /* ignore */ }
+    // An empty, private destination is accepted by VACUUM INTO and prevents a
+    // readable snapshot even if an operator's shell has umask 022.
+    fs.closeSync(fs.openSync(file,'wx',0o600));
     try { this.db.exec(`VACUUM INTO '${file.replace(/'/g, "''")}'`); }
     catch (e) { this.noteError(e); throw e; }
     const bytes = fs.statSync(file).size;
@@ -384,13 +393,14 @@ export class Db {
     return Boolean(this.get('SELECT 1 FROM signals WHERE scanner_id=? AND symbol=? AND tf=? AND bar_time=? AND kind=? AND side IS ? AND label=?', scannerId, symbol, tf, barTime, kind, side, label));
   }
   updateSignalAction(id: number, action: string, positionId: number | null) { this.run('UPDATE signals SET action=?, position_id=? WHERE id=?', action, positionId, id); }
-  signals(opts: { limit?: number; scanner?: string; symbol?: string; tf?: string; positionId?: number; kind?: string; since?: number } = {}): SignalRow[] {
+  signals(opts: { limit?: number; scanner?: string; symbol?: string; tf?: string; positionId?: number; kind?: string; side?: string; since?: number } = {}): SignalRow[] {
     const where: string[] = []; const params: any[] = [];
     if (opts.scanner) { where.push('scanner_id = ?'); params.push(opts.scanner); }
     if (opts.symbol) { where.push('symbol = ?'); params.push(opts.symbol); }
     if (opts.tf) { where.push('tf = ?'); params.push(opts.tf); }
     if (opts.positionId !== undefined) { where.push('position_id = ?'); params.push(opts.positionId); }
     if (opts.kind) { where.push('kind = ?'); params.push(opts.kind); }
+    if (opts.side) { where.push('side = ?'); params.push(opts.side); }
     if (opts.since) { where.push('at >= ?'); params.push(opts.since); }
     const sql = `SELECT * FROM signals ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY at DESC, id DESC LIMIT ?`;
     params.push(Math.min(opts.limit ?? 200, 2000));

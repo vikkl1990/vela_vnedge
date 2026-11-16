@@ -126,7 +126,7 @@ export class ShadowLedger extends EventEmitter {
         fillExit(existing, price, existing.qtyOpen, 'reversal', at, paper, true);
         this.finish(v, existing);
       }
-      if (v.open.size >= paper.maxOpenPositions) { v.rejected['max_open'] = (v.rejected['max_open'] ?? 0) + 1; continue; }
+      if (paper.maxOpenPositions > 0 && v.open.size >= paper.maxOpenPositions) { v.rejected['max_open'] = (v.rejected['max_open'] ?? 0) + 1; continue; }
       const lv = resolveLevels({ side, price, sl: sig.sl ?? undefined, tp: sig.tp, atr }, paper, market.tickSize);
       if ('error' in lv) { v.rejected[lv.error] = (v.rejected[lv.error] ?? 0) + 1; continue; }
       if (checkRiskVsFees(price, lv.sl, paper, sig.symbol)) { v.rejected['stop too tight for fees'] = (v.rejected['stop too tight for fees'] ?? 0) + 1; continue; }

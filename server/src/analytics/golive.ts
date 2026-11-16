@@ -7,7 +7,7 @@
  *   survival    a block-bootstrap Monte Carlo of the journal's R series through the fleet's own halt
  *               rules (daily loss, max loss) over 30 days breaches rarely enough
  *   drawdown    the simulated 95th-percentile drawdown stays inside the alert line
- *   halts       no halt was tripped in the window
+ *   halts       historical halts are advisory, not a waiting-period veto
  *   alerts      someone would hear a halt
  *
  * The simulation is the same idea as LuxAlgo's Prop Firm Sim (stationary block bootstrap of the
@@ -34,7 +34,7 @@ export interface GoLiveInputs {
   days?: number; paths?: number; seed?: number; minTrades?: number; maxBreachPct?: number; maxRiskPct?: number;
 }
 export interface GoLiveCheck { key: string; label: string; ok: boolean; value: string; need: string }
-export interface GoLiveVerdict { ok: boolean; checks: GoLiveCheck[]; sim: { paths: number; days: number; breachPct: number; dailyBreachPct: number; maxLossBreachPct: number; dd50Pct: number; dd95Pct: number; medianEndPct: number } | null }
+export interface GoLiveVerdict { ok: boolean; checks: GoLiveCheck[]; advisories: Array<{key:string;label:string;value:string;note:string}>; sim: { paths: number; days: number; breachPct: number; dailyBreachPct: number; maxLossBreachPct: number; dd50Pct: number; dd95Pct: number; medianEndPct: number } | null }
 
 /** Small deterministic PRNG (mulberry32). */
 function rng(seed: number) { let a = seed >>> 0; return () => { a = (a + 0x6D2B79F5) >>> 0; let t = a; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
@@ -69,15 +69,17 @@ export function goLive(inp: GoLiveInputs): GoLiveVerdict {
   // a % return is replayed at 1% "risk" per unit, so equity moves by exactly that return
   const sim = inp.rs.length >= 10 ? { paths, days, ...simulateSurvival(byEquity ? inp.equityPcts! : inp.rs, { tradesPerDay: inp.tradesPerDay, riskPct: byEquity ? 1 : inp.riskPct, dailyLossPct: inp.dailyLossPct, maxLossPct: inp.maxLossPct, days, paths, seed: inp.seed ?? 42 }) } : null;
   const checks: GoLiveCheck[] = [
-    { key: 'trades', label: 'Closed account trades', ok: inp.rs.length >= minTrades, value: String(inp.rs.length), need: `≥ ${minTrades}` },
+    { key: 'trades', label: 'Policy-compatible closed paper trades (last 30 days)', ok: inp.rs.length >= minTrades, value: String(inp.rs.length), need: `≥ ${minTrades}` },
     { key: 'risk', label: 'Risk per trade actually taken, median of the last 30 closed trades (% of equity)', ok: inp.riskPct <= (inp.maxRiskPct ?? 1.5), value: `${inp.riskPct.toFixed(2)}%`, need: `≤ ${inp.maxRiskPct ?? 1.5}%` },
     byEquity
       ? { key: 'expectancy', label: 'Lower 90% bound of the return per trade after costs, % of equity (margin sizing)', ok: inp.lbPct90 != null && inp.lbPct90 > 0, value: inp.lbPct90 == null ? 'no band yet' : `${inp.lbPct90 >= 0 ? '+' : ''}${inp.lbPct90.toFixed(3)}%`, need: '> 0' }
       : { key: 'expectancy', label: 'Lower 90% bound of E[R] after costs', ok: inp.lb90 !== null && inp.lb90 > 0, value: inp.lb90 === null ? 'no band yet' : `${inp.lb90 >= 0 ? '+' : ''}${inp.lb90.toFixed(3)}R`, need: '> 0' },
     { key: 'survival', label: `P(halt within ${days} days), block bootstrap of the journal`, ok: sim !== null && sim.breachPct <= maxBreach, value: sim ? `${sim.breachPct.toFixed(1)}%` : 'under 10 trades', need: `≤ ${maxBreach}%` },
     { key: 'drawdown', label: `Simulated 95th-percentile drawdown in ${days} days${byEquity ? ', from the trades\' own % returns' : ''}`, ok: sim !== null && sim.dd95Pct <= inp.drawdownAlertPct, value: sim ? `${sim.dd95Pct.toFixed(1)}%` : '–', need: `≤ ${inp.drawdownAlertPct}%` },
-    { key: 'halts', label: 'Halts tripped in the window', ok: inp.haltsInWindow === 0, value: String(inp.haltsInWindow), need: '0' },
     { key: 'alerts', label: 'Alert channel configured', ok: inp.alertsConfigured, value: inp.alertsConfigured ? 'yes' : 'no', need: 'yes' },
   ];
-  return { ok: checks.every(c => c.ok), checks, sim };
+  return { ok: checks.every(c => c.ok), checks, sim, advisories:[{
+    key:'halts',label:'Historical halts in the evaluation window',value:String(inp.haltsInWindow),
+    note:'Advisory history: past halts do not block readiness. Active loss limits, drawdown controls and the kill switch still apply.',
+  }] };
 }

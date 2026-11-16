@@ -3,11 +3,14 @@ import type {Db} from '../db.ts';
 import {TF_SECONDS,type PaperConfig} from '../config.ts';
 import {fillExit,type Position} from '../paper/logic.ts';
 import {priceExit,type ExitBook} from '../paper/exitExecution.ts';
+import {ShadowInvalidationStudy,ARIA_RULE,ARIA_STRESS_RULE} from './shadowInvalidation.ts';
 
 export const MONITOR_VERSION='recovery-observer-v1';
 export const MONITOR_RULES=[
  {id:'drawdown-050-v1',name:'−0.5R control',description:'Observe an exit when price reaches −0.5R. This control failed historical validation; it is not a trading recommendation.'},
  {id:'persistent-loss-v1',name:'Persistent loss',description:'After one source-timeframe bar, two observations at least a minute apart below −0.35R, with peak below +0.1R. Experimental; never executes.'},
+ {id:ARIA_RULE,name:'ARIA confirmed signal-wick failure',description:'Prospective Elliott Wave ARIA 15m shadow only; confirmed on minute samples. Fresh depth after configured delay +1s; never closes the actual trade.'},
+ {id:ARIA_STRESS_RULE,name:'ARIA invalidation stress',description:'Same shadow trigger with configured delay +3s and 5 bps adverse execution. Excluded from promotion.'},
 ];
 export interface WatchInput {position:Position;book:number;scope:string;config:PaperConfig;marketQty:number|null;exitPending:boolean}
 export interface MarketObservation {
@@ -17,14 +20,16 @@ export interface MarketObservation {
 }
 interface State {id:number;entryAt:number;book:number;scope:string;symbol:string;scanner:string;tf:string;side:string;firstAt:number;lastAt:number;peak:number;worst:number;r:number|null;complete:boolean;persistAt:number|null;seen:string[];state:string;reason:string;policyId:string|null;sourceHash:string|null;sim:number|null;lastSaved:number}
 interface Trial {id:number;position_id:number;entry_at:number;book:number;scope:string;symbol:string;rule:string;trigger_at:number;ready_at:number;status:string;payload:string;market_qty:number;market_filled:number;net:number|null;actual_net:number|null;delta:number|null;error:string|null}
-interface Payload {position:Position;config:PaperConfig;originalQty:number;fundingCount:number;reports:Array<{at:number;price:number;qty:number;marketQty:number;grossFee:number;cashFee:number;discount:number;depth:ExitBook}>}
+interface TrialExecution {extraLatencyMs:number;maxWaitMs:number;slippageBps:number}
+interface Payload {position:Position;config:PaperConfig;originalQty:number;fundingCount:number;execution?:TrialExecution;reports:Array<{at:number;price:number;qty:number;marketQty:number;grossFee:number;cashFee:number;discount:number;depth:ExitBook}>}
 const key=(p:{id:number;entryAt:number})=>`${p.id}:${p.entryAt}`;
 const net=(p:Position)=>p.realizedPnl-p.fees;
 /** Capable only of writing advisory_* tables. No engine, executor, config setter or entry-gate dependency. */
 export class OpenTradeMonitor {
  readonly db:Db;private states=new Map<string,State>();private pending=new Map<number,Trial>();
+ readonly invalidation:ShadowInvalidationStudy;
  private lastMaintenance=0;private lastTick=0;
- constructor(db:Db){
+ constructor(db:Db,now=Date.now()){
   this.db=db;
   db.db.exec(`CREATE TABLE IF NOT EXISTS advisory_trade_states(position_id INTEGER NOT NULL,entry_at INTEGER NOT NULL,updated_at INTEGER NOT NULL,payload TEXT NOT NULL,PRIMARY KEY(position_id,entry_at));
    CREATE TABLE IF NOT EXISTS advisory_checkpoints(id INTEGER PRIMARY KEY,position_id INTEGER NOT NULL,entry_at INTEGER NOT NULL,book INTEGER NOT NULL,scope TEXT NOT NULL,symbol TEXT NOT NULL,checkpoint TEXT NOT NULL,at INTEGER NOT NULL,payload TEXT NOT NULL,promotion_eligible INTEGER NOT NULL DEFAULT 0 CHECK(promotion_eligible=0),UNIQUE(position_id,entry_at,checkpoint));
@@ -39,12 +44,17 @@ export class OpenTradeMonitor {
    BEGIN INSERT OR IGNORE INTO advisory_reconcile VALUES(NEW.id,NEW.entry_at); END;`);
   for(const r of db.all<{payload:string}>('SELECT payload FROM advisory_trade_states')){const s:State=JSON.parse(r.payload);this.states.set(key(s),s);}
   for(const r of db.all<Trial>("SELECT * FROM advisory_exits WHERE status IN ('waiting','partial')"))this.pending.set(r.id,r);
+  this.invalidation=new ShadowInvalidationStudy(db,now);
  }
  observe(inputs:WatchInput[],markets:Map<string,MarketObservation>,setup:(p:Position)=>unknown,now=Date.now()){
   this.lastTick=now;const active=new Set(inputs.map(x=>key(x.position)));
   for(const input of inputs){
    const p=input.position,m=markets.get(p.symbol),unit=Math.abs(p.entryPrice-(p.slOriginal??p.entryPrice));
    if(p.status!=='open'||!(p.riskAmount>0)||!(unit>0))continue;
+   if(this.invalidation.observe(p,input.book,input.scope,m?.price??null,m?.priceAt??null,now,input.exitPending)){
+    this.trigger(input,ARIA_RULE,now,{extraLatencyMs:1000,maxWaitMs:30000,slippageBps:0});
+    this.trigger(input,ARIA_STRESS_RULE,now,{extraLatencyMs:3000,maxWaitMs:30000,slippageBps:5});
+   }
    let s=this.states.get(key(p));
    if(!s){s={id:p.id,entryAt:p.entryAt,book:input.book,scope:input.scope,symbol:p.symbol,scanner:p.scannerName,tf:p.tf,side:p.side,firstAt:now,lastAt:now,peak:0,worst:0,r:null,complete:now-p.entryAt<=10000,persistAt:null,seen:[],state:'warming',reason:'Awaiting a fresh observation',policyId:p.policy?.id??null,sourceHash:p.policy?.sourceHash??null,sim:p.policy?.sim??null,lastSaved:0};this.states.set(key(p),s);}
    const fresh=!!m&&m.price!==null&&m.priceAt!==null&&m.priceAt<=now&&now-m.priceAt<=10000;
@@ -78,7 +88,7 @@ export class OpenTradeMonitor {
   if(now-this.lastMaintenance>60000){this.resolve(now);this.lastMaintenance=now;}
  }
  private save(s:State,now:number,force=false){if(!force&&now-s.lastSaved<60000)return;s.lastSaved=now;this.db.run('INSERT INTO advisory_trade_states VALUES(?,?,?,?) ON CONFLICT(position_id,entry_at) DO UPDATE SET updated_at=excluded.updated_at,payload=excluded.payload',s.id,s.entryAt,now,JSON.stringify(s));}
- private trigger(input:WatchInput,rule:string,now:number){
+ private trigger(input:WatchInput,rule:string,now:number,execution?:TrialExecution){
   const p=input.position;
   if(this.db.get('SELECT id FROM advisory_exits WHERE position_id=? AND entry_at=? AND rule=?',p.id,p.entryAt,rule))return;
   const qty=input.marketQty;
@@ -86,9 +96,9 @@ export class OpenTradeMonitor {
   // Entry features and policy identity are already captured in checkpoints. Do not duplicate
   // large source/config snapshots in every partial-fill report.
   delete copy.policy;delete copy.executionPlan;delete copy.features;
-  const payload:Payload={position:copy,config:structuredClone(input.config),originalQty:p.qtyOpen,fundingCount:p.fills.filter(f=>f.reason==='funding').length,reports:[]};
+  const payload:Payload={position:copy,config:structuredClone(input.config),originalQty:p.qtyOpen,fundingCount:p.fills.filter(f=>f.reason==='funding').length,reports:[],...(execution?{execution}:{})};
   const valid=Number.isSafeInteger(qty)&&qty! > 0;
-  const x=this.db.run('INSERT INTO advisory_exits(position_id,entry_at,book,scope,symbol,rule,trigger_at,ready_at,status,payload,market_qty,error,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',p.id,p.entryAt,input.book,input.scope,p.symbol,rule,now,now+Math.max(0,input.config.latencyMs??0),valid?'waiting':'unpriced',JSON.stringify(payload),valid?qty!:0,valid?null:'No frozen executable quantity',now);
+  const x=this.db.run('INSERT INTO advisory_exits(position_id,entry_at,book,scope,symbol,rule,trigger_at,ready_at,status,payload,market_qty,error,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',p.id,p.entryAt,input.book,input.scope,p.symbol,rule,now,now+Math.max(0,input.config.latencyMs??0)+(execution?.extraLatencyMs??0),valid?'waiting':'unpriced',JSON.stringify(payload),valid?qty!:0,valid?null:'No frozen executable quantity',now);
   if(valid){const id=Number(x.lastInsertRowid);this.pending.set(id,this.db.get<Trial>('SELECT * FROM advisory_exits WHERE id=?',id)!);}
  }
  due(now=Date.now()){return [...this.pending.values()].filter(t=>t.ready_at<=now).sort((a,b)=>(a.book===0?0:1)-(b.book===0?0:1)||a.ready_at-b.ready_at);}
@@ -98,7 +108,7 @@ export class OpenTradeMonitor {
    const x:Payload=JSON.parse(t.payload),actual=current(t.position_id);
    if(!actual||actual.entryAt!==t.entry_at){this.finish(t,'censored','Position reset or unavailable',now);continue;}
    if(actual.fills.some(f=>f.at>=t.trigger_at&&f.qty>0&&f.reason!=='entry')){this.finish(t,'censored','Actual exit occurred before hypothetical completion',now);continue;}
-   if(now-t.ready_at>60000){this.finish(t,'unpriced','No complete executable fill within 60 seconds',now);continue;}
+   if(now>(x.execution?t.trigger_at+x.execution.maxWaitMs:t.ready_at+60000)){this.finish(t,'unpriced','No complete executable fill within the observation window',now);continue;}
    if(!book||book.receivedAt<t.ready_at)continue;
    book=compactBook(book);
    const bookKey=createHash('sha256').update(JSON.stringify([book.exchangeAt,book.bids,book.asks])).digest('hex');
@@ -112,8 +122,9 @@ export class OpenTradeMonitor {
    // Preserve funding incurred before the hypothetical close, prorated after partial fills.
    const funding=actual.fills.filter(f=>f.reason==='funding');
    for(const f of funding.slice(x.fundingCount)){if(f.at>now)break;const scaled={...f,pnl:f.pnl*x.position.qtyOpen/Math.max(1,actual.qtyOpen)};x.position.realizedPnl+=scaled.pnl;x.position.fills.push(scaled);x.fundingCount++;}
-   const f=fillExit(x.position,fill.price,quantity,'advisory-exit',now,x.config,'depth');
-   x.reports.push({at:now,price:fill.price,qty:quantity,marketQty:fill.qty,grossFee:f.feeGross??f.fee,cashFee:f.fee,discount:f.feeDiscount??0,depth:compactBook(book)});
+   const price=fill.price*(1+(x.position.side==='long'?-1:1)*(x.execution?.slippageBps??0)/10000);
+   const f=fillExit(x.position,price,quantity,'advisory-exit',now,x.config,'depth');
+   x.reports.push({at:now,price,qty:quantity,marketQty:fill.qty,grossFee:f.feeGross??f.fee,cashFee:f.fee,discount:f.feeDiscount??0,depth:compactBook(book)});
    const next={market_filled:t.market_filled+fill.qty,payload:JSON.stringify(x),status:done?'filled':'partial',net:done?net(x.position):null};
    this.db.transaction(()=>{
     this.db.run('UPDATE advisory_exits SET market_filled=?,payload=?,status=?,net=?,error=NULL,updated_at=? WHERE id=?',next.market_filled,next.payload,next.status,next.net,now,t.id);
@@ -125,7 +136,10 @@ export class OpenTradeMonitor {
  }
  private finish(t:Trial,status:string,error:string,now:number){this.db.run('UPDATE advisory_exits SET status=?,error=?,updated_at=? WHERE id=?',status,error,now,t.id);this.pending.delete(t.id);}
  resolve(now=Date.now()){
-  for(const t of this.pending.values())if(now-t.ready_at>60000)this.finish(t,'unpriced','Observation window expired; no inferred fill',now);
+  for(const t of this.pending.values()){
+   const x:Payload=JSON.parse(t.payload);
+   if(now>(x.execution?t.trigger_at+x.execution.maxWaitMs:t.ready_at+60000))this.finish(t,'unpriced','Observation window expired; no inferred fill',now);
+  }
   // Funding may be reconciled after a position closed. Revalue only settlements before the hypothetical fill.
   for(const row of this.db.all<{id:number;payload:string;fills:string;qty:number;net:number}>(`SELECT a.id,a.payload,p.fills,p.qty,a.net FROM advisory_exits a JOIN positions p ON p.id=a.position_id AND p.entry_at=a.entry_at WHERE a.status='filled' AND p.status='closed' AND (a.actual_net IS NULL OR EXISTS(SELECT 1 FROM advisory_reconcile r WHERE r.position_id=p.id AND r.entry_at=p.entry_at))`)){
     const x:Payload=JSON.parse(row.payload),actual=JSON.parse(row.fills)?.fills??[];
@@ -137,6 +151,7 @@ export class OpenTradeMonitor {
    updated_at=? WHERE EXISTS(SELECT 1 FROM positions p WHERE p.id=position_id AND p.entry_at=advisory_exits.entry_at AND p.status='closed')
    AND (actual_net IS NULL OR EXISTS(SELECT 1 FROM advisory_reconcile r WHERE r.position_id=advisory_exits.position_id AND r.entry_at=advisory_exits.entry_at))`,now);
   this.db.run('DELETE FROM advisory_reconcile');
+  this.invalidation.reconcile(now);
   this.db.run("UPDATE advisory_exits SET status='censored',delta=NULL,error='Actual position unavailable or reset' WHERE status='filled' AND actual_net IS NULL AND NOT EXISTS(SELECT 1 FROM positions p WHERE p.id=position_id AND p.entry_at=advisory_exits.entry_at)");
   this.db.run('DELETE FROM advisory_exit_liquidity WHERE at<?',now-86400000);
   // Bound storage independently of trading journals. Keep 90 days / 200k checkpoints and 50k trials.
@@ -150,7 +165,7 @@ export class OpenTradeMonitor {
    sum(CASE WHEN status='filled' AND actual_net IS NOT NULL THEN delta ELSE 0 END) deltaUsd,
    sum(CASE WHEN status='filled' AND actual_net IS NOT NULL THEN delta/json_extract(payload,'$.position.riskAmount') ELSE 0 END) deltaR,
    sum(status IN ('unpriced','censored')) unavailable,sum(status='filled' AND actual_net>0 AND net<0) winnersLost FROM advisory_exits GROUP BY book,scope,rule`);
-  return {mode:'advisory' as const,version:MONITOR_VERSION,at:this.lastTick,rules:MONITOR_RULES,positions:[...this.states.values()],trials:rows,summary};
+  return {mode:'advisory' as const,version:MONITOR_VERSION,at:this.lastTick,rules:MONITOR_RULES,positions:[...this.states.values()],trials:rows,summary,invalidationStudy:this.invalidation.view()};
  }
  detail(id:number){return this.db.all<any>('SELECT checkpoint,at,payload FROM advisory_checkpoints WHERE position_id=? ORDER BY at LIMIT 100',id).map(x=>({...x,payload:JSON.parse(x.payload)}));}
 }

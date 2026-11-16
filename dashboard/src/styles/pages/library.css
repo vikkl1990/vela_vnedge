@@ -1,41 +1,146 @@
 /* Library: toolbar, cards and the detail pane. Scoped to .lib-page so it wins over pages.css without editing it. Tokens only. */
-.lib-page .lib-main { gap: 18px; }
-.lib-page .lib-find { position: relative; flex: 1 1 280px; min-width: 200px; max-width: 520px; }
-.lib-page .lib-find-input { width: 100%; padding-right: 34px; }
-.lib-page .lib-kbd { right: 10px; top: 50%; transform: translateY(-50%); }
-.lib-page .lib-sort .select { min-width: 160px; }
-.lib-page .lib-main > .toolbar-row { position: sticky; top: 0; z-index: 3; padding: 4px 0 10px; background: var(--bg); }
-.lib-page .lib-nav-item { transition: background var(--dur-1) var(--ease); }
-.lib-page .lib-nav-item.on { font-weight: 650; }
-.lib-page .lib-nav-head { letter-spacing: var(--tracking-label); font-size: var(--fs-2xs); }
+.lib-page .lib-main {
+  gap: 18px;
+}
+.lib-page .lib-find {
+  position: relative;
+  flex: 1 1 280px;
+  min-width: 200px;
+  max-width: 520px;
+}
+.lib-page .lib-find-input {
+  width: 100%;
+  padding-right: 34px;
+}
+.lib-page .lib-kbd {
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+}
+.lib-page .lib-sort .select {
+  min-width: 160px;
+}
+.lib-page .lib-main > .toolbar-row {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  padding: 4px 0 10px;
+  background: var(--bg);
+}
+.lib-page .lib-nav-item {
+  transition: background var(--dur-1) var(--ease);
+}
+.lib-page .lib-nav-item.on {
+  font-weight: 650;
+}
+.lib-page .lib-nav-head {
+  letter-spacing: var(--tracking-label);
+  font-size: var(--fs-2xs);
+}
 
 /* cards: name first, record last, state in words */
-.lib-page .lib-card { box-shadow: var(--shadow-1); transition: border-color var(--dur-1) var(--ease), transform var(--dur-1) var(--ease), box-shadow var(--dur-1) var(--ease); }
-.lib-page .lib-card:hover { border-color: var(--border-strong); transform: translateY(-1px); box-shadow: var(--shadow-2); }
-.lib-page .lib-card-title { display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-.lib-page .lib-card-foot { margin-top: auto; padding-top: 6px; }
-.lib-page .lib-card-body { flex: 1; }
+.lib-page .lib-card {
+  box-shadow: var(--shadow-1);
+  transition:
+    border-color var(--dur-1) var(--ease),
+    transform var(--dur-1) var(--ease),
+    box-shadow var(--dur-1) var(--ease);
+}
+.lib-page .lib-card:hover {
+  border-color: var(--border-strong);
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-2);
+}
+.lib-page .lib-card-title {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.lib-page .lib-card-foot {
+  margin-top: auto;
+  padding-top: 6px;
+}
+.lib-page .lib-card-body {
+  flex: 1;
+}
 
 /* detail pane */
-.lib-page .lib-detail { background: var(--surface); box-shadow: var(--shadow-1); }
-.lib-page .lib-detail-body { gap: 14px; }
-.lib-page .lib-detail-head { display: flex; flex-direction: column; gap: 6px; }
-.lib-page .lib-detail-head .lib-detail-meta { margin: 0; font-size: var(--fs-xs); letter-spacing: var(--tracking-label); text-transform: uppercase; font-weight: 700; }
-.lib-page .lib-actions { gap: 8px; }
-.lib-page .lib-actions .btn { flex: 1 1 auto; justify-content: center; }
-.lib-page .lib-actions .btn-primary { flex: 1 1 100%; }
-.lib-screens { display: flex; flex-wrap: wrap; gap: 8px; }
-.lib-why { overflow-wrap: anywhere; }
-.lib-record { display: flex; flex-direction: column; gap: 14px; }
-.lib-page .lib-detail .tabpanel { padding-top: 12px; }
-.lib-page .lib-fact { background: var(--surface-2); border: 1px solid var(--border); }
-.lib-page .lib-sub h3 { font-size: var(--fs-xs); letter-spacing: var(--tracking-label); }
-.lib-page .lib-detail .callout { padding: 9px 12px 9px 16px; }
-@media (max-width: 760px) {
-  .lib-page .lib-find { max-width: none; flex-basis: 100%; }
-  .lib-page .lib-sort { flex: 1; }
-  .lib-page .lib-sort .select { width: 100%; }
-  .lib-page .lib-main > .toolbar-row { position: static; }
-  .lib-page .lib-card:hover { transform: none; }
+.lib-page .lib-detail {
+  background: var(--surface);
+  box-shadow: var(--shadow-1);
 }
-.lib-page .lib-main > .toolbar-row .toolbar-main { flex: 1 1 auto; }
+.lib-page .lib-detail-body {
+  gap: 14px;
+}
+.lib-page .lib-detail-head {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.lib-page .lib-detail-head .lib-detail-meta {
+  margin: 0;
+  font-size: var(--fs-xs);
+  letter-spacing: var(--tracking-label);
+  text-transform: uppercase;
+  font-weight: 700;
+}
+.lib-page .lib-actions {
+  gap: 8px;
+}
+.lib-page .lib-actions .btn {
+  flex: 1 1 auto;
+  justify-content: center;
+}
+.lib-page .lib-actions .btn-primary {
+  flex: 1 1 100%;
+}
+.lib-screens {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.lib-why {
+  overflow-wrap: anywhere;
+}
+.lib-record {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.lib-page .lib-detail .tabpanel {
+  padding-top: 12px;
+}
+.lib-page .lib-fact {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+}
+.lib-page .lib-sub h3 {
+  font-size: var(--fs-xs);
+  letter-spacing: var(--tracking-label);
+}
+.lib-page .lib-detail .callout {
+  padding: 9px 12px 9px 16px;
+}
+@media (max-width: 760px) {
+  .lib-page .lib-find {
+    max-width: none;
+    flex-basis: 100%;
+  }
+  .lib-page .lib-sort {
+    flex: 1;
+  }
+  .lib-page .lib-sort .select {
+    width: 100%;
+  }
+  .lib-page .lib-main > .toolbar-row {
+    position: static;
+  }
+  .lib-page .lib-card:hover {
+    transform: none;
+  }
+}
+.lib-page .lib-main > .toolbar-row .toolbar-main {
+  flex: 1 1 auto;
+}

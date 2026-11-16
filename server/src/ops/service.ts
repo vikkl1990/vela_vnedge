@@ -8,7 +8,7 @@ import type { AppConfig } from '../config.ts';
 import type { CandleStore, IntegrityEvent } from '../data/candleStore.ts';
 import type { Db } from '../db.ts';
 import { logger, type LogEntry } from '../log.ts';
-import { AlertManager, telegramFromEnv } from './alerts.ts';
+import { AlertManager, telegramFromEnv, type TelegramTarget } from './alerts.ts';
 import { BackupService } from './backup.ts';
 import { MetricsRegistry, RateWindow } from './metrics.ts';
 import { Monitor } from './monitor.ts';
@@ -34,6 +34,7 @@ export interface OpsDeps {
   peakEquity?: () => number;
   /** Test hook: replaces the Telegram transport. */
   transport?: (text: string) => Promise<void>;
+  telegramTarget?:()=>TelegramTarget|null;
 }
 
 export class OpsService {
@@ -55,11 +56,11 @@ export class OpsService {
     const cfg = d.cfg();
     this.workers = d.workers;
     this.pool = d.pool;
-    this.alerts = new AlertManager({ repeatMinutes: cfg.alerts.repeatMinutes, maxPerHour: cfg.alerts.maxPerHour, transport: d.transport ?? null, telegram: telegramFromEnv(cfg.alerts.telegram) });
+    this.alerts = new AlertManager({ repeatMinutes: cfg.alerts.repeatMinutes, maxPerHour: cfg.alerts.maxPerHour, transport: d.transport ?? null, telegram: d.telegramTarget?d.telegramTarget():telegramFromEnv(cfg.alerts.telegram) });
     this.monitor = new Monitor({ cfg: d.cfg, db: d.db, alerts: this.alerts, workers: d.workers, dataDir: d.dataDir, feed: d.feed, pool: d.pool, paper: d.paper, candles: d.candles, peakEquity: d.peakEquity, memoryLimit: memoryLimitBytes });
     this.backups = new BackupService(d.db, path.join(d.dataDir, 'backups'), () => ({ hourUtc: d.cfg().ops.backupHourUtc, keepDays: d.cfg().ops.backupKeepDays }));
     d.onConfigChange(next => {
-      this.alerts.configure({ repeatMinutes: next.alerts.repeatMinutes, maxPerHour: next.alerts.maxPerHour, ...(d.transport ? {} : { telegram: telegramFromEnv(next.alerts.telegram) }) });
+      this.alerts.configure({ repeatMinutes: next.alerts.repeatMinutes, maxPerHour: next.alerts.maxPerHour, ...(d.transport ? {} : { telegram: d.telegramTarget?d.telegramTarget():telegramFromEnv(next.alerts.telegram) }) });
       this.d.candles.driftWarnMs = next.ops.driftWarnMs;
       if (this.started) this.enableLogFile(next);
     });

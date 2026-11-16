@@ -2,10 +2,10 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState, type UIEvent }
 import { useLogs } from '../api/queries'
 import type { LogEntry, LogLevel } from '../api/types'
 import { WindowedList } from '../components/WindowedList'
-import { ErrorState, Loading, Panel, Segmented } from '../components/ui'
-import { EmptyState, PageHeader, Toolbar } from '../components/kit'
-import '../styles/pages/logs.css'
+import { EmptyState, ErrorState, Loading, PageHeader, Section, ToggleGroup, Toolbar } from '../components/kit'
+
 import { fmtTime, fmtUtc } from '../lib/format'
+import '../styles/pages/logs.css'
 
 const LEVELS: ('all' | LogLevel)[] = ['all', 'debug', 'info', 'warn', 'error']
 const SEV: Record<LogLevel, number> = { debug: 0, info: 1, warn: 2, error: 3 }
@@ -38,13 +38,23 @@ export function Logs() {
     return (logs.data ?? [])
       .filter((l) => level === 'all' || SEV[l.level] >= SEV[level])
       .filter((l) => !scope || l.scope === scope)
-      .filter((l) => !t || l.msg.toLowerCase().includes(t) || JSON.stringify(l.data ?? '').toLowerCase().includes(t))
+      .filter(
+        (l) =>
+          !t ||
+          l.msg.toLowerCase().includes(t) ||
+          JSON.stringify(l.data ?? '')
+            .toLowerCase()
+            .includes(t),
+      )
   }, [logs.data, level, scope, text])
 
   const scopes = useMemo(() => Array.from(new Set((logs.data ?? []).map((l) => l.scope))).sort(), [logs.data])
 
   const keyOf = useCallback((l: LogEntry, i: number) => `${l.at}-${i}`, [])
-  const itemHeight = useCallback((l: LogEntry, i: number) => ROW_H + (open.has(keyOf(l, i)) ? detailHeight(l) + 6 : 0), [open, keyOf])
+  const itemHeight = useCallback(
+    (l: LogEntry, i: number) => ROW_H + (open.has(keyOf(l, i)) ? detailHeight(l) + 6 : 0),
+    [open, keyOf],
+  )
   const toggle = useCallback((k: string) => {
     setOpen((s) => {
       const n = new Set(s)
@@ -71,14 +81,33 @@ export function Logs() {
   }, [])
 
   const filtered = level !== 'all' || scope !== '' || text.trim() !== ''
-  const clearFilters = () => { setLevel('all'); setScope(''); setText('') }
+  const clearFilters = () => {
+    setLevel('all')
+    setScope('')
+    setText('')
+  }
 
   return (
     <div className="page logs-page">
-      <PageHeader title="Logs" subtitle="The newest 400 lines, plus live events as they arrive. Click a line to open its details." />
-      <Toolbar end={<span className="muted small mono" role="status">{rows.length} line{rows.length === 1 ? '' : 's'}{filtered ? ' match' : ''}</span>}>
-        <Segmented ariaLabel="Level" value={level} onChange={setLevel} options={LEVELS} />
-        <select className="select select-sm" value={scope} onChange={(e) => setScope(e.target.value)} aria-label="Scope">
+      <PageHeader
+        title="Logs"
+        subtitle="The newest 400 lines, plus live events as they arrive. Click a line to open its details."
+      />
+      <Toolbar
+        end={
+          <span className="muted small mono" role="status">
+            {rows.length} line{rows.length === 1 ? '' : 's'}
+            {filtered ? ' match' : ''}
+          </span>
+        }
+      >
+        <ToggleGroup ariaLabel="Level" value={level} onChange={setLevel} options={LEVELS} />
+        <select
+          className="select select-sm"
+          value={scope}
+          onChange={(e) => setScope(e.target.value)}
+          aria-label="Scope"
+        >
           <option value="">all scopes</option>
           {scopes.map((s) => (
             <option key={s} value={s}>
@@ -86,13 +115,24 @@ export function Logs() {
             </option>
           ))}
         </select>
-        <input className="input input-sm logs-search" type="search" placeholder="Search messages and data" value={text} onChange={(e) => setText(e.target.value)} aria-label="Search logs" />
+        <input
+          className="input input-sm logs-search"
+          type="search"
+          placeholder="Search messages and data"
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          aria-label="Search logs"
+        />
         <label className="check">
           <input type="checkbox" checked={auto} onChange={(e) => setAuto(e.target.checked)} /> Follow newest
         </label>
-        {filtered && <button className="btn btn-sm" onClick={clearFilters}>Clear filters</button>}
+        {filtered && (
+          <button className="btn btn-sm" onClick={clearFilters}>
+            Clear filters
+          </button>
+        )}
       </Toolbar>
-      <Panel title="Log tail" pad={false}>
+      <Section variant="panel" title="Log tail" pad={false}>
         {logs.isLoading && !logs.data && (
           <div className="logbox">
             <Loading rows={12} />
@@ -111,8 +151,18 @@ export function Logs() {
             empty={
               <EmptyState
                 title={filtered ? 'No log lines match' : 'No log lines yet'}
-                hint={filtered ? 'Loosen the level, scope or search, or wait for new events.' : 'Lines appear here as the server writes them.'}
-                action={filtered ? <button className="btn btn-sm" onClick={clearFilters}>Clear filters</button> : undefined}
+                hint={
+                  filtered
+                    ? 'Loosen the level, scope or search, or wait for new events.'
+                    : 'Lines appear here as the server writes them.'
+                }
+                action={
+                  filtered ? (
+                    <button className="btn btn-sm" onClick={clearFilters}>
+                      Clear filters
+                    </button>
+                  ) : undefined
+                }
               />
             }
             render={(l, i) => {
@@ -121,12 +171,20 @@ export function Logs() {
             }}
           />
         )}
-      </Panel>
+      </Section>
     </div>
   )
 }
 
-const LogLine = memo(function LogLine({ l, open, onToggle }: { l: LogEntry; open: boolean; onToggle: () => void }) {
+const LogLine = memo(function LogLine({
+  l,
+  open,
+  onToggle,
+}: {
+  l: LogEntry
+  open: boolean
+  onToggle: () => void
+}) {
   const hasData = l.data !== undefined && l.data !== null
   return (
     <div

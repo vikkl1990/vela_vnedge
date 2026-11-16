@@ -83,3 +83,57 @@ test('a runtime quarantine blocks admission without treating existing forward ev
  assert.equal(candidateBlockers(store,cfg,now).counts.unavailable,1);
  assert.deepEqual(admitOnly(store,cfg,now),[]);assert.equal(store.get(next.id)!.stage,'candidate');
 });
+
+test('an old fill no longer occupies an idle research slot forever; its history is unchanged',()=>{
+ const {store,cfg,pair,pos,db}=world();const old=pair('old','15m','shadow',20);pos(old);
+ db.run('UPDATE positions SET entry_at=?,exit_at=?,realized_pnl=?',now-10*DAY,now-9*DAY,7);
+ const history=db.all('SELECT * FROM positions');const next=pair('next','15m','candidate',10);
+ assert.deepEqual(admitOnly(store,cfg,now),['next ETHUSD 15m']);
+ assert.equal(store.get(old.id)!.stage,'candidate');assert.equal(store.get(old.id)!.since,old.since);
+ assert.equal(store.get(next.id)!.stage,'shadow');assert.deepEqual(db.all('SELECT * FROM positions'),history);
+ const event=store.events(10).find(e=>e.actor==='rotation')!;
+ assert.equal(event.evidence.idleSince,now-7*DAY);assert.equal(event.evidence.lastEntryAt,now-10*DAY);
+});
+
+test('a fill exactly at the idle cutoff is still active',()=>{
+ const {store,cfg,pair,pos,db}=world();const old=pair('old','15m','shadow',20);pos(old);
+ db.run('UPDATE positions SET entry_at=?',now-7*DAY);pair('next','15m','candidate',10);
+ assert.deepEqual(admitOnly(store,cfg,now),[]);
+});
+
+test('a recent close keeps an old swing entry active',()=>{
+ const {store,cfg,pair,pos,db}=world();const old=pair('old','15m','shadow',20);pos(old);
+ db.run('UPDATE positions SET entry_at=?,exit_at=?',now-10*DAY,now-DAY);pair('next','15m','candidate',10);
+ assert.deepEqual(admitOnly(store,cfg,now),[]);
+});
+
+for(const book of [0,2]) for(const status of ['open','pending']) test(`rotation protects old ${status} positions in book ${book}`,()=>{
+ const {store,cfg,pair,pos,db}=world();const old=pair('old','15m','shadow',20);pos(old,status);
+ db.run('UPDATE positions SET entry_at=?,bt=?',now-10*DAY,book);pair('next','15m','candidate',10);
+ assert.deepEqual(admitOnly(store,cfg,now),[]);assert.equal(store.get(old.id)!.stage,'shadow');
+});
+
+test('a new evaluation window gets its full observation time despite old fills',()=>{
+ const {store,cfg,pair,pos,db}=world();const old=pair('old','15m','shadow',20);pos(old);
+ db.run('UPDATE positions SET entry_at=?',now-10*DAY);pair('next','15m','candidate',10);
+ store.evaluationSince=()=>now-2*DAY;
+ assert.deepEqual(admitOnly(store,cfg,now),[]);
+});
+
+test('paper-qualified quiet sources are protected without changing their qualification rules',()=>{
+ const {store,cfg,pair}=world();const old=pair('old','15m','shadow',20);pair('next','15m','candidate',10);
+ cfg.incubator.mirror!.enabled=true;store.policyFor=()=>{throw Error('unused test policy');};
+ store.evaluationSince=cell=>cell.since;
+ let calls=0;
+ store.copyRefusal=(_cell,mirror,_turnover,at,opts)=>{calls++;assert.equal(mirror,cfg.incubator.mirror);assert.equal(at,now);assert.equal(opts?.readOnly,true);return null;};
+ assert.deepEqual(admitOnly(store,cfg,now),[]);assert.equal(calls,1);assert.equal(store.get(old.id)!.stage,'shadow');
+});
+
+test('the transaction rejects a fill that arrives after the idle selection',()=>{
+ const {store,cfg,pair,pos,db}=world();const old=pair('old','15m','shadow',20),next=pair('next','15m','candidate',10);
+ const rotate=store.rotate.bind(store);
+ store.rotate=(...args)=>{pos(old);return rotate(...args);};
+ assert.throws(()=>admitOnly(store,cfg,now),/rotation state changed/);
+ assert.equal(store.get(old.id)!.stage,'shadow');assert.equal(store.get(next.id)!.stage,'candidate');assert.equal(store.rotationState().used,0);
+ assert.equal(db.get<{n:number}>('SELECT count(*) n FROM positions')!.n,1);
+});

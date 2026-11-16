@@ -1,15 +1,15 @@
-import { useAuth } from '../auth/AuthGate'
 import { memo, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useClosePosition, useExecution, useMarkets } from '../api/queries'
-import { positionTargets, protectionText, quantityText, targetR } from '../lib/protection'
 import type { Position } from '../api/types'
+import { useAuth } from '../auth/AuthGate'
 import { fmtAge, fmtInt, fmtMoney, fmtPrice, fmtR } from '../lib/format'
+import { positionTargets, protectionText, quantityText, targetR } from '../lib/protection'
 import { useToast } from '../lib/toast'
+import { useMediaQuery } from '../lib/useMediaQuery'
 import { useLivePrice, useLiveTick } from '../sse/prices'
 import { DataTable, type Column } from './DataTable'
-import { useMediaQuery } from '../lib/useMediaQuery'
-import { ConfirmDialog, Pill, Pnl, SidePill, StatusDot, Time } from './ui'
+import { ConfirmDialog, Pill, Pnl, SidePill, StatusDot, Time } from './kit'
 import { TradePath } from './TradePath'
 
 /** Live unrealized PnL from the latest tick (falls back to the server's number). */
@@ -27,7 +27,14 @@ function livePnl(p: Position, price: number | undefined): number {
 const LiveMark = memo(function LiveMark({ p, tick }: { p: Position; tick?: number }) {
   const { price, ageMs, stale } = useLiveTick(p.symbol, p.markPrice)
   return (
-    <span className={`mono ${stale ? 'price-stale' : ''}`} title={stale ? `no tick for ${ageMs === null ? 'this symbol yet' : fmtAge(ageMs)} — this is the server's last value, so the P&L beside it may be out of date` : undefined}>
+    <span
+      className={`mono ${stale ? 'price-stale' : ''}`}
+      title={
+        stale
+          ? `no tick for ${ageMs === null ? 'this symbol yet' : fmtAge(ageMs)} — this is the server's last value, so the P&L beside it may be out of date`
+          : undefined
+      }
+    >
       {fmtPrice(price ?? p.markPrice, tick)}
     </span>
   )
@@ -38,7 +45,14 @@ const LiveNotional = memo(function LiveNotional({ p }: { p: Position }) {
 })
 const LiveUpnl = memo(function LiveUpnl({ p }: { p: Position }) {
   const { price, stale } = useLiveTick(p.symbol, p.markPrice)
-  return <span className={stale ? 'price-stale' : ''} title={stale ? 'estimated from a price that is not live' : undefined}><Pnl value={livePnl(p, price)} /></span>
+  return (
+    <span
+      className={stale ? 'price-stale' : ''}
+      title={stale ? 'estimated from a price that is not live' : undefined}
+    >
+      <Pnl value={livePnl(p, price)} />
+    </span>
+  )
 })
 const LiveDot = memo(function LiveDot({ p }: { p: Position }) {
   const price = useLivePrice(p.symbol, p.markPrice)
@@ -46,32 +60,72 @@ const LiveDot = memo(function LiveDot({ p }: { p: Position }) {
 })
 
 function stopState(p: Position): { badge: string | null; tone: 'muted' | 'ok'; title: string } {
-  const r = p.sl == null ? null : targetR(p, p.sl);
-  if(r == null) return {badge:null,tone:'muted',title:protectionText(p)};
-  if(r>0.005) return {badge:`PROTECTED ${fmtR(r)}`,tone:'ok',title:protectionText(p)};
-  if(p.breakEven || Math.abs(r)<=0.005) return {badge:'BE',tone:'muted',title:'Stop is at entry, before costs. '+protectionText(p)};
-  return {badge:null,tone:'muted',title:protectionText(p)};
+  const r = p.sl == null ? null : targetR(p, p.sl)
+  if (r == null) return { badge: null, tone: 'muted', title: protectionText(p) }
+  if (r > 0.005) return { badge: `PROTECTED ${fmtR(r)}`, tone: 'ok', title: protectionText(p) }
+  if (p.breakEven || Math.abs(r) <= 0.005)
+    return { badge: 'BE', tone: 'muted', title: 'Stop is at entry, before costs. ' + protectionText(p) }
+  return { badge: null, tone: 'muted', title: protectionText(p) }
 }
 
-function ExecutionState({p}: {p:Position}) {
-  const e=p.execution
-  if(!e)return null
-  if(e.pending)return <div className="small" role="status">Exit {e.pending.status === 'partial' ? 'partially filled' : 'pending'} · {e.pending.reason}<br /><span className="muted">{e.pending.last_error ?? 'Awaiting executable depth'} · remaining exposure held</span></div>
-  if(e.desiredStop != null)return <div className="muted small">Stop update pending: {fmtPrice(e.desiredStop)}. Current SL remains active.</div>
+function ExecutionState({ p }: { p: Position }) {
+  const e = p.execution
+  if (!e) return null
+  if (e.pending)
+    return (
+      <div className="small" role="status">
+        Exit {e.pending.status === 'partial' ? 'partially filled' : 'pending'} · {e.pending.reason}
+        <br />
+        <span className="muted">
+          {e.pending.last_error ?? 'Awaiting executable depth'} · remaining exposure held
+        </span>
+      </div>
+    )
+  if (e.desiredStop != null)
+    return (
+      <div className="muted small">
+        Stop update pending: {fmtPrice(e.desiredStop)}. Current SL remains active.
+      </div>
+    )
   return null
 }
 
 function PositionTargets({ p, tick }: { p: Position; tick?: number }) {
   const targets = positionTargets(p)
-  const active = targets.filter(t => t.state === 'active')
-  const rLabel = (price: number) => { const r = targetR(p, price); return r == null ? 'R unavailable' : fmtR(r) }
-  return <div className="position-targets">
-    {active.length ? active.map(t => <span className="mono" key={t.index}>TP{t.index + 1} {fmtPrice(t.price, tick)} <small className="muted">{rLabel(t.price)}</small></span>) : <span className="muted">No allocated target</span>}
-    <details><summary>Exit details</summary>
-      {targets.map(t => <div key={t.index}>TP{t.index + 1}: {fmtPrice(t.price, tick)} · {rLabel(t.price)} · {t.state === 'active' ? `${t.qty} contracts allocated` : t.state === 'reference' ? 'reference only; no contracts' : t.state === 'hit' ? 'already hit' : 'allocation unknown'}</div>)}
-      <p>{protectionText(p)}</p>
-    </details>
-  </div>
+  const active = targets.filter((t) => t.state === 'active')
+  const rLabel = (price: number) => {
+    const r = targetR(p, price)
+    return r == null ? 'R unavailable' : fmtR(r)
+  }
+  return (
+    <div className="position-targets">
+      {active.length ? (
+        active.map((t) => (
+          <span className="mono" key={t.index}>
+            TP{t.index + 1} {fmtPrice(t.price, tick)} <small className="muted">{rLabel(t.price)}</small>
+          </span>
+        ))
+      ) : (
+        <span className="muted">No allocated target</span>
+      )}
+      <details>
+        <summary>Exit details</summary>
+        {targets.map((t) => (
+          <div key={t.index}>
+            TP{t.index + 1}: {fmtPrice(t.price, tick)} · {rLabel(t.price)} ·{' '}
+            {t.state === 'active'
+              ? `${t.qty} contracts allocated`
+              : t.state === 'reference'
+                ? 'reference only; no contracts'
+                : t.state === 'hit'
+                  ? 'already hit'
+                  : 'allocation unknown'}
+          </div>
+        ))}
+        <p>{protectionText(p)}</p>
+      </details>
+    </div>
+  )
 }
 
 export function PositionsTable({ positions, compact = false }: { positions: Position[]; compact?: boolean }) {
@@ -84,7 +138,11 @@ export function PositionsTable({ positions, compact = false }: { positions: Posi
   const mirrored = mode !== 'paper' && !exec.data?.dryRun
   const venue = {
     mirrored,
-    text: mirrored ? `— paper book and ${exec.data?.host ?? mode} account` : mode === 'paper' ? '(paper only)' : `(paper only; ${mode} is in dry-run)`,
+    text: mirrored
+      ? `— paper book and ${exec.data?.host ?? mode} account`
+      : mode === 'paper'
+        ? '(paper only)'
+        : `(paper only; ${mode} is in dry-run)`,
   }
   const narrow = useMediaQuery('(max-width: 1680px)')
   const veryNarrow = useMediaQuery('(max-width: 1180px)')
@@ -133,26 +191,64 @@ export function PositionsTable({ positions, compact = false }: { positions: Posi
           </span>
         ),
       },
-      { key: 'entry', header: 'Entry', numeric: true, value: (p) => p.entryPrice, render: (p) => <span className="mono">{fmtPrice(p.entryPrice, tick(p.symbol))}</span> },
-      { key: 'mark', header: 'Last', numeric: true, value: (p) => p.markPrice, render: (p) => <LiveMark p={p} tick={tick(p.symbol)} /> },
+      {
+        key: 'entry',
+        header: 'Entry',
+        numeric: true,
+        value: (p) => p.entryPrice,
+        render: (p) => <span className="mono">{fmtPrice(p.entryPrice, tick(p.symbol))}</span>,
+      },
+      {
+        key: 'mark',
+        header: 'Last',
+        numeric: true,
+        value: (p) => p.markPrice,
+        render: (p) => <LiveMark p={p} tick={tick(p.symbol)} />,
+      },
       {
         key: 'lev',
         header: 'Lev',
         numeric: true,
         value: (p) => p.marginLeverage ?? p.leverage ?? 0,
-        render: (p) => <span className="mono">{(p.marginLeverage ?? p.leverage) ? `${(p.marginLeverage ?? p.leverage)!.toFixed(1)}x` : '–'}</span>,
+        render: (p) => (
+          <span className="mono">
+            {(p.marginLeverage ?? p.leverage) ? `${(p.marginLeverage ?? p.leverage)!.toFixed(1)}x` : '–'}
+          </span>
+        ),
       },
       ...(narrow || compact
         ? []
         : ([
-            { key: 'notional', header: 'Notional', numeric: true, value: (p) => p.qtyOpen * p.contractValue * p.markPrice, render: (p) => <LiveNotional p={p} /> },
+            {
+              key: 'notional',
+              header: 'Notional',
+              numeric: true,
+              value: (p) => p.qtyOpen * p.contractValue * p.markPrice,
+              render: (p) => <LiveNotional p={p} />,
+            },
           ] as Column<Position>[])),
       // margin and liquidation are risk, not detail: they stay until the table is genuinely tiny
       ...(compact
         ? []
         : ([
-            { key: 'margin', header: 'Margin', numeric: true, value: (p) => p.margin ?? 0, render: (p) => <span className="mono">{p.margin != null ? fmtMoney(p.margin, 2) : '–'}</span> },
-            { key: 'liq', header: 'Liq', numeric: true, value: (p) => p.liqPrice ?? 0, render: (p) => <span className="mono loss">{p.liqPrice != null ? fmtPrice(p.liqPrice, tick(p.symbol)) : '–'}</span> },
+            {
+              key: 'margin',
+              header: 'Margin',
+              numeric: true,
+              value: (p) => p.margin ?? 0,
+              render: (p) => <span className="mono">{p.margin != null ? fmtMoney(p.margin, 2) : '–'}</span>,
+            },
+            {
+              key: 'liq',
+              header: 'Liq',
+              numeric: true,
+              value: (p) => p.liqPrice ?? 0,
+              render: (p) => (
+                <span className="mono loss">
+                  {p.liqPrice != null ? fmtPrice(p.liqPrice, tick(p.symbol)) : '–'}
+                </span>
+              ),
+            },
           ] as Column<Position>[])),
       {
         key: 'sl',
@@ -179,23 +275,59 @@ export function PositionsTable({ positions, compact = false }: { positions: Posi
           return <PositionTargets p={p} tick={tick(p.symbol)} />
         },
       },
-      { key: 'upnl', header: 'Unrealized', numeric: true, value: (p) => p.unrealizedPnl, render: (p) => <LiveUpnl p={p} /> },
+      {
+        key: 'upnl',
+        header: 'Unrealized',
+        numeric: true,
+        value: (p) => p.unrealizedPnl,
+        render: (p) => <LiveUpnl p={p} />,
+      },
       ...(dense || !anyRealized
         ? []
         : ([
-            { key: 'rpnl', header: 'Realized', numeric: true, value: (p) => p.realizedPnl, render: (p) => <Pnl value={p.realizedPnl} /> },
+            {
+              key: 'rpnl',
+              header: 'Realized',
+              numeric: true,
+              value: (p) => p.realizedPnl,
+              render: (p) => <Pnl value={p.realizedPnl} />,
+            },
           ] as Column<Position>[])),
       ...(dense
         ? []
         : ([
-            { key: 'r', header: 'R', numeric: true, value: (p) => p.rMultiple, render: (p) => <span className={`mono ${p.rMultiple >= 0 ? 'gain' : 'loss'}`}>{fmtR(p.rMultiple)}</span> },
-            { key: 'risk', header: 'Risk', numeric: true, value: (p) => p.riskAmount, render: (p) => <span className="mono">{fmtMoney(p.riskAmount)}</span> },
+            {
+              key: 'r',
+              header: 'R',
+              numeric: true,
+              value: (p) => p.rMultiple,
+              render: (p) => (
+                <span
+                  className={`mono ${p.rMultiple == null ? 'neutral' : p.rMultiple >= 0 ? 'gain' : 'loss'}`}
+                >
+                  {fmtR(p.rMultiple)}
+                </span>
+              ),
+            },
+            {
+              key: 'risk',
+              header: 'Risk',
+              numeric: true,
+              value: (p) => p.riskAmount,
+              render: (p) => <span className="mono">{fmtMoney(p.riskAmount)}</span>,
+            },
           ] as Column<Position>[])),
       {
         key: 'age',
-        header: 'Opened',
+        header: 'Filled',
         value: (p) => p.entryAt,
-        render: (p) => <Time t={p.entryAt} mode="ago" className="muted small" />,
+        render: (p) => (
+          <div>
+            <Time t={p.entryAt} mode="datetime" className="small" />
+            <br />
+            <Time t={p.entryAt} mode="ago" className="muted small" />
+          </div>
+        ),
       },
       {
         key: 'actions',
@@ -203,7 +335,12 @@ export function PositionsTable({ positions, compact = false }: { positions: Posi
         sortable: false,
         align: 'right',
         render: (p) => (
-          <button className="btn btn-xs btn-danger-outline" onClick={() => setClosing(p)} disabled={pending} aria-label={`Close ${p.symbol} position`}>
+          <button
+            className="btn btn-xs btn-danger-outline"
+            onClick={() => setClosing(p)}
+            disabled={pending}
+            aria-label={`Close ${p.symbol} position`}
+          >
             Close
           </button>
         ),
@@ -217,54 +354,153 @@ export function PositionsTable({ positions, compact = false }: { positions: Posi
         {positions.length === 0 && <p className="muted">No open positions</p>}
         {positions.map((p) => {
           const tick = markets?.find((m) => m.symbol === p.symbol)?.tickSize
-          return <article className="position-card" key={p.id}>
-            <div className="row gap"><b>{p.symbol} {p.tf}</b><SidePill side={p.side} /></div>
-            <Link className="link" to={`/scanners/${p.scannerId}`}>{p.scannerName}</Link>
-            <ExecutionState p={p} />
-            <dl className="position-metrics">
-              <div><dt>Unrealized P&L (USD)</dt><dd><LiveUpnl p={p} /></dd></div>
-              <div><dt>Mark price</dt><dd><LiveMark p={p} tick={tick} /></dd></div>
-              <div><dt>Stop loss {p.breakEven ? '(break-even)' : ''}</dt><dd>{fmtPrice(p.sl, tick)}</dd></div>
-              <div><dt>Liquidation (modelled{p.maintenanceMarginPct != null ? `, ${p.maintenanceMarginPct}% maintenance` : ''})</dt><dd>{fmtPrice(p.liqPrice, tick)}</dd></div>
-              <div><dt>Entry price</dt><dd>{fmtPrice(p.entryPrice, tick)}</dd></div>
-              <div><dt>Open / initial contracts</dt><dd>{fmtInt(p.qtyOpen)} / {fmtInt(p.qty)}</dd></div>
-              <div><dt>Remaining size</dt><dd>{quantityText(p.qtyOpen, p.contractValue)} {p.symbol.replace(/USD$/, '')} · <LiveNotional p={p} /> current notional</dd></div>
-              <div><dt>Margin (USD)</dt><dd>{fmtMoney(p.margin)}</dd></div>
-              <div><dt>Leverage</dt><dd>{(p.marginLeverage ?? p.leverage)?.toFixed(1) ?? '–'}×</dd></div>
-              <div><dt>Funding (USD)</dt><dd><Pnl value={p.funding ?? 0} /></dd></div>
-              <div><dt>Commission (USD)</dt><dd>{fmtMoney(p.fees)}</dd></div>
-              <div><dt>Realized P&L before commission (USD)</dt><dd><Pnl value={p.realizedPnl} /></dd></div>
-              <div><dt>Risk (USD)</dt><dd>{fmtMoney(p.riskAmount)}</dd></div>
-            </dl>
-            <PositionTargets p={p} tick={tick} />
-            <div className="position-card-actions">
-              <button className="btn" onClick={() => setPathOf({id:p.id,title:`${p.symbol} ${p.side} · ${p.scannerName}`})}>View trade path</button>
-              <button className="btn btn-danger-outline" onClick={() => setClosing(p)} disabled={pending} aria-label={`Close ${p.symbol} position`}>Close position</button>
-            </div>
-          </article>
+          return (
+            <article className="position-card" key={p.id}>
+              <div className="row gap">
+                <b>
+                  {p.symbol} {p.tf}
+                </b>
+                <SidePill side={p.side} />
+              </div>
+              <Link className="link" to={`/scanners/${p.scannerId}`}>
+                {p.scannerName}
+              </Link>
+              <ExecutionState p={p} />
+              <dl className="position-metrics">
+                <div>
+                  <dt>Filled</dt>
+                  <dd>
+                    <Time t={p.entryAt} mode="datetime" />
+                    <br />
+                    <Time t={p.entryAt} mode="ago" />
+                  </dd>
+                </div>
+                <div>
+                  <dt>Unrealized P&L (USD)</dt>
+                  <dd>
+                    <LiveUpnl p={p} />
+                  </dd>
+                </div>
+                <div>
+                  <dt>Mark price</dt>
+                  <dd>
+                    <LiveMark p={p} tick={tick} />
+                  </dd>
+                </div>
+                <div>
+                  <dt>Stop loss {p.breakEven ? '(break-even)' : ''}</dt>
+                  <dd>{fmtPrice(p.sl, tick)}</dd>
+                </div>
+                <div>
+                  <dt>
+                    Liquidation (modelled
+                    {p.maintenanceMarginPct != null ? `, ${p.maintenanceMarginPct}% maintenance` : ''})
+                  </dt>
+                  <dd>{fmtPrice(p.liqPrice, tick)}</dd>
+                </div>
+                <div>
+                  <dt>Entry price</dt>
+                  <dd>{fmtPrice(p.entryPrice, tick)}</dd>
+                </div>
+                <div>
+                  <dt>Open / initial contracts</dt>
+                  <dd>
+                    {fmtInt(p.qtyOpen)} / {fmtInt(p.qty)}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Remaining size</dt>
+                  <dd>
+                    {quantityText(p.qtyOpen, p.contractValue)} {p.symbol.replace(/USD$/, '')} ·{' '}
+                    <LiveNotional p={p} /> current notional
+                  </dd>
+                </div>
+                <div>
+                  <dt>Margin (USD)</dt>
+                  <dd>{fmtMoney(p.margin)}</dd>
+                </div>
+                <div>
+                  <dt>Leverage</dt>
+                  <dd>{(p.marginLeverage ?? p.leverage)?.toFixed(1) ?? '–'}×</dd>
+                </div>
+                <div>
+                  <dt>Funding (USD)</dt>
+                  <dd>
+                    <Pnl value={p.funding ?? 0} />
+                  </dd>
+                </div>
+                <div>
+                  <dt>Commission (USD)</dt>
+                  <dd>{fmtMoney(p.fees)}</dd>
+                </div>
+                <div>
+                  <dt>Realized P&L before commission (USD)</dt>
+                  <dd>
+                    <Pnl value={p.realizedPnl} />
+                  </dd>
+                </div>
+                <div>
+                  <dt>Risk (USD)</dt>
+                  <dd>{fmtMoney(p.riskAmount)}</dd>
+                </div>
+              </dl>
+              <PositionTargets p={p} tick={tick} />
+              <div className="position-card-actions">
+                <button
+                  className="btn"
+                  onClick={() => setPathOf({ id: p.id, title: `${p.symbol} ${p.side} · ${p.scannerName}` })}
+                >
+                  View trade path
+                </button>
+                <button
+                  className="btn btn-danger-outline"
+                  onClick={() => setClosing(p)}
+                  disabled={pending}
+                  aria-label={`Close ${p.symbol} position`}
+                >
+                  Close position
+                </button>
+              </div>
+            </article>
+          )
         })}
       </div>
       <div className="position-desktop">
-      <DataTable
-        columns={cols}
-        rows={positions}
-        rowKey={(p) => p.id}
-        onRowClick={(p) => setPathOf({ id: p.id, title: `${p.symbol} ${p.side} · ${p.scannerName}` })}
-        emptyLabel={
-          <span>
-            No open positions
-            <span className="empty-hint">The account opens one when an entry signal is actioned.</span>
-          </span>
-        }
-        defaultSort={{ key: 'age', dir: 'desc' }}
-        caption="Open positions"
-      />
+        <DataTable
+          columns={cols}
+          rows={positions}
+          rowKey={(p) => p.id}
+          onRowClick={(p) => setPathOf({ id: p.id, title: `${p.symbol} ${p.side} · ${p.scannerName}` })}
+          emptyLabel={
+            <span>
+              No open positions
+              <span className="empty-hint">The account opens one when an entry signal is actioned.</span>
+            </span>
+          }
+          defaultSort={{ key: 'age', dir: 'desc' }}
+          caption="Open positions"
+        />
       </div>
       <TradePath id={pathOf?.id ?? null} title={pathOf?.title} onClose={() => setPathOf(null)} />
       <ConfirmDialog
         open={!!closing}
         title={closing ? `Close ${closing.side.toUpperCase()} ${closing.symbol}?` : ''}
-        body={closing ? <p>Closes {fmtInt(closing.qtyOpen)} contracts at market {venue.text}.{venue.mirrored && <><br /><span className="muted small">The paper book closes immediately; the exchange order is sent after it and is confirmed separately on the exchange.</span></>}</p> : null}
+        body={
+          closing ? (
+            <p>
+              Closes {fmtInt(closing.qtyOpen)} contracts at market {venue.text}.
+              {venue.mirrored && (
+                <>
+                  <br />
+                  <span className="muted small">
+                    The paper book closes immediately; the exchange order is sent after it and is confirmed
+                    separately on the exchange.
+                  </span>
+                </>
+              )}
+            </p>
+          ) : null
+        }
         confirmLabel="Close position"
         danger
         busy={pending}
@@ -273,7 +509,13 @@ export function PositionsTable({ positions, compact = false }: { positions: Posi
           if (!closing) return
           close.mutate(closing.id, {
             onSuccess: (result) => {
-              toast.success(result.execution?.pending ? `Close pending: ${closing.symbol} is awaiting executable depth` : venue.mirrored ? `Close requested: ${closing.symbol} closed in the paper book` : `Closed ${closing.symbol}`)
+              toast.success(
+                result.execution?.pending
+                  ? `Close pending: ${closing.symbol} is awaiting executable depth`
+                  : venue.mirrored
+                    ? `Close requested: ${closing.symbol} closed in the paper book`
+                    : `Closed ${closing.symbol}`,
+              )
               setClosing(null)
             },
             onError: (e) => toast.error('Close failed', e.message),

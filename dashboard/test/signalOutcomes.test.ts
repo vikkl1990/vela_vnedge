@@ -10,24 +10,65 @@ test('resting and delayed orders are pending, never counted as opened fills', ()
     assert.equal(gateOf(action).key, 'pending')
   }
   const result = summarizeOutcomes([
-    signal('pending:resting limit at 99.4'), signal('pending'), signal('received:awaiting processing'),
-    signal('opened'), signal('reversed'), signal('closed', 'exit'),
+    signal('pending:resting limit at 99.4'),
+    signal('pending'),
+    signal('received:awaiting processing'),
+    signal('opened'),
+    signal('reversed'),
+    signal('closed', 'exit'),
   ])
   assert.equal(result.entries, 5)
   assert.equal(result.opened, 2)
-  assert.equal(result.buckets.find(b => b.key === 'pending')?.n, 2)
-  assert.equal(result.buckets.find(b => b.key === 'received')?.n, 1)
-  assert.equal(result.buckets.reduce((n, b) => n + b.n, 0), 6)
+  assert.equal(result.buckets.find((b) => b.key === 'pending')?.n, 2)
+  assert.equal(result.buckets.find((b) => b.key === 'received')?.n, 1)
+  assert.equal(
+    result.buckets.reduce((n, b) => n + b.n, 0),
+    6,
+  )
 })
 
 test('grouped rows and outcome totals agree on filled reversals and market refusals', () => {
-  const rows = [signal('opened'), signal('reversed'), signal('rejected:risk market: thin'), signal('rejected:market unavailable')]
-  assert.equal(rows.filter(s => gateOf(s.action).key === 'opened').length, summarizeOutcomes(rows).opened)
-  assert.equal(summarizeOutcomes(rows).buckets.find(b => b.key === 'market')?.n, 2)
+  const rows = [
+    signal('opened'),
+    signal('reversed'),
+    signal('rejected:risk market: thin'),
+    signal('rejected:market unavailable'),
+  ]
+  assert.equal(rows.filter((s) => gateOf(s.action).key === 'opened').length, summarizeOutcomes(rows).opened)
+  assert.equal(summarizeOutcomes(rows).buckets.find((b) => b.key === 'market')?.n, 2)
 })
 
 test('exit and information events cannot inflate entry conversion', () => {
-  const result = summarizeOutcomes([signal('closed', 'exit'), signal('reduced', 'exit'), signal('info', 'info')])
+  const result = summarizeOutcomes([
+    signal('closed', 'exit'),
+    signal('reduced', 'exit'),
+    signal('info', 'info'),
+  ])
   assert.equal(result.entries, 0)
   assert.equal(result.opened, 0)
+})
+
+test('data freshness, burst spacing and cooldown never masquerade as late scanners', () => {
+  const cases = [
+    ['rejected:exchange product status unknown or stale', 'exchange'],
+    ['rejected:risk market: fresh depth stale depth', 'depth'],
+    ['rejected:risk market: fresh depth cost exceeds ceiling (0.373% for $148)', 'market'],
+    ['rejected:risk market: fresh depth insufficient depth', 'market'],
+    ['rejected:risk burst: same side within 120s', 'burst'],
+    ['rejected:risk cooldown', 'cooldown'],
+    ['rejected:risk regime: choppy market', 'chop'],
+    ["rejected:the scanner's own stop: the account takes only the ATR stop", 'stop-policy'],
+    ['rejected:no fill', 'no-fill'],
+    ['rejected:risk max 1 positions on ETHUSD', 'capacity'],
+    ['rejected:stale signal', 'stale'],
+  ]
+  for (const [action, expected] of cases) {
+    assert.equal(gateOf(action).key, expected, action)
+    const buckets = summarizeOutcomes([signal(action)]).buckets
+    assert.deepEqual(
+      buckets.map((b) => [b.key, b.n]),
+      [[expected, 1]],
+      action,
+    )
+  }
 })

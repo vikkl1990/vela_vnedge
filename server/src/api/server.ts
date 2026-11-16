@@ -28,6 +28,7 @@ import { ContributionService } from '../scanners/contributions.ts';
 import { ReadinessService } from '../scanners/readiness.ts';
 import { ContractRegistry } from '../scanners/contracts.ts';
 import { deltaConnectionRoutes } from '../connections/routes.ts';
+import {telegramRoutes} from '../telegram/routes.ts';
 import { Journal, journalFilter } from '../analytics/journal.ts';
 
 const log = logger.scoped('api');
@@ -56,6 +57,7 @@ export class ApiServer {
     this.authCtx = createAuth(this.auth);
     authRoutes((m, r, h) => this.add(m, r, h), this.authCtx, req => this.userFor(req));
     deltaConnectionRoutes((m, r, h) => this.add(m, r, h), app.deltaConnection);
+    telegramRoutes((m,r,h)=>this.add(m,r,h),app.telegram,req=>this.userFor(req));
     setInterval(() => { try { this.auth.sweep(); } catch { /* ignore */ } }, 3600_000).unref?.();
     this.defineRoutes();
     for (const ext of EXTENSIONS) ext((method, route, handler) => this.add(method, route, (_r, _s, params, url, body) => handler(params, url, body)), app);
@@ -201,6 +203,7 @@ export class ApiServer {
     a.paper.on('position', (e: any) => this.broadcast('position', { type: e.type, position: a.paper.view(e.position, a.marks.mark(e.position.symbol) ?? null) }));
     a.paper.on('trade', (t: any) => this.broadcast('trade', t));
     a.paper.on('order', (o: any) => this.broadcast('order', o));
+    a.paper.on('pending', (e: {type:string;id?:number;entry?:{id:number};reason?:string}) => this.broadcast('pending', {type:e.type,id:e.id??e.entry?.id,reason:e.reason}));
     a.paper.on('accounting', (e: any) => this.broadcast('accounting', e));
     a.paper.on('stats', (s: any) => this.broadcast('stats', s));
     logger.on('entry', (e: any) => { if (e.level !== 'debug') this.broadcast('log', e); });
@@ -362,7 +365,7 @@ export class ApiServer {
     this.add('GET', '/api/signals', (_r, _s, _p, url) => {
       const rows = a.db.signals({
         limit: Number(url.searchParams.get('limit') ?? 200), scanner: url.searchParams.get('scanner') ?? undefined, symbol: url.searchParams.get('symbol') ?? undefined,
-        kind: url.searchParams.get('kind') ?? undefined, tf: url.searchParams.get('tf') ?? undefined, positionId: url.searchParams.has('positionId') ? Number(url.searchParams.get('positionId')) : undefined, since: url.searchParams.get('since') ? Number(url.searchParams.get('since')) : undefined,
+        kind: url.searchParams.get('kind') ?? undefined, side: url.searchParams.get('side') ?? undefined, tf: url.searchParams.get('tf') ?? undefined, positionId: url.searchParams.has('positionId') ? Number(url.searchParams.get('positionId')) : undefined, since: url.searchParams.get('since') ? Number(url.searchParams.get('since')) : undefined,
       });
       // Most scripts signal through a bare alertcondition, which carries a direction and nothing
       // else; the levels are derived from ATR when the position opens. Showing blank columns hides

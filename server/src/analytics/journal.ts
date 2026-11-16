@@ -36,6 +36,8 @@ export function journalRow(r: Raw) {
   return {
     id: r.id as number, book: [0,-1].includes(r.bt) ? 'paper' as const : 'shadow' as const, archived: r.bt < 0, status: r.status as string,
     scannerId: r.scanner_id as string, scannerName: r.scanner_name as string, symbol: r.symbol as string, tf: r.tf as string, side: r.side as string | null,
+    sourceScannerId: typeof meta?.executionPlan?.sourceScannerId === 'string' ? meta.executionPlan.sourceScannerId : r.scanner_id as string,
+    sourceHash: r.policy_source_hash ?? null,
     evidenceScope: r.scanner_id.startsWith('plan:') ? 'plan-comparison' : r.evidence_scope ?? 'unknown',
     entryAt: finite(r.entry_at), exitAt: finite(r.exit_at), eventAt: finite(r.exit_at) ?? finite(r.entry_at) ?? r.event_at,
     entryPrice: finite(r.entry_price), exitPrice: finite(r.exit_price), qty: finite(r.qty), qtyOpen: finite(r.qty_open), contractValue: finite(r.contract_value),
@@ -73,6 +75,7 @@ export class Journal {
     if (f.scope === 'evidence') where.push("p.scanner_id NOT LIKE 'plan:%' AND (p.bt IN (0,-1) OR p.evidence_scope IN ('shadow','legacy-shadow'))");
     if (f.scope === 'watch') where.push("p.scanner_id NOT LIKE 'plan:%' AND p.bt IN (2,-3) AND p.evidence_scope IN ('tracker','legacy-tracker')");
     const rows = this.db.all<Raw>(`SELECT p.*,
+      (SELECT t.source_hash FROM trade_policies t WHERE t.id=p.policy_id) policy_source_hash,
       EXISTS(SELECT 1 FROM execution_accounting a WHERE a.position_id=p.id AND a.state!='complete') accounting_pending,
       (SELECT o.price_source FROM orders o WHERE o.position_id=p.id AND o.bt=p.bt AND o.reason='entry' ORDER BY o.at,o.id LIMIT 1) fill_source
       FROM positions p WHERE ${where.join(' AND ')}`, ...args).map(journalRow);

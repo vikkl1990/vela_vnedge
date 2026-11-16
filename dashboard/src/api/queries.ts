@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient, type UseQueryOptions } from '@tanstack/react-query'
 import { api, ApiError } from './client'
+import { METADATA_REFRESH, REFRESH, streamFallback } from './refreshPolicy'
 import type { ConfigPatch, LogLevel, ScannerUpdate, SignalQuery, TradeQuery } from './types'
 
 /** Query keys — SSE handlers invalidate by these prefixes. */
@@ -13,7 +14,8 @@ export const qk = {
   library: ['library'] as const,
   libraryDetail: (id: string) => ['library', id] as const,
   scannerSource: (id: string) => ['scanners', 'source', id] as const,
-  scannerOverlay: (id: string, symbol: string, tf: string) => ['scanners', 'overlay', id, symbol, tf] as const,
+  scannerOverlay: (id: string, symbol: string, tf: string) =>
+    ['scanners', 'overlay', id, symbol, tf] as const,
   signals: (q: SignalQuery = {}) => ['signals', q] as const,
   positions: ['positions'] as const,
   positionPath: (id: number) => ['positionPath', id] as const,
@@ -35,19 +37,24 @@ type Opts<T> = Omit<UseQueryOptions<T, ApiError>, 'queryKey' | 'queryFn'>
 
 /** Portfolio risk state: halts, loss limits, drawdown scaling. */
 export function useRisk() {
-  return useQuery({ queryKey: ['risk'], queryFn: api.risk, refetchInterval: 20_000, retry: false })
+  return useQuery({ queryKey: ['risk'], queryFn: api.risk, refetchInterval: REFRESH.live, retry: false })
 }
 
 /** Exchange mirroring: mode, protective orders in place, last reconciliation. */
 export function useExecution() {
-  return useQuery({ queryKey: ['execution'], queryFn: api.execution, refetchInterval: 30_000, retry: false })
+  return useQuery({
+    queryKey: ['execution'],
+    queryFn: api.execution,
+    refetchInterval: REFRESH.normal,
+    retry: false,
+  })
 }
 
 export function useHealth() {
   return useQuery<ReturnType<typeof api.health> extends Promise<infer T> ? T : never, ApiError>({
     queryKey: qk.health,
     queryFn: api.health,
-    refetchInterval: 15_000,
+    refetchInterval: streamFallback,
     retry: false,
   })
 }
@@ -64,18 +71,62 @@ export function useBackendOnline(): { online: boolean; error: ApiError | null; c
  * Anything not pushed over SSE (markets, config) refreshes on a slow interval.
  */
 const LIVE_STALE = 30_000
-export const useJournal = (q: import('./journal').JournalQuery, enabled = true) => useQuery({ queryKey: ['journal', q], queryFn: () => api.journal(q), enabled, refetchInterval: 30_000, retry: 1 })
-export const useJournalDetail = (book: string, id: number | null) => useQuery({ queryKey: ['journal-detail', book, id], queryFn: () => api.journalDetail(book, id!), enabled: id !== null, refetchInterval: 30_000, retry: 1 })
+export const useJournal = (q: import('./journal').JournalQuery, enabled = true) =>
+  useQuery({
+    queryKey: ['journal', q],
+    queryFn: () => api.journal(q),
+    enabled,
+    refetchInterval: REFRESH.normal,
+    retry: 1,
+  })
+export const useJournalDetail = (book: string, id: number | null) =>
+  useQuery({
+    queryKey: ['journal-detail', book, id],
+    queryFn: () => api.journalDetail(book, id!),
+    enabled: id !== null,
+    refetchInterval: REFRESH.normal,
+    retry: 1,
+  })
 
-export const useContext = () => useQuery({ queryKey: ['context'], queryFn: api.context, refetchInterval: 5 * 60_000, staleTime: 60_000, retry: 1 })
-export const useGates = () => useQuery({ queryKey: ['gates'], queryFn: api.gates, refetchInterval: 30_000, staleTime: 15_000, retry: 1 })
-export const useConfig = () => useQuery({ queryKey: qk.config, queryFn: api.config, staleTime: 60_000, retry: 1 })
-export const useConfigDefaults = () => useQuery({ queryKey: ['config', 'defaults'], queryFn: api.configDefaults, staleTime: 3_600_000, retry: 1 })
+export const useContext = () =>
+  useQuery({
+    queryKey: ['context'],
+    queryFn: api.context,
+    refetchInterval: METADATA_REFRESH,
+    staleTime: 60_000,
+    retry: 1,
+  })
+export const useGates = () =>
+  useQuery({
+    queryKey: ['gates'],
+    queryFn: api.gates,
+    refetchInterval: REFRESH.normal,
+    staleTime: 15_000,
+    retry: 1,
+  })
+export const useConfig = () =>
+  useQuery({ queryKey: qk.config, queryFn: api.config, staleTime: 60_000, retry: 1 })
+export const useConfigDefaults = () =>
+  useQuery({ queryKey: ['config', 'defaults'], queryFn: api.configDefaults, staleTime: 3_600_000, retry: 1 })
 export const useMarkets = () =>
   // a failed load (a restart, a Delta hiccup) retries every 30 s instead of waiting out the 5-minute refresh
-  useQuery({ queryKey: qk.markets, queryFn: api.markets, staleTime: 5 * 60_000, refetchInterval: q => (q.state.status === 'error' ? 30_000 : 5 * 60_000), retry: 3, retryDelay: n => Math.min(30_000, 2_000 * 2 ** n) })
+  useQuery({
+    queryKey: qk.markets,
+    queryFn: api.markets,
+    staleTime: 5 * 60_000,
+    refetchInterval: (q) => (q.state.status === 'error' ? REFRESH.normal : METADATA_REFRESH),
+    retry: 3,
+    retryDelay: (n) => Math.min(30_000, 2_000 * 2 ** n),
+  })
 export const useScanners = (opts?: Opts<Awaited<ReturnType<typeof api.scanners>>>) =>
-  useQuery({ queryKey: qk.scanners, queryFn: api.scanners, staleTime: LIVE_STALE, retry: 1, ...opts })
+  useQuery({
+    queryKey: qk.scanners,
+    queryFn: api.scanners,
+    staleTime: LIVE_STALE,
+    refetchInterval: REFRESH.slow,
+    retry: 1,
+    ...opts,
+  })
 /**
  * Name/status lookup for headers, dropdowns and pickers. Same rows as `useScanners`, without the
  * per-scanner statistics and symbol lists that make the full response ~100x larger.
@@ -83,9 +134,16 @@ export const useScanners = (opts?: Opts<Awaited<ReturnType<typeof api.scanners>>
 export const useScannerIndex = (opts?: Opts<Awaited<ReturnType<typeof api.scannerIndex>>>) =>
   useQuery({ queryKey: qk.scannerIndex, queryFn: api.scannerIndex, staleTime: LIVE_STALE, retry: 1, ...opts })
 // decision 153: the Library list (cached a minute on the server), one script's detail, and the user's favorites
-export const useLibrary = () => useQuery({ queryKey: qk.library, queryFn: api.library, staleTime: 60_000, retry: 1 })
+export const useLibrary = () =>
+  useQuery({ queryKey: qk.library, queryFn: api.library, staleTime: 60_000, retry: 1 })
 export const useLibraryDetail = (id: string | null) =>
-  useQuery({ queryKey: qk.libraryDetail(id ?? ''), queryFn: () => api.libraryDetail(id!), enabled: Boolean(id), staleTime: 60_000, retry: 1 })
+  useQuery({
+    queryKey: qk.libraryDetail(id ?? ''),
+    queryFn: () => api.libraryDetail(id!),
+    enabled: Boolean(id),
+    staleTime: 60_000,
+    retry: 1,
+  })
 export function useLibraryFavorite() {
   const qc = useQueryClient()
   return useMutation({
@@ -93,11 +151,20 @@ export function useLibraryFavorite() {
     onMutate: async ({ id, on }) => {
       await qc.cancelQueries({ queryKey: qk.library })
       const prev = qc.getQueryData<Awaited<ReturnType<typeof api.library>>>(qk.library)
-      if (prev) qc.setQueryData(qk.library, { ...prev, favorites: on ? [...new Set([...prev.favorites, id])] : prev.favorites.filter((f) => f !== id) })
+      if (prev)
+        qc.setQueryData(qk.library, {
+          ...prev,
+          favorites: on ? [...new Set([...prev.favorites, id])] : prev.favorites.filter((f) => f !== id),
+        })
       return { prev }
     },
-    onError: (_e, _v, ctx) => { if (ctx?.prev) qc.setQueryData(qk.library, ctx.prev) },
-    onSuccess: (res) => { const prev = qc.getQueryData<Awaited<ReturnType<typeof api.library>>>(qk.library); if (prev) qc.setQueryData(qk.library, { ...prev, favorites: res.favorites }) },
+    onError: (_e, _v, ctx) => {
+      if (ctx?.prev) qc.setQueryData(qk.library, ctx.prev)
+    },
+    onSuccess: (res) => {
+      const prev = qc.getQueryData<Awaited<ReturnType<typeof api.library>>>(qk.library)
+      if (prev) qc.setQueryData(qk.library, { ...prev, favorites: res.favorites })
+    },
   })
 }
 export const useScannerSource = (id: string | undefined) =>
@@ -116,19 +183,51 @@ export const useScannerOverlay = (id: string | undefined, symbol: string, tf: st
     retry: 0,
   })
 export const useSignals = (q: SignalQuery = {}) =>
-  useQuery({ queryKey: qk.signals(q), queryFn: () => api.signals(q), staleTime: LIVE_STALE, retry: 1 })
+  useQuery({
+    queryKey: qk.signals(q),
+    queryFn: () => api.signals(q),
+    staleTime: LIVE_STALE,
+    refetchInterval: REFRESH.slow,
+    retry: 1,
+  })
 export const usePositions = () =>
-  useQuery({ queryKey: qk.positions, queryFn: api.positions, staleTime: LIVE_STALE, refetchInterval: 60_000, retry: 1 })
+  useQuery({
+    queryKey: qk.positions,
+    queryFn: api.positions,
+    staleTime: LIVE_STALE,
+    // Reconcile the complete list even while per-position SSE events keep arriving.
+    refetchInterval: REFRESH.live,
+    refetchOnMount: 'always',
+    retry: 1,
+  })
 export const useTrades = (q: TradeQuery = {}) =>
   useQuery({ queryKey: qk.trades(q), queryFn: () => api.trades(q), staleTime: LIVE_STALE, retry: 1 })
 /** Decision 190: the journal's page, filtered on the server. */
 export const useTradesPage = (q: TradeQuery = {}, enabled = true) =>
-  useQuery({ queryKey: ['trades', 'page', q], queryFn: () => api.tradesPage(q), enabled, staleTime: LIVE_STALE, retry: 1 })
+  useQuery({
+    queryKey: ['trades', 'page', q],
+    queryFn: () => api.tradesPage(q),
+    enabled,
+    staleTime: LIVE_STALE,
+    retry: 1,
+  })
 export const useOrders = (limit = 200) =>
   useQuery({ queryKey: qk.orders, queryFn: () => api.orders(limit), staleTime: LIVE_STALE, retry: 1 })
-export const useStats = () => useQuery({ queryKey: qk.stats, queryFn: api.stats, staleTime: LIVE_STALE, refetchInterval: 60_000, retry: 1 })
+export const useStats = () =>
+  useQuery({
+    queryKey: qk.stats,
+    queryFn: api.stats,
+    staleTime: LIVE_STALE,
+    refetchInterval: streamFallback,
+    retry: 1,
+  })
 export const useEquity = (scanner?: string) =>
-  useQuery({ queryKey: qk.equity(scanner), queryFn: () => api.equity(scanner), staleTime: LIVE_STALE, retry: 1 })
+  useQuery({
+    queryKey: qk.equity(scanner),
+    queryFn: () => api.equity(scanner),
+    staleTime: LIVE_STALE,
+    retry: 1,
+  })
 export const useBacktest = (scanner: string | undefined, symbol: string, tf: string) =>
   useQuery({
     queryKey: qk.backtest(scanner ?? '', symbol, tf),
@@ -137,7 +236,12 @@ export const useBacktest = (scanner: string | undefined, symbol: string, tf: str
     retry: 0,
   })
 export const useLogs = (level?: LogLevel, limit = 300) =>
-  useQuery({ queryKey: qk.logs(level), queryFn: () => api.logs(limit, level), staleTime: LIVE_STALE, retry: 1 })
+  useQuery({
+    queryKey: qk.logs(level),
+    queryFn: () => api.logs(limit, level),
+    staleTime: LIVE_STALE,
+    retry: 1,
+  })
 export const useCandles = (symbol: string, tf: string, limit = 500) =>
   useQuery({
     queryKey: qk.candles(symbol, tf),
@@ -153,7 +257,7 @@ export function useUpdateScanner() {
   return useMutation({
     mutationFn: ({ id, body }: { id: string; body: ScannerUpdate }) => api.updateScanner(id, body),
     onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: qk.scanners })  // prefix match also covers qk.scannerIndex
+      void qc.invalidateQueries({ queryKey: qk.scanners }) // prefix match also covers qk.scannerIndex
       void qc.invalidateQueries({ queryKey: qk.config })
     },
   })
@@ -162,18 +266,28 @@ export function useUpdateScanner() {
 export function useProfileScanner() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: ({ id, market, tfs }: { id: string; market?: string; tfs?: string[] }) => api.profileScanner(id, { market, tfs }),
-    onSuccess: (_d, v) => { void qc.invalidateQueries({ queryKey: qk.scanners }); void qc.invalidateQueries({ queryKey: ['scanner-profile', v.id] }) },
+    mutationFn: ({ id, market, tfs }: { id: string; market?: string; tfs?: string[] }) =>
+      api.profileScanner(id, { market, tfs }),
+    onSuccess: (_d, v) => {
+      void qc.invalidateQueries({ queryKey: qk.scanners })
+      void qc.invalidateQueries({ queryKey: ['scanner-profile', v.id] })
+    },
   })
 }
 export const useScannerProfile = (id: string | undefined) =>
-  useQuery({ queryKey: ['scanner-profile', id], queryFn: () => api.scannerProfile(id!), enabled: Boolean(id), staleTime: 60_000, retry: 1 })
+  useQuery({
+    queryKey: ['scanner-profile', id],
+    queryFn: () => api.scannerProfile(id!),
+    enabled: Boolean(id),
+    staleTime: 60_000,
+    retry: 1,
+  })
 
 export function useRunScanner() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: (id: string) => api.runScanner(id),
-    onSuccess: () => void qc.invalidateQueries({ queryKey: qk.scanners })  // prefix match also covers qk.scannerIndex,
+    onSuccess: () => void qc.invalidateQueries({ queryKey: qk.scanners }), // prefix match also covers qk.scannerIndex,
   })
 }
 
@@ -182,7 +296,10 @@ export function useReleaseScanner() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: (id: string) => api.releaseScanner(id),
-    onSuccess: () => { void qc.invalidateQueries({ queryKey: qk.scanners }); void qc.invalidateQueries({ queryKey: qk.health }) },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: qk.scanners })
+      void qc.invalidateQueries({ queryKey: qk.health })
+    },
   })
 }
 
@@ -192,7 +309,7 @@ export function useUpdateConfig() {
     mutationFn: (patch: ConfigPatch) => api.updateConfig(patch),
     onSuccess: (data) => {
       qc.setQueryData(qk.config, data)
-      void qc.invalidateQueries({ queryKey: qk.scanners })  // prefix match also covers qk.scannerIndex
+      void qc.invalidateQueries({ queryKey: qk.scanners }) // prefix match also covers qk.scannerIndex
     },
   })
 }
@@ -222,28 +339,50 @@ export function useCloseAll() {
   })
 }
 
-export const useOps = () => useQuery({ queryKey: ['ops'], queryFn: api.ops, refetchInterval: 60_000, retry: 1 })
-export const useMarketsToday = () => useQuery({ queryKey: ['markets-today'], queryFn: api.marketsToday, refetchInterval: 60_000, retry: 1 })
+export const useOps = () =>
+  useQuery({ queryKey: ['ops'], queryFn: api.ops, refetchInterval: REFRESH.slow, retry: 1 })
+export const useMarketsToday = () =>
+  useQuery({
+    queryKey: ['markets-today'],
+    queryFn: api.marketsToday,
+    refetchInterval: REFRESH.slow,
+    retry: 1,
+  })
 export function useRefreshMarketsToday() {
   const qc = useQueryClient()
-  return useMutation({ mutationFn: () => api.refreshMarketsToday(), onSuccess: () => void qc.invalidateQueries({ queryKey: ['markets-today'] }) })
+  return useMutation({
+    mutationFn: () => api.refreshMarketsToday(),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['markets-today'] }),
+  })
 }
 
 export function useKill() {
   const qc = useQueryClient()
-  return useMutation({ mutationFn: (v: { reason: string; closeAll?: boolean }) => api.riskKill(v.reason, v.closeAll), onSuccess: () => void qc.invalidateQueries({ queryKey: ['risk'] }) })
+  return useMutation({
+    mutationFn: (v: { reason: string; closeAll?: boolean }) => api.riskKill(v.reason, v.closeAll),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['risk'] }),
+  })
 }
 export function useResume() {
   const qc = useQueryClient()
-  return useMutation({ mutationFn: () => api.riskResume(), onSuccess: () => void qc.invalidateQueries({ queryKey: ['risk'] }) })
+  return useMutation({
+    mutationFn: () => api.riskResume(),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['risk'] }),
+  })
 }
 export function useReconcile() {
   const qc = useQueryClient()
-  return useMutation({ mutationFn: () => api.executionReconcile(), onSuccess: () => void qc.invalidateQueries({ queryKey: ['execution'] }) })
+  return useMutation({
+    mutationFn: () => api.executionReconcile(),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['execution'] }),
+  })
 }
 export function useExchangeCloseAll() {
   const qc = useQueryClient()
-  return useMutation({ mutationFn: () => api.executionCloseAll(), onSuccess: () => void qc.invalidateQueries() })
+  return useMutation({
+    mutationFn: () => api.executionCloseAll(),
+    onSuccess: () => void qc.invalidateQueries(),
+  })
 }
 
 export function useResetPaper() {
@@ -263,52 +402,135 @@ export function useRunBacktest() {
   })
 }
 
-export const useMl = () => useQuery({ queryKey: qk.ml, queryFn: api.ml, staleTime: 60_000, retry: 1, refetchInterval: 60_000 })
-export const useMlYardstick = (days = 60) => useQuery({ queryKey: qk.mlYardstick(days), queryFn: () => api.mlYardstick(days), staleTime: 300_000, retry: 1 })
+export const useMl = () =>
+  useQuery({ queryKey: qk.ml, queryFn: api.ml, staleTime: 60_000, retry: 1, refetchInterval: REFRESH.slow })
+export const useMlYardstick = (days = 60) =>
+  useQuery({
+    queryKey: qk.mlYardstick(days),
+    queryFn: () => api.mlYardstick(days),
+    staleTime: 300_000,
+    retry: 1,
+  })
 export const useMlScanner = (id: string) =>
-  useQuery({ queryKey: qk.mlScanner(id), queryFn: () => api.mlScanner(id), enabled: !!id, staleTime: 60_000, retry: 1 })
+  useQuery({
+    queryKey: qk.mlScanner(id),
+    queryFn: () => api.mlScanner(id),
+    enabled: !!id,
+    staleTime: 60_000,
+    retry: 1,
+  })
 export const useLearning = () =>
-  useQuery({ queryKey: qk.learning, queryFn: api.learning, staleTime: LIVE_STALE, retry: 1, refetchInterval: 60_000 })
+  useQuery({
+    queryKey: qk.learning,
+    queryFn: api.learning,
+    staleTime: LIVE_STALE,
+    retry: 1,
+    refetchInterval: REFRESH.slow,
+  })
 
 export const useAnalytics = () =>
-  useQuery({ queryKey: qk.analytics, queryFn: api.analytics, staleTime: LIVE_STALE, retry: 1, refetchInterval: 60_000 })
+  useQuery({
+    queryKey: qk.analytics,
+    queryFn: api.analytics,
+    staleTime: LIVE_STALE,
+    retry: 1,
+    refetchInterval: REFRESH.slow,
+  })
 
 /** The path a trade took, loaded only while its panel is open. */
 export function usePositionPath(id: number | null) {
-  return useQuery({ queryKey: qk.positionPath(id ?? 0), queryFn: () => api.positionPath(id!), enabled: id != null, staleTime: 15_000 })
+  return useQuery({
+    queryKey: qk.positionPath(id ?? 0),
+    queryFn: () => api.positionPath(id!),
+    enabled: id != null,
+    staleTime: 15_000,
+  })
 }
 
 /** The process minute by minute for the Overview's system panel (decision 80). */
 export function useOpsMetricsHistory(hours = 24) {
-  return useQuery({ queryKey: qk.opsMetricsHistory(hours), queryFn: () => api.opsMetricsHistory(hours), refetchInterval: 60_000 })
+  return useQuery({
+    queryKey: qk.opsMetricsHistory(hours),
+    queryFn: () => api.opsMetricsHistory(hours),
+    refetchInterval: REFRESH.slow,
+  })
 }
 
 /** Decision 174: the on-demand screen queue, polled while something runs. */
 export function useRadar(hours: number) {
-  return useQuery({ queryKey: ['radar', hours], queryFn: () => api.radar(hours), refetchInterval: 60_000 })
+  return useQuery({
+    queryKey: ['radar', hours],
+    queryFn: () => api.radar(hours),
+    refetchInterval: REFRESH.slow,
+  })
 }
 
 /** Decision 187: the paper fills against the tape. */
 export function useTapeAudit(days: number) {
-  return useQuery({ queryKey: ['tape-audit', days], queryFn: () => api.tapeAudit(days), refetchInterval: 60_000 })
+  return useQuery({
+    queryKey: ['tape-audit', days],
+    queryFn: () => api.tapeAudit(days),
+    refetchInterval: REFRESH.slow,
+  })
 }
 
 export function useScreenQueue() {
-  return useQuery({ queryKey: ['screen-queue'], queryFn: api.screenQueue, refetchInterval: (q) => (q.state.data?.running || q.state.data?.queued.length ? 10_000 : 60_000) })
+  return useQuery({
+    queryKey: ['screen-queue'],
+    queryFn: api.screenQueue,
+    refetchInterval: (q) =>
+      q.state.data?.running || q.state.data?.queued.length ? REFRESH.live : REFRESH.slow,
+  })
 }
 export function useScreenNow() {
   const qc = useQueryClient()
-  return useMutation({ mutationFn: api.screenNow, onSuccess: () => { void qc.invalidateQueries({ queryKey: ['screen-queue'] }) } })
+  return useMutation({
+    mutationFn: api.screenNow,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['screen-queue'] })
+    },
+  })
 }
 export function useScreenCancel() {
   const qc = useQueryClient()
-  return useMutation({ mutationFn: api.screenCancel, onSuccess: () => { void qc.invalidateQueries({ queryKey: ['screen-queue'] }) } })
+  return useMutation({
+    mutationFn: api.screenCancel,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['screen-queue'] })
+    },
+  })
 }
 
-export const useFundingGuard = () => useQuery({queryKey:['funding-guard'],queryFn:api.fundingGuard,refetchInterval:5000,retry:1})
-export const useAllocationAudit = () => useQuery({queryKey:['allocation-audit'],queryFn:api.allocationAudit,staleTime:30_000,refetchInterval:60_000,retry:1})
+export const useFundingGuard = () =>
+  useQuery({
+    queryKey: ['funding-guard'],
+    queryFn: api.fundingGuard,
+    refetchInterval: REFRESH.live,
+    retry: 1,
+  })
+export const useAllocationAudit = () =>
+  useQuery({
+    queryKey: ['allocation-audit'],
+    queryFn: api.allocationAudit,
+    staleTime: 30_000,
+    refetchInterval: REFRESH.slow,
+    retry: 1,
+  })
 
-export const useScannerPipeline = () => useQuery({queryKey:['scanner-pipeline'],queryFn:api.scannerPipeline,refetchInterval:30000,retry:1})
+export const useScannerPipeline = () =>
+  useQuery({
+    queryKey: ['scanner-pipeline'],
+    queryFn: api.scannerPipeline,
+    refetchInterval: REFRESH.normal,
+    retry: 1,
+  })
 
-export const useSignalActivity = () => useQuery({queryKey:['signal-activity'], queryFn:api.signalActivity, refetchInterval:30_000});
-export const useExecutionQuality = () => useQuery({queryKey:['execution-quality'], queryFn:api.executionQuality, refetchInterval:30_000, retry:1});
+export const useSignalActivity = () =>
+  useQuery({ queryKey: ['signal-activity'], queryFn: api.signalActivity, refetchInterval: REFRESH.normal })
+export const useExecutionQuality = () =>
+  useQuery({
+    queryKey: ['execution-quality'],
+    queryFn: api.executionQuality,
+    refetchInterval: REFRESH.normal,
+    retry: 1,
+  })

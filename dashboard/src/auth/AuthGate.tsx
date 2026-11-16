@@ -6,8 +6,8 @@
  * offers, never what it is allowed to do: every route is checked again on the server, so a
  * disabled button is a courtesy rather than a control.
  */
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { api, ApiError } from '../api/client'
 import type { Me, Permission, Role } from '../api/types'
 import { BrandLockup } from '../components/Brand'
@@ -38,7 +38,12 @@ export function useCanTrade(): boolean {
 
 export function AuthGate({ children }: { children: ReactNode }) {
   const qc = useQueryClient()
-  const status = useQuery({ queryKey: ['auth', 'status'], queryFn: api.authStatus, retry: 1, staleTime: 30_000 })
+  const status = useQuery({
+    queryKey: ['auth', 'status'],
+    queryFn: api.authStatus,
+    retry: 1,
+    staleTime: 30_000,
+  })
   const me = useQuery({
     queryKey: ['auth', 'me'],
     queryFn: api.me,
@@ -76,7 +81,12 @@ export function AuthGate({ children }: { children: ReactNode }) {
     return <Splash>Checking your session…</Splash>
   }
   if (status.data && !status.data.configured) {
-    return <SetupForm canSetup={status.data.canSetup} onDone={() => void qc.invalidateQueries({ queryKey: ['auth'] })} />
+    return (
+      <SetupForm
+        canSetup={status.data.canSetup}
+        onDone={() => void qc.invalidateQueries({ queryKey: ['auth'] })}
+      />
+    )
   }
   if (!value) {
     return <SignInForm onDone={() => void qc.invalidateQueries({ queryKey: ['auth'] })} />
@@ -103,37 +113,63 @@ function SignInForm({ onDone }: { onDone: () => void }) {
   return (
     <div className="auth-shell auth-signin">
       <div className="auth-layout">
-      <section className="auth-identity" aria-label="VN EDGE — Trade with precision">
-        <img src="/brand/logo-white.svg" alt="VN EDGE" width="332" height="226" />
-        <p className="brand-tagline">Trade with precision</p>
-        <p className="auth-identity-note">Your scanners. Your evidence.<br />Your trading workspace.</p>
-      </section>
-      <form
-        className="auth-card"
-        onSubmit={(e) => {
-          e.preventDefault()
-          login.mutate({ username: username.trim(), password })
-        }}
-      >
-        <div className="auth-brand">VN EDGE</div>
-        <h1 className="auth-title">Welcome back.</h1>
-        <p className="muted small">Sign in to your trading workspace.</p>
+        <section className="auth-identity" aria-label="VN EDGE — Trade with precision">
+          <img src="/brand/logo-white.svg" alt="VN EDGE" width="332" height="226" />
+          <p className="brand-tagline">Trade with precision</p>
+          <p className="auth-identity-note">
+            Your scanners. Your evidence.
+            <br />
+            Your trading workspace.
+          </p>
+        </section>
+        <form
+          className="auth-card"
+          onSubmit={(e) => {
+            e.preventDefault()
+            login.mutate({ username: username.trim(), password })
+          }}
+        >
+          <div className="auth-brand">VN EDGE</div>
+          <h1 className="auth-title">Welcome back.</h1>
+          <p className="muted small">Sign in to your trading workspace.</p>
 
-        <label className="auth-field">
-          <span>Username</span>
-          <input className="input" autoFocus autoComplete="username" value={username} onChange={(e) => setUsername(e.target.value)} required />
-        </label>
-        <label className="auth-field">
-          <span>Password</span>
-          <input className="input" type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} required />
-        </label>
+          <label className="auth-field">
+            <span>Username</span>
+            <input
+              className="input"
+              autoFocus
+              autoComplete="username"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              required
+            />
+          </label>
+          <label className="auth-field">
+            <span>Password</span>
+            <input
+              className="input"
+              type="password"
+              autoComplete="current-password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              required
+            />
+          </label>
 
-        {login.isError && <div className="auth-error" role="alert">{(login.error as Error).message}</div>}
+          {login.isError && (
+            <div className="auth-error" role="alert">
+              {(login.error as Error).message}
+            </div>
+          )}
 
-        <button className="btn btn-primary auth-submit" type="submit" disabled={login.isPending || !username || !password}>
-          {login.isPending ? 'Signing in…' : 'Sign in'}
-        </button>
-      </form>
+          <button
+            className="btn btn-primary auth-submit"
+            type="submit"
+            disabled={login.isPending || !username || !password}
+          >
+            {login.isPending ? 'Signing in…' : 'Sign in'}
+          </button>
+        </form>
       </div>
     </div>
   )
@@ -149,8 +185,8 @@ function SetupForm({ canSetup, onDone }: { canSetup: boolean; onDone: () => void
   if (!canSetup) {
     return (
       <Splash>
-        This instance has no accounts yet. The first administrator must be created from the server itself, so open the
-        dashboard over an SSH tunnel to <code>127.0.0.1</code> and reload.
+        This instance has no accounts yet. The first administrator must be created from the server itself, so
+        open the dashboard over an SSH tunnel to <code>127.0.0.1</code> and reload.
       </Splash>
     )
   }
@@ -172,22 +208,55 @@ function SetupForm({ canSetup, onDone }: { canSetup: boolean; onDone: () => void
 
         <label className="auth-field">
           <span>Username</span>
-          <input className="input" autoFocus autoComplete="username" value={username} onChange={(e) => setUsername(e.target.value)} required />
+          <input
+            className="input"
+            autoFocus
+            autoComplete="username"
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+            required
+          />
         </label>
         <label className="auth-field">
           <span>Password</span>
-          <input className="input" type="password" autoComplete="new-password" value={password} onChange={(e) => setPassword(e.target.value)} required />
+          <input
+            className="input"
+            type="password"
+            autoComplete="new-password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            required
+          />
           <span className="muted small">At least 10 characters.</span>
         </label>
         <label className="auth-field">
           <span>Confirm password</span>
-          <input className="input" type="password" autoComplete="new-password" value={confirm} onChange={(e) => setConfirm(e.target.value)} required />
+          <input
+            className="input"
+            type="password"
+            autoComplete="new-password"
+            value={confirm}
+            onChange={(e) => setConfirm(e.target.value)}
+            required
+          />
         </label>
 
-        {mismatch && <div className="auth-error" role="alert">The two passwords do not match.</div>}
-        {setup.isError && <div className="auth-error" role="alert">{(setup.error as Error).message}</div>}
+        {mismatch && (
+          <div className="auth-error" role="alert">
+            The two passwords do not match.
+          </div>
+        )}
+        {setup.isError && (
+          <div className="auth-error" role="alert">
+            {(setup.error as Error).message}
+          </div>
+        )}
 
-        <button className="btn btn-primary auth-submit" type="submit" disabled={setup.isPending || mismatch || !username || !password}>
+        <button
+          className="btn btn-primary auth-submit"
+          type="submit"
+          disabled={setup.isPending || mismatch || !username || !password}
+        >
           {setup.isPending ? 'Creating…' : 'Create administrator'}
         </button>
       </form>

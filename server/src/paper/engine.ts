@@ -315,6 +315,8 @@ export class PaperEngine extends EventEmitter {
   }
 
   private get paper(): PaperConfig { return this.cfgRef().paper; }
+  /** Account capacity is a runtime portfolio control, even for an older pending order. */
+  private positionCap(cfg:PaperConfig):number { return this.book===0?this.paper.maxOpenPositions:cfg.maxOpenPositions; }
 
   // ---- account state ----
 
@@ -654,7 +656,7 @@ export class PaperEngine extends EventEmitter {
     if (this.findOpen(ctx.scannerId,ctx.symbol,ctx.tf)) return {action:'ignored',reason:'reclaim trial already holds a position'};
     const previous=this.findPending(ctx.scannerId,ctx.symbol,ctx.tf);
     if (previous) this.cancelPending(previous.id,'reclaim setup replaced by fresh signal');
-    if (this.open.size+this.pending.size>=this.paper.maxOpenPositions) return refuse('max open positions');
+    if (this.paper.maxOpenPositions>0 && this.open.size+this.pending.size>=this.paper.maxOpenPositions) return refuse('max open positions');
     const age=PaperEngine.signalAgeSec(ev,ctx.tf,ctx.at);
     if (this.paper.maxSignalAgeSec>0 && age>this.paper.maxSignalAgeSec) return refuse('stale reclaim signal');
     if (!(ctx.atr && ctx.atr>0)) return refuse('reclaim setup needs ATR');
@@ -765,7 +767,8 @@ export class PaperEngine extends EventEmitter {
       `native re-entry refused; existing close retained: ${reason}` : replacing ? `reversal refused, position kept: ${reason}` : reason });
     let closed: Position | undefined;
     if (this.findPending(ctx.scannerId, ctx.symbol, ctx.tf)) return { action: 'ignored', reason: 'entry already pending' };
-    if (this.open.size + this.pending.size - (replacing ? 1 : 0) >= cfg.maxOpenPositions) return refused(`max open positions (${cfg.maxOpenPositions})`);
+    const positionCap=this.positionCap(cfg);
+    if (positionCap>0 && this.open.size + this.pending.size - (replacing ? 1 : 0) >= positionCap) return refused(`max open positions (${positionCap})`);
     // A market entry pays the spread: buy at the ask, sell at the bid when a fresh quote exists.
     // The script's own price is only a reference and is often minutes old by the time we act.
     const le = planned?{enabled:true,tfs:[ctx.tf],books:['account'] as Array<'account'|'shadow'>,atr:0,bars:(planned.expiresAt-ctx.at)/((TF_SECONDS[ctx.tf]??1)*1000),atrByTf:undefined}:cfg.limitEntry, tfMs = (TF_SECONDS[ctx.tf] ?? 0) * 1000;
@@ -1047,7 +1050,8 @@ export class PaperEngine extends EventEmitter {
     // a maker entry crosses no spread; the exit still pays it, as checkRiskVsFees counts
     const feeErr = checkRiskVsFees(L.price, levels.sl, cfg, pe.symbol, this.spreadPct(pe.symbol, cfg, at), { maker: true });
     if (feeErr) return cancel(feeErr);
-    if (this.open.size >= cfg.maxOpenPositions) return cancel(`max open positions (${cfg.maxOpenPositions})`);
+    const positionCap=this.positionCap(cfg);
+    if (positionCap>0 && this.open.size >= positionCap) return cancel(`max open positions (${positionCap})`);
     let leverageMult = pe.leverageMult;
     if (this.risk) {
       const g = this.risk.gate({ scannerId: pe.scannerId, symbol: pe.symbol, tf: pe.tf, side: pe.side, price: L.price, sl: levels.sl, at });
@@ -1130,7 +1134,8 @@ export class PaperEngine extends EventEmitter {
     if (feeErr) return cancel(feeErr);
     // decision 186: a reversal's held position is still open; it is closed only if this entry fills
     const held = pe.replacingId !== undefined ? this.open.get(pe.replacingId) : undefined;
-    if (this.open.size - (held ? 1 : 0) >= cfg.maxOpenPositions) return cancel(`max open positions (${cfg.maxOpenPositions})`);
+    const positionCap=this.positionCap(cfg);
+    if (positionCap>0 && this.open.size - (held ? 1 : 0) >= positionCap) return cancel(`max open positions (${positionCap})`);
     // the portfolio risk layer was consulted when the entry was queued; the book can have
     // halted, hit a cap or changed the drawdown scaling since, so ask it again at fill time
     let leverageMult = pe.leverageMult;

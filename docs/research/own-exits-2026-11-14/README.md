@@ -1,6 +1,6 @@
 # Own exits (14 Nov 2026)
 
-How to grade a script by its own ledger and put its entry-plus-exit pair into the shadow book. Decision 266.
+How to grade a script by its own ledger and put its entry-plus-exit pair into the shadow book. Decision 286.
 
 ## 1. Grade scripts
 
