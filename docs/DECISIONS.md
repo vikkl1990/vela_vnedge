@@ -8093,3 +8093,19 @@ malformed-book and risk refusals remain terminal. Exchange executors do not use 
 No capital, risk, evidence, scanner-reading, fee or admission threshold changes. A wait creates no fill, fee or promotion evidence.
 The audit is in `docs/research/paper-copy-fills-2026-11-16/`. Regression tests cover the cancelled-order defect, causal recovery,
 expiry, restart, unchanged economics/policy, pilot disablement and executor isolation. No profit uplift is claimed from a data-gap fix.
+
+## 290. Every average R on Performance carries its sample and a verdict (16 November 2026)
+
+The research of 10 to 16 November kept finding that an average R looked like an edge until the sample was examined: +0.134R on
+a handful of events, +0.29R per event that was timing, +100 bps that was a fill artefact. The Performance page showed the
+number alone. It now shows the number with a badge: `edge`, `losing`, `not proven` or `too few`, the trade count, and in the
+tooltip the 95% interval, the number of closing days and the sentence that explains the verdict.
+
+The interval is built from a standard error clustered by closing day, computed on the server (`seR`, `rDays` on every
+`PerformanceStats`): trades closed on the same day move together, so counting them as independent would claim more certainty
+than the data holds. The t value follows the number of days. A verdict needs 30 trades on at least 5 days; below that the badge
+says `too few` whatever the average looks like. `edge` means only that the interval is above zero in this window: it does not
+adjust for the number of groups compared on the page, for market drift, or for selection, and it is not a promotion rule.
+
+No gate, threshold, sizing or promotion rule reads this. It is a reading aid. Not built: a drift-neutral toggle, which needs
+per-side series the report does not carry.
