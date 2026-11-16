@@ -7934,7 +7934,23 @@ and PARTI lacks usable coverage. Ship no active invalidation rule from this stud
 The evaluator is research-only and cannot enroll evidence or change execution.
 See research/copied-reader-invalidation-2026-11-16.md for coverage and validation.
 
-## 282. Classify every market by asset class, and report, filter and browse by it (16 November 2026)
+## 282. Test ARIA invalidation prospectively without changing paper exits (16 November 2026)
+
+The four-opportunity ARIA result is insufficient for a paper policy change. Use new
+ordinary Elliott Wave ARIA 15m shadow trades as unchanged controls and price a
+versioned hypothetical signal-wick invalidation beside them. Preserve original
+entry context, price with delayed fresh depth and stress, include unchanged trades,
+and report smaller losing exits separately from wins. Start the cohort once, persist
+it across restarts, exclude historical/experimental/paper positions and never count
+advisory rows as promotion evidence. Policy versions remain separate.
+
+Keep ARIA, INIT and PARTI public streams observed between entries and retain a
+separate bounded replay archive with five-second samples and entry context. Capture
+failures remain visible; missing data never becomes a candle fill or a reconstructed
+trade. No paper exit, capital/risk setting or evidence threshold changes. See
+research/aria-shadow-invalidation-2026-11-16.md for the frozen experiment and evaluation.
+
+## 283. Classify every market by asset class, and report, filter and browse by it (16 November 2026)
 
 Every market now has one asset group and one sector, from one classifier (`shared/assetClass.ts`) that the server and
 the dashboard both import. Groups: Majors (BTC, ETH, SOL, XRP), Large-cap alts (a curated list of 29 established coins),

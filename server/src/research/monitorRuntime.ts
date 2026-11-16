@@ -5,6 +5,8 @@ import {OpenTradeMonitor,type WatchInput,type MarketObservation} from './openTra
 import {trendSide,type Position} from '../paper/logic.ts';
 import type {ExitBook} from '../paper/exitExecution.ts';
 import {logger} from '../log.ts';
+import {EXIT_STUDY_SYMBOLS} from './focusedReplay.ts';
+import {frozenSignalBar} from './shadowInvalidation.ts';
 const log=logger.scoped('trade-monitor');
 
 export class MonitorRuntime {
@@ -12,6 +14,7 @@ export class MonitorRuntime {
  private app:App;private symbols:string[]=[];private markets=new Map<string,MarketObservation>();
  private timer:ReturnType<typeof setInterval>;private pump:ReturnType<typeof setInterval>;private stopped=false;
  private busy=new Set<string>();private lastFetch=new Map<string,number>();private nextFetch=0;private lastSample=0;
+ private capturedContexts=new Set<string>();
  constructor(app:App,factory?:()=>DeltaFeed){
   this.app=app;this.monitor=new OpenTradeMonitor(app.db);this.depth=new AdvisoryDepthPool(app.db,factory);
   app.db.db.exec(`CREATE TABLE IF NOT EXISTS advisory_market_samples(symbol TEXT NOT NULL,bucket INTEGER NOT NULL,observed_at INTEGER NOT NULL,depth_at INTEGER,
@@ -37,7 +40,7 @@ export class MonitorRuntime {
   if(this.stopped)return;
   const snapshot=new Map(this.app.marks.quoteSummary(10000,now).rows.map(q=>[q.symbol,q])),inputs=this.inputs();
   // Selected research capture reuses advisory sockets; execution book sources stay unchanged.
-  const capture=[...new Set(['BTCUSD','ETHUSD','SOLUSD','INITUSD','PARTIUSD',
+  const capture=[...new Set(['BTCUSD','ETHUSD','SOLUSD',...EXIT_STUDY_SYMBOLS,
    ...this.app.scanners.requiredSeries().map(s=>s.symbol),...inputs.map(x=>x.position.symbol),
    ...this.app.paper.pendingEntries().map(x=>x.symbol),...this.app.shadow.pendingEntries().map(x=>x.symbol),
    ...(this.app.config.get().executionPlans??[]).filter(p=>p.enabled).map(p=>p.symbol)])];
@@ -51,6 +54,22 @@ export class MonitorRuntime {
     // still apply their own stricter one-second limit in priceExit.
     depth:this.depth.recorder.bookAt(symbol,now,10000),depthAt:this.depth.recorder.observedAt(symbol),flow:this.app.orderFlow.summary(symbol,now),funding:this.app.marks.funding(symbol)??null});
   }
+  for(const symbol of EXIT_STUDY_SYMBOLS){
+   const m=this.markets.get(symbol);if(m)this.app.replayArchive?.record(symbol,'study_market_sample',{...m,depth:undefined},now,'entry-invalidation-observer');
+  }
+  const currentContexts=new Set<string>();
+  for(const {position:p,book,scope,exitPending,marketQty} of inputs){
+   if(!EXIT_STUDY_SYMBOLS.some(s=>s===p.symbol))continue;
+   const key=`${p.id}:${p.entryAt}`;currentContexts.add(key);
+   if(!this.capturedContexts.has(key))this.app.replayArchive?.record(p.symbol,'study_entry_context',{
+    positionId:p.id,entryAt:p.entryAt,book,scope,scannerId:p.scannerId,tf:p.tf,side:p.side,entryPrice:p.entryPrice,
+    originalStop:p.slOriginal,policyId:p.policy?.id??null,sourceHash:p.policy?.sourceHash??null,signalBar:frozenSignalBar(this.app.db,p),
+    observedAfterEntryMs:now-p.entryAt},now,'entry-invalidation-observer');
+   this.app.replayArchive?.record(p.symbol,'study_position_sample',{positionId:p.id,entryAt:p.entryAt,book,scope,
+    quote:this.markets.get(p.symbol)?{price:this.markets.get(p.symbol)!.price,at:this.markets.get(p.symbol)!.priceAt}:null,
+    stop:p.sl,qtyOpen:p.qtyOpen,marketQty,exitPending},now,'entry-invalidation-observer');
+  }
+  this.capturedContexts=currentContexts;
   this.monitor.observe(inputs,this.markets,p=>this.setup(p),now);
   if(now-this.lastSample>=60000){
    this.app.db.transaction(()=>{
@@ -101,7 +120,7 @@ export class MonitorRuntime {
     researchOpen:positions.filter(p=>p.book===2&&!['shadow','legacy-shadow'].includes(p.scope)).length,
     worstOpenR:positions.length&&positions.some(p=>p.r!==null)?Math.min(...positions.filter(p=>p.r!==null).map(p=>p.r!)):null};
   });
-  return {...monitor,generatedAt:now,pairs,connections:this.depth.summary(),marketError,replay:this.app.replayArchive?.status(),retention:'Compact flow/depth: 72h, up to 500k rows each. Checkpoints/trials: 90d, up to 200k/50k. Durable replay: selected active/experiment pairs, 14-day target bounded by 16 GiB; gaps remain explicit.'};
+  return {...monitor,generatedAt:now,pairs,connections:this.depth.summary(),marketError,replay:this.app.replayArchive?.status(),retention:'Compact flow/depth: 72h, up to 500k rows each. Checkpoints/trials: 90d, up to 200k/50k. Broad replay: 14-day target / 16 GiB. Dedicated ARIA/INIT/PARTI replay: 21-day target / 4 GiB, 4 GiB free-disk reserve; gaps remain explicit.'};
  }
  stop(){this.stopped=true;clearInterval(this.timer);clearInterval(this.pump);this.depth.stop();}
 }
