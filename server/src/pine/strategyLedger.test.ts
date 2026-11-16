@@ -44,3 +44,33 @@ test('decision 111: resting levels must sit on the right side, a short takes the
   assert.deepEqual(restingLevels(t, [{ status: 'pending', category: 'exit', type: 'stop', stop: 52 }], 1), { sl: 52, tp: [] });
   assert.deepEqual(restingLevels(t, [{ status: 'pending', category: 'exit', type: 'stop', stop: 52 }], 2), { sl: undefined, tp: [] });
 });
+
+test('an exit that leaves other trades of the strategy open is marked partial; closing the whole position is not', () => {
+  const partial = {
+    closedtrades: [{ id: 't1', entry_id: 'L', size: 1, status: 'closed' as const, entry_bar_index: 10, entry_price: 100, exit_bar_index: 14, exit_price: 104 }],
+    opentrades: [{ id: 't2', entry_id: 'L', size: 1, status: 'open' as const, entry_bar_index: 10, entry_price: 100 }],
+  };
+  const out = ledgerAlerts(partial, 0, 20, timeAt);
+  assert.equal(out.find(a => a.barIndex === 14)!.message, 'STRATEGY exit long @ 104 partial=1');
+  // the extractor keeps it an exit but says it is partial, so a consumer that cannot replicate a partial close can refuse it
+  const ev = extractEvents(out.map(a => ({ ...a })) as any, []).find(e => e.kind === 'exit')!;
+  assert.equal(ev.partial, true);
+  // two entries that the strategy closes on the same bar leave the position flat: a whole closure
+  const whole = {
+    closedtrades: [
+      { id: 't1', size: 1, status: 'closed' as const, entry_bar_index: 10, entry_price: 100, exit_bar_index: 14, exit_price: 104 },
+      { id: 't2', size: 1, status: 'closed' as const, entry_bar_index: 12, entry_price: 102, exit_bar_index: 14, exit_price: 104 },
+    ],
+    opentrades: [],
+  };
+  const w = ledgerAlerts(whole, 0, 20, timeAt).filter(a => a.barIndex === 14);
+  assert.equal(w.length, 1);
+  assert.equal(w[0].message, 'STRATEGY exit long @ 104');
+  assert.equal(extractEvents(w.map(a => ({ ...a })) as any, [])[0].partial, undefined);
+  // a short that is still open does not make a long's exit partial
+  const mixed = {
+    closedtrades: [{ id: 't1', size: 1, status: 'closed' as const, entry_bar_index: 10, entry_price: 100, exit_bar_index: 14, exit_price: 104 }],
+    opentrades: [{ id: 't2', size: -1, status: 'open' as const, entry_bar_index: 12, entry_price: 102 }],
+  };
+  assert.equal(ledgerAlerts(mixed, 0, 20, timeAt).find(a => a.barIndex === 14)!.message, 'STRATEGY exit long @ 104');
+});

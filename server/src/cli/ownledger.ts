@@ -13,7 +13,7 @@ import { DeltaRest } from '../delta/rest.ts';
 import { ScannerRegistry } from '../scanners/registry.ts';
 import { PinePool, processWorker } from '../pine/pool.ts';
 import { TF_SECONDS } from '../config.ts';
-import { summariseOwnLedger, gradeOwnLedger, type OwnBar, type OwnCell } from '../research/ownLedger.ts';
+import { summariseOwnLedger, gradeOwnLedger, ownBarToWorkerBar, type OwnBar, type OwnCell } from '../research/ownLedger.ts';
 
 if (!process.env.IDS) { console.error('IDS=<file of scanner ids> is required'); process.exit(2); }
 const ids = [...new Set(fs.readFileSync(process.env.IDS, 'utf8').split(/\s+/).filter(Boolean))];
@@ -28,7 +28,7 @@ for (const symbol of MARKETS) {
   for (const tf of TFS) {
     if (!BARS[tf] || !TF_SECONDS[tf]) { console.error(`unsupported timeframe ${tf}`); process.exit(2); }
     const candles = await rest.recentCandles(symbol, tf, BARS[tf], TF_SECONDS[tf]);
-    series.set(`${symbol}|${tf}`, { bars: candles.slice(0, -1).map((x: any) => [x.time * 1000, x.open, x.high, x.low, x.close] as OwnBar), tick: Number(product?.tick_size ?? 0.5) });
+    series.set(`${symbol}|${tf}`, { bars: candles.slice(0, -1).map((x: any) => [x.time * 1000, x.open, x.high, x.low, x.close, x.volume] as OwnBar), tick: Number(product?.tick_size ?? 0.5) });
   }
 }
 
@@ -44,14 +44,14 @@ for (const id of ids) {
       const j = jobs.shift(); if (!j) return;
       const { bars, tick } = series.get(`${j.symbol}|${j.tf}`)!;
       const r = await pool.run({ scannerId: id, source: s.patched, symbol: j.symbol, tf: j.tf, tickSize: tick,
-        bars: bars.map(b => ({ time: b[0], open: b[1], high: b[2], low: b[3], close: b[4], volume: 0 })), tailBars: 'all', plotTail: 0, ledger: true });
+        bars: bars.map(ownBarToWorkerBar), tailBars: 'all', plotTail: 0, ledger: true });
       if (!r.ok || !r.ledger) { errors.push(`${j.symbol} ${j.tf}: ${r.error ?? 'not a strategy()'}`); continue; }
       cells.push({ symbol: j.symbol, tf: j.tf, bars, fillsOnClose, trades: [...r.ledger.closed, ...r.ledger.open] });
     }
   }));
   const summary = summariseOwnLedger(cells), verdict = gradeOwnLedger(summary);
   results.push({ id, summary, verdict, errors });
-  console.log(`${verdict.pass ? '*' : ' '} ${id.padEnd(44)} trades ${String(summary.trades + summary.open).padStart(5)} | net ${summary.net.toFixed(0).padStart(5)} bps | delayed ${summary.delayedNet.toFixed(0).padStart(5)} | halves ${summary.firstHalf.toFixed(0)}/${summary.secondHalf.toFixed(0)} | t ${summary.t.toFixed(1)}${verdict.pass ? '' : ' | failed: ' + verdict.failed.join(',')}`);
+  console.log(`${verdict.pass ? '*' : ' '} ${id.padEnd(44)} trades ${String(summary.trades + summary.open).padStart(5)} | net ${summary.net.toFixed(0).padStart(5)} bps | delayed ${summary.delayedNet.toFixed(0).padStart(5)} | halves ${summary.firstHalf.toFixed(0)}/${summary.secondHalf.toFixed(0)} | t ${summary.t.toFixed(1)}${verdict.pass ? '' : ' | failed: ' + verdict.failed.join(',')}${verdict.replicable ? '' : ` | NOT REPLICABLE: ${summary.partialExits} partial exits`}`);
 }
 fs.writeFileSync(OUT, JSON.stringify({ at: Date.now(), markets: MARKETS, tfs: TFS, results }, null, 1));
 console.log(`wrote ${OUT}`);

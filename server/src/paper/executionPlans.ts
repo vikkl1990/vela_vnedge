@@ -134,6 +134,9 @@ export function planSnapshot(cfg: AppConfig, p: ExecutionPlan, sourceHash: strin
   return {...versioned,signature};
 }
 export function planEvents(events: ScanEvent[], bars: Bar[], p: ExecutionPlanSnapshot): ScanEvent[] {
+  // Own exits are the author's stop and targets as written: the scanner's ATR entry protection would strip them, and a
+  // partial strategy exit cannot be replicated, so it is dropped rather than closing the whole position early.
+  if(p.exitPolicy==='own-exits')return events.filter(ev=>!(ev.kind==='exit'&&ev.partial));
   return p.variant === 'current' ? events.map(ev=>protectEntry(ev,p.reading?.entryProtection)) : adaptPlan(events,bars,p.variant);
 }
 export function planBacktest(p: ExecutionPlanSnapshot) {

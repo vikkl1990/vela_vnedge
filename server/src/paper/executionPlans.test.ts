@@ -326,3 +326,23 @@ test('own-exits plan validation: only the current reading, nothing layered on to
  assert.ok(validateExecutionPlans([{...base,maxStopLossPct:5}],tfs,c).some(x=>/ceiling/.test(x)));
  assert.equal(validateExecutionPlans([{...base,maxStopLossPct:2}],tfs,c).length,0);
 });
+
+test('own-exits plan keeps the script\'s own stop and targets even when the scanner asks for ATR entry protection; a partial exit is not replayed as a full close',t=>{
+ const {c}=setup(t);
+ (c.scanners as any).s={...(c.scanners as any).s,entryProtection:'atr'};
+ const own={id:'own',revision:1,enabled:true,scannerId:'s',symbol:'ETHUSD',tf:'15m',variant:'current',referenceEquity:1000,exitPolicy:'own-exits'} as ExecutionPlan;
+ const plain={...own,id:'plain',exitPolicy:undefined} as ExecutionPlan;
+ c.executionPlans=[own,plain];
+ const ev=(over:Record<string,unknown>)=>({kind:'entry',side:'long',price:100,sl:98,tp:[104,108],label:'x',message:'x',source:'alert',barTime:0,barIndex:0,...over}) as any;
+ const entry=ev({});
+ const ownOut=planEvents([entry],[],planSnapshot(c,own));
+ assert.equal(ownOut[0].sl,98,'own exits: the author\'s stop survives');
+ assert.deepEqual(ownOut[0].tp,[104,108],'own exits: the author\'s targets survive');
+ const plainOut=planEvents([entry],[],planSnapshot(c,plain));
+ assert.equal(plainOut[0].sl,undefined,'a non-own plan still takes the scanner\'s ATR protection');
+ assert.deepEqual(plainOut[0].tp,[]);
+ // a partial strategy exit cannot be replicated: dropping it is honest, closing the whole position would not be
+ const partial=ev({kind:'exit',exitType:'close',partial:true,sl:undefined,tp:[]}),whole=ev({kind:'exit',exitType:'close',sl:undefined,tp:[]});
+ assert.deepEqual(planEvents([partial,whole],[],planSnapshot(c,own)).map(x=>x.partial??false),[false],'own exits: only the whole closure remains');
+ assert.equal(planEvents([partial],[],planSnapshot(c,plain)).length,1,'other plans keep the exit they always had');
+});

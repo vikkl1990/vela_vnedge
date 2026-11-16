@@ -11,8 +11,10 @@
 /** Taker fee 0.05% with the 18% tax, plus 2 bps of slippage, charged on both sides: bps per round trip. */
 export const OWN_LEDGER_COST_BPS = 2 * (0.05 * 1.18 * 100 + 2);
 
-/** [time ms, open, high, low, close] */
-export type OwnBar = [number, number, number, number, number];
+/** [time ms, open, high, low, close, volume?] */
+export type OwnBar = [number, number, number, number, number, number?];
+/** The bar as the Pine worker takes it. A script that reads volume (VWAP, MFI, OBV, volume filters) must see the real one. */
+export const ownBarToWorkerBar = (b: OwnBar) => ({ time: b[0], open: b[1], high: b[2], low: b[3], close: b[4], volume: b[5] ?? 0 });
 export interface OwnTrade { size: number; entryPrice: number; exitPrice: number | null; entryIdx: number; exitIdx: number | null }
 export interface OwnCell {
   symbol: string;
@@ -53,6 +55,8 @@ export interface OwnLedgerSummary {
   badFills: number;
   /** Sum of open trades' losses at mark, bps. */
   openLoss: number;
+  /** Closed trades that left another trade of the same side held: a partial exit the bot's plans cannot replicate. */
+  partialExits: number;
 }
 
 const avg = (a: number[]) => a.length ? a.reduce((x, y) => x + y, 0) / a.length : NaN;
@@ -67,13 +71,14 @@ export function summariseOwnLedger(cells: OwnCell[], cost = OWN_LEDGER_COST_BPS)
   const closed: number[] = [], open: number[] = [], delayed: number[] = [], beyond: number[] = [], mae: number[] = [];
   const halves: [number[], number[]] = [[], []], side = { long: [] as number[], short: [] as number[] };
   const per = new Map<string, number[]>();
-  let bad = 0;
+  let bad = 0, partialExits = 0;
   for (const c of cells) {
     const b = c.bars;
     if (b.length < 3) continue;
     const last = b.length - 1, mid = b[0][0] + (b[last][0] - b[0][0]) / 2;
     const driftPerBar = Math.log(b[last][4] / b[0][1]) / last, lag = c.fillsOnClose ? 2 : 1;
     for (const t of c.trades) {
+      if (t.exitPrice !== null && t.exitIdx !== null && c.trades.some(o => o !== t && Math.sign(o.size) === Math.sign(t.size) && o.entryIdx <= t.exitIdx! && (o.exitIdx === null || o.exitIdx > t.exitIdx!))) partialExits++;
       const isOpen = t.exitPrice === null, ei = t.entryIdx, xi = isOpen ? last : t.exitIdx!, xp = isOpen ? b[last][4] : t.exitPrice!;
       if (!b[ei] || !b[xi] || !(t.entryPrice > 0) || !(xp > 0)) continue;
       const dir = Math.sign(t.size), gross = (xp - t.entryPrice) / t.entryPrice * dir * 1e4, net = gross - cost;
@@ -98,12 +103,16 @@ export function summariseOwnLedger(cells: OwnCell[], cost = OWN_LEDGER_COST_BPS)
     t: tStat(all), cells: per.size, cellsUp: [...per.values()].filter(v => avg(v) > 0).length,
     adverseMedian: q(0.5), adverse95: q(0.95), adverseMax: sorted.at(-1) ?? NaN,
     over3Pct: mae.length ? mae.filter(x => x > 300).length / mae.length : NaN, badFills: bad,
-    openLoss: open.reduce((a, x) => a + (x < 0 ? x : 0), 0),
+    openLoss: open.reduce((a, x) => a + (x < 0 ? x : 0), 0), partialExits,
   };
 }
 
 export type OwnLedgerGate = 'open-trades' | 'delay' | 'halves' | 'drift' | 'significance' | 'sample' | 'fills' | 'sides';
-export interface OwnLedgerVerdict { pass: boolean; failed: OwnLedgerGate[]; }
+/**
+ * `replicable` is separate from `pass`: a script can have a real own-ledger edge and still use partial exits, which the shadow
+ * plans cannot reproduce (a plan would hold the whole position to the author's last exit). Propose plans only when both hold.
+ */
+export interface OwnLedgerVerdict { pass: boolean; failed: OwnLedgerGate[]; replicable: boolean; }
 /**
  * The stress ladder of the 14 Nov 2026 study, each gate on top of the last: positive with open trades marked, positive with
  * a one-bar delay, positive in both halves, positive beyond the market's drift, t above 2. `sample` demands enough trades for
@@ -120,5 +129,5 @@ export function gradeOwnLedger(s: OwnLedgerSummary, minTrades = 100): OwnLedgerV
   if (!(s.t > 2)) failed.push('significance');
   if (s.badFills > 0) failed.push('fills');
   if (!(s.longTrades > 0 && s.shortTrades > 0 && s.long > 0 && s.short > 0)) failed.push('sides');
-  return { pass: failed.length === 0, failed };
+  return { pass: failed.length === 0, failed, replicable: !(s.partialExits > 0) };
 }

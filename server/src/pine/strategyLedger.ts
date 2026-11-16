@@ -55,7 +55,13 @@ export function ledgerAlerts(st: LedgerState, fromIdx: number, lastIdx: number, 
     seen.add(k);
     out.push({ barIndex: idx, time: timeAt(idx), type: 'alert', title: 'strategy', message: `STRATEGY ${verb} ${side} @ ${price}${extra}` });
   };
-  for (const t of [...(st.closedtrades ?? []), ...open]) {
+  const all = [...(st.closedtrades ?? []), ...open];
+  // an exit is partial when another trade of the same side is still held after the bar it exits on: the author reduced the
+  // position, they did not leave it. The bot cannot replicate a partial close, so the message says so rather than letting
+  // it read as a whole closure.
+  const stillHeld = (t: LedgerTrade, idx: number) => all.some(o => o !== t && Math.sign(o.size) === Math.sign(t.size)
+    && (o.entry_bar_index ?? Infinity) <= idx && (o.status !== 'closed' && o.exit_bar_index === undefined || (o.exit_bar_index ?? -1) > idx));
+  for (const t of all) {
     const side = t.size > 0 ? 'long' : 'short';
     let extra = '';
     if (t.status !== 'closed' && t.exit_bar_index === undefined && t.entry_bar_index === lastIdx) {
@@ -64,7 +70,9 @@ export function ledgerAlerts(st: LedgerState, fromIdx: number, lastIdx: number, 
       if (lv.tp.length) extra += ` tp=${lv.tp.join(',')}`;
     }
     emit(t.entry_bar_index, 'entry', side, Number(t.entry_price), extra);
-    if (t.status === 'closed' || t.exit_bar_index !== undefined) emit(t.exit_bar_index, 'exit', side, Number(t.exit_price));
+    if (t.status === 'closed' || t.exit_bar_index !== undefined) {
+      emit(t.exit_bar_index, 'exit', side, Number(t.exit_price), t.exit_bar_index !== undefined && stillHeld(t, t.exit_bar_index) ? ' partial=1' : '');
+    }
   }
   return out;
 }

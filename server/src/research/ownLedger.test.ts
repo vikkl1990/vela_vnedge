@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { summariseOwnLedger, gradeOwnLedger, OWN_LEDGER_COST_BPS, tStat, type OwnBar, type OwnCell, type OwnTrade } from './ownLedger.ts';
+import { summariseOwnLedger, gradeOwnLedger, OWN_LEDGER_COST_BPS, ownBarToWorkerBar, tStat, type OwnBar, type OwnCell, type OwnTrade } from './ownLedger.ts';
 
 /** A flat market: every bar opens, closes at 100 with a 1-point range, so drift is zero and nothing is priced off-bar. */
 const flat = (n: number): OwnBar[] => Array.from({ length: n }, (_, i) => [i * 3_600_000, 100, 100.5, 99.5, 100]);
@@ -70,8 +70,8 @@ test('market drift is removed: riding a rising market with no skill is not beyon
 
 test('grading names the gate that failed', () => {
   const good = { trades: 200, open: 0, closedNet: 50, net: 50, delayedNet: 40, beyondDrift: 30, firstHalf: 20, secondHalf: 60, long: 40, short: 60, longTrades: 100, shortTrades: 100,
-    t: 3, cells: 4, cellsUp: 4, adverseMedian: 50, adverse95: 300, adverseMax: 500, over3Pct: 0.1, badFills: 0, openLoss: 0 };
-  assert.deepEqual(gradeOwnLedger(good), { pass: true, failed: [] });
+    t: 3, cells: 4, cellsUp: 4, adverseMedian: 50, adverse95: 300, adverseMax: 500, over3Pct: 0.1, badFills: 0, openLoss: 0, partialExits: 0 };
+  assert.deepEqual(gradeOwnLedger(good), { pass: true, failed: [], replicable: true });
   assert.deepEqual(gradeOwnLedger({ ...good, delayedNet: -1 }).failed, ['delay']);
   assert.deepEqual(gradeOwnLedger({ ...good, net: -1, delayedNet: -2 }).failed, ['open-trades', 'delay']);
   assert.deepEqual(gradeOwnLedger({ ...good, secondHalf: -5 }).failed, ['halves']);
@@ -85,4 +85,30 @@ test('t statistic needs three trades and a spread', () => {
   assert.ok(Number.isNaN(tStat([1, 2])));
   assert.ok(Number.isNaN(tStat([5, 5, 5])));
   assert.ok(tStat([1, 2, 3, 4]) > 2);
+});
+
+test('a close that leaves other trades open is a partial exit; the grader counts it and calls the script not replicable', () => {
+  const bars = flat(20);
+  const winners: OwnTrade[] = Array.from({ length: 120 }, (_, i) => ({ size: 1, entryPrice: 100, exitPrice: 101, entryIdx: 2, exitIdx: 5 + (i % 3) }));
+  const s = summariseOwnLedger([cell(bars, [
+    { size: 1, entryPrice: 100, exitPrice: 101, entryIdx: 2, exitIdx: 5 },
+    { size: 1, entryPrice: 100, exitPrice: 103, entryIdx: 2, exitIdx: 8 },
+  ])]);
+  assert.equal(s.partialExits, 1, 'the first close at bar 5 leaves the second trade open');
+  assert.equal(gradeOwnLedger(s, 1).replicable, false);
+  // a whole-position closure and a short that stays open do not count
+  const whole = summariseOwnLedger([cell(bars, [
+    { size: 1, entryPrice: 100, exitPrice: 101, entryIdx: 2, exitIdx: 5 },
+    { size: 1, entryPrice: 100, exitPrice: 101, entryIdx: 3, exitIdx: 5 },
+    { size: -1, entryPrice: 100, exitPrice: null, entryIdx: 4, exitIdx: null },
+  ])]);
+  assert.equal(whole.partialExits, 0);
+  assert.equal(gradeOwnLedger(whole, 1).replicable, true);
+  void winners;
+});
+
+test('the grader feeds the script the real volume, not zero', () => {
+  const bar: OwnBar = [1_000, 10, 12, 9, 11, 4321];
+  assert.deepEqual(ownBarToWorkerBar(bar), { time: 1_000, open: 10, high: 12, low: 9, close: 11, volume: 4321 });
+  assert.equal(ownBarToWorkerBar([1_000, 10, 12, 9, 11]).volume, 0, 'a bar without volume is the only case that reads zero');
 });

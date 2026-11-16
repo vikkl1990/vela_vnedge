@@ -34,3 +34,10 @@ test('a cell that already has an own-exits plan is not proposed twice', () => {
   cfg.executionPlans = first.add;
   assert.equal(proposeOwnExitsPlans(cfg, ['norn-weave-thurisaz'], ['BTCUSD'], ['4h'], 1000).add.length, 0);
 });
+
+test('a script that exits in parts is named and left out, never proposed', () => {
+  const cfg = structuredClone(DEFAULT_CONFIG); cfg.executionPlans = [];
+  const r = proposeOwnExitsPlans(cfg, ['norn-weave-thurisaz', 'dema-atr-strategy'], ['BTCUSD'], ['4h'], 1000, new Set(['dema-atr-strategy']));
+  assert.deepEqual(r.skipped, ['dema-atr-strategy']);
+  assert.deepEqual(r.add.map(p => p.scannerId), ['norn-weave-thurisaz']);
+});
