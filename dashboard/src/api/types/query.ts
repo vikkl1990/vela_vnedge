@@ -23,6 +23,9 @@ export interface TradeQuery {
   side?: string
   from?: number
   to?: number
+  /** Asset class of the market (majors, large_alts, alts, meme, tradfi, other) and its sector. */
+  group?: string
+  sector?: string
 }
 /** Decision 190: one page of the journal; `total`, `pnl` and `fees` cover every matching trade, not only this page. */
 export interface TradePage {

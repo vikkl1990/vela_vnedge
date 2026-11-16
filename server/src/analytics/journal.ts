@@ -1,5 +1,6 @@
 import type { Db } from '../db.ts';
 import { fundingOf, validatePerformanceFilter, type PerformanceFilter } from './performance.ts';
+import { classClause, classOf, matchesClass } from '../markets/classes.ts';
 
 export type JournalBook = 'paper' | 'shadow';
 export type JournalFilter = PerformanceFilter & { book: JournalBook; status: string; scope: string; history: string; dateBy: 'entry' | 'exit'; offset: number; limit: number; sort: string };
@@ -20,7 +21,7 @@ export function journalFilter(p: URLSearchParams): JournalFilter {
   if (!['entry', 'exit'].includes(dateBy) || !['newest', 'oldest', 'worst', 'best'].includes(sort)) throw new JournalError('Invalid journal ordering or date basis.');
   const num = (k: string, fallback?: number) => p.has(k) ? Number(p.get(k)) : fallback;
   const f = { book, status, scope, history, dateBy, sort, offset: num('offset', 0)!, limit: num('limit', 50)!, from: num('from'), to: num('to'),
-    ...Object.fromEntries(['scanner', 'symbol', 'tf', 'side', 'reason'].map(k => [k, p.get(k) || undefined])) } as JournalFilter;
+    ...Object.fromEntries(['scanner', 'symbol', 'tf', 'side', 'reason', 'group', 'sector'].map(k => [k, p.get(k) || undefined])) } as JournalFilter;
   try { validatePerformanceFilter(f); } catch (e) { throw new JournalError((e as Error).message); }
   if (!Number.isSafeInteger(f.offset) || f.offset < 0 || !Number.isSafeInteger(f.limit) || f.limit < 1 || f.limit > 200) throw new JournalError('Invalid journal page.');
   return f;
@@ -68,6 +69,8 @@ export class Journal {
     if (id !== undefined) { where.push('p.id=?'); args.push(id); }
     if (f.status !== 'all') { where.push('p.status=?'); args.push(f.status); }
     for (const [c, v] of [['scanner_id', f.scanner], ['symbol', f.symbol], ['tf', f.tf], ['side', f.side], ['exit_reason', f.reason]]) if (v) { where.push(`p.${c}=?`); args.push(v); }
+    const cls = classClause(this.db, f, 'p.symbol');
+    if (cls) { where.push(cls.sql); args.push(...cls.args); }
     const time = f.dateBy === 'entry' ? 'p.entry_at' : 'p.exit_at';
     if (f.from !== undefined) { where.push(`${time}>=?`); args.push(f.from); }
     if (f.to !== undefined) { where.push(`${time}<?`); args.push(f.to); }
@@ -89,7 +92,7 @@ export class Journal {
         const archived = d.at < resetAt;
         if ((f.history === 'current' && archived) || (f.history === 'archived' && !archived)) continue;
         if ((f.scanner && d.scanner_id !== f.scanner) || (f.symbol && d.symbol !== f.symbol) || (f.tf && d.tf !== f.tf) || f.side ||
-          (f.reason && f.reason !== d.reason) || (f.scope === 'plans' && !d.scanner_id.startsWith('plan:'))) continue;
+          (f.reason && f.reason !== d.reason) || ((f.group || f.sector) && !matchesClass(classOf(d.symbol), f.group, f.sector)) || (f.scope === 'plans' && !d.scanner_id.startsWith('plan:'))) continue;
         // Placement dates are missing for deleted orders; do not invent them from the cancellation timestamp.
         if ((f.from !== undefined || f.to !== undefined) && f.dateBy === 'entry') continue;
         if ((f.from !== undefined && d.at < f.from) || (f.to !== undefined && d.at >= f.to)) continue;

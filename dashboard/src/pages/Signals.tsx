@@ -2,6 +2,7 @@ import { useCallback, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useHealth, useMarkets, useScannerIndex, useSignalActivity, useSignals } from '../api/queries'
 import type { Signal } from '../api/types'
+import { AssetChip } from '../components/AssetChip'
 import { DataTable, type Column } from '../components/DataTable'
 import { DecisionTrace } from '../components/DecisionTrace'
 import { CostAudit } from '../components/ExecutionPlans'
@@ -97,7 +98,7 @@ export function SignalsTable({
           <span className="cell-sym">
             <StatusDot tone={s.side === 'long' ? 'ok' : s.side === 'short' ? 'danger' : 'neutral'} />
             <span>
-              <b>{s.symbol}</b>
+              <b>{s.symbol}</b> <AssetChip symbol={s.symbol} />
               <div className="muted small mono">
                 {s.tf} · {s.kind}
               </div>
@@ -685,7 +686,7 @@ export function GroupedSignals({ signals }: { signals: Signal[] }) {
         <div>
           <Link to={`/scanners/${g.first.scannerId}`}>{g.first.scannerName}</Link>
           <div className="mono">
-            {g.first.symbol} · {g.first.tf}
+            {g.first.symbol} · {g.first.tf} <AssetChip symbol={g.first.symbol} />
           </div>
         </div>
       ),

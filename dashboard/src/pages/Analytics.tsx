@@ -16,7 +16,16 @@ import { api } from '../api/client'
 import { useMarkets, useScannerIndex } from '../api/queries'
 import { REFRESH } from '../api/refreshPolicy'
 import type { PerformanceGroup, PerformanceStats } from '../api/types'
+import {
+  ASSET_GROUPS,
+  ASSET_SECTORS,
+  groupLabel,
+  matchesClass,
+  sectorLabel,
+} from '../../../shared/assetClass'
 import { AllocationAuditPanel } from '../components/AllocationAudit'
+import { AssetClassBreakdown } from '../components/AssetClassBreakdown'
+import { useClassOf } from '../lib/assetClass'
 import { DataTable, type Column } from '../components/DataTable'
 import { LearningSection } from '../components/Learning'
 import { PolicyHealthPanel } from '../components/PolicyHealth'
@@ -41,6 +50,8 @@ import { useNow } from '../lib/useNow'
 import '../styles/pages/analytics.css'
 
 const GROUPS = [
+  ['byGroup', 'Asset class', 'group'],
+  ['bySector', 'Sector', 'sector'],
   ['byTf', 'Timeframe', 'tf'],
   ['bySymbol', 'Market', 'symbol'],
   ['byScanner', 'Scanner', 'scanner'],
@@ -172,7 +183,14 @@ function ComparisonRows({
   onChoose: (key: string) => void
 }) {
   const mobile = useMediaQuery('(max-width: 900px)')
-  const label = (r: PerformanceGroup) => (group === 'byExit' ? (EXITS[r.key] ?? r.label) : r.label)
+  const label = (r: PerformanceGroup) =>
+    group === 'byExit'
+      ? (EXITS[r.key] ?? r.label)
+      : group === 'byGroup'
+        ? groupLabel(r.key)
+        : group === 'bySector'
+          ? sectorLabel(r.key)
+          : r.label
   const cols: Column<PerformanceGroup>[] = [
     {
       key: 'label',
@@ -273,8 +291,8 @@ export function Analytics() {
   const effective = new URLSearchParams(params)
   if (!effective.has('period')) effective.set('period', '7d')
   const f = journalFilters(effective, useNow(60_000))
-  const { scanner, symbol, tf, side, reason, from, to } = f.query
-  const filter = { scanner, symbol, tf, side, reason, from, to }
+  const { scanner, symbol, tf, side, reason, from, to, group: assetGroup, sector: assetSector } = f.query
+  const filter = { scanner, symbol, tf, side, reason, from, to, group: assetGroup, sector: assetSector }
   const update = (v: Record<string, string>) => setParams(updateJournalFilters(effective, v))
   const q = useQuery({
     queryKey: ['analytics', 'performance', filter],
@@ -288,7 +306,8 @@ export function Analytics() {
   const markets = useMarkets(),
     scanners = useScannerIndex()
   const [scannerSearch, setScannerSearch] = useState('')
-  const [group, setGroup] = useState<(typeof GROUPS)[number][0]>('byTf')
+  const [group, setGroup] = useState<(typeof GROUPS)[number][0]>('byGroup')
+  const classOf = useClassOf()
   const [search, setSearch] = useState('')
   const [chartMetric, setChartMetric] = useState<'avgR' | 'trades'>('avgR')
   const [tab, setTab] = useState<'breakdown' | 'daily' | 'advanced'>('breakdown')
@@ -298,7 +317,9 @@ export function Analytics() {
       ...(d?.bySymbol ?? []).map((r) => r.key),
       ...(f.symbol ? [f.symbol] : []),
     ]),
-  ].sort()
+  ]
+    .filter((s) => s === f.symbol || matchesClass(classOf(s), f.group, f.sector))
+    .sort()
   const rows = (d?.[group] ?? []).filter((r) => r.label.toLowerCase().includes(search.toLowerCase()))
   const journalParams = new URLSearchParams(effective)
   journalParams.delete('page')
@@ -311,7 +332,9 @@ export function Analytics() {
     setScannerSearch('')
     setSearch('')
   }
-  const filtered = Boolean(f.symbol || f.tf || f.side || f.reason || f.scanner || f.period !== '7d')
+  const filtered = Boolean(
+    f.symbol || f.tf || f.side || f.reason || f.scanner || f.group || f.sector || f.period !== '7d',
+  )
   return (
     <div className="page performance-page">
       <RouteHeader
@@ -356,6 +379,38 @@ export function Analytics() {
               {JOURNAL_PERIODS.map(([v, label]) => (
                 <option key={v} value={v}>
                   {label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="perf-field">
+            Asset class
+            <select
+              className="select"
+              aria-label="Performance asset class"
+              value={f.group}
+              onChange={(e) => update({ group: e.target.value })}
+            >
+              <option value="">All classes</option>
+              {ASSET_GROUPS.map((g) => (
+                <option key={g.key} value={g.key} title={g.hint}>
+                  {g.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="perf-field">
+            Sector
+            <select
+              className="select"
+              aria-label="Performance sector"
+              value={f.sector}
+              onChange={(e) => update({ sector: e.target.value })}
+            >
+              <option value="">All sectors</option>
+              {ASSET_SECTORS.filter((s) => s.key !== 'other').map((s) => (
+                <option key={s.key} value={s.key}>
+                  {s.label}
                 </option>
               ))}
             </select>
@@ -512,6 +567,34 @@ export function Analytics() {
               shadow
             />
           </div>
+          <Section
+            variant="panel"
+            title="By asset class"
+            actions={
+              <span className="small muted">
+                majors · large-cap alts · alts · meme · stocks &amp; metals · other
+              </span>
+            }
+          >
+            <div className="performance-books">
+              <div>
+                <b className="small">Paper account</b>
+                <AssetClassBreakdown
+                  rows={d.byGroup}
+                  book="paper"
+                  onChoose={(key) => update({ group: key })}
+                />
+              </div>
+              <div>
+                <b className="small">Shadow research</b>
+                <AssetClassBreakdown
+                  rows={d.byGroup}
+                  book="shadow"
+                  onChoose={(key) => update({ group: key })}
+                />
+              </div>
+            </div>
+          </Section>
           <Callout tone="info" title="How to read this">
             R is net P&L divided by the initial stop-risk budget. Net is trading P&L minus commission plus
             signed funding. The books trade different opportunities and sizes, so shadow dollars are not

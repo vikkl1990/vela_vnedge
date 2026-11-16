@@ -32,6 +32,7 @@ import { configFingerprint, sourceHash } from './fingerprint.ts';
 import {
   feeFor, slip, roundTick, giveBackPct, type Position, type Fill, type PriceBar, type LevelResult, applyLiveBar, openR, reversalAllowed, applyScriptExit, applyTrade, applyMark, applyFunding, checkRiskVsFees, trendExit, computeStats, fillExit, openPosition, resolveLevels, sizeContracts, recordLeverage, unrealized, notionalOf, rMultiple, type TradeStats, exitConfigFor, earlyStallExit, splitLegs, liquidationPrice, pnlOf, modelTrail } from './logic.ts';
 import type { StructureLevel } from './luxExits.ts';
+import { classOf, matchesClass } from '../markets/classes.ts';
 
 const log = logger.scoped('paper');
 
@@ -1852,6 +1853,7 @@ export class PaperEngine extends EventEmitter {
     let list = this.closedPositions();
     if (o.scanner) list = list.filter(p => p.scannerId === o.scanner);
     if (o.symbol) list = list.filter(p => p.symbol === o.symbol);
+    if (o.group || o.sector) list = list.filter(p => matchesClass(classOf(p.symbol), o.group, o.sector));
     if (o.reason) list = list.filter(p => p.exitReason === o.reason);
     if (o.tf) list = list.filter(p => p.tf === o.tf);
     if (o.side) list = list.filter(p => p.side === o.side);
@@ -1864,7 +1866,7 @@ export class PaperEngine extends EventEmitter {
 function fin(v: number | null): number | null { return v === null || !Number.isFinite(v) ? (v === Infinity ? 999 : null) : v; }
 function mapFin<T extends Record<string, any>>(o: T): T { for (const k of Object.keys(o)) o[k].profitFactor = fin(o[k].profitFactor); return o; }
 
-export interface TradeFilter { scanner?: string; symbol?: string; reason?: string; tf?: string; side?: string; from?: number; to?: number }
+export interface TradeFilter { scanner?: string; symbol?: string; reason?: string; tf?: string; side?: string; from?: number; to?: number; group?: string; sector?: string }
 
 export function rowToPosition(r: any): Position {
   const extra = safe(r.fills, { fills: [], legs: [] });

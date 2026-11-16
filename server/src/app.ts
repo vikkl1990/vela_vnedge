@@ -1,4 +1,6 @@
 import {candleReplayBlock} from './paper/basket.ts';
+import {classMap,classOf} from './markets/classes.ts';
+import {ASSET_GROUPS,ASSET_SECTORS} from '../../shared/assetClass.ts';
 import {copyRecoveryRefusal} from './incubator/copyRecovery.ts';
 import {bindScalperConnection} from './connections/scalperOffer.ts';
 import {productFees,withProductFees} from './paper/productFees.ts';
@@ -571,11 +573,18 @@ export class App {
     return items;
   }
 
+  /** The asset class of every live market and every market in the trade history, with the group and sector lists the UI filters by. */
+  async assetClasses() {
+    const products = await this.rest.products().catch(() => new Map<string, unknown>());
+    const traded = this.db.all<{ symbol: string }>("SELECT DISTINCT symbol FROM positions WHERE symbol IS NOT NULL AND symbol != ''").map(r => r.symbol);
+    return { groups: ASSET_GROUPS, sectors: ASSET_SECTORS, classes: classMap([...new Set([...products.keys(), ...traded])]) };
+  }
+
   async markets() {
     if (this.marketCache && Date.now() - this.marketCache.at < 30_000) return this.marketCache.list;
     const [tickers] = await Promise.all([this.rest.tickers(),this.rest.products()]);
     const list = tickers.filter(t => t.contract_type === 'perpetual_futures' || !t.contract_type).map(t => ({
-      symbol: t.symbol, description: t.description ?? t.symbol, tickSize: Number(t.tick_size ?? 0), contractValue: Number(t.contract_value ?? 0),
+      symbol: t.symbol, description: t.description ?? t.symbol, tickSize: Number(t.tick_size ?? 0), contractValue: Number(t.contract_value ?? 0), group: classOf(t.symbol).group, sector: classOf(t.symbol).sector,
       markPrice: Number(t.mark_price ?? t.close), price: Number(t.close ?? t.mark_price), change24hPct: Number(t.mark_change_24h ?? 0), volume24h: Number(t.turnover_usd ?? 0),
     })).sort((a, b) => b.volume24h - a.volume24h);
     this.marketCache = { at: Date.now(), list };

@@ -10,9 +10,11 @@ import {
   useSignals,
   useStats,
 } from '../api/queries'
+import { ASSET_GROUPS } from '../../../shared/assetClass'
 import { MarketCanvas } from '../components/MarketCanvas'
 import { PaperPositions } from '../components/PaperPositions'
 import { ErrorState, Loading, Pill, Section, Time } from '../components/kit'
+import { chipLabel, useClassOf } from '../lib/assetClass'
 import { fmtMoney, fmtPct, fmtPnl, fmtPrice, pnlClass } from '../lib/format'
 import { patchSearch } from '../lib/researchNavigation'
 import { gateOf } from '../lib/signalOutcomes'
@@ -54,6 +56,8 @@ export function Terminal() {
         ? '1h'
         : '15m'
   const [filter, setFilter] = useState('')
+  const [classFilter, setClassFilter] = useState('')
+  const classOf = useClassOf()
   const markets = useMarkets(),
     positions = usePositions(),
     stats = useStats(),
@@ -68,8 +72,13 @@ export function Terminal() {
   const capital = useMemo(() => openCapital(positions.data ?? []), [positions.data])
   const visiblePositions = (positions.data ?? []).filter((p) => inHorizon(p.tf, horizon))
   const visibleSignals = workspaceSignals(signals.data ?? [], horizon)
+  const classCounts = new Map<string, number>()
+  for (const m of markets.data ?? [])
+    classCounts.set(classOf(m.symbol).group, (classCounts.get(classOf(m.symbol).group) ?? 0) + 1)
   const marketRows = (markets.data ?? []).filter(
-    (m) => !filter || `${m.symbol} ${m.description}`.toLowerCase().includes(filter.toLowerCase()),
+    (m) =>
+      (!filter || `${m.symbol} ${m.description}`.toLowerCase().includes(filter.toLowerCase())) &&
+      (!classFilter || classOf(m.symbol).group === classFilter),
   )
   const selected = markets.data?.find((m) => m.symbol === symbol)
   const update = (changes: Record<string, string | null>) => setSearch(patchSearch(search, changes))
@@ -170,6 +179,21 @@ export function Terminal() {
               onChange={(e) => setFilter(e.target.value)}
             />
           </label>
+          <div className="watchlist-classes" role="group" aria-label="Asset class">
+            <button aria-pressed={!classFilter} onClick={() => setClassFilter('')}>
+              All
+            </button>
+            {ASSET_GROUPS.filter((g) => classCounts.get(g.key)).map((g) => (
+              <button
+                key={g.key}
+                aria-pressed={classFilter === g.key}
+                title={`${g.hint} · ${classCounts.get(g.key)} markets`}
+                onClick={() => setClassFilter(classFilter === g.key ? '' : g.key)}
+              >
+                {g.key === 'large_alts' ? 'Large alts' : g.key === 'tradfi' ? 'Stocks' : g.label}
+              </button>
+            ))}
+          </div>
           <div className="watchlist-columns">
             <span>Contract</span>
             <span>Price / 24h</span>
@@ -195,7 +219,7 @@ export function Terminal() {
                   <small>
                     {(positions.data ?? []).some((p) => p.symbol === m.symbol)
                       ? '● Position open'
-                      : 'Perpetual'}
+                      : `Perpetual · ${chipLabel(classOf(m.symbol))}`}
                   </small>
                 </span>
                 <span className="mono">
