@@ -7950,6 +7950,39 @@ failures remain visible; missing data never becomes a candle fill or a reconstru
 trade. No paper exit, capital/risk setting or evidence threshold changes. See
 research/aria-shadow-invalidation-2026-11-16.md for the frozen experiment and evaluation.
 
+## 283. Classify every market by asset class, and report, filter and browse by it (16 November 2026)
+
+Every market now has one asset group and one sector, from one classifier (`shared/assetClass.ts`) that the server and
+the dashboard both import. Groups: Majors (BTC, ETH, SOL, XRP), Large-cap alts (a curated list of 29 established coins),
+Alts (every other crypto market), Meme, Stocks & metals (tokenised stocks and ETFs, metals, oil) and Other (anything not
+a USD perpetual). The sector is the second dimension inside a group (store of value, payments, layer 1, layer 2, DeFi,
+AI, gaming & NFT, stocks, metals, energy); a market keeps every secondary label, so an AI meme coin is a Meme coin and
+is also found under AI.
+
+Delta's own `product_specs.tags` and `top_tag` are the primary signal, remembered each time the product list loads, so a
+new listing is classified without a code change. The curated lists decide only the majors, the large-cap split and the
+markets Delta leaves untagged (XRP, TIA and 31 others); a name-based fallback keeps the classification stable when tags
+are not loaded. On the 261 live perpetuals: 4 majors, 26 large-cap alts, 135 alts, 35 meme, 61 stocks and metals, none
+Other.
+
+Surfaces: the performance report gains `byGroup` and `bySector`; the performance, journal and trade endpoints accept
+`group` and `sector` (an unknown value is a 400); `GET /api/markets/classes` returns the class of every live and traded
+market, and `/api/markets` rows carry the group and sector. The dashboard shows a class chip beside every market in the
+journal, open positions, signals and the radar; filters on the journal and Performance (the market list narrows to the
+chosen class); a "By asset class" panel on Performance and Home; class pills on the Workspace market list; and the radar's
+hard-coded ten-coin "majors" list is replaced by these groups.
+
+Reporting only. No scanner, sizing, stop, entry or promotion rule reads the class, and no evidence, identity or stored
+row changes. The large-cap list is a judgement: edit `LARGE_ALTS` and every report and filter follows.
+
+## 284. The daily report splits each book by asset class (16 November 2026)
+
+Follows decision 283. Each book's day in the daily report now carries `byGroup`: trades, summed R and net dollars per
+asset class (majors, large-cap alts, alts, meme, stocks & metals, other), computed from the same closed trades and the
+same classifier as the performance report, so the classes reconcile to the book. The Daily page shows the days on the
+page summed by class for the account and for the shadow book, and the daily Telegram text gains one "By class,
+account" line on days the account traded. Reporting only: no stored row, evidence or trading rule changes.
+
 ## 286. Own exits: grade a script by its own ledger, test it in shadow (14 November 2026)
 
 **Why.** The script-perspective study (`docs/research/script-perspective-2026-11-14/`) ran 513 `strategy()` scripts as their

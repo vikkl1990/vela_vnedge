@@ -3,6 +3,9 @@ import type { JournalQuery, JournalRow } from '../api/journal'
 import { useJournal, useMarkets, useScannerIndex } from '../api/queries'
 import { useBook } from '../lib/bookScope'
 import { fmtR, fmtRecordedMoney as money, fmtRecordedPrice as price } from '../lib/format'
+import { ASSET_GROUPS, ASSET_SECTORS, matchesClass } from '../../../shared/assetClass'
+import { AssetChip } from './AssetChip'
+import { useClassOf } from '../lib/assetClass'
 import { DataTable, type Column } from './DataTable'
 import { JournalDetailPanel } from './JournalDetail'
 import { JournalExport } from './JournalExport'
@@ -70,13 +73,17 @@ export function TradeJournal({
     next.set('trade', String(r.id))
     setParams(next)
   }
+  const classOf = useClassOf()
+  // the market list narrows to the chosen asset class or sector, so "Meme" offers only meme coins
   const symbols = [
     ...new Set([
       ...(markets.data ?? []).map((m) => m.symbol),
       ...(q.data?.rows ?? []).map((r) => r.symbol),
       ...(f.symbol ? [f.symbol] : []),
     ]),
-  ].sort()
+  ]
+    .filter((s) => s === f.symbol || matchesClass(classOf(s), f.group, f.sector))
+    .sort()
   const cols: Column<JournalRow>[] = [
     {
       key: 'id',
@@ -94,7 +101,8 @@ export function TradeJournal({
         <span>
           <b>
             {r.symbol} · {r.tf}
-          </b>
+          </b>{' '}
+          <AssetChip symbol={r.symbol} withSector />
           <div className="small muted">{r.scannerName}</div>
           <span className="small">{r.evidenceScope}</span>
         </span>
@@ -274,6 +282,38 @@ export function TradeJournal({
                   >
                     {['closed', 'all', 'open', 'pending', 'cancelled', 'voided'].map((s) => (
                       <option key={s}>{s}</option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  Asset class
+                  <select
+                    className="select"
+                    aria-label="Journal asset class"
+                    value={f.group}
+                    onChange={(e) => update({ group: e.target.value })}
+                  >
+                    <option value="">All classes</option>
+                    {ASSET_GROUPS.map((g) => (
+                      <option key={g.key} value={g.key} title={g.hint}>
+                        {g.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  Sector
+                  <select
+                    className="select"
+                    aria-label="Journal sector"
+                    value={f.sector}
+                    onChange={(e) => update({ sector: e.target.value })}
+                  >
+                    <option value="">All sectors</option>
+                    {ASSET_SECTORS.filter((s) => s.key !== 'other').map((s) => (
+                      <option key={s.key} value={s.key}>
+                        {s.label}
+                      </option>
                     ))}
                   </select>
                 </label>

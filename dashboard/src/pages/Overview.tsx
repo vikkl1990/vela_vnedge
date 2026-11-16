@@ -46,9 +46,53 @@ import {
   PromotionLadder,
   RealityGap,
 } from '../components/home/HomeBooks'
+import { AssetClassBreakdown } from '../components/AssetClassBreakdown'
+import { classRows } from '../lib/assetClass'
 import { RunHealthPanel } from '../components/RunHealthPanel'
 import { fmtInt, fmtMoney, fmtPct, fmtPnl, fmtProfitFactor, fmtR, pnlClass } from '../lib/format'
+import { useNow } from '../lib/useNow'
 import '../styles/pages/home.css'
+
+/** The last seven UTC days by asset class: which kinds of markets the trades and the money come from. */
+function AssetClassHome() {
+  const now = useNow(3_600_000)
+  const from = Math.floor(now / 3_600_000) * 3_600_000 - 7 * 86_400_000
+  const q = useQuery({
+    queryKey: ['analytics', 'performance', { from, view: 'home-classes' }],
+    queryFn: () => api.performance({ from }),
+    staleTime: 60_000,
+    refetchInterval: 120_000,
+    retry: 1,
+  })
+  return (
+    <Section
+      variant="panel"
+      title="By asset class, last 7 days"
+      actions={
+        <Link to="/analytics?period=7d" className="btn btn-xs">
+          Analytics →
+        </Link>
+      }
+    >
+      {q.data ? (
+        <div className="home-split">
+          <div>
+            <b className="small">Paper account</b>
+            <AssetClassBreakdown rows={classRows(q.data.byGroup, 'paper')} book="paper" />
+          </div>
+          <div>
+            <b className="small">Shadow research</b>
+            <AssetClassBreakdown rows={classRows(q.data.byGroup, 'shadow')} book="shadow" />
+          </div>
+        </div>
+      ) : q.isError ? (
+        <p className="muted small">The class breakdown could not load. It retries on its own.</p>
+      ) : (
+        <p className="muted small">Loading…</p>
+      )}
+    </Section>
+  )
+}
 
 export function Overview() {
   const stats = useStats()
@@ -126,6 +170,7 @@ export function Overview() {
         <NeedsYou />
         <MlAdvisor />
       </div>
+      <AssetClassHome />
 
       <Section
         variant="panel"

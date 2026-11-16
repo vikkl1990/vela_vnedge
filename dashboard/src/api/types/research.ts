@@ -96,6 +96,7 @@ export interface BookDay {
   trails: number
   trailKeeps: number | null
   byTf: Record<string, { trades: number; sumR: number }>
+  byGroup: Record<string, { trades: number; sumR: number; net: number }>
   best: { scanner: string; sumR: number } | null
   worst: { scanner: string; sumR: number } | null
   marginSumR: number
@@ -664,6 +665,8 @@ export interface PerformanceFilter {
   tf?: string
   side?: string
   reason?: string
+  group?: string
+  sector?: string
 }
 export interface PerformanceStats {
   trades: number
@@ -703,4 +706,6 @@ export interface PerformanceReport {
   byScanner: PerformanceGroup[]
   bySymbol: PerformanceGroup[]
   byExit: PerformanceGroup[]
+  byGroup: PerformanceGroup[]
+  bySector: PerformanceGroup[]
 }

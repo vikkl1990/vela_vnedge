@@ -107,3 +107,18 @@ test('unsafe filter values are rejected; CSV cells cannot inject formulas or bre
  for(const q of bad)assert.throws(()=>filter(q));
  assert.equal(csvCell('=SUM(1,2)'), '"\'=SUM(1,2)"');assert.equal(csvCell(' a,"b"\nnext'),'" a,""b""\nnext"');assert.equal(csvCell(-12),'"-12"');assert.equal(csvCell(null),'');
 });
+
+test('the journal filters by asset group and sector, and refuses an unknown one',t=>{
+ const {db,j}=fixture(t);
+ insert(db,{symbol:'BTCUSD'});insert(db,{symbol:'DOGEUSD'});insert(db,{symbol:'1000PEPEUSD'});insert(db,{symbol:'AKEUSD'});insert(db,{symbol:'DOGEUSD',bt:2});
+ assert.equal(j.page(filter()).total,4);
+ assert.equal(j.page(filter({group:'meme'})).total,2);
+ assert.deepEqual(j.page(filter({group:'meme'})).rows.map(r=>r.symbol).sort(),['1000PEPEUSD','DOGEUSD']);
+ assert.equal(j.page(filter({group:'meme',book:'shadow'})).total,1);
+ assert.equal(j.page(filter({group:'majors'})).total,1);
+ assert.equal(j.page(filter({group:'tradfi'})).total,0);
+ assert.equal(j.page(filter({sector:'meme'})).total,2);
+ assert.equal(j.page(filter({group:'meme',symbol:'DOGEUSD'})).total,1);
+ assert.equal(j.page(filter({group:'meme'})).summary.net,performanceReport(db,{group:'meme'},T+1).paper.net);
+ assert.throws(()=>filter({group:'bluechip'}),/asset group/);
+});

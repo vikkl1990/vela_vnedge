@@ -1,4 +1,5 @@
 import {gatedSignalPage} from '../evidence/gatedSignals.ts';
+import {isAssetGroup,isAssetSector} from '../../../shared/assetClass.ts';
 import { pineLibraries } from '../pine/libraries.ts';
 import { costAudit } from '../paper/costAudit.ts';
 import { allocationAudit } from '../analytics/allocationAudit.ts';
@@ -230,6 +231,8 @@ export class ApiServer {
     });
 
     this.add('GET', '/api/markets', async () => a.markets());
+    // every market the bot has seen or traded with its asset group and sector, so each page can show and filter by class
+    this.add('GET', '/api/markets/classes', async () => a.assetClasses());
     this.add('GET', '/api/ticker', async (_r, _s, _p, url) => {
       const symbol = url.searchParams.get('symbol') ?? a.config.get().symbols[0];
       const price = a.paper.mark(symbol) ?? a.candles.lastPrice(symbol);
@@ -407,7 +410,10 @@ export class ApiServer {
     });
     const tradeFilter = (url: URL) => {
       const g = (k: string) => url.searchParams.get(k) || undefined, n = (k: string) => (url.searchParams.get(k) ? Number(url.searchParams.get(k)) : undefined);
-      return { scanner: g('scanner'), symbol: g('symbol'), reason: g('reason'), tf: g('tf'), side: g('side'), from: n('from'), to: n('to') };
+      const group = g('group'), sector = g('sector');
+      if (group && !isAssetGroup(group)) throw new HttpError(400, 'Invalid asset group.');
+      if (sector && !isAssetSector(sector)) throw new HttpError(400, 'Invalid asset sector.');
+      return { scanner: g('scanner'), symbol: g('symbol'), reason: g('reason'), tf: g('tf'), side: g('side'), from: n('from'), to: n('to'), group, sector };
     };
     this.add('GET', '/api/trades', (_r, _s, _p, url) => a.paper.trades({ limit: Number(url.searchParams.get('limit') ?? 200), ...tradeFilter(url) }));
     this.add('GET', '/api/trades/page', (_r, _s, _p, url) => a.paper.tradesPage({ limit: Number(url.searchParams.get('limit') ?? 300), offset: Number(url.searchParams.get('offset') ?? 0), ...tradeFilter(url) }));
