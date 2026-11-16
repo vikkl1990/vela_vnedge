@@ -7914,3 +7914,22 @@ unverified cached state explicitly. Show absolute fill times as well as age, wit
 one shared positions status on Home, Workspace and Trades. These are UI changes;
 fill models, open positions, evidence identities and risk settings do not change.
 See research/paper-position-provenance-2026-11-16.md for the timestamps and tests.
+
+## 281. Copied scanners need versioned title contracts too (16 November 2026)
+
+Band Walk paper trade 18809 shorted “Bearish Band Walk Ended”. The author defines
+that event as weakening momentum, not an entry. The copy path used its configured
+legacy reader faithfully; the scanner had never opted into the existing reader fix.
+Give Band Walk reader 2 and an explicit six-title contract: preserve both Started
+and Midline Pullback directions and map both Ended events to none. Keep account
+allocation disabled. The new reading starts distinct evidence; never transfer the
+old reading's history to it or change unrelated scanner identities. Existing
+positions retain their saved price-management rules.
+
+Test signal-candle invalidation and two-bar lack of follow-through on current-model
+INIT, PARTI and ARIA trades with causal depth fills, immutable fees and funding.
+The ARIA candidate reduces loss on four paper trades but lacks independent evidence;
+Donchian INIT worsens, Trend Impulse INIT has no demonstrated paper improvement,
+and PARTI lacks usable coverage. Ship no active invalidation rule from this study.
+The evaluator is research-only and cannot enroll evidence or change execution.
+See research/copied-reader-invalidation-2026-11-16.md for coverage and validation.
