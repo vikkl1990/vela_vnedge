@@ -8093,3 +8093,17 @@ malformed-book and risk refusals remain terminal. Exchange executors do not use 
 No capital, risk, evidence, scanner-reading, fee or admission threshold changes. A wait creates no fill, fee or promotion evidence.
 The audit is in `docs/research/paper-copy-fills-2026-11-16/`. Regression tests cover the cancelled-order defect, causal recovery,
 expiry, restart, unchanged economics/policy, pilot disablement and executor isolation. No profit uplift is claimed from a data-gap fix.
+
+## 292. Step through journal trades with j and k (16 November 2026)
+
+Reviewing why trades stopped out meant clicking a row, reading its detail, scrolling back up and clicking the next one. With a
+trade open in the journal, `j` now opens the next trade on the page and `k` the previous one, and the detail panel shows
+"2 of 50 on this page" with Previous and Next buttons that do the same. Stepping stops at the ends of the page instead of
+wrapping, because a page is a slice of a longer list and wrapping would skip the rest. A trade that is not on the page (a link,
+or another page of results) starts from the top.
+
+The app already binds `g j` (Lab) and `g k` (Gates). Single-key shortcuts registered by different components could not see each
+other's chords, so `g k` would have opened Gates and stepped the list at once. The hotkey hook now shares the last key and every
+registered chord prefix, and a single key pressed within the chord window after a prefix belongs to the chord.
+
+Display only. Nothing here changes a trade.
