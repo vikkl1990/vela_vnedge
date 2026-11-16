@@ -77,3 +77,46 @@ test('coverage ignores stateful baskets without recording a negative screen or b
  await f.agent.tick();assert.equal(f.jobs.length,1);assert.deepEqual(f.jobs[0].ids,['a','b']);
  assert.equal(f.db.get<any>('SELECT count(*) n FROM pair_screen_evidence')!.n,0);
 });
+
+test('asset class guides research, never qualifies paper; negative peers remain in the exploration pool',async t=>{
+ const f=fixture(t);f.markets.splice(1);f.markets[0].symbol='BTCUSD';f.cfg.incubator.agents!.scannersPerJob=1;
+ for(const [id,r] of [['a',-.2],['b',.2]] as const){
+  for(const symbol of ['ETHUSD','SOLUSD'])recordCoverage(f.db,id,symbol,'15m',coverageSignature(f.cfg,f.scanners.find(s=>s.id===id)!,'15m'),
+   {at:f.now(),trades:30,avgR1:r,avgR2:r,pass:r>0} as any);
+ }
+ let v=await f.agent.view();assert.equal(v.due[0].id,'b');assert.equal(v.markets[0].group,'majors');
+ assert.equal(v.due.length,2);assert.equal(v.markets[0].account,0);
+ await f.agent.tick();assert.deepEqual(f.jobs[0].ids,['b']);assert.deepEqual(f.jobs[0].cells,[{id:'b',symbol:'BTCUSD'}]);
+ assert.equal(f.store.list(['live']).length,0);
+ f.db.kvSet('incubator.pairAgents',{day:new Date(f.now()).toISOString().slice(0,10),used:3,attempts:{},handled:[],nextAt:0,lastAt:0,status:''});
+ v=await f.agent.view();assert.equal(v.researchMode,'explore');assert.equal(v.due[0].id,'a');
+ f.cfg.paper.feeRatePct+=.01;assert.equal((await f.agent.view()).due[0].fit.markets,0,'changed policies cannot borrow peer results');
+});
+
+test('agent batches omit active cells instead of silently submitting the scanner-market Cartesian product',async t=>{
+ const f=fixture(t);f.markets.splice(2);
+ f.store.move({scannerId:'a',symbol:'LINKUSD',tf:'15m'},'shadow','test');
+ await f.agent.tick();
+ assert.deepEqual(f.jobs[0].cells,[{id:'a',symbol:'XRPUSD'},{id:'b',symbol:'XRPUSD'},{id:'b',symbol:'LINKUSD'}]);
+ const state=f.db.kvGet<any>('incubator.pairAgents')!;
+ assert.equal(state.attempts[JSON.stringify(['a','LINKUSD','15m'])],undefined);
+});
+
+test('an explicitly non-crypto universe is honoured without bypassing market refusals',async t=>{
+ const f=fixture(t);f.markets.splice(1);f.markets[0].symbol='OILUSD';f.markets[0].description='Oil ETF';
+ assert.equal((await f.agent.view()).markets.length,0);
+ f.cfg.risk.marketGate!.cryptoOnly=false;
+ assert.equal((await f.agent.view()).markets[0].eligible,true);
+ f.deps.verdict=()=>({allowed:false,reasons:['not operational']} as any);
+ assert.equal((await f.agent.view()).markets[0].eligible,false);
+ await f.agent.tick();assert.equal(f.jobs.length,0);
+});
+
+test('malformed and future coverage never hides an untested cell or breaks research',async t=>{
+ const f=fixture(t);f.markets.splice(1);
+ recordCoverage(f.db,'a','XRPUSD','15m',coverageSignature(f.cfg,f.scanners[0],'15m'),{at:f.now(),pass:true,trades:10} as any);
+ f.db.run("UPDATE pair_screen_evidence SET result='null'");
+ recordCoverage(f.db,'b','XRPUSD','15m',coverageSignature(f.cfg,f.scanners[1],'15m'),{at:f.now()+1000,pass:true,trades:10} as any);
+ const v=await f.agent.view();assert.equal(v.markets[0].screened,0);assert.equal(v.markets[0].due,2);
+ await f.agent.tick();assert.equal(f.jobs[0].cells?.length,2);
+});

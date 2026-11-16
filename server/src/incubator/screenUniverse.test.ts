@@ -18,3 +18,10 @@ test('fallback discovery excludes non-crypto instruments and low turnover',()=>{
   const ts=[...tickers,{symbol:'GOLDUSD',description:'Gold Token',contract_type:'perpetual_futures',turnover_usd:9e6},{symbol:'DUSTUSD',contract_type:'perpetual_futures',turnover_usd:1}];
   assert.deepEqual(screenUniverse(ts,{...opts,top:10}).symbols,tickers.map(t=>t.symbol));
 });
+
+test('an explicit non-crypto policy is respected by fallback discovery, but not used to override a refusal',()=>{
+ const ts=[{symbol:'OILUSD',description:'Oil ETF',contract_type:'perpetual_futures',turnover_usd:9e6}];
+ assert.deepEqual(screenUniverse(ts,{...opts,cryptoOnly:false}).symbols,['OILUSD']);
+ const today={enabled:true,markets:[{symbol:'OILUSD',allowed:false,reasons:['not operational']}]} as any;
+ assert.deepEqual(screenUniverse(ts,{...opts,cryptoOnly:false,today}).symbols,[]);
+});

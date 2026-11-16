@@ -27,7 +27,7 @@ export const ASSET_GROUPS: ReadonlyArray<{ key: AssetGroup; label: string; hint:
   { key: 'large_alts', label: 'Large-cap alts', hint: 'Established large-cap alternative coins' },
   { key: 'alts', label: 'Alts', hint: 'Other crypto markets that are not meme coins' },
   { key: 'meme', label: 'Meme', hint: 'Meme coins' },
-  { key: 'tradfi', label: 'Stocks & metals', hint: 'Tokenised stocks and ETFs, metals, oil' },
+  { key: 'tradfi', label: 'Stocks & commodities', hint: 'Tokenised stocks and ETFs, metals, oil' },
   { key: 'other', label: 'Other', hint: 'Markets the classifier does not recognise' },
 ];
 
@@ -77,19 +77,20 @@ export function baseAsset(symbol: string): string {
 export function classifySymbol(symbol: string, specs?: MarketSpecs | null): AssetClass {
   const sym = String(symbol ?? '').toUpperCase();
   const base = baseAsset(sym);
-  const rawTags = (specs?.tags ?? []).map(t => String(t).toLowerCase());
+  const rawTags = (specs?.tags ?? []).map(t => String(t).trim().toLowerCase());
   const tags: AssetSector[] = [...new Set(rawTags.map(t => SECTOR_FROM_TAG[t]).filter((x): x is AssetSector => !!x))];
   if (!/USD[TC]?$/.test(sym) || !base) return { group: 'other', sector: 'other', tags: [] };
 
   // tokenised stocks, metals, oil
-  const tradfi = specs?.topTag === 'tradfi' || rawTags.includes('xstock') || rawTags.includes('metal')
+  const tradfi = specs?.topTag?.trim().toLowerCase() === 'tradfi' || rawTags.includes('xstock') || rawTags.includes('metal')
     || METALS.has(base) || ENERGY.has(base) || STOCK_NAMES.has(base.replace(/[BX]$/, ''));
   if (tradfi) {
-    const sector: AssetSector = rawTags.includes('metal') || METALS.has(base) ? 'metals' : ENERGY.has(base) ? 'energy' : 'stocks';
+    // Delta currently tags OIL as "metal"; the known underlying is energy.
+    const sector: AssetSector = ENERGY.has(base) ? 'energy' : rawTags.includes('metal') || METALS.has(base) ? 'metals' : 'stocks';
     return { group: 'tradfi', sector, tags: [sector] };
   }
   if (MAJORS.has(base)) return { group: 'majors', sector: MAJOR_SECTOR[base] ?? 'layer_1', tags: [MAJOR_SECTOR[base] ?? 'layer_1'] };
-  if (rawTags.includes('meme') || MEME_NAMES.has(base)) {
+  if (rawTags.includes('meme') || (!rawTags.length && MEME_NAMES.has(base))) {
     return { group: 'meme', sector: 'meme', tags: [...new Set<AssetSector>(['meme', ...tags])] };
   }
   const sector = SECTOR_PRIORITY.find(s => tags.includes(s)) ?? 'other';

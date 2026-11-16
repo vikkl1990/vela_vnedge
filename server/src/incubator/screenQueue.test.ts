@@ -75,3 +75,15 @@ test('basket requests are rejected before a worker or coverage job is created',t
  assert.equal(children.length,0);assert.equal(q.list().queued.length,0);assert.equal(q.list().history.length,0);
  assert.equal(db.kvGet('incubator.screenQueue'),undefined);
 });
+
+test('exact cells survive the queue, deduplicate by cell set, and cannot leak into another job',t=>{
+ const {q,children}=setup(t);
+ const req={label:'cells',ids:['a','b'],markets:['BTCUSD','ETHUSD'],tf:'15m',actor:'pair-agents',cells:[{id:'b',symbol:'ETHUSD'},{id:'a',symbol:'BTCUSD'}]};
+ const a=q.enqueue(req);
+ assert.deepEqual(JSON.parse(children[0].env.RESEARCH_CELLS!),[{id:'a',symbol:'BTCUSD'},{id:'b',symbol:'ETHUSD'}]);
+ assert.equal(q.enqueue({...req,cells:[...req.cells].reverse()}).id,a.id);
+ assert.throws(()=>q.enqueue({...req,cells:[{id:'c',symbol:'BTCUSD'}]}),/outside/);
+ assert.throws(()=>q.enqueue({...req,cells:[]}),/Invalid/);
+ const b=q.enqueue({...req,cells:undefined});assert.notEqual(a.id,b.id);
+ children[0].emit('exit',0,null);assert.equal(children[1].env.RESEARCH_CELLS,undefined);
+});

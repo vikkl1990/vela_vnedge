@@ -5,7 +5,9 @@ import type { PairRow } from './store.ts';
 /** Backtest frequency is a planning estimate, never forward evidence or a promotion bypass. */
 export function admissionEvidence(r: Pick<PairRow,'screen'|'tf'>, inc: AppConfig['incubator']) {
   const base = screenScore(r.screen);
-  const trades = Number(r.screen?.trades), days = Number(r.screen?.days);
+  const train = Number(r.screen?.trades), holdout = Number(r.screen?.holdoutTrades ?? 0);
+  // days spans the full history, while trades counts only its training segment.
+  const trades = train + (Number.isFinite(holdout) && holdout > 0 ? holdout : 0), days = Number(r.screen?.days);
   const required = inc.gate.minTradesByTf?.[r.tf] ?? inc.gate.minTrades;
   const horizon = inc.gate.maxDaysByTf?.[r.tf] ?? inc.gate.maxDays;
   const estimatedDays = trades > 0 && days > 0 && Number.isFinite(days) && Number.isFinite(trades)
@@ -21,5 +23,9 @@ export function evidencePriority(r: PairRow, inc: AppConfig['incubator']): numbe
   const required = inc.gate.minTradesByTf?.[r.tf] ?? inc.gate.minTrades;
   const n = Number(r.gate?.stats?.trades ?? 0);
   if (!(required > 0) || !Number.isFinite(n) || n < 0 || n >= required) return 0;
-  return n / required;
+  const copySample=inc.mirror?.enabled?inc.mirror.minTrades??0:0;
+  // Complete the next real decision sample, not only the eventual full promotion
+  // sample. P&L is deliberately absent: losing samples get completed too.
+  const target=copySample>0&&n<copySample?Math.min(copySample,required):required;
+  return n / target;
 }

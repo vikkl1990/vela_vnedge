@@ -17,8 +17,17 @@ export interface PairAgentsView {
   eligible: number
   dueCells: number
   queueBusy: boolean
+  researchMode?: 'explore' | 'peer-fit'
+  nextResearch?: Array<{
+    id: string
+    symbol: string
+    tf: string
+    fit: { score: number; markets: number; trades: number; reason: string }
+  }>
   markets: Array<{
     symbol: string
+    group?: string
+    sector?: string
     turnover: number
     eligible: boolean
     reasons: string[]

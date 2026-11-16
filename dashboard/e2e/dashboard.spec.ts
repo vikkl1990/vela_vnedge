@@ -1,5 +1,75 @@
 import { test, expect } from './fixtures'
 
+test('Pair agents explain asset-class research without presenting it as paper qualification', async ({
+  page,
+  faults,
+  writes,
+}) => {
+  void faults
+  await page.route('**/api/radar*', (route) =>
+    route.fulfill({ json: { at: 1, hours: 24, bins: 6, tfs: [], markets: [], reserve: [] } }),
+  )
+  await page.route('**/api/incubator/agents', (route) =>
+    route.fulfill({
+      json: {
+        enabled: true,
+        markets: [
+          {
+            symbol: 'OILUSD',
+            group: 'tradfi',
+            sector: 'energy',
+            turnover: 900000,
+            eligible: true,
+            reasons: [],
+            account: 0,
+            shadow: 0,
+            tracked: 0,
+            screened: 0,
+            passed: 0,
+            due: 2,
+            cells: 2,
+          },
+        ],
+        eligible: 1,
+        scannerCount: 2,
+        tfs: ['15m'],
+        dueCells: 2,
+        usedToday: 1,
+        settings: { maxJobsPerDay: 24, scannersPerJob: 4, marketsPerJob: 3, refreshDays: 7 },
+        lastAt: 0,
+        status: 'Waiting for research',
+        running: null,
+        history: [],
+        researchMode: 'peer-fit',
+        nextResearch: [
+          {
+            id: 'trend',
+            symbol: 'OILUSD',
+            tf: '15m',
+            fit: {
+              score: 0,
+              markets: 0,
+              trades: 0,
+              reason: 'No matching peer history; explore this scanner/market/TF',
+            },
+          },
+        ],
+      },
+    }),
+  )
+  await page.goto('/radar')
+  await page.getByRole('tab', { name: 'Pair agents', exact: true }).click()
+  await page.getByText('Next research · scanner fit by asset class', { exact: true }).click()
+  await expect(
+    page.getByText(/These scores are not paper qualifications or profit predictions/),
+  ).toBeVisible()
+  await page
+    .getByText('Inspect every pair · assignments, completed screens and gaps', { exact: true })
+    .click()
+  await expect(page.getByText('Stocks & commodities · Energy', { exact: true })).toBeVisible()
+  expect(writes).toEqual([])
+})
+
 test('Signals render bounded rows, preserve filters, and sort every result', async ({
   page,
   faults,

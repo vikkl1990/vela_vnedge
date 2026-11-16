@@ -48,6 +48,7 @@ import { sourceHash } from '../paper/fingerprint.ts';
 import { SIMULATION_VERSION } from '../paper/version.ts';
 import type { MarketsToday } from '../risk/marketGate.ts';
 import { screenUniverse } from '../incubator/screenUniverse.ts';
+import { parseResearchCells, researchCellKey } from '../incubator/researchFit.ts';
 import { screenScope } from '../incubator/screenScope.ts';
 import { coverageSignature, recordCoverage } from '../incubator/pairAgents.ts';
 /** Decision 201: the hashes a screen result carries, so a later reader can tell what strategy it measured. */
@@ -140,7 +141,8 @@ while (sliceArg !== 'none') {
   }));
   // MARKETS=BTCUSD,ETHUSD: a hand run on just these markets (a 4h screen of the whole universe pulls a million 1m bars per market)
   const onlyMarkets = process.env.MARKETS ? new Set(process.env.MARKETS.split(',').map(x => x.trim()).filter(Boolean)) : null;
-  const selection=screenUniverse(tickers,{today,freshDepth:!!cfg.risk.marketGate?.freshDepth,onlyMarkets,top:inc.universeTop,floor:inc.minTurnoverUsd});
+  const researchCells=parseResearchCells(process.env.RESEARCH_CELLS);
+  const selection=screenUniverse(tickers,{today,freshDepth:!!cfg.risk.marketGate?.freshDepth,cryptoOnly:cfg.risk.marketGate?.cryptoOnly,onlyMarkets,top:inc.universeTop,floor:inc.minTurnoverUsd});
   const universe=selection.symbols;
   // decision 115: on a fast timeframe a quiet market is not screened — its cells could never clear the cost rule
   const quietTfs = new Set(inc.screen.quietFilterTfs ?? ['5m', '15m']);
@@ -259,6 +261,7 @@ while (sliceArg !== 'none') {
     let probed = 0, sawEntry = false;
     const observedAt = new Map(profiles.forScanner(s.id).filter(p=>p.tf===TF).map(p=>[p.market,p.at]));
     for (const symbol of probeMarketOrder(markets, observedAt)) {
+      if(researchCells&&!researchCells.has(researchCellKey(s.id,symbol)))continue;
       // Limit quiet work this pass; subsequent passes probe other markets first. Silence on three
       // markets is not evidence of silence everywhere, and it must not permanently starve the rest.
       if (probed >= silentProbeLimit && !sawEntry) { summary.silentSkipped += markets.length - probed; break; }
