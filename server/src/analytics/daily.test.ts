@@ -23,3 +23,17 @@ test('the daily report counts each book on the day its trades closed, net of fee
   assert.equal(rows[2].account.trades, 0);
   void D;
 });
+
+test('the daily report splits each book by the asset class of the market', () => {
+  const db = new Db(':memory:'); const now = Date.UTC(2026, 9, 19, 10), at = Date.UTC(2026, 9, 18, 12);
+  const ins = (bt: number, symbol: string, pnl: number) => db.run(
+    "INSERT INTO positions(status, scanner_id, scanner_name, symbol, tf, side, qty, qty_open, contract_value, entry_price, entry_at, exit_at, realized_pnl, fees, risk_amount, exit_reason, peak_r, bt) VALUES ('closed','s','S',?,'15m','long',1,0,1,100,?,?,?,0,10,'trail',1,?)",
+    symbol, at - 3600_000, at, pnl, bt);
+  ins(0, 'BTCUSD', 10); ins(0, 'ETHUSD', -5); ins(0, 'DOGEUSD', 20); ins(2, '1000PEPEUSD', 3); ins(2, 'AKEUSD', 4);
+  const y = dailyReport(db, 1000, 3, now)[1];
+  assert.deepEqual(y.account.byGroup.majors, { trades: 2, sumR: 0.5, net: 5 });
+  assert.deepEqual(y.account.byGroup.meme, { trades: 1, sumR: 2, net: 20 });
+  assert.equal(y.shadow.byGroup.meme.trades, 1); assert.equal(y.shadow.byGroup.alts.trades, 1);
+  assert.equal(Object.values(y.account.byGroup).reduce((n, g) => n + g.trades, 0), y.account.trades, 'classes reconcile to the book');
+  assert.match(dailyText([y]), /By class, account: Majors \+0\.5R\/2 · Meme \+2\.0R\/1/);
+});

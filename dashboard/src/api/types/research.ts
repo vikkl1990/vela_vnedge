@@ -96,6 +96,7 @@ export interface BookDay {
   trails: number
   trailKeeps: number | null
   byTf: Record<string, { trades: number; sumR: number }>
+  byGroup: Record<string, { trades: number; sumR: number; net: number }>
   best: { scanner: string; sumR: number } | null
   worst: { scanner: string; sumR: number } | null
   marginSumR: number

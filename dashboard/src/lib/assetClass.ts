@@ -1,5 +1,6 @@
 import { useCallback } from 'react'
 import { useAssetClasses } from '../api/queries'
+import type { PerformanceGroup } from '../api/types'
 import { classifySymbol, type AssetClass } from '../../../shared/assetClass'
 
 /**
@@ -32,3 +33,13 @@ export function chipLabel(c: AssetClass): string {
       return 'Other'
   }
 }
+
+export interface ClassRow {
+  key: string
+  trades: number
+  avgR: number | null
+  net: number
+}
+/** One book's side of the performance report's groups, as breakdown rows. */
+export const classRows = (rows: PerformanceGroup[] | undefined, book: 'paper' | 'shadow'): ClassRow[] =>
+  (rows ?? []).map((r) => ({ key: r.key, trades: r[book].trades, avgR: r[book].avgR, net: r[book].net }))
