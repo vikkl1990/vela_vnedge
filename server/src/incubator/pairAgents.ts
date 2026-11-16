@@ -62,10 +62,15 @@ export class PairAgents {
     const signatures=new Map(scanners.flatMap(sc=>tfs.map(tf=>[`${sc.id}|${tf}`,coverageSignature(c,sc,tf)] as const)));
     const evidence=new Map(db.all<{scanner_id:string;symbol:string;tf:string;at:number;signature:string;result:string}>('SELECT * FROM pair_screen_evidence')
       .filter(r=>r.at<=now && r.at>now-settings.refreshDays*DAY && r.signature===signatures.get(`${r.scanner_id}|${r.tf}`))
+      .flatMap(r=>{
+        try{
+          const result=JSON.parse(r.result) as ScreenResult;
+          return result&&typeof result.pass==='boolean'&&Number.isFinite(result.trades)&&result.trades>=0
+            ?[{...r,result}]:[];
+        }catch{return [];}
+      })
       .map(r=>[cellKey(r.scanner_id,r.symbol,r.tf),r]));
-    const fitFor=researchFits([...evidence.values()].flatMap(r=>{
-      try{return [{scannerId:r.scanner_id,symbol:r.symbol,tf:r.tf,result:JSON.parse(r.result) as ScreenResult}];}catch{return [];}
-    }));
+    const fitFor=researchFits([...evidence.values()].map(r=>({scannerId:r.scanner_id,symbol:r.symbol,tf:r.tf,result:r.result})));
     const pairs=new Map(store.list().map(r=>[cellKey(r.scannerId,r.symbol,r.tf),r]));
     const marketAttempts=new Map<string,number>();
     const active=new Set(['live','demote_proposed','shadow','proposed','tracked']);
@@ -86,7 +91,7 @@ export class PairAgents {
         else if(pair?.stage==='shadow'||pair?.stage==='proposed')row.shadow++;
         else if(pair?.stage==='tracked')row.tracked++;
         else if(pair?.stage==='candidate')row.candidates++;
-        if(e){row.screened++;try{if(JSON.parse(e.result).pass)row.passed++;}catch{/* malformed history is not a passing result */}}
+        if(e){row.screened++;if(e.result.pass)row.passed++;}
         if(active.has(pair?.stage??'')||e)continue;
         if(pair?.stage==='retired'&&now-pair.since<c.incubator.cooldownDays*DAY)continue;
         row.due++;

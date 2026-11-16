@@ -111,3 +111,12 @@ test('an explicitly non-crypto universe is honoured without bypassing market ref
  assert.equal((await f.agent.view()).markets[0].eligible,false);
  await f.agent.tick();assert.equal(f.jobs.length,0);
 });
+
+test('malformed and future coverage never hides an untested cell or breaks research',async t=>{
+ const f=fixture(t);f.markets.splice(1);
+ recordCoverage(f.db,'a','XRPUSD','15m',coverageSignature(f.cfg,f.scanners[0],'15m'),{at:f.now(),pass:true,trades:10} as any);
+ f.db.run("UPDATE pair_screen_evidence SET result='null'");
+ recordCoverage(f.db,'b','XRPUSD','15m',coverageSignature(f.cfg,f.scanners[1],'15m'),{at:f.now()+1000,pass:true,trades:10} as any);
+ const v=await f.agent.view();assert.equal(v.markets[0].screened,0);assert.equal(v.markets[0].due,2);
+ await f.agent.tick();assert.equal(f.jobs[0].cells?.length,2);
+});
