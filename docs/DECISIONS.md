@@ -7975,6 +7975,14 @@ hard-coded ten-coin "majors" list is replaced by these groups.
 Reporting only. No scanner, sizing, stop, entry or promotion rule reads the class, and no evidence, identity or stored
 row changes. The large-cap list is a judgement: edit `LARGE_ALTS` and every report and filter follows.
 
+## 284. The daily report splits each book by asset class (16 November 2026)
+
+Follows decision 283. Each book's day in the daily report now carries `byGroup`: trades, summed R and net dollars per
+asset class (majors, large-cap alts, alts, meme, stocks & metals, other), computed from the same closed trades and the
+same classifier as the performance report, so the classes reconcile to the book. The Daily page shows the days on the
+page summed by class for the account and for the shadow book, and the daily Telegram text gains one "By class,
+account" line on days the account traded. Reporting only: no stored row, evidence or trading rule changes.
+
 ## 285. Live scans dispatch longest timeframe first (15 November 2026)
 
 **Why.** The VM journal (7 days, runs after a normal bar close, restarts excluded) put a bar close to its last finished

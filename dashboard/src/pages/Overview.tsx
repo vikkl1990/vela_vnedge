@@ -47,6 +47,7 @@ import {
   RealityGap,
 } from '../components/home/HomeBooks'
 import { AssetClassBreakdown } from '../components/AssetClassBreakdown'
+import { classRows } from '../lib/assetClass'
 import { RunHealthPanel } from '../components/RunHealthPanel'
 import { fmtInt, fmtMoney, fmtPct, fmtPnl, fmtProfitFactor, fmtR, pnlClass } from '../lib/format'
 import { useNow } from '../lib/useNow'
@@ -77,11 +78,11 @@ function AssetClassHome() {
         <div className="home-split">
           <div>
             <b className="small">Paper account</b>
-            <AssetClassBreakdown rows={q.data.byGroup} book="paper" />
+            <AssetClassBreakdown rows={classRows(q.data.byGroup, 'paper')} book="paper" />
           </div>
           <div>
             <b className="small">Shadow research</b>
-            <AssetClassBreakdown rows={q.data.byGroup} book="shadow" />
+            <AssetClassBreakdown rows={classRows(q.data.byGroup, 'shadow')} book="shadow" />
           </div>
         </div>
       ) : q.isError ? (

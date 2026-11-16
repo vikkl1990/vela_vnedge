@@ -25,6 +25,7 @@ import {
 } from '../../../shared/assetClass'
 import { AllocationAuditPanel } from '../components/AllocationAudit'
 import { AssetClassBreakdown } from '../components/AssetClassBreakdown'
+import { classRows } from '../lib/assetClass'
 import { useClassOf } from '../lib/assetClass'
 import { DataTable, type Column } from '../components/DataTable'
 import { LearningSection } from '../components/Learning'
@@ -580,7 +581,7 @@ export function Analytics() {
               <div>
                 <b className="small">Paper account</b>
                 <AssetClassBreakdown
-                  rows={d.byGroup}
+                  rows={classRows(d.byGroup, 'paper')}
                   book="paper"
                   onChoose={(key) => update({ group: key })}
                 />
@@ -588,7 +589,7 @@ export function Analytics() {
               <div>
                 <b className="small">Shadow research</b>
                 <AssetClassBreakdown
-                  rows={d.byGroup}
+                  rows={classRows(d.byGroup, 'shadow')}
                   book="shadow"
                   onChoose={(key) => update({ group: key })}
                 />
