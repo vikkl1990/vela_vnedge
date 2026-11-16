@@ -3,14 +3,7 @@ import { Link, useSearchParams } from 'react-router-dom'
 import { useCloseAll, useExecution, usePositions } from '../api/queries'
 import { PaperPositions } from '../components/PaperPositions'
 import { TradeJournal } from '../components/TradeJournal'
-import {
-  AccountBadge,
-  BookBadge,
-  ConfirmDialog,
-  EmptyState,
-  PageHeader,
-  Section,
-} from '../components/kit'
+import { AccountBadge, BookBadge, ConfirmDialog, EmptyState, PageHeader, Section } from '../components/kit'
 
 import { useBook } from '../lib/bookScope'
 import { useToast } from '../lib/toast'
