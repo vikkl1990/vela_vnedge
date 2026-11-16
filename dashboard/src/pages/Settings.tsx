@@ -458,6 +458,13 @@ const SECTIONS: Section[] = [
         kind: 'number',
         step: '1',
         validate: num(1, 1000),
+        hint: 'Applies only when promotion count limits are enabled. Execution risk limits always apply.',
+      },
+      {
+        path: 'incubator.promote.countLimitsEnabled',
+        label: 'Apply promotion count limits',
+        kind: 'bool',
+        hint: 'Turn off weekly, fleet, per-market and per-scanner allocation quotas. Forward evidence, available margin and execution risk limits remain required.',
       },
       {
         path: 'incubator.promote.maxPerWeek',
@@ -465,6 +472,7 @@ const SECTIONS: Section[] = [
         kind: 'number',
         step: '1',
         validate: num(0, 1000),
+        hint: 'Applies only when promotion count limits are enabled.',
       },
       {
         path: 'incubator.promote.maxPerMarket',
@@ -472,6 +480,7 @@ const SECTIONS: Section[] = [
         kind: 'number',
         step: '1',
         validate: num(1, 1000),
+        hint: 'Allocation quota only; applies when promotion count limits are enabled.',
       },
       {
         path: 'incubator.promote.maxPerScanner',
@@ -479,6 +488,7 @@ const SECTIONS: Section[] = [
         kind: 'number',
         step: '1',
         validate: num(1, 1000),
+        hint: 'Allocation quota only; applies when promotion count limits are enabled.',
       },
       {
         path: 'incubator.gate.minTrades',

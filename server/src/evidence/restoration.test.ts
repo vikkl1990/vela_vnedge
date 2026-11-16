@@ -203,6 +203,7 @@ test('actual shadow dispatch records the restoration hold, continues shadow eval
  t.mock.timers.enable({apis:['Date'],now:T+15*DAY});
  const {ShadowRunner}=await import('../incubator/shadow.ts');
  const f=setup(t);f.cfg.incubator.enabled=true;f.enroll();
+ f.db.kvSet('risk.marketsToday',{enabled:true,at:Date.now(),markets:[{symbol:'BTCUSD',allowed:true,reasons:[],turnoverUsd:1e8}]});
  const H=900000,last=Math.floor(Date.now()/H)*H-H;
  const bars=Array.from({length:80},(_,i)=>({time:last-(79-i)*H,open:100,high:101,low:99,close:100+(i%2),volume:100}));
  const shadow=new PaperEngine(f.db,()=>f.cfg,{book:2});shadow.sourceHashFor=()=> 'source';

@@ -13,6 +13,7 @@ import {
   useSignals,
 } from '../api/queries'
 import { ChartFrames, FramePicker } from '../chart/ChartFrames'
+import { activeChartKeys, retainChartRecord } from '../chart/activeRecords'
 import { CryptoComparison } from '../chart/CryptoComparison'
 import { decisionMarks } from '../chart/decisionMarks'
 import { OrderFlowPanel } from '../chart/OrderFlowPanel'
@@ -106,12 +107,6 @@ export function ChartPage() {
   const [journalBook, setJournalBook] = useState<'paper' | 'shadow'>('paper')
   const [tradeDays, setTradeDays] = useState('7')
   const [ledgers, setLedgers] = useState<Record<string, AuthorLedger>>({})
-  const recordLedger = (ledger: AuthorLedger) =>
-    setLedgers((prev) => {
-      const next = { ...prev, [`${ledger.symbol}:${ledger.tf}:${ledger.id}`]: ledger }
-      if (Object.keys(next).length > 64) delete next[Object.keys(next)[0]]
-      return next
-    })
   const [comparisonOpen, setComparisonOpen] = useState(false)
 
   const symbolOptions = useMemo(() => {
@@ -121,13 +116,6 @@ export function ChartPage() {
   }, [markets.data, config.data])
 
   const symbol = symbolSel || symbolOptions[0] || 'BTCUSD'
-  const recordRun = (frame: string, run: ScriptRun) =>
-    setRuns((prev) => {
-      const key = `${symbol}:${frame}:${run.id}`
-      const next = { ...prev, [key]: snapshotRun(run, frame) }
-      if (Object.keys(next).length > 64) delete next[Object.keys(next)[0]]
-      return next
-    })
   useEffect(() => {
     try {
       localStorage.setItem(LS_KEY, JSON.stringify({ symbol, tf, view, frames }))
@@ -181,6 +169,25 @@ export function ChartPage() {
     for (const s of addedScanners) if (!ids.includes(s.id)) ids.push(s.id)
     return ids
   }, [enabledScanners, shownSelection, addedScanners, heldScanner])
+
+  const recordLedger = (ledger: AuthorLedger) =>
+    setLedgers((prev) =>
+      retainChartRecord(
+        prev,
+        `${ledger.symbol}:${ledger.tf}:${ledger.id}`,
+        ledger,
+        activeChartKeys(symbol, view === 'frames' ? frames : [tf], selectedIds),
+      ),
+    )
+  const recordRun = (frame: string, run: ScriptRun) =>
+    setRuns((prev) =>
+      retainChartRecord(
+        prev,
+        `${symbol}:${frame}:${run.id}`,
+        snapshotRun(run, frame),
+        activeChartKeys(symbol, view === 'frames' ? frames : [tf], selectedIds, 'vn:'),
+      ),
+    )
 
   const sources = useQueries({
     queries: selectedIds.map((id) => ({

@@ -7857,3 +7857,26 @@ All 1,567 server tests and TypeScript checking pass. Six regression tests cover 
 held-position retirement protection, promotion/copy denial, delayed-copy revalidation and
 exit-only execution before/during quarantine. Paper mode, $150 margin, risk caps, capacity,
 fees, reader versions, evidence thresholds and live-readiness requirements are unchanged.
+
+## 278. Remove arbitrary chart and promotion quotas without resetting evidence (15 November 2026)
+
+The operator explicitly requested removal of both chart and pilot/promotion restrictions except
+actual platform limitations. Allow all ten supported chart timeframes, display every returned
+plot value, and retain every selected scanner/frame result instead of silently dropping results
+beyond 64. Prune inactive contexts to bound retained data. API pagination, supported resolutions
+and Pine runtime resource protection remain intact. Desktop and phone browser tests execute
+real Pine workers across all ten frames and verify eight displayed plots per frame.
+
+Add an explicit `incubator.promote.countLimitsEnabled` switch. Its omitted/default value keeps
+legacy quotas; false bypasses weekly, fleet, per-market and per-scanner allocation-count caps,
+including cohort proposal selection and config saves. The reviewed migration changes only this
+flag in locked paper mode, writes a private backup atomically and supports dry-run/idempotence.
+Existing pilot daily/open limits are already zero (disabled). Do not change pilot sizing,
+available margin, account risk controls, worker capacity, evidence thresholds or live locks.
+Trade policy/evidence identities remain identical when only this switch changes.
+
+Also correct copy-readiness reporting during missing market data: a configured turnover floor
+cannot be reported as passed without a finite turnover observation. The shared evidence-only
+test used to enroll forward restorations stays independent of market availability. This avoids
+the post-restart false increase from 34 to 40 eligible cells when ZRO was absent from a market
+refresh; it does not certify a missing market or disable restoration collection.

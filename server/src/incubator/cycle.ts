@@ -143,6 +143,7 @@ export function screenTf(inc: AppConfig['incubator'], now = Date.now()): string 
 
 /** Live cells on this market and for this scanner, against the diversity caps (decision 106). */
 export function diversityRefusal(cfg: AppConfig, scannerId: string, symbol: string): string | null {
+  if (cfg.incubator.promote.countLimitsEnabled === false) return null;
   const inc = cfg.incubator; const live = livePairs(cfg);
   const perMarket = inc.promote.maxPerMarket ?? Infinity, perScanner = inc.promote.maxPerScanner ?? Infinity;
   const onMarket = live.filter(p => p.symbol === symbol).length, forScanner = live.filter(p => p.scannerId === scannerId).length;
@@ -440,7 +441,7 @@ function judgeCohorts(store: IncubatorStore, cfg: AppConfig, active: PairRow[], 
     // only markets the account can trade today are picked for the fleet (decision 104); the rest keep brewing as evidence
     const markets = store.marketsToday(now);
     const pick = v.decision === 'propose'
-      ? new Set(stats.perMarket.filter(p => p.trades >= inc.gate.minMarketTrades && p.avgR > 0 && !marketRefusal(markets, p.symbol, inc.gate.minTurnoverUsd) && !diversityRefusal(cfg, rows[0].scannerId, p.symbol)).slice(0, inc.promote.maxPerWeek).map(p => p.symbol))
+      ? new Set(stats.perMarket.filter(p => p.trades >= inc.gate.minMarketTrades && p.avgR > 0 && !marketRefusal(markets, p.symbol, inc.gate.minTurnoverUsd) && !diversityRefusal(cfg, rows[0].scannerId, p.symbol)).slice(0, inc.promote.countLimitsEnabled === false ? undefined : inc.promote.maxPerWeek).map(p => p.symbol))
       : new Set<string>();
     for (const m of members) {
       const wanted = pick.has(m.symbol);
@@ -585,9 +586,9 @@ export function approve(store: IncubatorStore, cfg: AppConfig, id: number, actor
   const sc = cfg.scanners[r.scannerId];
   if (r.stage === 'proposed') {
     const week = store.promotionsSince(now - 7 * DAY);
-    if (week >= inc.promote.maxPerWeek) throw new IncubatorError(`weekly promotion limit reached (${week}/${inc.promote.maxPerWeek}); try again later or raise incubator.promote.maxPerWeek`);
+    if (inc.promote.countLimitsEnabled !== false && week >= inc.promote.maxPerWeek) throw new IncubatorError(`weekly promotion limit reached (${week}/${inc.promote.maxPerWeek}); try again later or raise incubator.promote.maxPerWeek`);
     const fleet = livePairs(cfg).length;
-    if (fleet >= inc.promote.maxFleet) throw new IncubatorError(`the live fleet is full (${fleet}/${inc.promote.maxFleet} pairs); demote one first or raise incubator.promote.maxFleet`);
+    if (inc.promote.countLimitsEnabled !== false && fleet >= inc.promote.maxFleet) throw new IncubatorError(`the live fleet is full (${fleet}/${inc.promote.maxFleet} pairs); demote one first or raise incubator.promote.maxFleet`);
     const crowded = diversityRefusal(cfg, r.scannerId, r.symbol);
     if (crowded) throw new IncubatorError(crowded);
     const refusal = promotionRefusal(store, cfg, r, now);

@@ -59,6 +59,17 @@ test('quarantine blocks promotion and both immediate and delayed paper copy, inc
  assert.equal(f.db.get<any>('SELECT count(*) n FROM evidence_restorations')!.n,0);
 });
 
+test('copy readiness and runtime both wait for missing turnover without altering evidence-only enrollment rules',t=>{
+ const f=setup(t),m={enabled:true,minTrades:0,minTurnoverUsd:2e6};
+ for(const readOnly of [true,false]){
+  for(const missing of [null,NaN,Infinity])assert.match(f.store.copyRefusal(f.cell,m,missing,NOW,{readOnly})!,/market data unavailable/);
+  assert.equal(f.store.copyRefusal(f.cell,m,3e6,NOW,{readOnly}),null);
+  assert.match(f.store.copyRefusal(f.cell,m,1e6,NOW,{readOnly})!,/thin market/);
+  assert.equal(f.store.copyRefusal(f.cell,{...m,minTurnoverUsd:0},null,NOW,{readOnly}),null);
+ }
+ assert.equal(f.db.get<any>('SELECT count(*) n FROM evidence_restorations')!.n,0);
+});
+
 function runtime(t:any,held:boolean){
  const f=setup(t);t.mock.timers.enable({apis:['Date'],now:NOW+1000});
  const row=f.store.move(f.cell,'shadow','test',null,null,NOW-DAY);
