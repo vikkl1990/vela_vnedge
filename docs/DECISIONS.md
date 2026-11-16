@@ -7983,6 +7983,26 @@ same classifier as the performance report, so the classes reconcile to the book.
 page summed by class for the account and for the shadow book, and the daily Telegram text gains one "By class,
 account" line on days the account traded. Reporting only: no stored row, evidence or trading rule changes.
 
+## 285. Live scans dispatch longest timeframe first (15 November 2026)
+
+**Why.** The VM journal (7 days, runs after a normal bar close, restarts excluded) put a bar close to its last finished
+scan at 9.6 s on 15m, 21 s on 1h and 36 s on 4h, against a script time of 0.7 s, 0.9 s and 8 s. Every 4h close is also a
+1h close and a 15m close, so the 4h scan queued behind 17 shorter ones and the 1h scan behind the 15m ones: a plain
+first-in-first-out live queue. The wait costs little against a 4h bar, but it is delay with no reason.
+
+**What changed.** `PinePool.run` takes an optional `rank`; a ranked live job goes ahead of queued live jobs of lower rank
+and behind those of equal or higher rank, and an unranked live job counts as the lowest. The scanner engine passes the
+timeframe's length in seconds for live account runs. Live still precedes mirror, shadow and background work, the 240 s
+queue deadline still drops a job that waited too long, and a job already running is never pre-empted.
+
+**Not changed.** The late-bar guard: three layers held over the 7 days (queue deadline 240 s, `paper.maxSignalAgeSec` 300
+in the scanner engine and again in the paper engine); no entry signal was recorded later than 76 s after its bar closed.
+The late runs in the journal were the catch-up scans after restarts, all marked stats-only. They need no tag in the run
+log: `at - (bar_time + timeframe)` already says how late a run was.
+
+**Expected effect.** About 36 s to about 10 s for a 4h close, and the 1h scans finish ahead of the 15m ones. Check
+`scanner_run_log` after the next deploy. Nothing about which signals are taken changes.
+
 ## 286. Own exits: grade a script by its own ledger, test it in shadow (14 November 2026)
 
 **Why.** The script-perspective study (`docs/research/script-perspective-2026-11-14/`) ran 513 `strategy()` scripts as their

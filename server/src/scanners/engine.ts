@@ -489,7 +489,7 @@ export class ScannerEngine extends EventEmitter {
         const live=mode.live && tailBars!=='all';
         const deadline=b.at(-1)!.time+(TF_SECONDS[tf]??0)*1000+Math.min(cfg.paper.maxSignalAgeSec||300,300)*1000;
         const execute=(retry=false)=>this.pool.run({scannerId:s.id,source:s.patched,symbol,tf,tickSize:market.tickSize,bars:b,tailBars,plotTail:rule?b.length:400,inputs,timezone:sc.timezone},
-          {priority:live?'live':'background',...(retry?{deadlineMs:Math.max(1,deadline-Date.now())}:{})});
+          {priority:live?'live':'background',...(live?{rank:TF_SECONDS[tf]??0}:{}),...(retry?{deadlineMs:Math.max(1,deadline-Date.now())}:{})});
         const first=await execute();
         if(!live||first.ok||!first.error?.startsWith('memory-shared:'))return first;
         return this.recovery.recover(first,()=>{
