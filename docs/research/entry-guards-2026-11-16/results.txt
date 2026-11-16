@@ -1,0 +1,14 @@
+replayed 906 skipped 2
+
+kind        n   avg R   95% CI (by day)    long   short   neutral
+opened      443   0.049   -0.043..0.128        0.041   0.057    0.049
+burst       210   0.088   -0.009..0.188        0.081   0.097    0.089
+cooldown     74   0.236   0.003..0.537         0.262   0.220    0.241
+regime      179   0.022   -0.134..0.173        0.145  -0.149   -0.002
+
+all refused by the three guards: n 463 avg R 0.086 | taken: 443 0.049
+same-side entries within 120 s of each other (taken + burst-refused): clusters 467 | with 2+ entries 110 | entries in them 296 | largest 6
+cluster sum of R: mean 0.228 worst -5.215 5th pct -2.783 best 4.649
+same clusters, only the entries the account actually took: worst -1.110 5th pct -1.089 mean 0.080
+
+refused by symbol (n>=8): SOL n29 -0.06 | 1000PEPE n29 0.35 | XRP n11 -0.65 | AKE n44 0.21 | AIN n32 -0.16 | DOGE n17 0.14 | UNI n21 0.20 | LINK n18 0.15 | ZEC n20 0.08 | AAVE n9 0.11 | INIT n61 0.14 | ARIA n14 0.14 | EVAA n13 0.60 | BTW n52 0.03 | AIOT n42 -0.06 | SOPH n12 0.03
