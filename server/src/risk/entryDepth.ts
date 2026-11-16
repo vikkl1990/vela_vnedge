@@ -30,6 +30,8 @@ import type {AppConfig} from '../config.ts';
 import {toMs} from '../delta/ws.ts';
 export interface EntryDepthRequest {symbol:string;qty:number;contractValue:number;maker?:boolean;at:number;book?:number;virtualQty?:number;fees?:{feeRatePct:number;makerFeeRatePct?:number;feeTaxPct?:number}}
 type RawBook={buy:Array<{price:string|number;size:string|number}>;sell:Array<{price:string|number;size:string|number}>;timestamp?:unknown;last_updated_at?:unknown};
+export interface DepthQuote {symbol:string;bid:number;ask:number;bidSize:number;askSize:number;receivedAt:number;exchangeAt:number}
+interface DepthDependencies {cfg:()=>AppConfig;book:(symbol:string)=>Promise<RawBook>;now?:()=>number;save?:(state:unknown)=>void;quote?:(quote:DepthQuote)=>void}
 /** Bounded public reads, coalesced per symbol; checks always use the final sized quantity. */
 export class EntryDepthGate {
  private cache=new Map<string,{receivedAt:number;exchangeAt:number;book:RawBook}>();
@@ -37,8 +39,8 @@ export class EntryDepthGate {
  private queue:Array<{symbol:string;urgent:boolean;run:()=>void}>=[];private active=0;private background=0;
  readonly counts={requests:0,errors:0,checks:0,blocked:0};
  private last:Array<Record<string,unknown>>=[];
- constructor(deps:{cfg:()=>AppConfig;book:(symbol:string)=>Promise<RawBook>;now?:()=>number;save?:(state:unknown)=>void}){this.deps=deps;}
- private deps:{cfg:()=>AppConfig;book:(symbol:string)=>Promise<RawBook>;now?:()=>number;save?:(state:unknown)=>void};
+ constructor(deps:DepthDependencies){this.deps=deps;}
+ private deps:DepthDependencies;
  private now(){return this.deps.now?.()??Date.now();}
  enabled(symbol?:string){const m=this.deps.cfg().risk.marketGate;return !!(m?.enabled&&m.freshDepth&&(m.maxBookCostPct??0)>0&&(!symbol||!m.exempt?.includes(symbol)));}
  get stats(){return {enabled:this.enabled(),...this.counts,inFlight:this.active,queued:this.queue.length,last:this.last};}
@@ -52,7 +54,20 @@ export class EntryDepthGate {
    this.active++;if(!job.urgent)this.background++;this.counts.requests++;
    void Promise.resolve().then(()=>this.deps.book(symbol)).then(book=>{
     if(!book||!Array.isArray(book.buy)||!Array.isArray(book.sell))throw Error('malformed depth response');
-    this.cache.set(symbol,{book,receivedAt:this.now(),exchangeAt:toMs(book.timestamp??book.last_updated_at,0)});
+    const receivedAt=this.now(),exchangeAt=toMs(book.timestamp??book.last_updated_at,0);
+    this.cache.set(symbol,{book,receivedAt,exchangeAt});
+    // An executable REST book already contains an executable top quote. Preserve
+    // both clocks rather than waiting for an unrelated ticker/L1 update to arrive.
+    const maxAge=this.deps.cfg().paper.quoteMaxAgeMs;
+    if(maxAge>0&&exchangeAt>0&&exchangeAt<=receivedAt+2000&&receivedAt-exchangeAt<=maxAge&&book.buy.length&&book.sell.length
+      &&[...book.buy,...book.sell].every(l=>Number.isFinite(Number(l.price))&&Number(l.price)>0&&Number.isFinite(Number(l.size))&&Number(l.size)>0)){
+      const bid=Math.max(...book.buy.map(l=>Number(l.price))),ask=Math.min(...book.sell.map(l=>Number(l.price)));
+      if(bid<=ask){
+        const bidSize=book.buy.filter(l=>Number(l.price)===bid).reduce((n,l)=>n+Number(l.size),0);
+        const askSize=book.sell.filter(l=>Number(l.price)===ask).reduce((n,l)=>n+Number(l.size),0);
+        try{this.deps.quote?.({symbol,bid,ask,bidSize,askSize,receivedAt,exchangeAt});}catch{/* quote publication cannot invalidate the cached book */}
+      }
+    }
    }).catch(()=>{this.cache.delete(symbol);this.counts.errors++;}).finally(()=>{this.active--;if(!job.urgent)this.background--;this.pending.delete(symbol);resolve();this.drain();});
   }};this.queue.push(job);});
   this.pending.set(symbol,task);this.drain();return task;

@@ -8093,3 +8093,15 @@ malformed-book and risk refusals remain terminal. Exchange executors do not use 
 No capital, risk, evidence, scanner-reading, fee or admission threshold changes. A wait creates no fill, fee or promotion evidence.
 The audit is in `docs/research/paper-copy-fills-2026-11-16/`. Regression tests cover the cancelled-order defect, causal recovery,
 expiry, restart, unchanged economics/policy, pilot disablement and executor isolation. No profit uplift is claimed from a data-gap fix.
+
+## 293. Validated REST depth supplies a paper quote when the stream is quiet (16 November 2026)
+
+The entry path fetched fresh depth but could still reject for a missing executable bid/ask because that quote lived in a
+separate streaming store. Publish top-of-book from the existing validated REST response in paper mode, with its original
+exchange and receipt timestamps. Healthy L1 quotes retain priority. Invalid, crossed, stale, future or untimestamped books
+cannot supply the fallback; the actual-quantity depth, cost, fee, risk and evidence checks remain unchanged. No extra fetch,
+backdated order or fill is introduced. A newly visible quote is not permission to bypass a cost refusal.
+
+The 57-cell funnel and limits of the improvement are recorded in `docs/research/paper-copy-funnel-2026-11-16/`. The old
+ten-cell fill count mostly predates the turnover correction; two further cells subsequently filled. No profitability gain
+is claimed. Asset-class UI columns also now fit full monetary values, with stacked phone rows instead of clipped amounts.

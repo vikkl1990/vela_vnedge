@@ -277,7 +277,9 @@ export class App {
         return { bids: side(ob.buy), asks: side(ob.sell) };
       },
     });
-    this.entryDepth=new EntryDepthGate({cfg,book:async symbol=>await this.rest.orderbook(symbol,25),save:state=>this.db.kvSet('risk.entryDepth',state)});
+    this.entryDepth=new EntryDepthGate({cfg,book:async symbol=>await this.rest.orderbook(symbol,25),save:state=>this.db.kvSet('risk.entryDepth',state),
+      quote:q=>{if(cfg().execution.mode==='paper')this.marks.setQuotes(q.symbol,q.bid,q.ask,q.receivedAt,q.exchangeAt,'rest_depth',
+        {bidSize:q.bidSize,askSize:q.askSize,bookAt:q.exchangeAt});}});
     wireEntryDepth(this.paper,this.shadow,this.entryDepth);
     for(const book of [this.paper,this.shadow])book.alignmentBars=(symbol,tf)=>this.candles.get(symbol,tf,{closedOnly:true});
     this.risk = new RiskManager({ db: this.db, paper: this.paper, candles: this.candles, cfgRef: cfg, marketGate: this.marketGate });
