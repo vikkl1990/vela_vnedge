@@ -8077,3 +8077,19 @@ while the VM remains crypto-only. The Pair Agents view explains classes and rese
 
 See `docs/research/asset-class-allocation-2026-11-16/` for the measured funnel and 54 public depth requests: 50/53 readable
 samples passed at $250 and $750, 46/53 at $1,500. Actual entry checks still refuse stale, insufficient or costly books.
+
+## 288. Accepted paper orders survive temporary depth gaps (16 November 2026)
+
+The frozen 57 copy-eligible cells all scan successfully. In the audited 24 hours they produced 74 account entry decisions,
+19 paper fills and 56 shadow fills. Eligibility is permission to attempt a fresh signal, not an instruction to open a position.
+The pre-deploy $2M turnover rule caused 145 copy refusals; decision 287 has already aligned it to $50k.
+
+A separate execution defect cancelled five accepted maker orders over seven days solely because the cached depth was stale
+at a price touch. Keep an already-accepted order pending through missing/stale depth, within its original expiry. The existing
+bounded depth scheduler refreshes it. Recheck all price, fee, depth, risk and exposure requirements on a later observation;
+do not replay the failed print or candle range. Persist that observation boundary for resting-order recovery. Cost, capacity,
+malformed-book and risk refusals remain terminal. Exchange executors do not use this paper-only recovery.
+
+No capital, risk, evidence, scanner-reading, fee or admission threshold changes. A wait creates no fill, fee or promotion evidence.
+The audit is in `docs/research/paper-copy-fills-2026-11-16/`. Regression tests cover the cancelled-order defect, causal recovery,
+expiry, restart, unchanged economics/policy, pilot disablement and executor isolation. No profit uplift is claimed from a data-gap fix.
