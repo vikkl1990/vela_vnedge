@@ -7,6 +7,8 @@
  */
 import type { Db } from '../db.ts';
 import { ACCOUNT_AND_SHADOW_EVIDENCE } from './scope.ts';
+import { classOf } from '../markets/classes.ts';
+import { groupLabel } from '../../../shared/assetClass.ts';
 
 const DAY = 86_400_000;
 export interface BookDay {
@@ -14,6 +16,8 @@ export interface BookDay {
   /** Mean of (R kept ÷ peak R) over trail exits, null when none. */
   trailKeeps: number | null;
   byTf: Record<string, { trades: number; sumR: number }>;
+  /** The same trades by the asset class of their market (majors, large_alts, alts, meme, tradfi, other). */
+  byGroup: Record<string, { trades: number; sumR: number; net: number }>;
   best: { scanner: string; sumR: number } | null; worst: { scanner: string; sumR: number } | null;
   /** Decision 138: the same trades re-scored under margin sizing, at the same average risk, in units of today's R. */
   marginSumR: number;
@@ -35,12 +39,12 @@ function marginWeight(x: { ep: number; sl: number | null; fills: string | null }
 }
 
 function book(db: Db, bt: number, from: number, to: number): BookDay {
-  const rows = db.all<{ scanner_name: string; tf: string; exit_reason: string; pnl: number; fees: number; risk: number; peak: number | null; ep: number; sl: number | null; fills: string | null }>(
-    `SELECT scanner_name, tf, exit_reason, realized_pnl pnl, fees, risk_amount risk, peak_r peak, entry_price ep, sl_original sl, fills FROM positions p WHERE p.scanner_id NOT LIKE 'plan:%' AND bt=? AND status='closed' AND exit_at>=? AND exit_at<? AND ${ACCOUNT_AND_SHADOW_EVIDENCE}`, bt, from, to);
+  const rows = db.all<{ scanner_name: string; symbol: string; tf: string; exit_reason: string; pnl: number; fees: number; risk: number; peak: number | null; ep: number; sl: number | null; fills: string | null }>(
+    `SELECT scanner_name, symbol, tf, exit_reason, realized_pnl pnl, fees, risk_amount risk, peak_r peak, entry_price ep, sl_original sl, fills FROM positions p WHERE p.scanner_id NOT LIKE 'plan:%' AND bt=? AND status='closed' AND exit_at>=? AND exit_at<? AND ${ACCOUNT_AND_SHADOW_EVIDENCE}`, bt, from, to);
   const r = (x: typeof rows[number]) => (x.risk > 0 ? (x.pnl - x.fees) / x.risk : 0);
   const trails = rows.filter(x => x.exit_reason === 'trail' && x.risk > 0 && (x.peak ?? 0) > 0);
-  const byTf: BookDay['byTf'] = {}; const byScanner = new Map<string, number>();
-  for (const x of rows) { const t = (byTf[x.tf] ??= { trades: 0, sumR: 0 }); t.trades++; t.sumR += r(x); byScanner.set(x.scanner_name, (byScanner.get(x.scanner_name) ?? 0) + r(x)); }
+  const byTf: BookDay['byTf'] = {}; const byGroup: BookDay['byGroup'] = {}; const byScanner = new Map<string, number>();
+  for (const x of rows) { const t = (byTf[x.tf] ??= { trades: 0, sumR: 0 }); t.trades++; t.sumR += r(x); const g = (byGroup[classOf(x.symbol).group] ??= { trades: 0, sumR: 0, net: 0 }); g.trades++; g.sumR += r(x); g.net += x.pnl - x.fees; byScanner.set(x.scanner_name, (byScanner.get(x.scanner_name) ?? 0) + r(x)); }
   const ranked = [...byScanner].sort((a, b) => b[1] - a[1]);
   const sumR = rows.reduce((a, x) => a + r(x), 0);
   const marginSumR = rows.reduce((a, x) => a + r(x) * marginWeight(x), 0);
@@ -49,7 +53,7 @@ function book(db: Db, bt: number, from: number, to: number): BookDay {
     sumR, avgR: rows.length ? sumR / rows.length : 0, wins: rows.filter(x => x.pnl - x.fees > 0).length,
     stops: rows.filter(x => x.exit_reason === 'sl').length, trails: trails.length,
     trailKeeps: trails.length ? trails.reduce((a, x) => a + r(x) / (x.peak as number), 0) / trails.length : null,
-    marginSumR, byTf, best: ranked.length ? { scanner: ranked[0][0], sumR: ranked[0][1] } : null,
+    marginSumR, byTf, byGroup, best: ranked.length ? { scanner: ranked[0][0], sumR: ranked[0][1] } : null,
     worst: ranked.length ? { scanner: ranked.at(-1)![0], sumR: ranked.at(-1)![1] } : null,
   };
 }
@@ -87,6 +91,7 @@ export function dailyText(rows: DailyRow[]): string {
   return [
     `📊 VN EDGE daily report ${d.day} (UTC)`,
     `Account: ${a.trades} trades, net ${sign(a.net)} (fees ${a.fees.toFixed(2)}), ${sign(a.avgR, 3)}R a trade, ${a.stops} stopped, ${a.trails} trailed${a.trailKeeps !== null ? `, trail kept ${Math.round(a.trailKeeps * 100)}% of the peak` : ''}. Equity ${d.equity.toFixed(2)}.`,
+    a.trades ? `By class, account: ${Object.entries(a.byGroup).map(([g, v]) => `${groupLabel(g)} ${sign(v.sumR, 1)}R/${v.trades}`).join(' · ')}` : '',
     `Shadow: ${s.trades} trades, ${sign(s.avgR, 3)}R a trade, sum ${sign(s.sumR, 1)}R · ${Object.entries(s.byTf).map(([tf, v]) => `${tf} ${sign(v.sumR, 1)}R/${v.trades}`).join(' · ')}`,
     `Incubator: ${inc.admitted} admitted, ${inc.proposed} proposed, ${inc.promoted} promoted, ${inc.retired} retired, ${inc.demoted} demoted.`,
     `Last 7 days: account ${wTrades} trades ${sign(wTrades ? wR / wTrades : 0, 3)}R a trade (sum ${sign(wR, 1)}R); shadow ${sTrades} trades ${sign(sTrades ? sR / sTrades : 0, 3)}R a trade.`,

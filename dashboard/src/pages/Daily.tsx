@@ -6,6 +6,8 @@ import { useConfig } from '../api/queries'
 import { REFRESH } from '../api/refreshPolicy'
 import type { DailyRow } from '../api/types'
 import { Callout, QueryState, RouteHeader, Section, Stat, StatGrid, TabPanel, Tabs } from '../components/kit'
+import { AssetClassBreakdown } from '../components/AssetClassBreakdown'
+import type { ClassRow } from '../lib/assetClass'
 import { LockStudyPanel } from '../components/LockStudyPanel'
 import { fmtPnl, fmtPnl as r } from '../lib/format'
 
@@ -25,6 +27,25 @@ function sumWeek(rows: DailyRow[]) {
   const sn = rows.reduce((a, x) => a + x.shadow.trades, 0),
     ssr = rows.reduce((a, x) => a + x.shadow.sumR, 0)
   return { n, sr, net, avg: n ? sr / n : 0, sn, ssr, savg: sn ? ssr / sn : 0 }
+}
+
+/** The days on the page, summed by asset class for one book. */
+function classTotals(rows: DailyRow[], book: 'account' | 'shadow'): ClassRow[] {
+  const sum = new Map<string, { trades: number; sumR: number; net: number }>()
+  for (const d of rows)
+    for (const [key, v] of Object.entries(d[book].byGroup ?? {})) {
+      const t = sum.get(key) ?? { trades: 0, sumR: 0, net: 0 }
+      t.trades += v.trades
+      t.sumR += v.sumR
+      t.net += v.net
+      sum.set(key, t)
+    }
+  return [...sum].map(([key, t]) => ({
+    key,
+    trades: t.trades,
+    avgR: t.trades ? t.sumR / t.trades : null,
+    net: t.net,
+  }))
 }
 
 export function Daily() {
@@ -149,6 +170,9 @@ export function Daily() {
               ]}
             />
             <TabPanel idPrefix="daily" id="account" value={tab}>
+              <Section variant="panel" title={`By asset class, last ${rows.length} days`}>
+                <AssetClassBreakdown rows={classTotals(rows, 'account')} book="account" />
+              </Section>
               <Section variant="panel" title="Account" pad={false}>
                 <div className="table-wrap">
                   <table className="table small daily-table">
@@ -230,6 +254,9 @@ export function Daily() {
               <LockStudyPanel />
             </TabPanel>
             <TabPanel idPrefix="daily" id="shadow" value={tab}>
+              <Section variant="panel" title={`By asset class, last ${rows.length} days`}>
+                <AssetClassBreakdown rows={classTotals(rows, 'shadow')} book="shadow" />
+              </Section>
               <Section variant="panel" title="Shadow book and incubator" pad={false}>
                 <div className="table-wrap">
                   <table className="table small daily-table">

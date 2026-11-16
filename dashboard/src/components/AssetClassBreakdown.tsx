@@ -1,6 +1,6 @@
-import type { PerformanceGroup } from '../api/types'
 import { ASSET_GROUPS, ASSET_SECTORS } from '../../../shared/assetClass'
 import { fmtInt, fmtPnl } from '../lib/format'
+import type { ClassRow } from '../lib/assetClass'
 import '../styles/asset-chip.css'
 
 const tone = (v: number | null) => (v === null || v === 0 ? '' : v > 0 ? 'gain' : 'loss')
@@ -16,8 +16,9 @@ export function AssetClassBreakdown({
   kind = 'group',
   onChoose,
 }: {
-  rows: PerformanceGroup[] | undefined
-  book: 'paper' | 'shadow'
+  rows: ClassRow[] | undefined
+  /** Names the book in the empty message and the table's accessible label. */
+  book: string
   kind?: 'group' | 'sector'
   onChoose?: (key: string) => void
 }) {
@@ -25,9 +26,9 @@ export function AssetClassBreakdown({
   const label = (key: string) =>
     (kind === 'group' ? ASSET_GROUPS : ASSET_SECTORS).find((x) => x.key === key)?.label ?? key
   const used = (rows ?? [])
-    .filter((r) => r[book].trades > 0)
+    .filter((r) => r.trades > 0)
     .sort((a, b) => order.indexOf(a.key) - order.indexOf(b.key))
-  const total = used.reduce((n, r) => n + r[book].trades, 0)
+  const total = used.reduce((n, r) => n + r.trades, 0)
   if (!used.length) return <p className="muted small">No closed {book} trades in this period.</p>
   return (
     <div
@@ -46,7 +47,7 @@ export function AssetClassBreakdown({
         </span>
       </div>
       {used.map((r) => {
-        const s = r[book]
+        const s = r
         const name = (
           <span className="class-row-name">
             <span className="class-dot" aria-hidden="true" />
