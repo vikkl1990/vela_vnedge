@@ -1,6 +1,7 @@
 import { createHmac } from 'node:crypto';
 import { productFees, type ProductFees } from '../paper/productFees.ts';
 import { logger } from '../log.ts';
+import { registerProductSpecs } from '../markets/classes.ts';
 
 const log = logger.scoped('delta.rest');
 
@@ -27,6 +28,8 @@ export interface DeltaProduct {
   trading_status?: string;
   initial_margin?: string; maintenance_margin?: string; max_leverage_notional?: string;
   taker_commission_rate?: string; maker_commission_rate?: string;
+  /** Delta's own market tags (`meme`, `ai`, `defi`, `layer_1`, `xStock`, `metal`…) and `top_tag` (`tradfi`): the asset classes read them. */
+  product_specs?: { tags?: string[] | null; top_tag?: string | null } | null;
 }
 
 /**
@@ -168,6 +171,7 @@ export class DeltaRest {
       if (!after) {
         log.debug(`products: ${map.size} live perpetuals`);
         this.productCache = map; this.productCacheAt = Date.now();
+        registerProductSpecs(map.values());
         return map;
       }
       if (!list.length) throw new Error('Delta products: empty page with continuation cursor');

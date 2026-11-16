@@ -664,6 +664,8 @@ export interface PerformanceFilter {
   tf?: string
   side?: string
   reason?: string
+  group?: string
+  sector?: string
 }
 export interface PerformanceStats {
   trades: number
@@ -703,4 +705,6 @@ export interface PerformanceReport {
   byScanner: PerformanceGroup[]
   bySymbol: PerformanceGroup[]
   byExit: PerformanceGroup[]
+  byGroup: PerformanceGroup[]
+  bySector: PerformanceGroup[]
 }

@@ -89,3 +89,30 @@ test('paired execution plans do not inflate ordinary shadow performance or daily
  assert.equal(performanceReport(db,{},now).shadow.trades,1);
  assert.equal(dailyReport(db,1000,2,now)[1].shadow.trades,1);db.db.close();
 });
+
+test('trades are grouped and filtered by the asset class of their market', () => {
+  const db = new Db(':memory:');
+  insert(db, { symbol: 'BTCUSD', pnl: 21, fees: 1 });      // majors
+  insert(db, { symbol: 'ETHUSD', pnl: 11, fees: 1 });      // majors
+  insert(db, { symbol: 'DOGEUSD', pnl: -9, fees: 1 });     // meme
+  insert(db, { symbol: '1000PEPEUSD', pnl: 4, fees: 1 });  // meme
+  insert(db, { symbol: 'AKEUSD', pnl: 6, fees: 1 });       // alts
+  insert(db, { symbol: 'BNBUSD', pnl: 2, fees: 1 });       // large-cap alts
+  insert(db, { symbol: 'DOGEUSD', bt: 2, pnl: 3, fees: 1 });
+  const r = performanceReport(db, {}, now);
+  const by = (k: string) => r.byGroup.find(g => g.key === k);
+  assert.equal(by('majors')?.paper.trades, 2); assert.equal(by('majors')?.paper.net, 30);
+  assert.equal(by('meme')?.paper.trades, 2); assert.equal(by('meme')?.paper.net, -7); assert.equal(by('meme')?.shadow.trades, 1);
+  assert.equal(by('alts')?.paper.trades, 1); assert.equal(by('large_alts')?.paper.trades, 1);
+  assert.equal(r.byGroup.reduce((n, g) => n + g.paper.trades, 0), r.paper.trades, 'group totals reconcile to the book');
+  assert.equal(r.bySector.find(s => s.key === 'meme')?.paper.trades, 2);
+  // filters apply to both books and to the totals
+  const meme = performanceReport(db, { group: 'meme' }, now);
+  assert.equal(meme.paper.trades, 2); assert.equal(meme.shadow.trades, 1); assert.equal(meme.paper.net, -7);
+  assert.equal(performanceReport(db, { group: 'majors', symbol: 'BTCUSD' }, now).paper.trades, 1);
+  assert.equal(performanceReport(db, { group: 'majors', symbol: 'DOGEUSD' }, now).paper.trades, 0);
+  assert.equal(performanceReport(db, { sector: 'meme' }, now).paper.trades, 2);
+  assert.equal(performanceReport(db, { group: 'tradfi' }, now).paper.trades, 0);
+  assert.throws(() => performanceReport(db, { group: 'bluechip' }, now), /asset group/);
+  assert.throws(() => performanceReport(db, { sector: 'nope' }, now), /asset sector/);
+});

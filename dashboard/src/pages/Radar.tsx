@@ -17,6 +17,9 @@ import { fmtCompactUsd as money, fmtPnl as r1 } from '../lib/format'
 import { choice, researchHref } from '../lib/researchNavigation'
 import { useResearchFilters } from '../lib/useResearchFilters'
 
+import { ASSET_GROUPS } from '../../../shared/assetClass'
+import { AssetChip } from '../components/AssetChip'
+import { useClassOf } from '../lib/assetClass'
 import { PairAgentsPanel } from '../components/PairAgentsPanel'
 import '../styles/pages/radar.css'
 
@@ -25,18 +28,6 @@ import '../styles/pages/radar.css'
  * stops, net R) for every market × timeframe, over the last day by default. A cell's shade is its entries per pair; its
  * bars are the window in slices, entries up and stops down; a quiet cell names the refusal that silenced it.
  */
-const MAJORS = new Set([
-  'BTCUSD',
-  'ETHUSD',
-  'SOLUSD',
-  'XRPUSD',
-  'BNBUSD',
-  'DOGEUSD',
-  'ADAUSD',
-  'AVAXUSD',
-  'LINKUSD',
-  'SUIUSD',
-])
 const pairs = (c: RadarCell) => c.live + c.shadow + c.candidate + c.tracked
 
 function Cell({
@@ -115,7 +106,8 @@ export default function Radar() {
   // the filters live in the URL so a link, Back and Forward all keep them (defaults stay out of it)
   const { params, set } = useResearchFilters()
   const hours = Number(choice(params.get('hours'), ['6', '24', '72', '168'], '24'))
-  const group = choice(params.get('group'), ['all', 'majors', 'alts'], 'all')
+  const group = choice(params.get('group'), ['all', ...ASSET_GROUPS.map((g) => g.key as string)], 'all')
+  const classOf = useClassOf()
   const sort = choice(params.get('sort'), ['turnover', 'signals', 'netR', 'pairs'], 'turnover')
   const onlyActive = params.get('active') !== '0'
   const [tab, setTab] = useState<'radar' | 'agents'>('radar')
@@ -125,7 +117,7 @@ export default function Radar() {
     if (!v) return null
     const score = (m: RadarMarket, f: (c: RadarCell) => number) =>
       v.tfs.reduce((a, tf) => a + (m.cells[tf] ? f(m.cells[tf]!) : 0), 0)
-    let ms = v.markets.filter((m) => group === 'all' || (group === 'majors') === MAJORS.has(m.symbol))
+    let ms = v.markets.filter((m) => group === 'all' || classOf(m.symbol).group === group)
     if (onlyActive)
       ms = ms.filter(
         (m) => score(m, (c) => c.live + c.shadow + c.tracked + c.opened + c.signals + c.shadowSignals) > 0,
@@ -149,7 +141,7 @@ export default function Radar() {
       ),
     )
     return { ...v, markets: ms, maxDensity }
-  }, [q.data, group, sort, onlyActive])
+  }, [q.data, group, sort, onlyActive, classOf])
   const reserved = (tf: string) =>
     (q.data?.reserve ?? [])
       .filter((r) => !r.tfs?.length || r.tfs.includes(tf))
@@ -235,8 +227,11 @@ export default function Radar() {
                   aria-label="Markets"
                 >
                   <option value="all">All markets</option>
-                  <option value="majors">Majors</option>
-                  <option value="alts">Alts</option>
+                  {ASSET_GROUPS.map((g) => (
+                    <option key={g.key} value={g.key} title={g.hint}>
+                      {g.label}
+                    </option>
+                  ))}
                 </select>
                 <select
                   className="select select-sm"
@@ -287,7 +282,7 @@ export default function Radar() {
                         {v.markets.map((m) => (
                           <tr key={m.symbol}>
                             <td className="radar-market">
-                              <b>{m.symbol.replace(/USD$/, '')}</b>
+                              <b>{m.symbol.replace(/USD$/, '')}</b> <AssetChip symbol={m.symbol} />
                               <div className="muted small mono">
                                 {money(m.turnoverUsd)}
                                 {m.atrPct !== null ? ` · ATR ${m.atrPct.toFixed(2)}%` : ''}

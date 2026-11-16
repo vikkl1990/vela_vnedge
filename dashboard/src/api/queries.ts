@@ -104,6 +104,9 @@ export const useGates = () =>
     staleTime: 15_000,
     retry: 1,
   })
+/** The asset class of every market (majors, alts, meme, stocks & metals…): one source of truth, refreshed with the market list. */
+export const useAssetClasses = () =>
+  useQuery({ queryKey: ['markets', 'classes'], queryFn: api.assetClasses, staleTime: 10 * 60_000, retry: 2 })
 export const useConfig = () =>
   useQuery({ queryKey: qk.config, queryFn: api.config, staleTime: 60_000, retry: 1 })
 export const useConfigDefaults = () =>

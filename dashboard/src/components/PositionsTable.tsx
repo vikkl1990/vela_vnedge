@@ -8,6 +8,7 @@ import { positionTargets, protectionText, quantityText, targetR } from '../lib/p
 import { useToast } from '../lib/toast'
 import { useMediaQuery } from '../lib/useMediaQuery'
 import { useLivePrice, useLiveTick } from '../sse/prices'
+import { AssetChip } from './AssetChip'
 import { DataTable, type Column } from './DataTable'
 import { ConfirmDialog, Pill, Pnl, SidePill, StatusDot, Time } from './kit'
 import { TradePath } from './TradePath'
@@ -167,7 +168,8 @@ export function PositionsTable({ positions, compact = false }: { positions: Posi
           <span className="cell-sym">
             <LiveDot p={p} />
             <span>
-              <b>{p.symbol}</b> <span className="muted small mono">{p.tf}</span>
+              <b>{p.symbol}</b> <span className="muted small mono">{p.tf}</span>{' '}
+              <AssetChip symbol={p.symbol} />
               <div className="muted small">
                 <Link to={`/scanners/${p.scannerId}`} className="link">
                   {p.scannerName}
@@ -360,6 +362,7 @@ export function PositionsTable({ positions, compact = false }: { positions: Posi
                 <b>
                   {p.symbol} {p.tf}
                 </b>
+                <AssetChip symbol={p.symbol} />
                 <SidePill side={p.side} />
               </div>
               <Link className="link" to={`/scanners/${p.scannerId}`}>
