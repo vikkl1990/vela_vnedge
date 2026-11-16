@@ -48,6 +48,7 @@ import { sourceHash } from '../paper/fingerprint.ts';
 import { SIMULATION_VERSION } from '../paper/version.ts';
 import type { MarketsToday } from '../risk/marketGate.ts';
 import { screenUniverse } from '../incubator/screenUniverse.ts';
+import { screenScope } from '../incubator/screenScope.ts';
 import { coverageSignature, recordCoverage } from '../incubator/pairAgents.ts';
 /** Decision 201: the hashes a screen result carries, so a later reader can tell what strategy it measured. */
 function screenProvenance(patched: string, read: { extract: Record<string, unknown>; rule: Record<string, unknown> }, policy: Record<string, unknown>) {
@@ -231,7 +232,7 @@ while (sliceArg !== 'none') {
   // and skips the judge: it prints each pair's verdict so the retirements can be read before they happen.
   // decision 201: RESCREEN_STAGES=live (with RESCREEN_SHADOW=1 and DRY=1) revalidates the live pairs under today's policy
   const rescreenStages = new Set((process.env.RESCREEN_STAGES ?? 'shadow,proposed').split(',').map(x => x.trim()));
-  const skipStages = new Set(shadowOnly ? ['live', 'demote_proposed', 'tracked', 'candidate', 'retired', 'shadow', 'proposed'].filter(x => !rescreenStages.has(x)) : ['live', 'demote_proposed', 'shadow', 'proposed', 'tracked']);
+  const { skipStages, silentProbeLimit } = screenScope({ shadowOnly, rescreenStages, explicitCells: Boolean(only?.size && onlyMarkets?.size) });
   const markets = [...data.keys()];
   let stopped = false;
   for (const [idx, s] of scripts.entries()) {
@@ -260,7 +261,7 @@ while (sliceArg !== 'none') {
     for (const symbol of probeMarketOrder(markets, observedAt)) {
       // Limit quiet work this pass; subsequent passes probe other markets first. Silence on three
       // markets is not evidence of silence everywhere, and it must not permanently starve the rest.
-      if (!shadowOnly && probed >= 3 && !sawEntry) { summary.silentSkipped += markets.length - probed; break; }
+      if (probed >= silentProbeLimit && !sawEntry) { summary.silentSkipped += markets.length - probed; break; }
       const cur = store.find(s.id, symbol, TF);
       if (cur && skipStages.has(cur.stage)) continue;
       if (shadowOnly && !cur) continue;   // only the book's own cells

@@ -199,7 +199,7 @@ export class RiskManager extends EventEmitter implements RiskGate {
     if (this.st.week.tripped) return reject(`weekly loss limit ${c.maxWeeklyLossPct}% hit (${this.st.week.trippedPnlPct?.toFixed(2)}%)`);
     const open = this.paper.openPositions().filter(p => p.id !== req.replacing), pending = this.paper.pendingEntries();
     const total = open.length + pending.length;
-    if (total >= c.maxPositionsTotal) return reject(`max positions ${c.maxPositionsTotal} reached`);
+    if (c.maxPositionsTotal > 0 && total >= c.maxPositionsTotal) return reject(`max positions ${c.maxPositionsTotal} reached`);
     const bySymbol = open.filter(p => p.symbol === req.symbol).length + pending.filter(p => p.symbol === req.symbol).length;
     if (bySymbol >= c.maxPositionsPerSymbol) return reject(`max ${c.maxPositionsPerSymbol} positions on ${req.symbol}`);
     const byScanner = open.filter(p => p.scannerId === req.scannerId).length + pending.filter(p => p.scannerId === req.scannerId).length;
@@ -326,6 +326,14 @@ export class RiskManager extends EventEmitter implements RiskGate {
     if (closeAll) { const n = this.paper.closeAll('risk-kill', this.now()); log.warn(`requested closure of ${n} position(s) on manual halt`); }
   }
 
+  /** Clear only an operator pause. Never rebase loss windows or clear cooldowns. */
+  resumeManual():{ok:true}|{ok:false;reason:string} {
+    this.tick(this.now());
+    if(this.st.day.tripped||this.st.week.tripped)return {ok:false,reason:'Entries remain paused: an active daily or weekly loss limit cannot be cleared from Telegram.'};
+    if(this.st.manualHalt){this.st.manualHalt=null;this.save();this.db.afterCommit(()=>log.info('manual entry pause cleared; risk windows preserved'));}
+    return {ok:true};
+  }
+
   /** Clear the manual halt, tripped kill switches and cooldowns; restart the period windows from the current equity. */
   reset(): void {
     this.st = this.freshState(this.now());
@@ -350,7 +358,7 @@ export class RiskManager extends EventEmitter implements RiskGate {
       manualHalt: this.st.manualHalt, equity: eq, peakEquity: this.peakEquity(), drawdownPct: this.drawdownPct(), leverageMult: this.leverageMult(),
       sizing: { from: this.ddFrom(), drawdownPct: this.sizingDrawdownPct(), startEquity: this.paper.initialEquity },
       day: period(this.st.day, c?.maxDailyLossPct ?? 0), week: period(this.st.week, c?.maxWeeklyLossPct ?? 0),
-      positions: { open: open.length, pending: pending.length, max: c?.maxPositionsTotal ?? null, bySymbol: count('symbol'), byScanner: count('scannerId'), maxPerSymbol: c?.maxPositionsPerSymbol ?? null, maxPerScanner: c?.perScannerMaxPositions ?? null },
+      positions: { open: open.length, pending: pending.length, max: c?.maxPositionsTotal > 0 ? c.maxPositionsTotal : null, bySymbol: count('symbol'), byScanner: count('scannerId'), maxPerSymbol: c?.maxPositionsPerSymbol ?? null, maxPerScanner: c?.perScannerMaxPositions ?? null },
       scanners: Object.fromEntries(Object.entries(this.st.scanners).map(([id, s]) => [id, { ...s, dayPnl: this.scannerDayPnl(id), inCooldown: Boolean(s.cooldownUntil && now < s.cooldownUntil) }])),
       exposure: { tf, ...this.exposure(tf), limitPct: c?.maxBetaExposurePct ?? 0 },
       regime: c?.regime ?? null, config: c, rejections: this.rejections.slice(-50).reverse(),

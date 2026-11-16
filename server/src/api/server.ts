@@ -28,6 +28,7 @@ import { ContributionService } from '../scanners/contributions.ts';
 import { ReadinessService } from '../scanners/readiness.ts';
 import { ContractRegistry } from '../scanners/contracts.ts';
 import { deltaConnectionRoutes } from '../connections/routes.ts';
+import {telegramRoutes} from '../telegram/routes.ts';
 import { Journal, journalFilter } from '../analytics/journal.ts';
 
 const log = logger.scoped('api');
@@ -56,6 +57,7 @@ export class ApiServer {
     this.authCtx = createAuth(this.auth);
     authRoutes((m, r, h) => this.add(m, r, h), this.authCtx, req => this.userFor(req));
     deltaConnectionRoutes((m, r, h) => this.add(m, r, h), app.deltaConnection);
+    telegramRoutes((m,r,h)=>this.add(m,r,h),app.telegram,req=>this.userFor(req));
     setInterval(() => { try { this.auth.sweep(); } catch { /* ignore */ } }, 3600_000).unref?.();
     this.defineRoutes();
     for (const ext of EXTENSIONS) ext((method, route, handler) => this.add(method, route, (_r, _s, params, url, body) => handler(params, url, body)), app);

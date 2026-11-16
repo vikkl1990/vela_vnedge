@@ -1,18 +1,9 @@
 import { useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { useCloseAll, useExecution, usePositions } from '../api/queries'
-import { PositionsTable } from '../components/PositionsTable'
+import { PaperPositions } from '../components/PaperPositions'
 import { TradeJournal } from '../components/TradeJournal'
-import {
-  AccountBadge,
-  BookBadge,
-  ConfirmDialog,
-  EmptyState,
-  ErrorState,
-  Loading,
-  PageHeader,
-  Section,
-} from '../components/kit'
+import { AccountBadge, BookBadge, ConfirmDialog, EmptyState, PageHeader, Section } from '../components/kit'
 
 import { useBook } from '../lib/bookScope'
 import { useToast } from '../lib/toast'
@@ -99,13 +90,7 @@ export function Trades() {
               }
               pad={false}
             >
-              {positions.isLoading && !positions.data ? (
-                <Loading kind="table" rows={3} cols={10} />
-              ) : positions.isError && !positions.data ? (
-                <ErrorState error={positions.error} onRetry={() => positions.refetch()} />
-              ) : (
-                <PositionsTable positions={positions.data ?? []} />
-              )}
+              <PaperPositions query={positions} />
             </Section>
           )}
         </>

@@ -59,7 +59,7 @@ console.log(`| sizing | ${p.sizingMode}, risk ${p.riskPerTradePct}% of equity, s
 console.log(`| entry filter | stop ≥ ${p.minRiskFeeRatio}× round-trip fee; signal younger than ${p.maxSignalAgeSec}s |`);
 console.log(`| fees | ${p.feeRatePct}% taker + ${p.feeTaxPct ?? 0}% GST; Scalper Offer ${p.scalperOffer?.enabled ? `on (${p.scalperOffer.majorsMinutes}m majors / ${p.scalperOffer.othersMinutes}m others)` : 'off'} |`);
 console.log(`| fills | ${p.fillSource}${p.useSpread ? ', crossing the quoted spread' : ''}, slippage ${p.slippageBps} bps |`);
-console.log(`| open positions | max ${p.maxOpenPositions} |`);
+console.log(`| open positions | ${p.maxOpenPositions>0?`max ${p.maxOpenPositions}`:"no count cap"} |`);
 console.log(`| exchange mirroring | ${cfg.execution.mode}${cfg.execution.mode === 'paper' ? ' (nothing is sent to an exchange)' : ''} |`);
 console.log(`| auto-tune | ${cfg.autoTune.enabled ? 'on' : 'off'} |`);
 

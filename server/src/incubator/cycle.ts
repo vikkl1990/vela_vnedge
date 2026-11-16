@@ -143,6 +143,7 @@ export function screenTf(inc: AppConfig['incubator'], now = Date.now()): string 
 
 /** Live cells on this market and for this scanner, against the diversity caps (decision 106). */
 export function diversityRefusal(cfg: AppConfig, scannerId: string, symbol: string): string | null {
+  if (cfg.incubator.promote.countLimitsEnabled === false) return null;
   const inc = cfg.incubator; const live = livePairs(cfg);
   const perMarket = inc.promote.maxPerMarket ?? Infinity, perScanner = inc.promote.maxPerScanner ?? Infinity;
   const onMarket = live.filter(p => p.symbol === symbol).length, forScanner = live.filter(p => p.scannerId === scannerId).length;
@@ -257,10 +258,14 @@ export function evaluate(store: IncubatorStore, cfg: AppConfig, now = Date.now()
   const rep: CycleReport = { proposed: [], retired: [], brewing: 0, demoteProposed: [], admitted: [], free: 0 };
   // decision 195: a shadow, proposed or tracked pair whose scanner cannot run never trades; it held its slot while its
   // stage said otherwise. It is retired with the library's reason, and returns through the screen if the script does.
-  if (opts.unavailable) {
+  {
     for (const r of store.list(['shadow', 'proposed', 'tracked'])) {
-      const why0 = opts.unavailable(r.scannerId);
-      if (!why0 || store.shadowHolds(r)) continue;
+      const library = opts.unavailable?.(r.scannerId);
+      const quarantine = store.quarantineReason(r.scannerId);
+      const why0 = library ?? (quarantine ? `quarantined: ${quarantine}` : null);
+      // A quarantine pauses a watch subscription; it owns no formal slot.
+      // Open account/shadow orders retain their allocation and exit handling.
+      if (!why0 || (r.stage === 'tracked' && !library) || store.rotationHolds(r)) continue;
       const why = `scanner unavailable: ${why0}`;
       store.move(r, 'retired', 'library', { reasons: [why] }, why, now); rep.retired.push(name(r));
     }
@@ -295,7 +300,7 @@ export function evaluate(store: IncubatorStore, cfg: AppConfig, now = Date.now()
   // decision 106: a shadow pair with no shadow trade for `gate.staleDays` proves nothing and gives its slot back
   // decision 108: the cap follows the timeframe — 21 days is three weeks of 15m bars and five 4h trades at best
   for (const r of store.list(['shadow'])) {
-    if (store.shadowHolds(r)) continue;
+    if (store.rotationHolds(r)) continue;
     const staleDays = inc.gate.staleDaysByTf?.[r.tf] ?? inc.gate.staleDays ?? 0;
     if (!(staleDays > 0)) continue;
     const forward = store.shadowEvaluation(r,now), since = forward.since;
@@ -315,7 +320,7 @@ export function evaluate(store: IncubatorStore, cfg: AppConfig, now = Date.now()
   // looking best fails most of them by selection alone (519 of 617 on 25 October); 35 of those failures were up 83.8R in
   // the shadow book. A failing pair with too little record yet keeps collecting it; the stale cap retires the silent ones.
   for (const r of store.list(['shadow'])) {
-    if (store.shadowHolds(r)) continue;
+    if (store.rotationHolds(r)) continue;
     const sc = r.screen as any;
     const {trades:fwd,since} = store.shadowEvaluation(r,now);
     if (!sc || sc.pass !== false || !(typeof sc.at === 'number' && sc.at > since)) continue;
@@ -374,18 +379,18 @@ function judgePair(store: IncubatorStore, cfg: AppConfig, r: PairRow, rep: Cycle
   const stats = restoration&&!restoration.passed && restoration.stats
     ? restoration.stats : pairStats(trades, forward.since, now);
   const dv = deliveryVerdict(r.screen, pairStats(forward.trades,forward.since,now));
-  if (dv.retire && r.stage === 'shadow' && !store.shadowHolds(r)) { store.move(r, 'retired', 'gate', { stats, reasons: [dv.reason] }, dv.reason!, now); rep.retired.push(name(r)); return; }
+  if (dv.retire && r.stage === 'shadow' && !store.rotationHolds(r)) { store.move(r, 'retired', 'gate', { stats, reasons: [dv.reason] }, dv.reason!, now); rep.retired.push(name(r)); return; }
   const overlap = overlapPct(trades.filter(t => t.entryAt >= forward.since), store.liveTradesOn(r.symbol, r.scannerId));
   let v = gateVerdict(stats, returningGate(store, gateFor(cfg.incubator, r.tf), [r]), overlap);
   if (restoration&&!restoration.passed) v={decision:restoration.gateDecision==='retire'?'retire':'brewing',reasons:restoration.reasons};
   if (!restoration && v.decision === 'retire' && store.policyFor && stats.trades<store.trades(r.scannerId,r.symbol,r.tf,2).filter(t=>t.entryAt>=r.since).length) v={...v,decision:'brewing',reasons:['collecting compatible policy evidence']};
-  if (v.decision === 'retire' && store.shadowHolds(r)) v = {...v, decision:'brewing', reasons:['retirement deferred: shadow position or order still active', ...v.reasons]};
+  if (v.decision === 'retire' && store.rotationHolds(r)) v = {...v, decision:'brewing', reasons:['retirement deferred: account or shadow position or order still active', ...v.reasons]};
   store.setGate(r.id, { at: now, stats, overlapPct: overlap, ...v }, now);
   if (v.decision === 'propose' && r.stage === 'shadow' && marketRefusal(store.marketsToday(now), r.symbol, cfg.incubator.gate.minTurnoverUsd)) { store.setGate(r.id, { at: now, stats, overlapPct: overlap, ...v, decision: 'brewing', reasons: [marketRefusal(store.marketsToday(now), r.symbol, cfg.incubator.gate.minTurnoverUsd)!] }, now); rep.brewing++; }
   else if (v.decision === 'propose' && r.stage === 'shadow' && demotionAnswered(store, cfg, r, now)) { store.setGate(r.id, { at: now, stats, overlapPct: overlap, ...v, decision: 'brewing', reasons: [demotionAnswered(store, cfg, r, now)!] }, now); rep.brewing++; }
   else if (v.decision === 'propose' && r.stage === 'shadow') { store.move(r, 'proposed', 'gate', { stats, overlap, reasons: v.reasons }, 'passed the promotion gate', now, { keepSince: true }); rep.proposed.push(name(r)); }
   else if (v.decision === 'brewing' && r.stage === 'proposed') { store.move(r, 'shadow', 'gate', { stats, reasons: v.reasons }, 'no longer passes the gate', now, { keepSince: true }); rep.brewing++; }
-  else if (v.decision === 'retire' && !store.shadowHolds(r)) { store.move(r, 'retired', 'gate', { stats, reasons: v.reasons }, v.reasons[0], now); rep.retired.push(name(r)); }
+  else if (v.decision === 'retire' && !store.rotationHolds(r)) { store.move(r, 'retired', 'gate', { stats, reasons: v.reasons }, v.reasons[0], now); rep.retired.push(name(r)); }
   else if (v.decision === 'brewing') rep.brewing++;
 }
 
@@ -410,7 +415,7 @@ function judgeCohorts(store: IncubatorStore, cfg: AppConfig, active: PairRow[], 
       if (r.stage !== 'shadow') return true;
       const forward=store.shadowEvaluation(r,now);
       const dv = deliveryVerdict(r.screen, pairStats(forward.trades, forward.since, now));
-      if (!dv.retire || store.shadowHolds(r)) return true;
+      if (!dv.retire || store.rotationHolds(r)) return true;
       store.move(r, 'retired', 'gate', { reasons: [dv.reason] }, dv.reason!, now); rep.retired.push(name(r)); return false;
     });
     if (!rows.length) continue;
@@ -430,13 +435,13 @@ function judgeCohorts(store: IncubatorStore, cfg: AppConfig, active: PairRow[], 
     for (const m of members) store.setGate(m.row.id, { at: now, cohort, stats, overlapPct: overlap, market: stats.perMarket.find(p => p.symbol === m.symbol) ?? null, ...v, ...(strategyComparison ? { strategyComparison } : {}) }, now);
 
     if (v.decision === 'retire') {
-      for (const m of members) { if (store.shadowHolds(m.row)) { store.setGate(m.row.id, {at:now, cohort, stats, overlapPct:overlap, ...v, decision:'brewing', reasons:['retirement deferred: shadow position or order still active', ...v.reasons]}, now); continue; } store.move(m.row, 'retired', 'gate', { cohort, stats, reasons: v.reasons }, `${cohort}: ${v.reasons[0]}`, now); rep.retired.push(name(m.row)); }
+      for (const m of members) { if (store.rotationHolds(m.row)) { store.setGate(m.row.id, {at:now, cohort, stats, overlapPct:overlap, ...v, decision:'brewing', reasons:['retirement deferred: account or shadow position or order still active', ...v.reasons]}, now); continue; } store.move(m.row, 'retired', 'gate', { cohort, stats, reasons: v.reasons }, `${cohort}: ${v.reasons[0]}`, now); rep.retired.push(name(m.row)); }
       continue;
     }
     // only markets the account can trade today are picked for the fleet (decision 104); the rest keep brewing as evidence
     const markets = store.marketsToday(now);
     const pick = v.decision === 'propose'
-      ? new Set(stats.perMarket.filter(p => p.trades >= inc.gate.minMarketTrades && p.avgR > 0 && !marketRefusal(markets, p.symbol, inc.gate.minTurnoverUsd) && !diversityRefusal(cfg, rows[0].scannerId, p.symbol)).slice(0, inc.promote.maxPerWeek).map(p => p.symbol))
+      ? new Set(stats.perMarket.filter(p => p.trades >= inc.gate.minMarketTrades && p.avgR > 0 && !marketRefusal(markets, p.symbol, inc.gate.minTurnoverUsd) && !diversityRefusal(cfg, rows[0].scannerId, p.symbol)).slice(0, inc.promote.countLimitsEnabled === false ? undefined : inc.promote.maxPerWeek).map(p => p.symbol))
       : new Set<string>();
     for (const m of members) {
       const wanted = pick.has(m.symbol);
@@ -530,6 +535,8 @@ export class IncubatorError extends Error { status = 409; }
 
 /** Recheck a proposal using today's eligible evidence, not the gate snapshot saved days ago. */
 function promotionRefusal(store: IncubatorStore, cfg: AppConfig, r: PairRow, now: number): string | null {
+  const quarantine = store.quarantineReason(r.scannerId);
+  if (quarantine) return `scanner quarantined: ${quarantine}`;
   const inc = cfg.incubator;
   const markets = store.marketsToday(now, Math.max(1, cfg.risk.marketGate?.refreshMinutes ?? 60) * 3 * 60_000);
   if (cfg.risk.marketGate?.enabled && !markets.size) return 'market eligibility has not been judged';
@@ -579,9 +586,9 @@ export function approve(store: IncubatorStore, cfg: AppConfig, id: number, actor
   const sc = cfg.scanners[r.scannerId];
   if (r.stage === 'proposed') {
     const week = store.promotionsSince(now - 7 * DAY);
-    if (week >= inc.promote.maxPerWeek) throw new IncubatorError(`weekly promotion limit reached (${week}/${inc.promote.maxPerWeek}); try again later or raise incubator.promote.maxPerWeek`);
+    if (inc.promote.countLimitsEnabled !== false && week >= inc.promote.maxPerWeek) throw new IncubatorError(`weekly promotion limit reached (${week}/${inc.promote.maxPerWeek}); try again later or raise incubator.promote.maxPerWeek`);
     const fleet = livePairs(cfg).length;
-    if (fleet >= inc.promote.maxFleet) throw new IncubatorError(`the live fleet is full (${fleet}/${inc.promote.maxFleet} pairs); demote one first or raise incubator.promote.maxFleet`);
+    if (inc.promote.countLimitsEnabled !== false && fleet >= inc.promote.maxFleet) throw new IncubatorError(`the live fleet is full (${fleet}/${inc.promote.maxFleet} pairs); demote one first or raise incubator.promote.maxFleet`);
     const crowded = diversityRefusal(cfg, r.scannerId, r.symbol);
     if (crowded) throw new IncubatorError(crowded);
     const refusal = promotionRefusal(store, cfg, r, now);

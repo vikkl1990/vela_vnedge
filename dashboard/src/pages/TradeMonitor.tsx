@@ -288,10 +288,83 @@ export function TradeMonitor() {
               <TabPanel id="exits" value={tab} idPrefix="mon">
                 <div className="mon-stack">
                   <Callout tone="warn" title="Unproven controls, no execution.">
-                    Two frozen controls record what an earlier exit would have done. A result is comparable
-                    only after both the what-if fill and the real trade have finished. More early exits do not
-                    mean better performance.
+                    Frozen controls record what an earlier exit would have done. A result is comparable only
+                    after both the what-if fill and the real trade have finished. More early exits do not mean
+                    better performance.
                   </Callout>
+                  {d.invalidationStudy && (
+                    <Section
+                      title="ARIA · prospective shadow comparison"
+                      hint="Elliott Wave · 15m · never changes paper exits"
+                    >
+                      <p className="small muted">{d.invalidationStudy.description}</p>
+                      <DataTable
+                        rows={d.invalidationStudy.groups}
+                        rowKey={(g) => g.policyId}
+                        caption="ARIA signal-wick invalidation comparison"
+                        emptyLabel="Waiting for a new eligible ARIA shadow trade. Earlier trades are not enrolled."
+                        columns={[
+                          {
+                            key: 'policy',
+                            header: 'Frozen policy',
+                            render: (g) => <span title={g.policyId}>{g.policyId.slice(0, 10)}</span>,
+                          },
+                          {
+                            key: 'coverage',
+                            header: 'Covered / closed / enrolled',
+                            render: (g) => `${g.covered} / ${g.closed} / ${g.enrolled}`,
+                          },
+                          { key: 'missing', header: 'Unavailable', render: (g) => g.unavailable },
+                          {
+                            key: 'delta',
+                            header: 'Δ net R',
+                            render: (g) => (g.covered ? heatLabel(g.deltaR, 'paper') : '—'),
+                          },
+                          {
+                            key: 'stress',
+                            header: 'Stress Δ R',
+                            render: (g) => (g.covered ? heatLabel(g.stressDeltaR, 'paper') : '—'),
+                          },
+                          {
+                            key: 'stops',
+                            header: 'Full SLs before → after',
+                            render: (g) => `${g.stopsBefore} → ${g.stopsAfter}`,
+                          },
+                          {
+                            key: 'losses',
+                            header: 'Losing trades before → after',
+                            render: (g) => `${g.losersBefore} → ${g.losersAfter}`,
+                          },
+                          { key: 'cut', header: 'Winners cut short', render: (g) => g.winnersCut },
+                        ]}
+                      />
+                      <p className="small muted">
+                        Includes unchanged trades; policies stay separate. Stress adds delay and 5 bps adverse
+                        execution. Better net profit and fewer full SLs must hold on new independent trades
+                        before any paper change. These results never count toward promotion.
+                      </p>
+                    </Section>
+                  )}
+                  {d.replay?.entryInvalidationStudy && (
+                    <Section title="Dedicated replay · ARIA, INIT and PARTI">
+                      <p>
+                        {d.replay.entryInvalidationStudy.lastError
+                          ? `Capture needs attention: ${d.replay.entryInvalidationStudy.lastError}`
+                          : d.replay.entryInvalidationStudy.ready
+                            ? 'Recording observed market data and five-second trade samples.'
+                            : 'Starting capture.'}
+                      </p>
+                      <p className="small muted">
+                        {d.replay.entryInvalidationStudy.lastSyncAt
+                          ? `Last saved ${fmtAge(now - d.replay.entryInvalidationStudy.lastSyncAt)} ago. `
+                          : 'Awaiting first durable save. '}
+                        {(d.replay.entryInvalidationStudy.bytes / 1024 ** 2).toFixed(1)} MiB sealed ·{' '}
+                        {d.replay.entryInvalidationStudy.dropped} dropped events ·{' '}
+                        {d.replay.entryInvalidationStudy.failures} capture errors. Retention targets 21 days
+                        within 4 GiB. Missing observations remain explicit gaps.
+                      </p>
+                    </Section>
+                  )}
                   <Section title="Totals" hint="Cover all pairs, whatever pair is selected.">
                     <Summary data={d} />
                     <details>

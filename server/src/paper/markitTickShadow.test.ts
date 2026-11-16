@@ -29,7 +29,10 @@ test('paired MarkitTick rollout writes only experiments, preserves existing plan
  const cfg=new ConfigStore(file).get();for(const p of MARKITTICK_SHADOW_PLANS){assert.equal(cfg.scanners[p.scannerId].enabled,false);assert.equal(planSnapshot(cfg,p).paper.marginPerTrade,50);}
  next.executionPlans[37].label='edited';fs.writeFileSync(file,JSON.stringify(next));assert.throws(()=>enableMarkitTickShadow(file),/will not be overwritten/);
  raw.execution.mode='dry-run';fs.writeFileSync(file,JSON.stringify(raw));assert.throws(()=>enableMarkitTickShadow(file),/paper mode/);
- raw.execution.mode='paper';raw.executionPlans.push({...raw.executionPlans[0],id:'extra'});fs.writeFileSync(file,JSON.stringify(raw));assert.throws(()=>enableMarkitTickShadow(file),new RegExp(String(MAX_RESEARCH_PLANS)));
+ raw.execution.mode='paper';
+ while(raw.executionPlans.length+MARKITTICK_SHADOW_PLANS.length<=MAX_RESEARCH_PLANS)
+  raw.executionPlans.push({...raw.executionPlans[0],id:`extra-${raw.executionPlans.length}`});
+ fs.writeFileSync(file,JSON.stringify(raw));assert.throws(()=>enableMarkitTickShadow(file),new RegExp(String(MAX_RESEARCH_PLANS)));
 });
 test('TP comparisons share entry, native SL, sizing, fees and every risk setting; only explicit exit policy differs',t=>{
  const {cfg}=fixture(t);const before=JSON.stringify(cfg);

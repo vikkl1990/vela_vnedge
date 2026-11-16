@@ -4,6 +4,7 @@ import {willyNativeReady} from './scanners/willyContracts.ts';
 import {scannerPairs} from './scanners/allocation.ts';
 import { validateExecutionPlans, type ExecutionPlan } from './paper/executionPlans.ts';
 import fs from 'node:fs';
+import {randomUUID} from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -251,6 +252,7 @@ export interface PaperConfig {
    * (decision 53). 0 = off (the default); the VM runs 0.5.
    */
   minSizeShare?: number;
+  /** Account-wide count ceiling; 0 disables only this ceiling. */
   maxOpenPositions: number;
   // ---- execution realism (phase 2) ----
   /** `tape`: fill on Delta's trade stream (1m candles only when the tape is silent > tapeFallbackMs). `candles`: legacy 1-minute candle fills. */
@@ -459,6 +461,8 @@ export interface IncubatorConfig {
     reserve?: Array<{ tfs?: string[]; markets?: string[]; slots: number }>;
 };
   promote: { maxPerWeek: number; maxFleet: number;
+    /** False removes allocation-count quotas only; evidence and execution risk checks still apply. Omitted preserves legacy caps. */
+    countLimitsEnabled?: boolean;
     /** Decision 106: no more live cells than this on one market, or for one scanner, so the fleet spreads across pairs. */
     maxPerMarket?: number; maxPerScanner?: number;
     /** Promote gate proposals into the fleet without the owner's click, within maxPerWeek and maxFleet (decision 55). */
@@ -567,6 +571,7 @@ export interface RiskConfig {
   maxWeeklyLossPct: number;
   /** Close every open position when a kill switch trips. */
   closeAllOnKill: boolean;
+  /** Total open + pending count ceiling; 0 disables only this ceiling. */
   maxPositionsTotal: number;
   maxPositionsPerSymbol: number;
   /** Cap |Σ side × notional × corr(symbol, BTCUSD)| as % of equity (0 = off). Correlation over the last `corrBars` closed bars of the entry timeframe. */
@@ -642,7 +647,7 @@ export const DEFAULT_CONFIG: AppConfig = {
     },
     admit: { rotation: { enabled: false, maxPerDay: 12, idleDaysByTf: { '15m': 7, '1h': 14, '4h': 28 }, cooldownDays: 3 }, cohortMarkets: { default: 5, '1h': 8, '4h': 12 }, minCohortMarkets: 3,
       reserve: [{ tfs: ['4h'], markets: ['BTCUSD', 'ETHUSD', 'SOLUSD', 'XRPUSD'], slots: 80 }, { tfs: ['4h'], slots: 200 }] },
-    promote: { maxPerWeek: 2, maxFleet: 20, auto: false, maxPerMarket: 2, maxPerScanner: 6, reviewMinutes: 15 },
+    promote: { maxPerWeek: 2, maxFleet: 20, countLimitsEnabled: true, auto: false, maxPerMarket: 2, maxPerScanner: 6, reviewMinutes: 15 },
     demote: { window: 50, minTrades: 30, maxPfR: 0.9, silentDays: 14, silentDaysByTf: { '1h': 30, '4h': 60 }, marketOutDays: 3, costStarvedRefusals: 5, costStarvedDays: 14 },
     cooldownDays: 30,
     mirror: { enabled: false, minTrades: 5, minNetR: 0, minTurnoverUsd: 2_000_000 },
@@ -946,7 +951,7 @@ export function validateConfig(c: AppConfig): string[] {
   if (p.quotedSlippageBps !== undefined && !(Number.isFinite(p.quotedSlippageBps) && p.quotedSlippageBps >= 0 && p.quotedSlippageBps < 10_000)) errs.push('paper.quotedSlippageBps must be 0..10000');
   if (!(Number.isFinite(p.slippageBps) && p.slippageBps >= 0 && p.slippageBps < 10_000)) errs.push('paper.slippageBps must be 0..10000');
   if (!(Number.isFinite(p.fallbackAtrSl) && p.fallbackAtrSl > 0)) errs.push('paper.fallbackAtrSl must be positive');
-  if (!(p.maxOpenPositions >= 1)) errs.push('paper.maxOpenPositions must be >= 1');
+  if (!Number.isInteger(p.maxOpenPositions) || p.maxOpenPositions < 0) errs.push('paper.maxOpenPositions must be a non-negative integer (0 disables the cap)');
   if (!['paper', 'dry-run', 'testnet'].includes(c.execution?.mode)) errs.push('execution.mode must be paper|dry-run|testnet');
   if (!(c.ml?.minProb >= 0 && c.ml?.minProb < 1)) errs.push('ml.minProb must be 0..1');
   if (!(c.autoTune?.minTrades >= 1 && c.autoTune?.minProfitFactor >= 0 && c.autoTune?.intervalHours >= 1)) errs.push('autoTune.minTrades ≥ 1, minProfitFactor ≥ 0, intervalHours ≥ 1');
@@ -978,6 +983,7 @@ export function validateConfig(c: AppConfig): string[] {
     if (inc.gate?.staleDaysByTf !== undefined && !Object.values(inc.gate.staleDaysByTf).every(v => v > 0 && v <= 365)) errs.push('incubator.gate.staleDaysByTf values must be 1..365 days');
     if (inc.screen?.retryPerNight !== undefined && !(Number.isInteger(inc.screen.retryPerNight) && inc.screen.retryPerNight >= 0 && inc.screen.retryPerNight <= 200)) errs.push('incubator.screen.retryPerNight must be 0..200');
     if (!(inc.promote?.maxPerWeek >= 0 && inc.promote?.maxFleet >= 1)) errs.push('incubator.promote needs maxPerWeek ≥ 0 and maxFleet ≥ 1');
+    if (inc.promote?.countLimitsEnabled !== undefined && typeof inc.promote.countLimitsEnabled !== 'boolean') errs.push('incubator.promote.countLimitsEnabled must be boolean');
     if(inc.promote?.reviewMinutes!==undefined&&(!Number.isInteger(inc.promote.reviewMinutes)||inc.promote.reviewMinutes<5||inc.promote.reviewMinutes>1440))errs.push('incubator.promote.reviewMinutes must be an integer from 5 to 1440');
     if (!(inc.screen?.slices >= 1 && inc.screen?.slices <= 31)) errs.push('incubator.screen.slices must be 1..31');
   }
@@ -1004,7 +1010,7 @@ export function validateRealismAndRisk(c: AppConfig): string[] {
   const pct = (v: number, k: string, max = 100) => { if (!(Number.isFinite(v) && v >= 0 && v <= max)) errs.push(`risk.${k} must be 0..${max}`); };
   pct(r.maxDailyLossPct, 'maxDailyLossPct'); pct(r.maxWeeklyLossPct, 'maxWeeklyLossPct'); pct(r.perScannerDailyLossPct, 'perScannerDailyLossPct');
   pct(r.maxBetaExposurePct, 'maxBetaExposurePct', 100_000);
-  if (!(r.maxPositionsTotal >= 1)) errs.push('risk.maxPositionsTotal must be ≥ 1');
+  if (!Number.isInteger(r.maxPositionsTotal) || r.maxPositionsTotal < 0) errs.push('risk.maxPositionsTotal must be a non-negative integer (0 disables the cap)');
   if (!(r.maxPositionsPerSymbol >= 1)) errs.push('risk.maxPositionsPerSymbol must be ≥ 1');
   if (!(r.perScannerMaxPositions >= 1)) errs.push('risk.perScannerMaxPositions must be ≥ 1');
   if (!(r.corrBars >= 5 && r.corrBars <= 500)) errs.push('risk.corrBars must be 5..500');
@@ -1118,7 +1124,7 @@ export class ConfigStore {
     const cellsOf = (v: ScannerConfig) => scannerPairs(v,this.cfg.timeframes).length;
     const cells = Object.entries({ ...this.cfg.scanners, [id]: next }).filter(([, v]) => v.enabled && !v.hidden).reduce((n, [, v]) => n + cellsOf(v), 0);
     const cap = this.cfg.incubator?.promote?.maxFleet ?? 20;
-    if (cells > cap) throw Object.assign(new Error(`refused: the live fleet would have ${cells} cells, above incubator.promote.maxFleet (${cap}); raise the limit deliberately or add fewer pairs`), { status: 400 });
+    if (this.cfg.incubator?.promote?.countLimitsEnabled !== false && cells > cap) throw Object.assign(new Error(`refused: the live fleet would have ${cells} cells, above incubator.promote.maxFleet (${cap}); raise the limit deliberately or add fewer pairs`), { status: 400 });
     this.cfg = { ...this.cfg, scanners: { ...this.cfg.scanners, [id]: next } };
     this.save();
     return next;
@@ -1128,9 +1134,11 @@ export class ConfigStore {
 
   /** Write atomically (temp file + rename), so another process never reads a half-written file. */
   private save() {
-    const tmp = `${this.file}.${process.pid}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(this.cfg, null, 2));
-    fs.renameSync(tmp, this.file);
+    const tmp = `${this.file}.${randomUUID()}.tmp`;
+    try {
+      fs.writeFileSync(tmp, JSON.stringify(this.cfg, null, 2), {mode:0o600,flag:'wx'});
+      fs.renameSync(tmp, this.file);
+    } finally { try { fs.unlinkSync(tmp); } catch { /* already renamed */ } }
     this.seenMtimeMs = fs.statSync(this.file).mtimeMs;
   }
 }

@@ -43,11 +43,6 @@ export const MEASURED: Record<string, Measured> = {
     note: 'under exit mode script, the stop when the script publishes none',
   },
   'paper.slippageBps': { value: 2, decision: 96, note: 'plus the measured book cost on every market leg' },
-  'risk.maxPositionsTotal': {
-    value: 8,
-    decision: 116,
-    note: 'the replay of the shadow book: more positions raised the drawdown faster than the return',
-  },
   'risk.maxPositionsPerSymbol': {
     value: 1,
     decision: 116,

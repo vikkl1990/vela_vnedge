@@ -8,6 +8,7 @@ import { liveStatus } from '../lib/liveStatus'
 import { mlState } from '../lib/mlPresentation'
 
 import { BookChip } from '../components/kit/books'
+import { ReadinessHistoryPanel } from '../components/PolicyHealth'
 
 import '../styles/pages/live.css'
 
@@ -34,13 +35,13 @@ const plain = (v: number) => String(Number(v.toFixed(4)))
 
 /** Where to go to fix a go-live check. Keys are the server's; anything unknown goes to the gates page. */
 const FIX: Record<string, { to?: string; text: string }> = {
-  trades: { to: '/learn', text: 'See the record on Learn' },
+  trades: { to: '#readiness-history', text: 'See counted trades and exclusions below' },
   risk: { to: '/settings', text: 'Review sizing in Settings' },
   expectancy: { to: '/learn', text: 'See the edge on Learn' },
   survival: { to: '/learn', text: 'See the simulation on Learn' },
   drawdown: { to: '/learn', text: 'See the simulation on Learn' },
   halts: { to: '/gates', text: 'See the gates' },
-  alerts: { text: 'Set the alert target in server configuration' },
+  alerts: { text: 'Connect Telegram alerts in Settings', to: '/settings#telegram-connection' },
 }
 const fixFor = (key: string) => FIX[key] ?? { to: '/gates', text: 'See the gates' }
 
@@ -71,6 +72,7 @@ export function Live() {
         allowProduction={exec?.allowProduction}
       />
       <ChecksSection golive={learning.data?.golive} loading={learning.isLoading} failed={learning.isError} />
+      <ReadinessHistoryPanel />
       <GatesSummary q={gates} />
       <ParitySection
         paper={paper}
@@ -269,6 +271,19 @@ function ChecksSection({
           </table>
         </div>
       </div>
+      {golive.advisories?.map((item) => (
+        <div className="panel" key={item.key}>
+          <p>
+            <Pill tone="warn">Advisory</Pill>{' '}
+            <strong>
+              {item.label}: {item.value}
+            </strong>
+          </p>
+          <p className="muted small">
+            {item.note} <Link to="/gates">Review risk controls</Link>
+          </p>
+        </div>
+      ))}
       {sim && (
         <div className="live-sim">
           <h3 className="live-sub-title">Simulated through the fleet&rsquo;s halts</h3>
@@ -537,8 +552,8 @@ function EngineSection({
   const cur = learning?.current
   const exitEvidence = cur
     ? cur.trades > 0
-      ? `${cur.trades} closed account trades under these settings, average ${signed(cur.avgR, 2)}R after costs.`
-      : 'No closed account trades under these settings yet.'
+      ? `${cur.trades} closed account trades with compatible trade rules, average ${signed(cur.avgR, 2)}R after costs.`
+      : 'No closed account trades with compatible trade rules yet.'
     : 'Closed-trade evidence has not loaded.'
 
   let sizeRule: string

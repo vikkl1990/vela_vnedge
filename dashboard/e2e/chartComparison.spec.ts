@@ -1,5 +1,6 @@
 import type { Vela } from '@luxalgo/vela'
 import { test, expect, scanners } from './fixtures'
+import { DELTA_TIMEFRAMES } from '../src/lib/timeframes'
 
 const M = 900000,
   T = Date.UTC(2026, 10, 12),
@@ -50,6 +51,49 @@ const row = (book = 'paper') => ({
     { at: T + 182 * M, price: 118.6, qty: 1, reason: 'tp1', fee: 0.05, pnl: 0.5 },
     { at: T + 183 * M, price: 119, qty: 1, reason: 'trail', fee: 0.05, pnl: 1.3 },
   ],
+})
+
+test('all supported frames and every plot value can be shown without a four-frame or six-plot cap', async ({
+  page,
+  faults,
+  writes,
+}, info) => {
+  test.setTimeout(90000)
+  void faults
+  await page.route('**/api/scanners', (r) => r.fulfill({ json: scanners.slice(0, 1) }))
+  await page.route('**/api/scanners/*/source', (r) =>
+    r.fulfill({
+      json: {
+        id: 'scanner-0',
+        name: 'All plots',
+        inputs: {},
+        timezone: 'UTC',
+        sourceHash: 'all-plots',
+        patched:
+          '//@version=5\nindicator("All plots", overlay=true)\n' +
+          Array.from({ length: 8 }, (_, i) => `plot(${i + 1}, "Plot ${i + 1}")`).join('\n'),
+      },
+    }),
+  )
+  await page.route('**/api/candles?**', (r) => r.fulfill({ json: bars }))
+  await page.goto('/chart?symbol=ETHUSD&tf=15m&add=scanner-0')
+  await page.getByRole('button', { name: 'Frames', exact: true }).click()
+  const picker = page.getByRole('group', { name: 'Frames', exact: true })
+  for (const tf of DELTA_TIMEFRAMES) {
+    const button = picker.getByRole('button', { name: tf, exact: true })
+    if ((await button.getAttribute('aria-pressed')) !== 'true') await button.click()
+  }
+  await expect(page.locator('.chart-frame')).toHaveCount(10)
+  await page.locator('#chart-values > summary').click()
+  const rows = page.locator('#chart-values tbody tr')
+  await expect(rows).toHaveCount(10, { timeout: 60000 })
+  for (const tf of DELTA_TIMEFRAMES)
+    await expect(
+      rows.filter({ has: page.locator('td').filter({ hasText: new RegExp(`· ${tf}$`) }) }),
+    ).toContainText('Plot 8: 8')
+  expect(writes).toEqual([])
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+  await page.screenshot({ path: info.outputPath('all-chart-frames.png'), fullPage: true })
 })
 
 test('real Pine workers apply per-script timezones and compare recorded closed fills with the author ledger', async ({

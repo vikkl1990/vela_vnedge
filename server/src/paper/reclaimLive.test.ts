@@ -188,3 +188,11 @@ test('failed reclaim confirmation restores setup and budget; retry creates one a
   assert.equal(a.e.pendingEntries().length,1);assert.ok(a.e.pendingEntries()[0].limit);assert.equal(placed,1);
   assert.equal(reclaimStatus(a.db,a.cfg,a.e,a.ctx.at).trials[0].usedToday,1);
 });
+
+test('zero account count ceiling keeps reclaim setup, confirmation and maker fill active',t=>{
+ const a=setup(t);a.cfg.paper.maxOpenPositions=0;
+ assert.equal(a.e.onEntry(a.ev,a.ctx).action,'pending');a.confirm();
+ const order=a.e.pendingEntries()[0];assert.ok(order.limit);
+ a.e.onTrade('SOLUSD',100,1,order.at+1000,order.at+1000);
+ assert.equal(a.e.openPositions().length,1);
+});

@@ -8,4 +8,6 @@ export const NATIVE_REENTRY_SCANNERS = new Set([
   'strat-trap-vwap-engine-author-native',
 ]);
 
-export const nativeReentry = (id: string, reader?: number) => reader === 3 && NATIVE_REENTRY_SCANNERS.has(id);
+export const nativeReentry = (id: string, reader?: number) =>
+  reader === 3 && NATIVE_REENTRY_SCANNERS.has(id) ||
+  reader === 2 && id === 'stealthtrail-supertrend-author-native-v1';

@@ -2,6 +2,7 @@ import type { ScannerContractDetail, ScannerReadiness } from '../../../shared/sc
 import { fetchJournalCsv } from '../lib/journalExport'
 import type { ContributionDetail, Contributions } from './contributions'
 import type { DeltaConnectionStatus, DeltaEnvironment } from './deltaConnection'
+import type { TelegramStatus, TelegramPairing } from './telegram'
 import type { ExecutionPlansView } from './executionPlans'
 import type { Footprint, OrderFlowView } from './orderFlow'
 import type { PairAgentsView } from './pairAgents'
@@ -140,6 +141,13 @@ const del = <T>(path: string) => request<T>(path, { method: 'DELETE' })
 export const api = {
   tradeMonitor: () => get<TradeMonitorView>('/trade-monitor'),
   deltaConnection: () => get<DeltaConnectionStatus>('/connections/delta'),
+  telegramConnection: () => get<TelegramStatus>('/connections/telegram'),
+  saveTelegramConnection: (body: { botToken: string }) => put<TelegramStatus>('/connections/telegram', body),
+  pairTelegram: () => post<TelegramPairing>('/connections/telegram/pair', {}),
+  approveTelegram: (body: { pairId: string }) => post<TelegramStatus>('/connections/telegram/approve', body),
+  testTelegram: () => post<TelegramStatus>('/connections/telegram/test', {}),
+  telegramControls: (enabled: boolean) => put<TelegramStatus>('/connections/telegram/controls', { enabled }),
+  removeTelegramConnection: () => del<TelegramStatus>('/connections/telegram'),
   saveDeltaConnection: (body: { environment: DeltaEnvironment; apiKey: string; apiSecret: string }) =>
     put<DeltaConnectionStatus>('/connections/delta', body),
   checkDeltaConnection: () => post<DeltaConnectionStatus>('/connections/delta/check', {}),
@@ -403,6 +411,12 @@ export const api = {
       books: Array<{
         book: string
         matching: number
+        capacityCompatible?: number
+        scopeCompatible?: number
+        sizingCompatible?: number
+        totalClosed?: number
+        outsideWindow?: number
+        exclusions?: Array<{ reason: string; label: string; trades: number }>
         changed: number
         legacy: number
         quarantined: number

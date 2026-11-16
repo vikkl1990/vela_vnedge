@@ -7751,7 +7751,206 @@ Apply each scanner's configured timezone to its own Vela execution metadata; do 
 
 The latency check also corrects a classification error: all 99 quote-labelled entries in the rolling 14-day account sample have saved maker fills. Most retain explicit resting-limit placement traces. Almost all very late run-log rows occur immediately after restarts, before the existing stale-entry check. No execution, risk, capital, scanner or evidence configuration is changed. See `research/chart-comparison-2026-11-15.md` and the dated measurement JSON.
 
-## 268. Live scans dispatch longest timeframe first (15 November 2026)
+## 267. Import Trend Continuation and native Stealth into isolated shadow (15 November 2026)
+
+The user's VELA_Delta_BOT repository has the same Stealth and AlgoAlpha Pine sources already installed here, plus a missing Python trend-continuation model. Port the latter into the shared Pine runtime with pinned-source Python parity tests, retaining its 48-close breakout, regime/volatility filters, 2×SMA-ATR stop and single 2R target. Explicitly identify its missing funding input. Add a separate source-pinned Stealth lifecycle reader with native milestones, causal break-even amendments and old-side flip/reentry handling; leave the original reader and evidence intact.
+
+Six prospective experimental plans cover BTC/ETH/SOL: Stealth 15m and Trend Continuation 1h. Increase only research capacity from 73 to 79; do not change paper limits, margin, risk caps or evidence rules. Experiments remain excluded from promotion. Reference parity and synthetic-depth lifecycle replays prove implementation mechanics, not profitability. See `research/vnedge-import-2026-11-15.md`.
+
+## 268. Synchronize saved shadow allocations without waiting for the timer (15 November 2026)
+
+Config refresh now synchronizes shadow sources and their realtime subscriptions; a concurrent refresh during candle loading requests a fresh pass instead of silently sharing an outdated pass. Fresh-close recovery remains subject to the same candle-integrity, deduplication, priority and signal-age checks. No stale entry or historical fill is invented.
+
+The six newly imported cells' first 60 scans match their source strategies: Stealth has no new confirmed flip after activation, and Trend Continuation has no qualifying breakout under its volatility/regime filters. Activation latency is a separate confirmed gap, not the cause of those quiet scans. All scanner policies, risk caps, evidence identities and experimental exclusions remain unchanged. See `research/vnedge-import-signal-audit-2026-11-15.md`.
+
+## 269. Historical halts inform readiness without imposing a waiting period (15 November 2026)
+
+At the operator's explicit request, remove the halt-free historical-window requirement from go-live eligibility. Retain the actual halt records and display their count as advisory history on Live control. The remaining six checks still apply: matching trade count, realized risk, after-cost expectancy, simulated loss-limit survival, drawdown and alert configuration. Active daily/weekly loss limits, drawdown controls, kill switch and production activation locks are unchanged. This is a readiness-policy change only; it does not reset evidence, promote scanners, alter capital or activate real trading.
+
+## 270. Expand imported strategies only to minute-replayed liquid shadow candidates (15 November 2026)
+
+Screen both imported strategies across 20 liquid Delta India crypto perpetuals and 15m/1h/4h, then extend every 1h/4h cell to six months without changing strategy inputs or selection thresholds. Only native Stealth ZECUSD 1h and Trend Continuation UNIUSD 1h qualify as new experimental candidates after complete minute-path replay, cost sensitivity and rolling-history entry parity. This is retrospective research, with historical funding/depth limitations, not paper qualification.
+
+Add two isolated shadow plans and raise only research-plan capacity from 79 to 81. Preserve all existing cohorts, paper mode, $150 margin, risk caps and evidence exclusions. No backtest or experiment is promoted automatically. See `research/liquid-import-study-2026-11-15.md` and its complete screening JSON.
+
+## 271. Make account-wide position counts optional without changing capital or evidence rules (15 November 2026)
+
+At the operator's request, allow zero to disable `paper.maxOpenPositions` and `risk.maxPositionsTotal`, and remove both eight-position ceilings on the paper account. Zero is not a full book. Apply the same meaning at setup, market and maker admission, fill-time checks, advisory validation ledgers and UI. An account's current capacity applies to older pending orders; their bound stops, fees, sizing and evidence remain unchanged. Positive count limits retain their existing behavior, including pending reservations and reversal replacement.
+
+Available cash margin, pending reservations, per-trade stop-risk cap, per-market/per-scanner limits, daily/weekly loss limits, cooldowns, evidence gates and paper mode remain unchanged. The guarded migration changes only the two count settings and refuses unexpected starting ceilings. Strategy evidence identity remains stable; exact account policy identity changes, so current-policy readiness accrues under the new settings without relabelling historical trades.
+
+The new ZEC/UNI 1h research allocations were activated at 12:39 UTC, after the preceding hourly close. Loaded histories and live feeds are healthy. Their first prospective bar closes at 13:00 UTC; past bars must not be traded to manufacture activity. Post-close observations are recorded separately from historical replay and synthetic lifecycle tests.
+
+## 272. Preserve trade evidence across expanded global position capacity (15 November 2026)
+
+Correct decision 271's unnecessary account-readiness reset. Full immutable policy IDs still change, but readiness may also count an otherwise identical policy with stricter global position-count ceilings. Only `paper.maxOpenPositions`, its copy in `sizing.maxOpenPositions`, and `risk.maxPositionsTotal` may differ. Both snapshots must have valid full and strategy hashes, known sources and no adoption marker. Counts must be valid integers and may only expand (zero means no count ceiling). Tightening is not covered because it could exclude historical concurrent trades.
+
+Keep every other execution, source, reader, fee, offer, sizing, capital, stop, risk, regime and ML setting identical. Keep all existing evidence-scope, quarantine and evaluation-window exclusions. Accept winning and losing outcomes without changing their fills, costs, returns, stored policies or historical frequency. Copying, promotion, leverage qualification, the 200-trade readiness minimum and the other readiness checks remain unchanged. Show capacity-compatible records separately on Live control and in evidence details. This history is not validation of higher concurrency.
+
+At 14:40 UTC the read-only VM snapshot contained 1,040 account closes in 30 days. One matched exactly; 13 more differed only in the removed global count ceilings (including three losers). Another 280 otherwise eligible records differed in drawdown sizing and, for subsets, execution versions or fee/entry settings; they remain excluded. No configuration migration is needed. See `research/readiness-capacity-2026-11-15.md`.
+
+## 273. Restore only history with recorded proof of unchanged sizing (15 November 2026)
+
+Extend account-readiness compatibility with a per-trade execution proof, not a general waiver for changed sizing. Complete validated policies must differ only in expanded global count ceilings, maker-cell settings belonging to unrelated cells, and removal of the capital-based drawdown schedule. For the last difference, accept only simulation-211 ordinary full-quantity depth-priced taker entries whose saved order, fresh quote/depth, admission trace, allocation fraction and market specification reproduce the actual contracts, isolated leverage, entry price, fees and modeled stop risk under the current sizing. Check every leverage tier and previous multiplier; exclude missing, partial, experimental or non-equivalent records. Keep original policy IDs and returns immutable. Do not rescale historical profit or infer additional trades.
+
+The 15:00 UTC VM snapshot has 1,091 closed account trades, 50 outside the window. In-window exclusions are 744 without bound policies, two adopted without original provenance, 163 on older execution, 57 without enough sizing evidence and 51 with unproven size equivalence. Nine additional trades, including one loss, satisfy the proof, taking readiness from 15 to 24. Show exclusion reasons and compatible subsets in the UI. Copying, promotion, leverage evidence, risk caps, paper mode, capital, the 200-trade minimum and all other readiness checks are unchanged. No configuration or journal migration. See `research/readiness-history-2026-11-15.md`.
+
+## 274. Pair a private Telegram operator and preserve risk state on remote controls (15 November 2026)
+
+At the operator's request, add administrator-only Telegram setup in Settings. Verify the bot, store its token outside configuration and policy fingerprints, claim a private chat using an expiring pairing link, and require dashboard approval of the numeric Telegram user before test delivery activates alerts. No token is returned or logged. Incoming long polling uses durable offsets and a fixed command allowlist. Exact user/chat identity and an active owning administrator are required; stale, forwarded, group, duplicate and pre-restart commands cannot execute.
+
+Provide status, positions, daily net P&L and alerts, immediate paper pause, and one-use confirmed manual resume and paper-position closure. Resume clears only a manual pause and preserves every risk window and cooldown; tripped loss limits remain blocking. Bind close confirmation to the original entry and remaining quantity. Record command outcomes durably, without confirmation codes; do not retry uncertain actions after crashes. No Telegram capability can place entries, arm live, reset losses or change capital/risk/evidence settings. Existing configuration and research plans are unchanged.
+
+The VVVUSD Kinetic 1h position inspected during implementation has an active 18.815 paper stop, 19.591 entry and a 0.5R trail activation at 19.979. Its recorded peak of 0.425R has not activated the trail. Add the stop and activation explanation to Telegram position reports; do not change its exit policy from this observation. Setup and operational details: TELEGRAM.md.
+
+## 275. Pin a supported LTS runtime and keep service data private (15 November 2026)
+
+Pin VN EDGE and its two scheduled jobs to a root-owned, separately installed Node 24.22.3 LTS runtime. Leave the host-wide Node installation and other applications untouched. Test the production architecture and SQLite snapshot before switching. Open logs through a service-user wrapper instead of systemd's root-owned append files, use umask 0077 and a daily/maxsize logrotate rule. Protect existing data using a preflighted, no-follow permission migration with an ownership allowlist; preserve contents and executable bits. Config atomic replacements, SQLite databases and snapshots explicitly use private modes even outside the service.
+
+No configuration, execution, sizing, risk or evidence migration is involved. Keep paper mode and every saved setting byte-for-byte unchanged. Maintenance and rollback instructions: VM-MAINTENANCE.md.
+
+## 276. Honour explicit scanner/market screen requests without promoting trackers (15 November 2026)
+
+The Alphamojo and RSI Volume Ladder allocation audit found that both remain enabled but
+have no direct account allocations. Their tracker subscriptions are intentionally outside
+promotion evidence (decision 139). However, an explicit IDS + MARKETS screen inherited the
+nightly skip for tracked cells, and the three-silent-market discovery shortcut could omit
+requested markets. A successful job could therefore leave the requested cells untested.
+
+Bounded scanner/market batches now screen tracked cells and finish their requested market
+probes, subject to the existing job budget and market eligibility. Broad discovery retains
+its rolling three-market probe and tracker exclusion. Shadow rescreens retain their requested
+stage scope; active account/shadow cells and retirement cooldowns retain their existing paths.
+
+Recording a passing screen still leaves a tracked cell tracked: its subscription, age and
+historical evidence scope stay unchanged, and it is not admitted, copied or promoted. This is
+a coverage correction, not a lower evidence bar. Paper mode, sizing, fees, entry/exit rules,
+risk limits, readiness thresholds and shadow capacity are unchanged.
+
+Validation: 1,561 server tests pass and server TypeScript checking passes. Regression cases
+cover explicit watch-cell coverage, silence beyond three requested markets, unchanged broad
+and shadow-rescreen scopes, and a passing watched-cell screen remaining outside admission.
+Fresh scanner/pair research runs separately against a private database snapshot; its simulated
+trades never enter the production journals or qualify a cell for paper.
+
+## 277. Release unusable shadow allocations and preserve held exits (15 November 2026)
+
+The promotion audit found six formal shadow cells whose registry status was runnable but whose
+scanner health was quarantined. Admission checked quarantine; allocation retirement, approval
+and copying did not consistently check it. These cells held scarce research slots without a
+valid route to paper.
+
+Retire unheld quarantined formal cells through the normal evaluator and refill their slots
+using the existing ranked admission rules. Preserve watch subscriptions and any allocation
+with an account or shadow position/order. Apply the held-order protection to every automatic
+retirement path. Recheck quarantine at promotion, immediate copy and delayed-copy recovery.
+Unheld quarantined shadow sources do not run; held sources retain exit-only execution. Check
+again after asynchronous worker/depth calls, including reading-comparison entry callbacks.
+
+An identical private VM snapshot at 18:00 UTC admitted 14 candidates with the old code and 20
+with the correction. The six incremental admissions replace exactly the six quarantined cells;
+neither run produced a new paper proposal. Pooling compatible scanner evidence also produced
+no passing cohort, so no pooling rule was changed. Backtests and experimental records remain
+excluded, original trade policies remain immutable, and no historical trade is relabelled.
+
+All 1,567 server tests and TypeScript checking pass. Six regression tests cover slot release,
+held-position retirement protection, promotion/copy denial, delayed-copy revalidation and
+exit-only execution before/during quarantine. Paper mode, $150 margin, risk caps, capacity,
+fees, reader versions, evidence thresholds and live-readiness requirements are unchanged.
+
+## 278. Remove arbitrary chart and promotion quotas without resetting evidence (15 November 2026)
+
+The operator explicitly requested removal of both chart and pilot/promotion restrictions except
+actual platform limitations. Allow all ten supported chart timeframes, display every returned
+plot value, and retain every selected scanner/frame result instead of silently dropping results
+beyond 64. Prune inactive contexts to bound retained data. API pagination, supported resolutions
+and Pine runtime resource protection remain intact. Desktop and phone browser tests execute
+real Pine workers across all ten frames and verify eight displayed plots per frame.
+
+Add an explicit `incubator.promote.countLimitsEnabled` switch. Its omitted/default value keeps
+legacy quotas; false bypasses weekly, fleet, per-market and per-scanner allocation-count caps,
+including cohort proposal selection and config saves. The reviewed migration changes only this
+flag in locked paper mode, writes a private backup atomically and supports dry-run/idempotence.
+Existing pilot daily/open limits are already zero (disabled). Do not change pilot sizing,
+available margin, account risk controls, worker capacity, evidence thresholds or live locks.
+Trade policy/evidence identities remain identical when only this switch changes.
+
+Also correct copy-readiness reporting during missing market data: a configured turnover floor
+cannot be reported as passed without a finite turnover observation. The shared evidence-only
+test used to enroll forward restorations stays independent of market availability. This avoids
+the post-restart false increase from 34 to 40 eligible cells when ZRO was absent from a market
+refresh; it does not certify a missing market or disable restoration collection.
+
+
+## 279. Explain readiness coverage where its count is shown (15 November 2026)
+
+The operator questioned the 28-trade readiness counter against a much larger
+journal. A VM audit reconciled 1,095 total closed paper trades, 51 outside the
+30-day window, 28 qualifying and 1,016 excluded within it. The 28 already retain
+15 capacity-compatible and nine proven same-size trades. A private replay of 107
+sizing exclusions found no additional same-size history; removing the suspected
+leverage guard still recovered zero. Do not relabel older fill models as current.
+
+Name the checklist's scope explicitly and place the existing exclusion and
+compatibility breakdown directly on Live control, using the same renderer as
+Incubator. Missing coverage is unavailable, not zero or a pass. Keep independent
+snapshot refresh visible. This changes presentation only: 200 qualifying closes,
+net expectancy, live locks, risk limits and evidence selection are unchanged.
+See research/readiness-count-2026-11-15.md for the measured reconciliation and
+forward collection plan. Desktop/phone rendered tests verify the 28/1,095
+reconciliation and preserve the failed 200-trade requirement.
+
+## 280. A position event is not an account snapshot (16 November 2026)
+
+After an apparently empty screen, the dashboard displayed positions filled 14–18
+hours earlier. Original orders, entry audit rows and service logs confirm these
+were existing forward paper trades restored at restart, not newly backdated
+entries. The browser had a reproducible completeness bug: an SSE delta could seed
+an empty/partial positions cache before the full response, and renew its freshness.
+
+Never initialize an account list from one position event. Retain the last full
+refresh timestamp, reconcile independently every ten seconds, and show loading or
+unverified cached state explicitly. Show absolute fill times as well as age, with
+one shared positions status on Home, Workspace and Trades. These are UI changes;
+fill models, open positions, evidence identities and risk settings do not change.
+See research/paper-position-provenance-2026-11-16.md for the timestamps and tests.
+
+## 281. Copied scanners need versioned title contracts too (16 November 2026)
+
+Band Walk paper trade 18809 shorted “Bearish Band Walk Ended”. The author defines
+that event as weakening momentum, not an entry. The copy path used its configured
+legacy reader faithfully; the scanner had never opted into the existing reader fix.
+Give Band Walk reader 2 and an explicit six-title contract: preserve both Started
+and Midline Pullback directions and map both Ended events to none. Keep account
+allocation disabled. The new reading starts distinct evidence; never transfer the
+old reading's history to it or change unrelated scanner identities. Existing
+positions retain their saved price-management rules.
+
+Test signal-candle invalidation and two-bar lack of follow-through on current-model
+INIT, PARTI and ARIA trades with causal depth fills, immutable fees and funding.
+The ARIA candidate reduces loss on four paper trades but lacks independent evidence;
+Donchian INIT worsens, Trend Impulse INIT has no demonstrated paper improvement,
+and PARTI lacks usable coverage. Ship no active invalidation rule from this study.
+The evaluator is research-only and cannot enroll evidence or change execution.
+See research/copied-reader-invalidation-2026-11-16.md for coverage and validation.
+
+## 282. Test ARIA invalidation prospectively without changing paper exits (16 November 2026)
+
+The four-opportunity ARIA result is insufficient for a paper policy change. Use new
+ordinary Elliott Wave ARIA 15m shadow trades as unchanged controls and price a
+versioned hypothetical signal-wick invalidation beside them. Preserve original
+entry context, price with delayed fresh depth and stress, include unchanged trades,
+and report smaller losing exits separately from wins. Start the cohort once, persist
+it across restarts, exclude historical/experimental/paper positions and never count
+advisory rows as promotion evidence. Policy versions remain separate.
+
+Keep ARIA, INIT and PARTI public streams observed between entries and retain a
+separate bounded replay archive with five-second samples and entry context. Capture
+failures remain visible; missing data never becomes a candle fill or a reconstructed
+trade. No paper exit, capital/risk setting or evidence threshold changes. See
+research/aria-shadow-invalidation-2026-11-16.md for the frozen experiment and evaluation.
+
+## 285. Live scans dispatch longest timeframe first (15 November 2026)
 
 **Why.** The VM journal (7 days, runs after a normal bar close, restarts excluded) put a bar close to its last finished
 scan at 9.6 s on 15m, 21 s on 1h and 36 s on 4h, against a script time of 0.7 s, 0.9 s and 8 s. Every 4h close is also a

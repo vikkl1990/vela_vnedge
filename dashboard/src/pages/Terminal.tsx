@@ -11,11 +11,12 @@ import {
   useStats,
 } from '../api/queries'
 import { MarketCanvas } from '../components/MarketCanvas'
-import { PositionsTable } from '../components/PositionsTable'
+import { PaperPositions } from '../components/PaperPositions'
 import { ErrorState, Loading, Pill, Section, Time } from '../components/kit'
 import { fmtMoney, fmtPct, fmtPnl, fmtPrice, pnlClass } from '../lib/format'
 import { patchSearch } from '../lib/researchNavigation'
 import { gateOf } from '../lib/signalOutcomes'
+import { accountPositionLimit } from '../lib/positionCapacity'
 import { inHorizon, openCapital, workspaceSignals, type TradingHorizon } from '../lib/workspace'
 import { useLiveTick } from '../sse/prices'
 
@@ -121,9 +122,19 @@ export function Terminal() {
           <span>Open positions</span>
           <strong className="mono">
             {positions.data?.length ?? '—'}
-            <em> / {config.data?.risk?.maxPositionsTotal ?? '—'}</em>
+            <em>
+              {' '}
+              /{' '}
+              {config.data
+                ? (accountPositionLimit(
+                    config.data.paper.maxOpenPositions,
+                    config.data.risk?.maxPositionsTotal ?? 0,
+                    config.data.risk?.enabled,
+                  ) ?? 'no count cap')
+                : '—'}
+            </em>
           </strong>
-          <small>One shared account across horizons</small>
+          <small>Shared account; margin and risk checks apply</small>
         </div>
       </div>
       <div className="terminal-viewbar">
@@ -322,13 +333,7 @@ export function Terminal() {
           }
           pad={false}
         >
-          {positions.isLoading ? (
-            <Loading kind="table" rows={2} cols={7} />
-          ) : positions.isError ? (
-            <ErrorState error={positions.error} onRetry={() => positions.refetch()} />
-          ) : (
-            <PositionsTable positions={visiblePositions} compact />
-          )}
+          <PaperPositions query={positions} visiblePositions={visiblePositions} compact />
         </Section>
         <section className="terminal-panel terminal-setups">
           <div className="terminal-panel-title">

@@ -1,4 +1,4 @@
-import {plotLifecycle,ML_RSI_NATIVE} from './plotLifecycle.ts';
+import {plotLifecycle,ML_RSI_NATIVE,TREND_CONTINUATION,STEALTH_NATIVE} from './plotLifecycle.ts';
 import {createHash} from 'node:crypto';
 import {authorReview, authorReviewCatalog, type AuthorReviewCatalog} from '../library/authorReview.ts';
 import type {ScannerConfig} from '../config.ts';
@@ -50,6 +50,11 @@ export function scannerContract(s:LoadedScanner, sc:Partial<ScannerConfig>, plan
   else if(plotNative){
     adapter='Source-pinned lifecycle v1';capabilities.push('Confirmed source signals with validated native stop',s.id===ML_RSI_NATIVE?'Causal Supertrend amendments and opposite-side flip exit; no fixed target':'Native target milestones; full closure at farthest target');
     if(!plan)gaps.push('Validated in experimental shadow only; paper evidence is not established.');
+    if(s.id===TREND_CONTINUATION){
+      capabilities.push('48-close breakout with EMA 24/96, ER and ATR midrank filters; native 2R target');
+      gaps.push('OHLC-only port: source adapter supplies no funding data; funding entry filter is inactive. Execution still charges funding.');
+    }
+    if(s.id===STEALTH_NATIVE)capabilities.push('Old-side flip closure and causal break-even stop amendment; TP1/TP2 are milestones');
   }
   else if(nativeReader&&native?.role!=='Context'&&native?.role!=='Manual / restricted'){
     adapter='Native lifecycle reader';capabilities.push('Validated native entry geometry','Side-specific exits and stop amendments');

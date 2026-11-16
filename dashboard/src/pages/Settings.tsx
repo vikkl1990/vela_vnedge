@@ -17,6 +17,7 @@ import {
 } from '../components/kit'
 
 import { DeltaConnectionPanel } from '../components/DeltaConnectionPanel'
+import { TelegramConnectionPanel } from '../components/TelegramConnectionPanel'
 import { CostAudit } from '../components/ExecutionPlans'
 import { MEASURED } from '../lib/measured'
 import { DELTA_TIMEFRAMES } from '../lib/timeframes'
@@ -168,14 +169,16 @@ const SECTIONS: Section[] = [
         label: 'Max open positions (engine)',
         kind: 'number',
         step: '1',
-        validate: num(1, 500),
+        hint: '0 removes this count limit; margin and all other risk checks still apply',
+        validate: num(0, 500),
       },
       {
         path: 'risk.maxPositionsTotal',
         label: 'Max open positions (risk layer)',
         kind: 'number',
         step: '1',
-        validate: num(1, 500),
+        hint: '0 removes this count limit; margin and all other risk checks still apply',
+        validate: num(0, 500),
       },
       {
         path: 'risk.maxPositionsPerSymbol',
@@ -455,6 +458,13 @@ const SECTIONS: Section[] = [
         kind: 'number',
         step: '1',
         validate: num(1, 1000),
+        hint: 'Applies only when promotion count limits are enabled. Execution risk limits always apply.',
+      },
+      {
+        path: 'incubator.promote.countLimitsEnabled',
+        label: 'Apply promotion count limits',
+        kind: 'bool',
+        hint: 'Turn off weekly, fleet, per-market and per-scanner allocation quotas. Forward evidence, available margin and execution risk limits remain required.',
       },
       {
         path: 'incubator.promote.maxPerWeek',
@@ -462,6 +472,7 @@ const SECTIONS: Section[] = [
         kind: 'number',
         step: '1',
         validate: num(0, 1000),
+        hint: 'Applies only when promotion count limits are enabled.',
       },
       {
         path: 'incubator.promote.maxPerMarket',
@@ -469,6 +480,7 @@ const SECTIONS: Section[] = [
         kind: 'number',
         step: '1',
         validate: num(1, 1000),
+        hint: 'Allocation quota only; applies when promotion count limits are enabled.',
       },
       {
         path: 'incubator.promote.maxPerScanner',
@@ -476,6 +488,7 @@ const SECTIONS: Section[] = [
         kind: 'number',
         step: '1',
         validate: num(1, 1000),
+        hint: 'Allocation quota only; applies when promotion count limits are enabled.',
       },
       {
         path: 'incubator.gate.minTrades',
@@ -743,7 +756,7 @@ export function Settings() {
   const navIds = useMemo(
     () => [
       ...SECTIONS.map((sec) => `settings-${sec.key}`),
-      ...(isAdmin ? ['delta-connection'] : []),
+      ...(isAdmin ? ['delta-connection', 'telegram-connection'] : []),
       'fee-audit',
       'scanner-overrides',
     ],
@@ -976,6 +989,7 @@ export function Settings() {
             </h2>
             <ul>
               {isAdmin && navLink('delta-connection', 'Delta connection')}
+              {isAdmin && navLink('telegram-connection', 'Telegram alerts')}
               {navLink('fee-audit', 'Fee audit')}
               {navLink('scanner-overrides', 'Scanner overrides')}
             </ul>
@@ -1061,6 +1075,7 @@ export function Settings() {
           </fieldset>
 
           <DeltaConnectionPanel />
+          <TelegramConnectionPanel />
           <Disclosure
             id="fee-audit"
             title="Effective fees and scalper eligibility"
