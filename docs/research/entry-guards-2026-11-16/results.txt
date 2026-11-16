@@ -1,0 +1,117 @@
+Corrected diagnostic; supersedes the invalid original recommendation.
+{
+  "version": 2,
+  "from": 1793631609063,
+  "asOf": 1794840311560,
+  "referenceEquity": 1000,
+  "hashes": {
+    "signals": "0fd532db607452fc31d778260357c84948977b28c1ab81b9464254094cdebd7a",
+    "candles": {
+      "EVAAUSD": "773037a674f92fc6e2036197e3d3b5df6c8576d9e04e7eddc262d7b7a7d1ea7e",
+      "VVVUSD": "61a831729e13767e2858f5054f9b510ebae1ea94f62c89ca773825275a065c68",
+      "LINKUSD": "7ac7503190fc73136fcf86bade36f4f71a1da881aba9564c52057676008feed2",
+      "GRIFFAINUSD": "65936ce21b139e43c2251bc6fffbcf4dc9ce424bcc7b0ca4bf9abd60d55cce02",
+      "UNIUSD": "049b5c98385bd9d1faa7398e82d417ed7cd39bcfec8476996b88a9e25cba71d7",
+      "BNBUSD": "d64fdb163f839fa82e4ce231804dc640ee57cfa3e7a6a7a5fe805a16e508aade",
+      "SOLUSD": "2f61eb0fe59a9fb3e2ff527749d258d59405cbc7485b2b10dc6f75bb0c9d6be1",
+      "DOGEUSD": "3b0cc0c2616fea5a32dfb74a07e3559fa99cf498267b1345aa51861e0542de0f",
+      "1000PEPEUSD": "ad39387505a8d03e887270a0895c2bb5e2d04327c446263e7b26bf1beb51aff5",
+      "XRPUSD": "0ce195f4cb806d8f159b4eb01b6c1b7aa0dbcea813c92de5339e96269735adfa",
+      "ZECUSD": "43a74506a5853aea95db5734217e0ad122fcb166ef73891498fd0406d5c88290",
+      "AKEUSD": "19c5d8810e65dd29a859eaece01c6479b827dffb288a64cf806a3b7512589186",
+      "AINUSD": "bcd9caa33f682faf4f0797f63cbb16bade296ae754f2f218d7ef79a39c9c0378",
+      "STRKUSD": "554480717e47f5f7ab765b743b1fb8c8b3420a4609d1fb3dcecef7d68afe9a32",
+      "ARIAUSD": "8a531086b8f0bdf0ac3057cf4e92691ca4fb1ac5efa196109f26dd4eb2e6e269",
+      "PARTIUSD": "96361fd304b0f4b8cb686750605002f4b9ee7954b7017117dbb3a00237a88393",
+      "INITUSD": "2dbe5f5f8bbf189b541438bb5273925d1fd76232b45f53e5f6d6bdb81455d955",
+      "ETHUSD": "a892b894af542aecc78c5994eae82aebb15e7cfd7a33cdeeccc322070af5eff2",
+      "BTCUSD": "ccd9b5d973642bef5b605f8450c0207988be446657b59c14b356586ad53788d0",
+      "AAVEUSD": "3a6d48441d2f06def40a744e88b11e175f4b8b5327eb800931cd9809d011817f",
+      "BTWUSD": "7e9504ce45ccf640814cb17065d194453a9c501eedbf87cc2b9fe3f417ef68ce",
+      "CAPUSD": "cbbaae87d94120bb3a1cc240de55c70ca91bb2e04aacf0571a49481d502247df",
+      "BLESSUSD": "b1a7f36fed4238505ac9c3723c534752e94305b1db81709b1fa236a7240e0893",
+      "AIOTUSD": "b269ae329a413c01090fdd23491cd220e951558db2563c54f51c0f86596c3844",
+      "BCHUSD": "12887546f522a71fbae97d2a2ea1c3007b9665ba53c2d9ee7e64bf7b8b4b0057",
+      "AVAXUSD": "3c74d170f93fd8ee6844cea32341d6959c4b06ed2bcac88cd54c81abc5adffbd",
+      "SOPHUSD": "6f5fe0238b30d8efcd9c2692ed0f34646a865d18e6afd610c3959c26ea42a9bb"
+    }
+  },
+  "policyChangeEligible": false,
+  "promotionEligible": false,
+  "limitations": [
+    "Minute opens miss intraminute stops and targets; they are not tape or executable quotes.",
+    "No shared-wallet replay, competing positions, historical sizing record, funding or future author exits.",
+    "Only observed bound policies are used; missing history and resting/reclaim orders are unverified.",
+    "Sampled cash fees use the archived policy. Voucher benefits are not trading profit.",
+    "Sampled results are not a current-versus-relaxed-cooldown profit comparison."
+  ],
+  "groups": {
+    "opened": {
+      "signals": 443,
+      "statuses": {
+        "unverified": 443
+      },
+      "reasons": {
+        "missing or incompatible entry-time policy/context": 443
+      },
+      "sampledClosed": 0,
+      "sampledNet": null,
+      "sampledMeanR": null
+    },
+    "regime-efficiency": {
+      "signals": 179,
+      "statuses": {
+        "unverified": 122,
+        "sampled-closed": 38,
+        "rejected": 19
+      },
+      "reasons": {
+        "missing or incompatible entry-time policy/context": 100,
+        "trail": 23,
+        "sl": 14,
+        "resting/reclaim entry requires recorded tape and depth; never converted to market": 20,
+        "risk budget too small for one contract": 19,
+        "tp1": 1,
+        "future author exits are not in this signal export": 2
+      },
+      "sampledClosed": 38,
+      "sampledNet": -25.734438936988393,
+      "sampledMeanR": -0.12662114666602461
+    },
+    "burst": {
+      "signals": 211,
+      "statuses": {
+        "unverified": 178,
+        "sampled-closed": 28,
+        "rejected": 5
+      },
+      "reasons": {
+        "missing or incompatible entry-time policy/context": 145,
+        "sl": 12,
+        "resting/reclaim entry requires recorded tape and depth; never converted to market": 32,
+        "trail": 16,
+        "risk budget too small for one contract": 5,
+        "minute gap before exit": 1
+      },
+      "sampledClosed": 28,
+      "sampledNet": -24.6433748598463,
+      "sampledMeanR": -0.11907637291968695
+    },
+    "cooldown": {
+      "signals": 75,
+      "statuses": {
+        "unverified": 52,
+        "sampled-closed": 23
+      },
+      "reasons": {
+        "missing or incompatible entry-time policy/context": 46,
+        "trail": 21,
+        "sl": 2,
+        "resting/reclaim entry requires recorded tape and depth; never converted to market": 6
+      },
+      "sampledClosed": 23,
+      "sampledNet": 82.65273564977974,
+      "sampledMeanR": 0.36466416617243796
+    }
+  }
+}
