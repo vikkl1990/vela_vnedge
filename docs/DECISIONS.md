@@ -8002,3 +8002,57 @@ log: `at - (bar_time + timeframe)` already says how late a run was.
 
 **Expected effect.** About 36 s to about 10 s for a 4h close, and the 1h scans finish ahead of the 15m ones. Check
 `scanner_run_log` after the next deploy. Nothing about which signals are taken changes.
+
+## 286. Own exits: grade a script by its own ledger, test it in shadow (14 November 2026)
+
+**Why.** The script-perspective study (`docs/research/script-perspective-2026-11-14/`) ran 513 `strategy()` scripts as their
+authors wrote them and charged Delta's costs: the library as a whole has no edge, trades held under a day lose in every slice,
+and all the profit is in multi-day holds. Ten scripts held up (stop-and-reverse or ride-the-trend, positive on both sides, in
+nearly every market and timeframe, with a one-bar delay). The bot's recipe (1.5 ATR stop, trail arming at +0.5R, floor, 3% cap)
+closes trades within hours, which is the part of the distribution that loses. The edge exists only as a pair: the script's own
+entry with the script's own exit. The bot had never traded that pair.
+
+**What.**
+- **A shadow execution policy, `exitPolicy: 'own-exits'`** on an execution plan (`paper/executionPlans.ts`, `ownExitsOverride` in
+  `paper/policy.ts`). The plan reads the script's current reading and applies none of the bot's additions: no R ladder, trail,
+  profit floor, early cut, early stall, break-even move, trend exit, structure trail or stale close. Script targets are used as
+  written and the script's own stop is kept (the account's refusal of script stops does not apply). The only thing kept is the
+  wide disaster stop (`scriptDisasterStopAtr`, 3 ATR) so sizing has a basis. Validation allows only the current reading with no
+  target, trail, basket, hold limit or inversion, and `maxStopLossPct` may still only tighten the account ceiling. Plans are
+  shadow research cells: they cannot enter the account book, and the policy is part of the plan's signature, so it never shares
+  evidence with the same cell under the account's recipe.
+- **An own-ledger grader** (`research/ownLedger.ts`, `cli/ownledger.ts`). The Pine worker returns the strategy's closed and open
+  trades on request (`WorkerJob.ledger`; off for the live scan). The grader charges 15.8 bps a round trip and applies the stress
+  ladder of the study: open trades marked to market, a one-bar delay (two where the script fills on close), positive in both
+  halves, positive beyond the market's drift, a positive long and short record, t above 2, entries inside their own bar, and
+  enough trades. It names the gate that failed.
+- **A plan proposer** (`cli/ownexitsplans.ts`) for the ten survivors. It reads a copy of the config, validates with the config
+  validator, respects `MAX_RESEARCH_PLANS`, lists what does not fit and writes a file. It applies nothing.
+
+**What it does not do.** It does not touch the account, live execution, allocation or sizing. It does not enable a plan: the
+output file is applied by the operator through the config route. It does not change the 3% ceiling. It does not model funding
+(a multi-day hold pays it; the shadow book charges it, the grader does not). Returns in the grader are bps of notional, not R,
+because a script with a wide or absent stop has no stable R.
+
+**What decides.** A forward shadow record of the pair against the same cell under the account's recipe. Ten of 513 survived the
+screen, so the screen alone is not evidence; the forward record is. Capacity is the practical limit: the 37 existing plans and
+up to 18 paired studies leave little of the 73 research slots, so the proposer lists what does not fit.
+
+**Review corrections (16 November 2026).** Three defects found in review, each reproduced and fixed with a test.
+- *Entry protection.* `planEvents` applied the scanner's ATR entry protection to own-exits plans, which strips the entry's
+  stop and targets: an author's stop 98 and targets 104/108 became no stop and no targets. Own-exits plans now use the
+  author's levels as written.
+- *Partial exits.* The strategy ledger turned every closed trade into a whole-position exit, so an author's 30% partial
+  close closed the bot's whole position. An exit that leaves another trade of the strategy held is now marked `partial=1`
+  (`partial` on the event); own-exits plans drop it, since a plan cannot replicate a partial close, the grader counts
+  `partialExits` and marks the script not `replicable`, and the proposer (`GRADES=` file) leaves such scripts out. Other
+  consumers read the exit as before.
+- *Volume.* `cli/ownledger.ts` fed scripts a volume of 0, which changes any script that reads volume. It now passes the real
+  volume. The 14 November script-perspective study used its own harness, which did pass volume, so its list of ten stands;
+  the grader's output for volume-reading scripts must be re-run before a plan is proposed from it.
+
+**Execution follow-up (16 November 2026).** Dispatch now applies the own-exits filter before the exit branch, through both
+the current reader and raw-run reading comparisons; integration tests verify that a partial event preserves quantity and
+the subsequent full exit closes it. The proposer requires version 2 grades, an explicit pass and replicability, zero run
+errors and successful coverage of each requested cell. Missing or stale grades cannot activate the historical shortlist.
+The accidental absolute `server/node_modules` symlink is removed. These fixes activate no plans and change no account policy.

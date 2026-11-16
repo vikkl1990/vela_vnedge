@@ -35,6 +35,8 @@ export interface ScanEvent {
   source: 'alert' | 'shape' | 'derived' | 'alertcondition' | 'label';
   barTime: number;
   barIndex: number;
+  /** A strategy() exit that leaves part of the strategy's position open. Consumers that cannot replicate a partial close must not read it as a full one. */
+  partial?: boolean;
 }
 
 /**
@@ -205,7 +207,7 @@ function parseAlertOne(msg: string, head: string, base: ScanEvent, fixed = false
   if (st) {
     const side = st[2] as Side; const price = numOf(st[3]);
     if (!(price !== undefined && price > 0)) return { ...base, kind: 'info', label: 'strategy order without a usable price' };
-    if (st[1] !== 'entry') return { ...base, kind: 'exit', side, exitType: 'close', price, label: `EXIT ${side.toUpperCase()} (strategy)` };
+    if (st[1] !== 'entry') return { ...base, kind: 'exit', side, exitType: 'close', price, label: `EXIT ${side.toUpperCase()} (strategy)`, ...(/\bpartial=1\b/.test(msg) ? { partial: true } : {}) };
     // decision 111: a last-bar fill may carry the strategy's own resting stop and limits
     const slM = msg.match(new RegExp(String.raw`\bsl=(${NUM_SRC})`)), tpM = msg.match(/\btp=([\d.eE+-]+(?:,[\d.eE+-]+)*)/);
     const slV = numOf(slM?.[1]);

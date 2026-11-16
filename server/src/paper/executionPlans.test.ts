@@ -1,10 +1,10 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {DEFAULT_CONFIG,validateConfig,type AppConfig} from '../config.ts';
+import {DEFAULT_CONFIG,TF_SECONDS,validateConfig,type AppConfig} from '../config.ts';
 import {Db} from '../db.ts';
 import {PaperEngine} from './engine.ts';
 import {bookPaperConfig} from './policy.ts';
-import {planSnapshot,planScannerId,planEvents,planBacktest,type ExecutionPlan} from './executionPlans.ts';
+import {planSnapshot,planScannerId,planEvents,planBacktest,validateExecutionPlans,type ExecutionPlan} from './executionPlans.ts';
 import {PlanComparisons} from './planComparisons.ts';
 import {runBacktest} from './backtest.ts';
 import {costAudit} from './costAudit.ts';
@@ -293,4 +293,74 @@ test('invalid basket configuration is rejected at save and cannot hide other pla
  assert.ok(validateConfig(c).some(e=>e.includes('bad-basket')&&e.includes('stop cap')));
  c.executionPlans!.at(-1)!.maxStopLossPct=3;
  assert.equal(validateConfig(c).filter(e=>e.includes('executionPlans')).length,0,'an explicit plan cap satisfies the same snapshot guard');
+});
+test('own-exits plan: the author\'s exit as written, no ladder, trail, floor or early cut, and the script\'s own stop is kept',t=>{
+ const {c,e,service,ctx}=setup(t);
+ // the account's recipe is as loud as it gets here: trail, floor, early cut and the script-stop refusal are all on
+ Object.assign(c.paper,{trailAfterR:.5,trailGiveBackPct:10,floorAtR:.5,floorKeepR:.25,earlyCut:{r:-.5,minutes:30},skipScriptStops:true});
+ c.executionPlans=[{id:'own',revision:1,enabled:true,scannerId:'s',symbol:'ETHUSD',tf:'15m',variant:'current',referenceEquity:1000,exitPolicy:'own-exits'} as ExecutionPlan];
+ assert.deepEqual(validateConfig(c).filter(x=>/own/.test(x)),[]);
+ const snap=planSnapshot(c,c.executionPlans[0]);
+ assert.equal(snap.exitMode,'script');assert.equal(snap.exitPolicy,'own-exits');
+ assert.equal(snap.paper.scriptTargets,'use');assert.deepEqual(snap.paper.fallbackRR,[0,0,0]);
+ assert.equal(snap.paper.trailAfterR,0);assert.equal(snap.paper.floorAtR,0);assert.equal(snap.paper.earlyCut,undefined);
+ assert.equal(snap.paper.skipScriptStops,false);assert.equal(snap.requireAtrStop,false);
+ assert.equal(snap.paper.fallbackAtrSl,c.paper.scriptDisasterStopAtr);
+ // identity: it is a different experiment from the same cell under the account's recipe
+ const control=planSnapshot(c,{...c.executionPlans[0],id:'ctl',exitPolicy:undefined});
+ assert.notEqual(snap.signature,control.signature);assert.equal(control.paper.trailAfterR,.5);
+ // behaviour: the script's stop (98) and targets are what the position carries; the account recipe would have refused this stop
+ service.observe(ctx);
+ const p=e.openPositions().find(x=>x.executionPlan?.id==='own');
+ assert.ok(p,'the own-exits plan takes the entry');
+ assert.equal(p!.sl,98);assert.deepEqual(p!.tp.slice(0,3),[110,120,130]);
+});
+test('own-exits plan validation: only the current reading, nothing layered on top',()=>{
+ const c=structuredClone(DEFAULT_CONFIG);
+ const base={id:'own',revision:1,enabled:true,scannerId:'s',symbol:'ETHUSD',tf:'15m',variant:'current',referenceEquity:1000,exitPolicy:'own-exits'} as ExecutionPlan;
+ const tfs=TF_SECONDS;
+ assert.deepEqual(validateExecutionPlans([base],tfs,c),[]);
+ for(const bad of [{variant:'native'},{variant:'atr'},{takeProfit:{mode:'r',rr:[1,2,3],split:[0,0,1]}},{trailing:{afterR:1,giveBackPct:10,floorAtR:0,floorKeepR:0}},{maxHoldMinutes:60},{comparison:{group:'g',role:'control',kind:'exit-policy'}}])
+  assert.ok(validateExecutionPlans([{...base,...bad} as ExecutionPlan],tfs,c).some(x=>/own exits|exit-policy|control/.test(x)),JSON.stringify(bad));
+ // the stop ceiling may only tighten, as for every research plan
+ assert.ok(validateExecutionPlans([{...base,maxStopLossPct:5}],tfs,c).some(x=>/ceiling/.test(x)));
+ assert.equal(validateExecutionPlans([{...base,maxStopLossPct:2}],tfs,c).length,0);
+});
+
+for(const channel of ['observe','observeScan'] as const)test(`own-exits ${channel}: partial author exits leave quantity intact; a full exit closes it`,t=>{
+ const {c,e,service,ctx}=setup(t);
+ c.executionPlans=[{id:'own',revision:1,enabled:true,scannerId:'s',symbol:'ETHUSD',tf:'15m',variant:'current',referenceEquity:1000,
+  exitPolicy:'own-exits',...(channel==='observeScan'?{readingOverride:{version:1}}:{})}];
+ c.scanners.s.entryProtection='atr';
+ const send=(kind:'entry'|'exit',partial=false)=>{
+  if(channel==='observe')service.observe({...ctx,at:kind==='entry'?T:T+60000,event:{...ctx.event,kind,exitType:'close',partial}});
+  else service.observeScan({...ctx,at:kind==='entry'?T:T+60000,patched:'strategy("test")',since:ctx.bars.at(-1)!.time,newLabelKeys:new Set(),
+   refusal:()=>null,result:{id:1,ok:true,ms:1,bars:35,lastBarTime:ctx.bars.at(-1)!.time,warnings:0,shapes:[],labels:[],plots:[],
+    alerts:[{type:'alert',time:ctx.bars.at(-1)!.time,barIndex:34,message:`STRATEGY ${kind} long @ 100${partial?' partial=1':''}`}]}
+  });
+ };
+ send('entry');const pos=e.openPositions()[0];assert.ok(pos);const qty=pos.qtyOpen;
+ if(channel==='observe')assert.equal(pos.sl,98,'entry protection cannot discard the native stop in the dispatch path');
+ send('exit',true);assert.equal(e.position(pos.id)?.qtyOpen,qty);assert.equal(e.position(pos.id)?.status,'open');
+ send('exit');assert.equal(e.position(pos.id)?.qtyOpen,0);assert.equal(e.position(pos.id)?.status,'closed');
+});
+
+test('own-exits plan keeps the script\'s own stop and targets even when the scanner asks for ATR entry protection; a partial exit is not replayed as a full close',t=>{
+ const {c}=setup(t);
+ (c.scanners as any).s={...(c.scanners as any).s,entryProtection:'atr'};
+ const own={id:'own',revision:1,enabled:true,scannerId:'s',symbol:'ETHUSD',tf:'15m',variant:'current',referenceEquity:1000,exitPolicy:'own-exits'} as ExecutionPlan;
+ const plain={...own,id:'plain',exitPolicy:undefined} as ExecutionPlan;
+ c.executionPlans=[own,plain];
+ const ev=(over:Record<string,unknown>)=>({kind:'entry',side:'long',price:100,sl:98,tp:[104,108],label:'x',message:'x',source:'alert',barTime:0,barIndex:0,...over}) as any;
+ const entry=ev({});
+ const ownOut=planEvents([entry],[],planSnapshot(c,own));
+ assert.equal(ownOut[0].sl,98,'own exits: the author\'s stop survives');
+ assert.deepEqual(ownOut[0].tp,[104,108],'own exits: the author\'s targets survive');
+ const plainOut=planEvents([entry],[],planSnapshot(c,plain));
+ assert.equal(plainOut[0].sl,undefined,'a non-own plan still takes the scanner\'s ATR protection');
+ assert.deepEqual(plainOut[0].tp,[]);
+ // a partial strategy exit cannot be replicated: dropping it is honest, closing the whole position would not be
+ const partial=ev({kind:'exit',exitType:'close',partial:true,sl:undefined,tp:[]}),whole=ev({kind:'exit',exitType:'close',sl:undefined,tp:[]});
+ assert.deepEqual(planEvents([partial,whole],[],planSnapshot(c,own)).map(x=>x.partial??false),[false],'own exits: only the whole closure remains');
+ assert.equal(planEvents([partial],[],planSnapshot(c,plain)).length,1,'other plans keep the exit they always had');
 });

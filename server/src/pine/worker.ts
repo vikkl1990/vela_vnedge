@@ -34,8 +34,12 @@ export interface WorkerJob {
   /** IANA timezone for the script's sessions (default Etc/UTC). */
   timezone?: string;
   footprints?: FlowMinute[];
+  /** Research: also return the strategy's own closed and open trades (own-exits backtest). Off for the live scan. */
+  ledger?: boolean;
 }
 
+/** One trade from a strategy's own ledger. `size` is signed (negative = short); open trades have no exit. */
+export interface LedgerTrade { size: number; entryPrice: number; exitPrice: number | null; entryIdx: number; exitIdx: number | null }
 export interface WorkerAlert { barIndex: number; time: number; type: 'alert' | 'alertcondition'; title?: string; message: string }
 export interface WorkerShape { title: string; shape?: string; location?: string; color?: string; times: number[] }
 export interface WorkerLabel { time: number; y: number; text: string; color?: string; style?: string; barIndex?: number; /** Decision 172: the bar the label was created on, from the label stamp; absent when the script set no stamp. */ createdAt?: number }
@@ -56,6 +60,8 @@ export interface WorkerResult {
   shapes: WorkerShape[];
   labels: WorkerLabel[];
   plots: WorkerPlot[];
+  /** Present only when the job asked for it (`ledger`). */
+  ledger?: { closed: LedgerTrade[]; open: LedgerTrade[] };
 }
 
 const rest = new DeltaRest();
@@ -75,6 +81,13 @@ async function fetchOther(symbol: string, deltaTf: string, bars: number, endMs: 
   const out = list.map(c => ({ time: c.time * 1000, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume }));
   htfCache.set(key, { at: Date.now(), bars: out });
   return out;
+}
+
+function ledgerTrades(st: any): { closed: LedgerTrade[]; open: LedgerTrade[] } {
+  const one = (t: any, closed: boolean): LedgerTrade => ({ size: Number(t.size), entryPrice: Number(t.entry_price), exitPrice: closed ? Number(t.exit_price) : null,
+    entryIdx: Number(t.entry_bar_index), exitIdx: closed ? Number(t.exit_bar_index) : null });
+  const ok = (t: LedgerTrade) => Number.isFinite(t.size) && t.size !== 0 && t.entryPrice > 0 && (t.exitPrice === null || t.exitPrice > 0);
+  return { closed: (st.closedtrades ?? []).map((t: any) => one(t, true)).filter(ok), open: (st.opentrades ?? []).map((t: any) => one(t, false)).filter(ok) };
 }
 
 function shapeKind(opts: any): string | undefined {
@@ -158,7 +171,8 @@ async function runJob(job: WorkerJob): Promise<WorkerResult> {
       labels.push({ time, y, text: String(l.text ?? '').slice(0, 80), color: l.color, style: l.style, createdAt });
     }
 
-    return { ...base, ok: true, ms: Date.now() - t0, title: ctx.indicator?.title, overlay: ctx.indicator?.overlay, warnings: (ctx.warnings ?? []).length, alerts, shapes, labels, plots };
+    const ledger = job.ledger && ctx.strategy ? ledgerTrades(ctx.strategy) : undefined;
+    return { ...base, ok: true, ms: Date.now() - t0, title: ctx.indicator?.title, overlay: ctx.indicator?.overlay, warnings: (ctx.warnings ?? []).length, alerts, shapes, labels, plots, ...(ledger ? { ledger } : {}) };
   } catch (e: any) {
     return { ...base, ok: false, ms: Date.now() - t0, error: String(e?.message ?? e).slice(0, 500) };
   }

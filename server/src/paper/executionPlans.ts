@@ -14,7 +14,7 @@ import {protectEntry} from './entryProtection.ts';
 import type { Bar } from '../data/candleStore.ts';
 import type { ScanEvent } from '../scanners/extractor.ts';
 import { exitConfigFor } from './logic.ts';
-import { scannerExitPolicy, entryPolicy } from './policy.ts';
+import { scannerExitPolicy, entryPolicy, ownExitsOverride } from './policy.ts';
 import { adaptPlan } from './planStudy.ts';
 
 // Bounded research capacity: 73 existing plans plus six VNEDGE/Stealth import cells.
@@ -40,7 +40,7 @@ export type ReadingOverride = {version:number} & Pick<Partial<ScannerConfig>,'re
 export interface ExecutionPlan {
   basket?: 'rsi-volume-ladder-v1';
   /** Same native initial stop/entry; replace author TP with account R ladder, trail and floor. */
-  exitPolicy?: 'account-ladder';
+  exitPolicy?: 'account-ladder' | 'own-exits';
   id: string; revision: number; enabled: boolean;
   scannerId: string; symbol: string; tf: string;
   variant: 'current' | 'native' | 'atr';
@@ -93,19 +93,21 @@ export function planSnapshot(cfg: AppConfig, p: ExecutionPlan, sourceHash: strin
   const original = cfg.scanners[p.scannerId];
   const override={...p.readingOverride};delete override.version;
   const sc=p.readingOverride?{...original,...override}:original;
-  const exitMode = p.variant === 'current' ? sc?.exitMode ?? 'both' : 'levels';
-  const base = p.exitPolicy==='account-ladder' ? undefined : p.variant === 'current' ? scannerExitPolicy(cfg,p.scannerId) : sc?.exit;
+  const exitMode = p.exitPolicy==='own-exits' ? 'script' : p.variant === 'current' ? sc?.exitMode ?? 'both' : 'levels';
+  const base = p.exitPolicy==='own-exits' ? ownExitsOverride(cfg.paper) : p.exitPolicy==='account-ladder' ? undefined : p.variant === 'current' ? scannerExitPolicy(cfg,p.scannerId) : sc?.exit;
   const entry = entryPolicy(cfg,p.tf,'account',{scannerId:p.scannerId});
   const paper = structuredClone(withProductFees(scannerEntryConfig(exitConfigFor(cfg.paper,p.symbol,base,p.tf),original,p.tf),fees,p.symbol));
   // The control tests the configured account R ladder rather than silently retaining
   // the source's one target. Native SL and every entry/risk setting stay identical.
   if(p.exitPolicy==='account-ladder')paper.scriptTargets='ignore';
+  // Own exits: the script's stop and targets are honoured as written, never replaced by the ladder.
+  if(p.exitPolicy==='own-exits')paper.scriptTargets='use';
   // Resolved settings must not be layered a second time in the backtester.
   delete paper.exitBySymbol;delete paper.exitByTf;
   Object.assign(paper, { initialEquity:p.referenceEquity, sizingMode:'margin', maxOpenPositions:100_000,
     // Prospective plan evidence always pays full fees. Account offer settings remain separate.
     scalperOffer:paper.scalperOffer ? {...paper.scalperOffer,enabled:false} : undefined,
-    skipScriptStops:p.variant === 'current' && Boolean(cfg.paper.skipScriptStops) && sc?.entryProtection !== 'native',
+    skipScriptStops:p.exitPolicy!=='own-exits' && p.variant === 'current' && Boolean(cfg.paper.skipScriptStops) && sc?.entryProtection !== 'native',
     limitEntry:entry ? {enabled:true,tfs:[p.tf],books:['shadow'],atr:entry.pullbackAtr,bars:entry.pullbackBars} : undefined });
   if(p.takeProfit)Object.assign(paper,{scriptTargets:p.takeProfit.mode==='native'?'use':'ignore',
     tpSplit:[...p.takeProfit.split],...(p.takeProfit.rr?{fallbackRR:[...p.takeProfit.rr]}:{}),
@@ -133,6 +135,9 @@ export function planSnapshot(cfg: AppConfig, p: ExecutionPlan, sourceHash: strin
   return {...versioned,signature};
 }
 export function planEvents(events: ScanEvent[], bars: Bar[], p: ExecutionPlanSnapshot): ScanEvent[] {
+  // Own exits are the author's stop and targets as written: the scanner's ATR entry protection would strip them, and a
+  // partial strategy exit cannot be replicated, so it is dropped rather than closing the whole position early.
+  if(p.exitPolicy==='own-exits')return events.filter(ev=>!(ev.kind==='exit'&&ev.partial));
   return p.variant === 'current' ? events.map(ev=>protectEntry(ev,p.reading?.entryProtection)) : adaptPlan(events,bars,p.variant);
 }
 export function planBacktest(p: ExecutionPlanSnapshot) {
@@ -155,7 +160,12 @@ export function validateExecutionPlans(plans: ExecutionPlan[] | undefined, tfs: 
     if(p.basket&&cfg){
       try{planSnapshot(cfg,p);}catch(error){errors.push(`executionPlans.${p.id}: ${error instanceof Error?error.message:'invalid effective basket policy'}`);}
     }
-    if(p.exitPolicy!==undefined&&(p.exitPolicy!=='account-ladder'||p.comparison?.kind!=='exit-policy'||p.comparison.role!=='control'))errors.push(`executionPlans.${p.id}: account ladder requires an explicit exit-policy control`);
+    if(p.exitPolicy==='own-exits'){
+      // Shadow research only: the author's own entry with the author's own exit. No ladder, trail, floor or early cut, so a
+      // plan that also asks for one is a different experiment. The stop ceiling may tighten but never relaxes (checked below).
+      if(p.variant!=='current'||p.takeProfit||p.trailing||p.basket||p.maxHoldMinutes!==undefined||p.readingOverride?.invert||p.comparison?.kind==='exit-policy')errors.push(`executionPlans.${p.id}: own exits require the current reading with no target, trail, basket, hold limit or inversion`);
+    }
+    else if(p.exitPolicy!==undefined&&(p.exitPolicy!=='account-ladder'||p.comparison?.kind!=='exit-policy'||p.comparison.role!=='control'))errors.push(`executionPlans.${p.id}: account ladder requires an explicit exit-policy control`);
     if(p.comparison?.kind==='exit-policy'){
       const sc=cfg?.scanners[p.scannerId];
       if(!MARKITTICK_NATIVE[p.scannerId]||p.variant!=='current'||!p.readingOverride||p.takeProfit||p.trailing||p.basket||p.maxHoldMinutes!==undefined||p.readingOverride.invert||p.readingOverride.reader!==2||Object.keys(p.readingOverride).some(k=>!['version','reader'].includes(k))||cfg&&(sc?.reader!==2||sc?.entryProtection!=='native'||sc?.exitMode!=='levels'))errors.push(`executionPlans.${p.id}: exit comparison requires a validated native MarkitTick bracket and unmodified entry policy`);
