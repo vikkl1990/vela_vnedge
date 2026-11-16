@@ -8107,3 +8107,15 @@ other's chords, so `g k` would have opened Gates and stepped the list at once. T
 registered chord prefix, and a single key pressed within the chord window after a prefix belongs to the chord.
 
 Display only. Nothing here changes a trade.
+
+## 293. Validated REST depth supplies a paper quote when the stream is quiet (16 November 2026)
+
+The entry path fetched fresh depth but could still reject for a missing executable bid/ask because that quote lived in a
+separate streaming store. Publish top-of-book from the existing validated REST response in paper mode, with its original
+exchange and receipt timestamps. Healthy L1 quotes retain priority. Invalid, crossed, stale, future or untimestamped books
+cannot supply the fallback; the actual-quantity depth, cost, fee, risk and evidence checks remain unchanged. No extra fetch,
+backdated order or fill is introduced. A newly visible quote is not permission to bypass a cost refusal.
+
+The 57-cell funnel and limits of the improvement are recorded in `docs/research/paper-copy-funnel-2026-11-16/`. The old
+ten-cell fill count mostly predates the turnover correction; two further cells subsequently filled. No profitability gain
+is claimed. Asset-class UI columns also now fit full monetary values, with stacked phone rows instead of clipped amounts.
