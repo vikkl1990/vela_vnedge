@@ -81,6 +81,8 @@ export const QUIET_FILL_MS = 1000;
 
 /** Tape-mode entry waiting for its first print after signal time + latency. */
 export interface PendingEntry {
+  /** A failed depth observation cannot be reused as a fill after the book recovers. */
+  depthObservedFrom?:number;
   /** Fresh observations only after recovery; not persisted as an inferred exchange fill. */
   makerObservedFrom?:number;
   observation?: {event:ScanEvent; context:Pick<EntryContext,'signalBar'|'atr'|'refPrice'|'at'>};
@@ -199,6 +201,21 @@ export class PaperEngine extends EventEmitter {
     if(d?.reject)return d.reject;
     if(evidence&&d?.admissionDepth)evidence.admissionDepth=d.admissionDepth;
     return d?.crossingPct!==undefined?checkRiskVsFees(price,sl,cfg,symbol,d.crossingPct,{maker}):null;
+  }
+
+  /** Keep an accepted paper order through a temporary data gap, without executing
+   * its failed observation or extending its reservation, price or deadline. The
+   * existing scheduler refreshes depth; only a later price event can try again. */
+  private waitForEntryDepth(pe:PendingEntry,reason:string,at:number):boolean {
+    if(this.cfgRef().execution.mode!=='paper'||![0,2].includes(this.book)||this.executionIntent||!['fresh execution depth unavailable',
+      'risk market: fresh depth stale depth','risk market: fresh depth missing depth',
+      'risk market: fresh depth missing depth timestamp'].includes(reason))return false;
+    pe.depthObservedFrom=Math.max(pe.depthObservedFrom??0,at);
+    this.pending.set(pe.id,pe);
+    this.db.run('UPDATE positions SET fills=json_set(fills,?,json(?)) WHERE id=?',
+      pe.limit?'$.limitEntry':'$.pendingEntry',JSON.stringify(pe),pe.id);
+    if(pe.signalId)this.db.updateSignalAction(pe.signalId,`pending:waiting for fresh depth (${reason})`,pe.id);
+    return true;
   }
 
   /**
@@ -1063,7 +1080,7 @@ export class PaperEngine extends EventEmitter {
     if (size.qty < 1) return cancel(size.reason ?? 'size');
     const evidence:EntryFillEvidence={};
     const depthBlock=this.depthRefusal(pe.symbol,size.qty,pe.market.contractValue,L.price,levels.sl,cfg,at,true,pe,evidence);
-    if(depthBlock)return cancel(depthBlock);
+    if(depthBlock)return this.waitForEntryDepth(pe,depthBlock,at)?null:cancel(depthBlock);
     const fundingBlock = this.fundingEntryBlock?.(pe.symbol, pe.side, pe.tf, size.qty * pe.market.contractValue * L.price, size.riskAmount, at);
     if (fundingBlock) return cancel(fundingBlock);
     if (this.risk) {
@@ -1149,7 +1166,7 @@ export class PaperEngine extends EventEmitter {
     if (size.qty < 1) return cancel(size.reason ?? 'size');
     if(this.cfgRef().execution.mode==='paper'&&(this.limitEntryAllowed?.()??true)&&(this.book===0||!!pe.executionPlan)&&this.marketDepthPrice?.(pe.symbol,pe.side,size.qty)!==undefined){
       const plan=depthPlan(size,price,pe.side,n=>this.marketDepthPrice!(pe.symbol,pe.side,n)!,p=>this.size(p,levels.sl,pe.market,pe.score,leverageMult,held?.id,{scannerId:pe.scannerId,symbol:pe.symbol,tf:pe.tf,at:receivedAt,policy:pe.policy,executionPlan:pe.executionPlan},{quoted:true},pe.sizeScale));
-      if('reject'in plan)return cancel(plan.reject);
+      if('reject'in plan)return this.waitForEntryDepth(pe,plan.reject,receivedAt)?null:cancel(plan.reject);
       price=plan.price;size=plan.size;quoted=true;context.source='depth';context.depth=plan.depth;
       if(levels.tp.some(tp=>pe.side==='long'?price>=tp:price<=tp))return cancel('depth price moved past target');
       const valid=resolveLevels({side:pe.side,price,sl:levels.sl,tp:levels.tp},cfg,pe.market.tickSize);
@@ -1159,7 +1176,7 @@ export class PaperEngine extends EventEmitter {
     }
     size=this.capReserved(pe,size);
     const depthBlock=this.depthRefusal(pe.symbol,size.qty,pe.market.contractValue,price,levels.sl,cfg,receivedAt,false,pe,context);
-    if(depthBlock)return cancel(depthBlock);
+    if(depthBlock)return this.waitForEntryDepth(pe,depthBlock,receivedAt)?null:cancel(depthBlock);
     const fundingBlock = this.fundingEntryBlock?.(pe.symbol, pe.side, pe.tf, size.qty * pe.market.contractValue * price, size.riskAmount, receivedAt);
     if (fundingBlock) return cancel(fundingBlock);
     if (this.risk) {
@@ -1237,6 +1254,7 @@ export class PaperEngine extends EventEmitter {
     for (const pe of [...this.pending.values()]) {
       const cfg=this.configFor(pe),makerTape=!!pe.limit&&this.makerTape(pe,cfg);
       if ((cfg.fillSource !== 'tape'&&!makerTape) || pe.reclaim || pe.symbol !== symbol || time < pe.dueAt) continue;
+      if(pe.depthObservedFrom!==undefined&&time<=pe.depthObservedFrom)continue;
       if(makerTape&&!freshMakerPrint(qty,time,observedAt,Math.max(pe.at,pe.makerObservedFrom??pe.at),pe.limit!.expiresAt,cfg.quoteMaxAgeMs))continue;
       if (pe.limit?.quoteAnchor!==undefined && !tradedVolume(qty)) continue;
       if (pe.limit && !(time >= pe.at && this.limitTouched(pe, price, price))) continue;
@@ -1399,7 +1417,7 @@ export class PaperEngine extends EventEmitter {
           if(this.makerTape(pe))continue; // Tape policy cannot infer a fill from historical/partial candle extrema.
           // A partial candle observed before expiry is usable; an OHLC range spanning
           // the deadline cannot prove that the touch happened while the order rested.
-          if ((pe.limit.quoteAnchor===undefined || tradedVolume(bar.volume)) && bar.time >= pe.at && bar.time < pe.limit.expiresAt && Math.min(observedAt, barClosedAt) <= pe.limit.expiresAt && this.limitTouched(pe, bar.low, bar.high)) {
+          if ((pe.limit.quoteAnchor===undefined || tradedVolume(bar.volume)) && bar.time >= pe.at && (pe.depthObservedFrom===undefined||bar.time>pe.depthObservedFrom) && bar.time < pe.limit.expiresAt && Math.min(observedAt, barClosedAt) <= pe.limit.expiresAt && this.limitTouched(pe, bar.low, bar.high)) {
             const fill = () => {
               const pos = this.fillLimit(pe, observedAt, bar.time,{kind:'candle',...bar});
               if (pos) {
