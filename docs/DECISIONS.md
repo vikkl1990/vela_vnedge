@@ -7997,3 +7997,9 @@ up to 18 paired studies leave little of the 73 research slots, so the proposer l
 - *Volume.* `cli/ownledger.ts` fed scripts a volume of 0, which changes any script that reads volume. It now passes the real
   volume. The 14 November script-perspective study used its own harness, which did pass volume, so its list of ten stands;
   the grader's output for volume-reading scripts must be re-run before a plan is proposed from it.
+
+**Execution follow-up (16 November 2026).** Dispatch now applies the own-exits filter before the exit branch, through both
+the current reader and raw-run reading comparisons; integration tests verify that a partial event preserves quantity and
+the subsequent full exit closes it. The proposer requires version 2 grades, an explicit pass and replicability, zero run
+errors and successful coverage of each requested cell. Missing or stale grades cannot activate the historical shortlist.
+The accidental absolute `server/node_modules` symlink is removed. These fixes activate no plans and change no account policy.

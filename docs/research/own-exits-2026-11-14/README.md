@@ -18,11 +18,17 @@ A row marked `*` passed every gate. Otherwise the row ends with the gates that f
 ## 2. Propose shadow plans
 
 ```bash
-CONFIG=config-copy.json OUT=own-exits-plans.json node --no-warnings server/src/cli/ownexitsplans.ts
+CONFIG=config-copy.json GRADES=ownledger.json OUT=own-exits-plans.json node --no-warnings server/src/cli/ownexitsplans.ts
 ```
 
 Writes the plans to add and the ones that do not fit in the research capacity. Nothing is applied. Applying is a separate
 step through the config route, and each plan is a shadow research cell.
+
+Grades are mandatory: version 2 output must explicitly pass, be replicable, contain no run errors and cover the requested
+market/timeframe. Missing, old or partial-exit grades are listed as skipped, never treated as permission to run.
+The default ID list is a research shortlist, not evidence of a passing grade. Research plans never qualify for promotion.
+Partial author exits are ignored by own-exits dispatch rather than falsely closing the whole position; strategies known to
+use them are excluded by the proposer because the plan cannot reproduce their ledger.
 
 ## 3. Read the result
 

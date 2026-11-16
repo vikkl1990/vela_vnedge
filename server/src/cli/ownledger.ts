@@ -50,9 +50,9 @@ for (const id of ids) {
     }
   }));
   const summary = summariseOwnLedger(cells), verdict = gradeOwnLedger(summary);
-  results.push({ id, summary, verdict, errors });
+  results.push({ id, summary, verdict, errors, cells:cells.map(c=>({symbol:c.symbol,tf:c.tf})) });
   console.log(`${verdict.pass ? '*' : ' '} ${id.padEnd(44)} trades ${String(summary.trades + summary.open).padStart(5)} | net ${summary.net.toFixed(0).padStart(5)} bps | delayed ${summary.delayedNet.toFixed(0).padStart(5)} | halves ${summary.firstHalf.toFixed(0)}/${summary.secondHalf.toFixed(0)} | t ${summary.t.toFixed(1)}${verdict.pass ? '' : ' | failed: ' + verdict.failed.join(',')}${verdict.replicable ? '' : ` | NOT REPLICABLE: ${summary.partialExits} partial exits`}`);
 }
-fs.writeFileSync(OUT, JSON.stringify({ at: Date.now(), markets: MARKETS, tfs: TFS, results }, null, 1));
+fs.writeFileSync(OUT, JSON.stringify({ version:2, at: Date.now(), markets: MARKETS, tfs: TFS, results }, null, 1));
 console.log(`wrote ${OUT}`);
 process.exit(0);

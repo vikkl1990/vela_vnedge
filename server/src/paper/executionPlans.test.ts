@@ -327,6 +327,24 @@ test('own-exits plan validation: only the current reading, nothing layered on to
  assert.equal(validateExecutionPlans([{...base,maxStopLossPct:2}],tfs,c).length,0);
 });
 
+for(const channel of ['observe','observeScan'] as const)test(`own-exits ${channel}: partial author exits leave quantity intact; a full exit closes it`,t=>{
+ const {c,e,service,ctx}=setup(t);
+ c.executionPlans=[{id:'own',revision:1,enabled:true,scannerId:'s',symbol:'ETHUSD',tf:'15m',variant:'current',referenceEquity:1000,
+  exitPolicy:'own-exits',...(channel==='observeScan'?{readingOverride:{version:1}}:{})}];
+ c.scanners.s.entryProtection='atr';
+ const send=(kind:'entry'|'exit',partial=false)=>{
+  if(channel==='observe')service.observe({...ctx,at:kind==='entry'?T:T+60000,event:{...ctx.event,kind,exitType:'close',partial}});
+  else service.observeScan({...ctx,at:kind==='entry'?T:T+60000,patched:'strategy("test")',since:ctx.bars.at(-1)!.time,newLabelKeys:new Set(),
+   refusal:()=>null,result:{id:1,ok:true,ms:1,bars:35,lastBarTime:ctx.bars.at(-1)!.time,warnings:0,shapes:[],labels:[],plots:[],
+    alerts:[{type:'alert',time:ctx.bars.at(-1)!.time,barIndex:34,message:`STRATEGY ${kind} long @ 100${partial?' partial=1':''}`}]}
+  });
+ };
+ send('entry');const pos=e.openPositions()[0];assert.ok(pos);const qty=pos.qtyOpen;
+ if(channel==='observe')assert.equal(pos.sl,98,'entry protection cannot discard the native stop in the dispatch path');
+ send('exit',true);assert.equal(e.position(pos.id)?.qtyOpen,qty);assert.equal(e.position(pos.id)?.status,'open');
+ send('exit');assert.equal(e.position(pos.id)?.qtyOpen,0);assert.equal(e.position(pos.id)?.status,'closed');
+});
+
 test('own-exits plan keeps the script\'s own stop and targets even when the scanner asks for ATR entry protection; a partial exit is not replayed as a full close',t=>{
  const {c}=setup(t);
  (c.scanners as any).s={...(c.scanners as any).s,entryProtection:'atr'};

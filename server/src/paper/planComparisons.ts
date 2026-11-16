@@ -118,7 +118,10 @@ export class PlanComparisons {
     this.db.run('INSERT OR IGNORE INTO execution_plan_cohorts VALUES(?,?,?,?,?,?,?,?)',planScannerId(p),p.id,p.revision,p.signature,p.symbol,p.tf,input.at,JSON.stringify(p));
   }
   private execute(input:Observation,p:ExecutionPlanSnapshot){
-    const ev=input.event,scannerId=planScannerId(p);
+    // Apply the plan's event contract before either dispatch branch. In particular,
+    // a partial author exit is not a full-position close in an own-exits plan.
+    const ev=planEvents([input.event],input.bars,p)[0],scannerId=planScannerId(p);
+    if(!ev)return;
     if(ev.kind==='exit'){
       this.paper.onScriptExit(scannerId,p.symbol,p.tf,ev.exitType??'close',ev.price,input.at,p.exitMode,ev.side);
       return;
@@ -133,8 +136,7 @@ export class PlanComparisons {
     const occupied=[...this.paper.openPositions(),...this.paper.pendingEntries()].some(x=>x.executionPlan?.id===p.id&&x.scannerId!==scannerId);
     if(input.refusal||occupied){this.db.run("UPDATE execution_plan_events SET action='rejected',reason=? WHERE id=?",input.refusal??'previous plan version still holds an order or position',id);return;}
     try{
-      const event=planEvents([ev],input.bars,p)[0];
-      const d=this.paper.onEntry(event,{scannerId,scannerName:`${input.scannerName} · ${p.label??p.variant} v${p.revision}`,symbol:p.symbol,tf:p.tf,
+      const d=this.paper.onEntry(ev,{scannerId,scannerName:`${input.scannerName} · ${p.label??p.variant} v${p.revision}`,symbol:p.symbol,tf:p.tf,
         market:input.market,at:input.at,refPrice:input.refPrice,atr:lastAtr(input.bars,14),signalBar:input.bars.at(-1),exitMode:p.exitMode,signalId:null,executionPlan:p,features:{plan_event_id:id}});
       this.db.run('UPDATE execution_plan_events SET action=?,reason=?,position_id=? WHERE id=?',d.action,d.reason??null,d.position?.id??d.pendingId??null,id);
     }catch(error){this.db.run("UPDATE execution_plan_events SET action='error',reason='admission failed; inspect service log' WHERE id=?",id);throw error;}
