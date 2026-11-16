@@ -75,7 +75,7 @@ export function Scanners() {
   const { params, set, setSection, hash } = useResearchFilters()
   const activity = choice(
     params.get('activity'),
-    ['all', 'scheduled', 'shadow', 'fault', 'unallocated', 'context', 'off', 'unknown'],
+    ['all', 'scheduled', 'shadow', 'watch', 'fault', 'unallocated', 'context', 'off', 'unknown'],
     'all',
   )
   const config = useConfig()
@@ -883,21 +883,50 @@ export function Scanners() {
             (todo.length > 0 ? (
               <div className="needs mb-page">
                 <div className="needs-head">
-                  <h2>Worth acting on</h2>
+                  <h2>Setup and entry reviews</h2>
                   <span className="needs-count mono">{todo.length}</span>
                 </div>
+                <p className="muted sc-todo-note">
+                  Past refusals are historical outcomes, not necessarily active blocks. Expand a row for exact
+                  reasons and current paper readiness.
+                </p>
                 <ul className="needs-list">
                   {shownTodo.map((t) => (
                     <li key={t.s.id} className="sc-todo-item">
-                      <span className="needs-text">
+                      <div className="needs-text">
                         <span className={`sc-todo-tone ${t.tone}`} aria-hidden />
-                        <span>
+                        <div className="sc-todo-copy">
                           <Link to={`/scanners/${t.s.id}`} className="strong">
                             {t.s.name}
-                          </Link>{' '}
-                          {t.text}
-                        </span>
-                      </span>
+                            {ambiguousNames.has(t.s.name) && <span className="muted mono"> · {t.s.id}</span>}
+                          </Link>
+                          <span className="sc-todo-detail">{t.text}</span>
+                          {t.history && !!t.s.week?.lastEntryAt && (
+                            <span className="muted sc-todo-detail">
+                              Last entry attempt {timeAgo(t.s.week.lastEntryAt)}
+                            </span>
+                          )}
+                          {t.evidence && <span className="sc-todo-detail">{t.evidence}</span>}
+                          {((t.history && !!t.s.week?.reasons?.length) ||
+                            !!t.s.paperReadiness?.holds.length) && (
+                            <details className="sc-todo-detail">
+                              <summary>Evidence and recorded reasons</summary>
+                              {t.history &&
+                                t.s.week?.reasons?.map((r) => (
+                                  <div key={`${r.action}:${r.symbol}:${r.tf}`} className="sc-todo-reason">
+                                    {r.n} × {r.symbol} {r.tf}: {r.action.replace(/^rejected:/, '')} ·{' '}
+                                    {timeAgo(r.lastAt)}
+                                  </div>
+                                ))}
+                              {t.s.paperReadiness?.holds.map((r) => (
+                                <div key={`${r.symbol}:${r.tf}`} className="sc-todo-reason">
+                                  Current evidence · {r.symbol} {r.tf}: {r.reason}
+                                </div>
+                              ))}
+                            </details>
+                          )}
+                        </div>
+                      </div>
                       <span className="sc-todo-actions">
                         {t.release && (
                           <button
@@ -908,8 +937,8 @@ export function Scanners() {
                             Release
                           </button>
                         )}
-                        <Link to={`/scanners/${t.s.id}`} className="btn btn-xs">
-                          Open
+                        <Link to={t.href ?? `/scanners/${t.s.id}`} className="btn btn-xs">
+                          {t.action ?? 'Inspect scanner'}
                         </Link>
                       </span>
                     </li>
@@ -927,8 +956,9 @@ export function Scanners() {
               </div>
             ) : (
               <div className="mb-page">
-                <Callout tone="ok" title="Nothing needs action.">
-                  Every scanner that is on is scheduled and running.
+                <Callout tone="ok" title="No setup or entry reviews.">
+                  No issues meet this panel’s review criteria in the available data. This does not guarantee
+                  future signals or fills.
                 </Callout>
               </div>
             ))}
@@ -1010,6 +1040,7 @@ export function Scanners() {
                   <option value="context">Entries disabled</option>
                   <option value="off">Paper disabled</option>
                   <option value="shadow">Shadow allocated / copy path</option>
+                  <option value="watch">Watch-only tracking</option>
                   <option value="unknown">Schedule unknown</option>
                 </select>
               </label>

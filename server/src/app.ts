@@ -1,4 +1,5 @@
 import {candleReplayBlock} from './paper/basket.ts';
+import {scannerAttentionReadiness} from './scanners/attention.ts';
 import {classMap,classOf} from './markets/classes.ts';
 import {ASSET_GROUPS,ASSET_SECTORS} from '../../shared/assetClass.ts';
 import {copyRecoveryRefusal} from './incubator/copyRecovery.ts';
@@ -595,6 +596,7 @@ export class App {
 
   /** Pre-grouped lookups so building the whole scanner list is linear rather than quadratic. */
   private scannerViewIndex() {
+    const week=this.weekFunnelByScanner(),pairs=this.incubatorStore.list();
     return {
       closed: this.paper.closedByScanner(),
       open: this.paper.openCountByScanner(),
@@ -602,9 +604,19 @@ export class App {
       backtests: this.scanners.backtestsByScanner(),
       lastRun: this.scanners.lastRunByScanner(),
       profiles: this.profiles.summaries(),
-      books: this.scannerBooks(),
-      week: this.weekFunnelByScanner(),
+      books: this.scannerBooks(pairs),
+      week,
+      attention:this.scannerAttentionIndex(week,pairs),
     };
+  }
+
+  private scannerAttentionIndex(week=this.weekFunnelByScanner(),pairs=this.incubatorStore.list()){
+    const cfg=this.config.get(),at=Date.now(),markets=this.incubatorStore.marketsToday(at);
+    return scannerAttentionReadiness({week,pairs,store:this.incubatorStore,mirror:cfg.incubator.mirror,at,
+      copyEnabled:!!(cfg.incubator.enabled&&cfg.incubator.mirror?.enabled&&cfg.execution.mode==='paper'),
+      turnover:s=>markets.get(s)?.turnoverUsd??null,
+      scanners:this.registry.all().map(s=>({id:s.id,enabled:!!cfg.scanners[s.id]?.enabled,hidden:cfg.scanners[s.id]?.hidden,
+        scheduledCells:this.scanners.isActive(s)?this.scanners.pairsFor(s.id).length:0}))});
   }
 
   /** The last seven days of entry signals per scanner, by what became of them (decision 87): the week explained, not just the last run. */
@@ -613,11 +625,12 @@ export class App {
   }
 
   /** Which books each scanner is in (decision 64): markets it trades in the account, markets it is proving in the shadow book. */
-  private scannerBooks() {
-    const out = new Map<string, { account: string[]; shadow: string[]; proposed: string[] }>();
-    for (const r of this.incubatorStore.list(['live', 'demote_proposed', 'shadow', 'proposed'])) {
-      const b = out.get(r.scannerId) ?? { account: [], shadow: [], proposed: [] };
-      (r.stage === 'live' || r.stage === 'demote_proposed' ? b.account : r.stage === 'proposed' ? b.proposed : b.shadow).push(`${r.symbol} ${r.tf}`);
+  private scannerBooks(pairs=this.incubatorStore.list()) {
+    const out = new Map<string, { account: string[]; shadow: string[]; proposed: string[]; tracked:string[]; candidates:string[] }>();
+    for (const r of pairs) {
+      if(r.stage==='retired')continue;
+      const b = out.get(r.scannerId) ?? { account: [], shadow: [], proposed: [],tracked:[],candidates:[] };
+      (r.stage === 'live' || r.stage === 'demote_proposed' ? b.account : r.stage === 'proposed' ? b.proposed : r.stage==='tracked'?b.tracked:r.stage==='candidate'?b.candidates:b.shadow).push(`${r.symbol} ${r.tf}`);
       out.set(r.scannerId, b);
     }
     return out;
@@ -648,6 +661,7 @@ export class App {
       lastRun: idx ? (idx.lastRun.get(id) ?? null) : this.scanners.getLastRun(id), stats,
       books: (idx ? idx.books : this.scannerBooks()).get(id) ?? { account: [], shadow: [], proposed: [] },
       week: (idx ? idx.week : this.weekFunnelByScanner()).get(id) ?? null,
+      paperReadiness:(idx?idx.attention:this.scannerAttentionIndex()).get(id)??null,
     };
   }
 

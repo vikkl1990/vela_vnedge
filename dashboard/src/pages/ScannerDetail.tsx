@@ -18,6 +18,7 @@ import {
 } from '../api/queries'
 import type { EntrySource, Trade } from '../api/types'
 import { useAuth } from '../auth/AuthGate'
+import { scannerActivity } from '../lib/scannerPresentation'
 import { ChartFrames } from '../chart/ChartFrames'
 import { VelaChart, type ChartScript } from '../chart/VelaChart'
 import { EquityChart } from '../components/charts'
@@ -241,9 +242,10 @@ export function ScannerDetail() {
           {s.reason}
         </Callout>
       )}
-      {s.enabled && !s.symbols.length && (
-        <Callout tone="warn" title="No pairs assigned.">
-          Turning a scanner on does not schedule paper scans. Assign pairs on the Incubator.
+      {s.enabled && s.scheduledCells === 0 && (
+        <Callout tone="warn" title={scannerActivity(s).label}>
+          {scannerActivity(s).detail}{' '}
+          <Link to={`/incubator?q=${encodeURIComponent(s.id)}`}>Review evidence and allocations</Link>
         </Callout>
       )}
 

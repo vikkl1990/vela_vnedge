@@ -1,5 +1,5 @@
 import type { Scanner } from '../api/types'
-import { scannerActivity } from './scannerPresentation'
+import { scannerActivity } from './scannerPresentation.ts'
 
 /** On in the account, or allocated in the account, shadow or proposed books. */
 export const isTrading = (s: Scanner) =>
@@ -15,7 +15,7 @@ export function weekBlockers(w: Week): Array<[string, number]> {
     [
       ['waiting', w.pending ?? 0],
       ['pilot cap', w.pilot ?? 0],
-      ['stops', w.protection ?? 0],
+      ['native-stop policy', w.protection ?? 0],
       ['gate', w.gate],
       ['fee', w.fee],
       ['regime', w.regime],
@@ -56,11 +56,29 @@ export function fleetStats(all: Scanner[]) {
   }
 }
 
-/** Scanners that are on (or held back) and need a look, worst first. */
-export function worthActingOn(
-  all: Scanner[],
-): Array<{ s: Scanner; tone: 'danger' | 'warn'; text: string; release?: boolean }> {
-  const out: Array<{ s: Scanner; tone: 'danger' | 'warn'; text: string; release?: boolean }> = []
+export function paperEvidenceSummary(s: Scanner): string | undefined {
+  const r = s.paperReadiness
+  if (!r) return undefined
+  if (r.shadow > 0)
+    return `Now: ${r.eligible} of ${r.shadow} shadow cells pass paper-copy checks. ${r.copyEnabled ? (r.eligible > 0 ? 'Copying is on; a fresh signal and entry checks are still required.' : 'Copying is on; review the unmet requirements below.') : 'Copying is off.'}`
+  if (r.tracked > 0)
+    return `Now: ${r.tracked} watch-only cells; their observations do not count toward promotion. ${r.candidates} shadow admission candidate${r.candidates === 1 ? '' : 's'}.`
+  return `Now: no shadow evidence cells; ${r.candidates} admission candidates.`
+}
+
+interface AttentionItem {
+  s: Scanner
+  tone: 'danger' | 'warn'
+  text: string
+  release?: boolean
+  history?: boolean
+  evidence?: string
+  href?: string
+  action?: string
+}
+/** Setup faults and historical entry reviews are distinct; neither authorizes admission. */
+export function worthActingOn(all: Scanner[]): AttentionItem[] {
+  const out: AttentionItem[] = []
   for (const s of all) {
     if (s.hidden || !isTrading(s)) continue
     if (s.health?.quarantined) {
@@ -74,11 +92,19 @@ export function worthActingOn(
     }
     const a = scannerActivity(s)
     if (a.key === 'fault') out.push({ s, tone: 'danger', text: `${a.label.toLowerCase()}: ${a.detail}` })
-    else if (a.key === 'unallocated')
+    else if (['unallocated', 'watch', 'shadow'].includes(a.key) && s.enabled && s.scheduledCells === 0)
       out.push({
         s,
         tone: 'warn',
-        text: 'is on but has no paper cells scheduled. Assign pairs for it to run.',
+        text:
+          a.key === 'shadow'
+            ? 'has shadow allocations and no direct paper schedule.'
+            : a.key === 'watch'
+              ? 'is tracking markets in watch-only mode.'
+              : 'has no direct paper schedule or shadow allocations.',
+        evidence: paperEvidenceSummary(s),
+        href: `/incubator?q=${encodeURIComponent(s.id)}`,
+        action: 'Review evidence',
       })
     else if (a.key === 'context')
       out.push({
@@ -87,11 +113,18 @@ export function worthActingOn(
         text: 'is on but its reader has no entry channels, so it cannot open trades.',
       })
     else if (s.week && s.week.entries >= 3 && s.week.opened === 0) {
-      const top = weekBlockers(s.week)[0]
+      const blockers = weekBlockers(s.week)
+        .slice(0, 3)
+        .map(([label, n]) => `${n} ${label}`)
+        .join(' · ')
       out.push({
         s,
         tone: 'warn',
-        text: `gave ${s.week.entries} entry signals in 7 days and none opened${top ? `. Most were held by ${top[0]}.` : '.'}`,
+        text: `7-day paper history: ${s.week.entries} entry attempts, 0 fills${s.week.pending ? `, ${s.week.pending} pending` : ''}. ${blockers}.`,
+        history: true,
+        evidence: paperEvidenceSummary(s),
+        href: `/signals?scanner=${encodeURIComponent(s.id)}&kind=entry`,
+        action: 'Review signals',
       })
     }
   }
