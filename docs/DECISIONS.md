@@ -8093,3 +8093,17 @@ malformed-book and risk refusals remain terminal. Exchange executors do not use 
 No capital, risk, evidence, scanner-reading, fee or admission threshold changes. A wait creates no fill, fee or promotion evidence.
 The audit is in `docs/research/paper-copy-fills-2026-11-16/`. Regression tests cover the cancelled-order defect, causal recovery,
 expiry, restart, unchanged economics/policy, pilot disablement and executor isolation. No profit uplift is claimed from a data-gap fix.
+
+## 289. A "Moving now" strip on Home shows 5-minute, 15-minute and 1-hour moves (16 November 2026)
+
+Delta's tickers carry only a 24-hour change, so a pump ten minutes old looked like any other busy market. The spike study
+(`docs/research/spike-catcher-2026-11-16/`) found about 93 moves of 5 sigma and 1.2% a day across 81 markets, and the bot held
+a position in 9% of the biggest ones: the first step toward seeing them is seeing them. The server keeps a ring of mark prices
+per market (filled once a minute by the existing market-list fetch, 65 minutes deep) and `GET /api/markets/movers` reads the
+change over each window from it. A figure is reported only when the ring reaches back that far, and a market that stopped
+updating shows none. The strip lists the biggest movers in the chosen window with their asset class, the side the account holds
+there (if any) and a link to the chart, and falls back to the 24-hour tape until the server has history.
+
+Display only. Nothing here opens, sizes or skips a trade, and the study's conclusion stands: no chase or fade catcher is
+supported by the backtests. The "hot" thresholds (1.5% in 5 minutes, 3% in 15, 5% in an hour) only decide which chips are
+highlighted. Direction is shown by an arrow and a sign as well as by colour.

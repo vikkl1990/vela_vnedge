@@ -35,7 +35,7 @@ import {
 } from '../components/kit'
 import { PaperPositions } from '../components/PaperPositions'
 import { ScannerPnlBoard, type ScannerPnlRow } from '../components/ScannerPnlBoard'
-import { TickerTape } from '../components/TickerTape'
+import { MoversStrip } from '../components/MoversStrip'
 
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../api/client'
@@ -159,7 +159,7 @@ export function Overview() {
           </Link>
         }
       />
-      <TickerTape />
+      <MoversStrip />
       <LiveStatusStrip />
       <BookCards />
       <div className="home-split">

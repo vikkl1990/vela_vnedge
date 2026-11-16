@@ -1,5 +1,6 @@
 import {candleReplayBlock} from './paper/basket.ts';
 import {classMap,classOf} from './markets/classes.ts';
+import { MoverStore, MOVER_WINDOWS_MIN } from './markets/movers.ts';
 import {ASSET_GROUPS,ASSET_SECTORS} from '../../shared/assetClass.ts';
 import {copyRecoveryRefusal} from './incubator/copyRecovery.ts';
 import {bindScalperConnection} from './connections/scalperOffer.ts';
@@ -112,6 +113,9 @@ export class App {
   private lastAdmissionAt = 0;
   private huntTimer: ReturnType<typeof setInterval> | null = null;
   readonly marks = new MarkStore();
+  /** Short price history per market for the movers strip (display only). */
+  readonly movers = new MoverStore();
+  private moverTimer: ReturnType<typeof setInterval> | null = null;
   readonly exchangeStatus = new TradingStatus();
   /** Decision 187: every paper fill set beside the real prints on the tape. */
   tapeAudit!: TapeAudit;
@@ -382,6 +386,9 @@ export class App {
     void refreshMarkets();
     this.marketTimer = setInterval(refreshMarkets, Math.max(1, this.config.get().risk.marketGate?.refreshMinutes ?? 60) * 60_000);
     this.marketTimer.unref?.();
+    // the movers strip needs a reading each minute whether or not a dashboard is open, so a pump is on the strip from its first minutes
+    this.moverTimer = setInterval(() => { this.markets().catch(e => log.warn(`movers sample failed: ${e?.message ?? e}`)); }, 60_000);
+    this.moverTimer.unref?.();
     // Closed trades and the clock drive evidence reviews independently of screening.
     // Reviews share one operation with manual and pair-agent calls; failed screens stay retryable.
     this.lastAdmissionAt=Date.now();
@@ -580,6 +587,13 @@ export class App {
     return { groups: ASSET_GROUPS, sectors: ASSET_SECTORS, classes: classMap([...new Set([...products.keys(), ...traded])]) };
   }
 
+  /** The biggest recent movers with their asset class, for the dashboard strip. */
+  async moversNow(limit = 60) {
+    await this.markets().catch(() => null); // a cold server answers from one fresh reading rather than from nothing
+    const now = Date.now();
+    return { at: now, windows: [...MOVER_WINDOWS_MIN], historyMinutes: this.movers.historyMinutes(now), rows: this.movers.movers(now, limit).map(r => ({ ...r, group: classOf(r.symbol).group, sector: classOf(r.symbol).sector })) };
+  }
+
   async markets() {
     if (this.marketCache && Date.now() - this.marketCache.at < 30_000) return this.marketCache.list;
     const [tickers] = await Promise.all([this.rest.tickers(),this.rest.products()]);
@@ -588,6 +602,7 @@ export class App {
       markPrice: Number(t.mark_price ?? t.close), price: Number(t.close ?? t.mark_price), change24hPct: Number(t.mark_change_24h ?? 0), volume24h: Number(t.turnover_usd ?? 0),
     })).sort((a, b) => b.volume24h - a.volume24h);
     this.marketCache = { at: Date.now(), list };
+    this.movers.record(this.marketCache.at, list.map(m => ({ symbol: m.symbol, price: m.markPrice })));
     return list;
   }
 
@@ -1084,6 +1099,7 @@ export class App {
     this.incubator.stop();
     this.executor?.stop();
     if (this.marketTimer) clearInterval(this.marketTimer);
+    if (this.moverTimer) clearInterval(this.moverTimer);
     if (this.huntTimer) clearInterval(this.huntTimer);
     this.feed.stop();
     await this.pool.stop();
