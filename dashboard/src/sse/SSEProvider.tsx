@@ -1,4 +1,5 @@
 import { decisionRefreshKeys } from './decisionRefresh'
+import { mergePositionEvent } from './positionCache'
 import { batchedInvalidation } from '../lib/batchedInvalidation'
 import { useQueryClient } from '@tanstack/react-query'
 import {
@@ -149,15 +150,11 @@ export function SSEProvider({ children }: { children: ReactNode }) {
         for (const key of decisionRefreshKeys('signal')) invalidate(key)
       }),
       sseBus.on('position', (e: PositionEvent) => {
-        qc.setQueryData<Position[]>(qk.positions, (prev) => {
-          const list = prev ?? []
-          if (e.type === 'closed' || e.type === 'voided') return list.filter((p) => p.id !== e.position.id)
-          const idx = list.findIndex((p) => p.id === e.position.id)
-          if (idx === -1) return [e.position, ...list]
-          // Replace only the changed row so memoized rows keep their identity.
-          const next = list.slice()
-          next[idx] = e.position
-          return next
+        // Never turn one event into an empty/partial account snapshot. Preserve the
+        // last full HTTP refresh time: busy price/stop events do not verify the list.
+        const snapshotAt = qc.getQueryState(qk.positions)?.dataUpdatedAt
+        qc.setQueryData<Position[]>(qk.positions, (prev) => mergePositionEvent(prev, e), {
+          updatedAt: snapshotAt,
         })
         for (const key of decisionRefreshKeys('position', e.type)) invalidate(key)
         if (e.type !== 'updated') bumpStats()
@@ -226,6 +223,7 @@ export function SSEProvider({ children }: { children: ReactNode }) {
         noteEvent()
         // resync anything we may have missed while disconnected
         if (wasReconnect) void qc.invalidateQueries()
+        else invalidate(qk.positions)
       }
       es.onerror = () => {
         // EventSource auto-retries, but we manage backoff ourselves for control.

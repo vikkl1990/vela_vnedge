@@ -33,7 +33,7 @@ import {
   TabPanel,
   Tabs,
 } from '../components/kit'
-import { PositionsTable } from '../components/PositionsTable'
+import { PaperPositions } from '../components/PaperPositions'
 import { ScannerPnlBoard, type ScannerPnlRow } from '../components/ScannerPnlBoard'
 import { TickerTape } from '../components/TickerTape'
 
@@ -142,13 +142,7 @@ export function Overview() {
         }
         pad={false}
       >
-        {positions.isLoading && !positions.data ? (
-          <Loading kind="table" rows={3} cols={10} />
-        ) : positions.isError && !positions.data ? (
-          <ErrorState error={positions.error} onRetry={() => positions.refetch()} />
-        ) : (
-          <PositionsTable positions={positions.data ?? []} compact />
-        )}
+        <PaperPositions query={positions} compact />
       </Section>
 
       <div className="grid-2-1">

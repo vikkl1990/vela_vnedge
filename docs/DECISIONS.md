@@ -7899,3 +7899,18 @@ net expectancy, live locks, risk limits and evidence selection are unchanged.
 See research/readiness-count-2026-11-15.md for the measured reconciliation and
 forward collection plan. Desktop/phone rendered tests verify the 28/1,095
 reconciliation and preserve the failed 200-trade requirement.
+
+## 280. A position event is not an account snapshot (16 November 2026)
+
+After an apparently empty screen, the dashboard displayed positions filled 14–18
+hours earlier. Original orders, entry audit rows and service logs confirm these
+were existing forward paper trades restored at restart, not newly backdated
+entries. The browser had a reproducible completeness bug: an SSE delta could seed
+an empty/partial positions cache before the full response, and renew its freshness.
+
+Never initialize an account list from one position event. Retain the last full
+refresh timestamp, reconcile independently every ten seconds, and show loading or
+unverified cached state explicitly. Show absolute fill times as well as age, with
+one shared positions status on Home, Workspace and Trades. These are UI changes;
+fill models, open positions, evidence identities and risk settings do not change.
+See research/paper-position-provenance-2026-11-16.md for the timestamps and tests.
