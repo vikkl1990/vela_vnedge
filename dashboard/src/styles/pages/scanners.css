@@ -112,6 +112,29 @@
   display: flex;
   align-items: baseline;
   gap: 8px;
+  min-width: 0;
+  flex: 1 1 420px;
+}
+.sc-todo-copy {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.sc-todo-note {
+  margin: 8px 0;
+}
+.sc-todo-detail {
+  display: block;
+  margin-top: 6px;
+}
+.sc-todo-detail summary {
+  cursor: pointer;
+  padding: 6px 0;
+}
+.sc-todo-reason {
+  margin: 6px 0;
+}
+.sc-todo-actions .btn {
+  min-height: 32px;
 }
 
 /* list view */

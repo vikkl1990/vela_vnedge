@@ -8105,3 +8105,12 @@ backdated order or fill is introduced. A newly visible quote is not permission t
 The 57-cell funnel and limits of the improvement are recorded in `docs/research/paper-copy-funnel-2026-11-16/`. The old
 ten-cell fill count mostly predates the turnover correction; two further cells subsequently filled. No profitability gain
 is claimed. Asset-class UI columns also now fit full monetary values, with stacked phone rows instead of clipped amounts.
+
+## 294. Scanner reviews separate historical refusals from current evidence (16 November 2026)
+
+The scanner attention panel treated seven-day entry refusals as current faults and told enabled shadow/watch-only
+scanners to assign paper pairs. Display exact historical reasons and their times, then evaluate current copy eligibility
+read-only through the existing shared evidence policy. Tracked observations remain ineligible; duplicate scanner imports
+retain separate IDs and histories. Native-stop refusals are labelled as policy refusals, not stopped trades. Failed
+eligibility reads remain unverified. This is a diagnostic correction, with no admission, risk, margin or execution changes.
+The dated audit is `docs/research/scanner-attention-2026-11-16.md`.

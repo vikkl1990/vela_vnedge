@@ -21,13 +21,21 @@ export function scannerActivity(s: Scanner): {
     }
   if (s.status !== 'ok')
     return { key: 'fault', label: 'Source unavailable', detail: s.reason || s.status, tone: 'danger' }
-  if (!s.enabled && (s.books?.shadow.length ?? 0) + (s.books?.proposed.length ?? 0) > 0)
+  const noDirectSchedule = !s.enabled || s.scheduledCells === 0
+  if (noDirectSchedule && (s.books?.shadow.length ?? 0) + (s.books?.proposed.length ?? 0) > 0)
     return {
       key: 'shadow',
       label: 'Shadow allocated',
       tone: 'muted',
       detail:
         'No direct paper schedule. Shadow signals may enter paper through copying only after evidence and entry checks pass; the direct-paper switch does not control shadow copying.',
+    }
+  if (noDirectSchedule && (s.books?.tracked?.length ?? 0) > 0)
+    return {
+      key: 'watch',
+      label: 'Watch-only tracking',
+      detail: `${s.books?.tracked?.length} tracked cells; these observations do not count toward promotion. Review shadow admission in the Incubator.`,
+      tone: 'muted',
     }
   if (!s.enabled)
     return {

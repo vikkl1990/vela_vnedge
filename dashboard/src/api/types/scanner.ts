@@ -71,6 +71,8 @@ export interface Scanner {
     regime: number
     guard: number
     other: number
+    lastEntryAt?: number
+    reasons?: Array<{ action: string; symbol: string; tf: string; n: number; lastAt: number }>
   } | null
   author?: string
   file: string
@@ -121,7 +123,22 @@ export interface Scanner {
   /** Explicit (market, timeframe) pairs (decision 70); when set they replace symbols × timeframes. */
   pairs?: Array<{ symbol: string; tf: string }> | null
   /** Which books the scanner is in (decision 64): markets it trades in the account, markets it is proving in the shadow book, markets proposed for promotion. */
-  books?: { account: string[]; shadow: string[]; proposed: string[] }
+  books?: {
+    account: string[]
+    shadow: string[]
+    proposed: string[]
+    tracked?: string[]
+    candidates?: string[]
+  }
+  paperReadiness?: {
+    at: number
+    copyEnabled: boolean
+    shadow: number
+    eligible: number
+    tracked: number
+    candidates: number
+    holds: Array<{ symbol: string; tf: string; reason: string }>
+  } | null
 }
 
 export type EntrySource = 'alert' | 'alertcondition' | 'shape' | 'derived' | 'label'
