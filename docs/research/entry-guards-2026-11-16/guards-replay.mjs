@@ -12,7 +12,7 @@ const rows=data.rows.map(x=>{if(!cache.has(x.sym)){const f=path.join(dir,'m1g',`
 const groups={};
 for(const x of data.rows){const g=guardKind(x.action);groups[g]??={signals:0,statuses:{},reasons:{},sampledClosed:0,sampledNet:0,sampledMeanR:null};groups[g].signals++;}
 for(const r of rows){const g=groups[r.group];g.statuses[r.status]=(g.statuses[r.status]??0)+1;g.reasons[r.reason]=(g.reasons[r.reason]??0)+1;if(r.status==='sampled-closed'){g.sampledClosed++;g.sampledNet+=r.net;}}
-for(const [k,g] of Object.entries(groups)){const closed=rows.filter(r=>r.group===k&&r.status==='sampled-closed');g.sampledMeanR=closed.length?closed.reduce((s,r)=>s+r.r,0)/closed.length:null;}
+for(const [k,g] of Object.entries(groups)){const closed=rows.filter(r=>r.group===k&&r.status==='sampled-closed');g.sampledMeanR=closed.length?closed.reduce((s,r)=>s+r.r,0)/closed.length:null;if(!closed.length)g.sampledNet=null;}
 const result={version:2,from:data.from,asOf:data.asOf,referenceEquity,hashes,policyChangeEligible:false,promotionEligible:false,
  limitations:['Minute opens miss intraminute stops and targets; they are not tape or executable quotes.','No shared-wallet replay, competing positions, historical sizing record, funding or future author exits.','Only observed bound policies are used; missing history and resting/reclaim orders are unverified.','Sampled cash fees use the archived policy. Voucher benefits are not trading profit.','Sampled results are not a current-versus-relaxed-cooldown profit comparison.'],groups,rows};
 if(!process.env.OUT)throw Error('OUT is required');

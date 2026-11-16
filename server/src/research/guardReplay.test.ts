@@ -50,3 +50,9 @@ test('the explicit as-of cutoff cannot use later samples and refusal categories 
  assert.equal(guardKind(x.action),'cooldown');
  assert.equal(replayGuardSample(x,[bars([100])[0],bars([100])[0]],T+M,1000).status,'unverified');
 });
+test('execution latency starts at saved admission time, not the earlier journal insert',()=>{
+ const x=fixture();x.snapshot!.signalAt=T+59900;
+ const r=replayGuardSample(x,bars([100,95,90]),T+3*M,1000);
+ assert.equal(r.status,'sampled-closed');
+ if(r.status==='sampled-closed')assert.equal(r.entryAt,T+2*M);
+});
