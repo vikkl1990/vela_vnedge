@@ -7880,3 +7880,22 @@ cannot be reported as passed without a finite turnover observation. The shared e
 test used to enroll forward restorations stays independent of market availability. This avoids
 the post-restart false increase from 34 to 40 eligible cells when ZRO was absent from a market
 refresh; it does not certify a missing market or disable restoration collection.
+
+
+## 279. Explain readiness coverage where its count is shown (15 November 2026)
+
+The operator questioned the 28-trade readiness counter against a much larger
+journal. A VM audit reconciled 1,095 total closed paper trades, 51 outside the
+30-day window, 28 qualifying and 1,016 excluded within it. The 28 already retain
+15 capacity-compatible and nine proven same-size trades. A private replay of 107
+sizing exclusions found no additional same-size history; removing the suspected
+leverage guard still recovered zero. Do not relabel older fill models as current.
+
+Name the checklist's scope explicitly and place the existing exclusion and
+compatibility breakdown directly on Live control, using the same renderer as
+Incubator. Missing coverage is unavailable, not zero or a pass. Keep independent
+snapshot refresh visible. This changes presentation only: 200 qualifying closes,
+net expectancy, live locks, risk limits and evidence selection are unchanged.
+See research/readiness-count-2026-11-15.md for the measured reconciliation and
+forward collection plan. Desktop/phone rendered tests verify the 28/1,095
+reconciliation and preserve the failed 200-trade requirement.

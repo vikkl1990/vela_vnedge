@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../api/client'
 import { REFRESH } from '../api/refreshPolicy'
-import { Callout, ErrorState, Loading, Section } from './kit'
+import { Callout, EmptyState, ErrorState, Loading, Section } from './kit'
 
 import { Link } from 'react-router-dom'
 import { useHealth } from '../api/queries'
@@ -111,20 +111,7 @@ export function PolicyHealthPanel() {
           {q.data.books
             .filter((b) => b.book === 'paper' && b.exclusions)
             .map((b) => (
-              <div key={b.book} className="stack" aria-label="Paper readiness exclusions">
-                <h3>Why other paper trades do not count</h3>
-                <p className="small muted">
-                  {b.totalClosed} closed paper trades in the journal; {b.outsideWindow} are outside the{' '}
-                  {q.data.windowDays}-day readiness window. Within the window, {b.matching} qualify.
-                </p>
-                <ul>
-                  {b.exclusions!.map((item) => (
-                    <li key={item.reason}>
-                      {item.label}: <strong>{item.trades}</strong>
-                    </li>
-                  ))}
-                </ul>
-              </div>
+              <PaperReadinessHistory key={b.book} book={b} windowDays={q.data!.windowDays} />
             ))}
           <p className="small muted">
             {q.data.books.reduce((n, b) => n + b.adoptedOpen, 0)} existing positions/orders adopted at
@@ -142,5 +129,89 @@ export function PolicyHealthPanel() {
         </>
       )}
     </Section>
+  )
+}
+
+type PolicyBook = Awaited<ReturnType<typeof api.policyHealth>>['books'][number]
+
+/** Same explanation on Live control and the detailed evidence page. No second qualification rule. */
+function PaperReadinessHistory({ book: b, windowDays }: { book: PolicyBook; windowDays: number }) {
+  const capacity = b.capacityCompatible ?? 0
+  const scope = b.scopeCompatible ?? 0
+  const sizing = b.sizingCompatible ?? 0
+  return (
+    <div className="stack" aria-label="Paper readiness exclusions">
+      <h3>Why other paper trades do not count</h3>
+      <p className="small muted">
+        {b.totalClosed !== undefined && b.outsideWindow !== undefined ? (
+          <>
+            {b.totalClosed} closed paper trades in the journal; {b.outsideWindow} are outside the {windowDays}
+            -day readiness window. Within the window, {b.matching} qualify.
+          </>
+        ) : (
+          <>
+            {b.matching} trades qualify in the last {windowDays} days. Total journal coverage is unavailable.
+          </>
+        )}
+      </p>
+      <p className="small">
+        Included: {b.matching - capacity - scope - sizing} exact matches + {capacity} capacity-compatible +{' '}
+        {scope} unrelated-cell settings + {sizing} same-size replay.
+      </p>
+      {b.exclusions ? (
+        b.exclusions.length ? (
+          <ul>
+            {b.exclusions.map((item) => (
+              <li key={item.reason}>
+                {item.label}: <strong>{item.trades}</strong>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="small muted">All closed paper trades within this window qualify.</p>
+        )
+      ) : (
+        <p className="small muted">The server did not supply an exclusion breakdown.</p>
+      )}
+    </div>
+  )
+}
+
+export function ReadinessHistoryPanel() {
+  const q = useQuery({
+    queryKey: ['policy-health'],
+    queryFn: api.policyHealth,
+    refetchInterval: REFRESH.slow,
+  })
+  const book = q.data?.books.find((b) => b.book === 'paper')
+  return (
+    <div id="readiness-history">
+      <Section variant="panel" title="Readiness trade history">
+        {q.isPending ? (
+          <Loading rows={2} />
+        ) : q.isError ? (
+          <ErrorState error={q.error} onRetry={() => q.refetch()} />
+        ) : book && q.data ? (
+          <>
+            <PaperReadinessHistory book={book} windowDays={q.data.windowDays} />
+            <p className="small muted">
+              Counts refresh independently of the checklist. Shadow research and backtests do not count as
+              paper closes. Compatible history keeps its recorded returns; missing evidence is never treated
+              as a pass.
+            </p>
+            <p className="small muted">
+              To build the record: keep execution rules stable, resolve scanner and fill failures, and let
+              qualified cells trade within available margin and risk limits. Trade count alone does not
+              establish positive expectancy.
+            </p>
+            <Link to="/incubator?section=operations#incubator-evidence">
+              Inspect evidence and execution reliability
+            </Link>
+          </>
+        ) : (
+          <EmptyState title="Paper readiness history is unavailable." />
+        )}
+      </Section>
+    </div>
   )
 }

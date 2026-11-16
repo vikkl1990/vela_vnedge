@@ -69,7 +69,7 @@ export function goLive(inp: GoLiveInputs): GoLiveVerdict {
   // a % return is replayed at 1% "risk" per unit, so equity moves by exactly that return
   const sim = inp.rs.length >= 10 ? { paths, days, ...simulateSurvival(byEquity ? inp.equityPcts! : inp.rs, { tradesPerDay: inp.tradesPerDay, riskPct: byEquity ? 1 : inp.riskPct, dailyLossPct: inp.dailyLossPct, maxLossPct: inp.maxLossPct, days, paths, seed: inp.seed ?? 42 }) } : null;
   const checks: GoLiveCheck[] = [
-    { key: 'trades', label: 'Closed account trades', ok: inp.rs.length >= minTrades, value: String(inp.rs.length), need: `≥ ${minTrades}` },
+    { key: 'trades', label: 'Policy-compatible closed paper trades (last 30 days)', ok: inp.rs.length >= minTrades, value: String(inp.rs.length), need: `≥ ${minTrades}` },
     { key: 'risk', label: 'Risk per trade actually taken, median of the last 30 closed trades (% of equity)', ok: inp.riskPct <= (inp.maxRiskPct ?? 1.5), value: `${inp.riskPct.toFixed(2)}%`, need: `≤ ${inp.maxRiskPct ?? 1.5}%` },
     byEquity
       ? { key: 'expectancy', label: 'Lower 90% bound of the return per trade after costs, % of equity (margin sizing)', ok: inp.lbPct90 != null && inp.lbPct90 > 0, value: inp.lbPct90 == null ? 'no band yet' : `${inp.lbPct90 >= 0 ? '+' : ''}${inp.lbPct90.toFixed(3)}%`, need: '> 0' }
