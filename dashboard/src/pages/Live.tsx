@@ -8,6 +8,7 @@ import { liveStatus } from '../lib/liveStatus'
 import { mlState } from '../lib/mlPresentation'
 
 import { BookChip } from '../components/kit/books'
+import { ReadinessHistoryPanel } from '../components/PolicyHealth'
 
 import '../styles/pages/live.css'
 
@@ -34,7 +35,7 @@ const plain = (v: number) => String(Number(v.toFixed(4)))
 
 /** Where to go to fix a go-live check. Keys are the server's; anything unknown goes to the gates page. */
 const FIX: Record<string, { to?: string; text: string }> = {
-  trades: { to: '/learn', text: 'See the record on Learn' },
+  trades: { to: '#readiness-history', text: 'See counted trades and exclusions below' },
   risk: { to: '/settings', text: 'Review sizing in Settings' },
   expectancy: { to: '/learn', text: 'See the edge on Learn' },
   survival: { to: '/learn', text: 'See the simulation on Learn' },
@@ -71,6 +72,7 @@ export function Live() {
         allowProduction={exec?.allowProduction}
       />
       <ChecksSection golive={learning.data?.golive} loading={learning.isLoading} failed={learning.isError} />
+      <ReadinessHistoryPanel />
       <GatesSummary q={gates} />
       <ParitySection
         paper={paper}
