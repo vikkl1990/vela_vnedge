@@ -17,7 +17,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node: ['22.x', '24.x']   # native TypeScript needs >= 22.18; 24 is the current LTS line
+        node: ['22.x', '24.22.3']   # production LTS pinned in .node-version
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -45,7 +45,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '24.x'
+          node-version-file: '.node-version'
           cache: npm
       - run: npm ci
       - name: Lint
@@ -82,3 +82,5 @@ jobs:
         run: sed -e 's#__ROOT__#/tmp/vnedge#g' -e 's#__NODE_DIR__#/usr/local/bin#g' -e 's#__HOME__#/tmp#g' ops/launchd/com.vnedge.server.plist > /tmp/t.plist && plutil -lint /tmp/t.plist
       - name: Shell syntax
         run: zsh -n ops/install-launchd.sh && zsh -n ops/uninstall-launchd.sh && node -e "require('./ops/pm2.config.cjs')"
+      - name: VM maintenance scripts
+        run: bash -n ops/service-entrypoint.sh && python3 ops/test_private_data.py

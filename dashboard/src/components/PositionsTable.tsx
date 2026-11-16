@@ -319,9 +319,15 @@ export function PositionsTable({ positions, compact = false }: { positions: Posi
           ] as Column<Position>[])),
       {
         key: 'age',
-        header: 'Opened',
+        header: 'Filled',
         value: (p) => p.entryAt,
-        render: (p) => <Time t={p.entryAt} mode="ago" className="muted small" />,
+        render: (p) => (
+          <div>
+            <Time t={p.entryAt} mode="datetime" className="small" />
+            <br />
+            <Time t={p.entryAt} mode="ago" className="muted small" />
+          </div>
+        ),
       },
       {
         key: 'actions',
@@ -361,6 +367,14 @@ export function PositionsTable({ positions, compact = false }: { positions: Posi
               </Link>
               <ExecutionState p={p} />
               <dl className="position-metrics">
+                <div>
+                  <dt>Filled</dt>
+                  <dd>
+                    <Time t={p.entryAt} mode="datetime" />
+                    <br />
+                    <Time t={p.entryAt} mode="ago" />
+                  </dd>
+                </div>
                 <div>
                   <dt>Unrealized P&L (USD)</dt>
                   <dd>

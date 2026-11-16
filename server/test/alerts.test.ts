@@ -56,11 +56,11 @@ test('telegramFromEnv prefers the environment and treats blanks as unconfigured;
   assert.deepEqual(telegramFromEnv({ botToken: 'cfg', chatId: '1' }, { TELEGRAM_BOT_TOKEN: 'env', TELEGRAM_CHAT_ID: '2' }), { botToken: 'env', chatId: '2' });
   assert.equal(telegramFromEnv(null, { TELEGRAM_BOT_TOKEN: 'env' }), null, 'a token without a chat id is not a target');
   let url = '', body: any = null;
-  const ok = telegramTransport({ botToken: '123:SECRET', chatId: '42' }, (async (u: string, init: any) => { url = String(u); body = JSON.parse(init.body); return new Response('{}', { status: 200 }); }) as any);
+  const ok = telegramTransport({ botToken: '123:SECRET', chatId: '42' }, (async (u: string, init: any) => { url = String(u); body = JSON.parse(init.body); return new Response('{"ok":true,"result":{}}', { status: 200 }); }) as any);
   await ok('hi');
   assert.equal(url, 'https://api.telegram.org/bot123:SECRET/sendMessage'); assert.equal(body.chat_id, '42'); assert.equal(body.text, 'hi');
   const bad = telegramTransport({ botToken: '123:SECRET', chatId: '42' }, (async () => { throw new Error('fetch failed https://api.telegram.org/bot123:SECRET/sendMessage'); }) as any);
-  await assert.rejects(bad('x'), (e: Error) => !e.message.includes('SECRET') && /redacted/.test(e.message));
+  await assert.rejects(bad('x'), (e: Error) => !e.message.includes('SECRET') && /unavailable/.test(e.message));
 });
 
 // ---- monitor conditions with fake dependencies ----

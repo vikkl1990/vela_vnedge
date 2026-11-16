@@ -1,0 +1,7 @@
+[Service]
+UMask=0077
+Environment="PATH=@RUNTIME@/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+ExecStart=
+ExecStart=/usr/bin/bash /opt/vnedge/ops/service-entrypoint.sh vnedge @RUNTIME@/bin/node --no-warnings=ExperimentalWarning src/index.ts
+StandardOutput=journal
+StandardError=journal

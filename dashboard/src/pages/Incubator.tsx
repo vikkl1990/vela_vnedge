@@ -329,8 +329,16 @@ export default function Incubator() {
                   <FunnelStage
                     n="4"
                     label="In the account"
-                    value={`${d.fleet} / ${d.config.promote.maxFleet}`}
-                    sub={`${d.promotionsThisWeek}/${d.config.promote.maxPerWeek} promotions this week`}
+                    value={
+                      d.config.promote.countLimitsEnabled === false
+                        ? `${d.fleet} · no count cap`
+                        : `${d.fleet} / ${d.config.promote.maxFleet}`
+                    }
+                    sub={
+                      d.config.promote.countLimitsEnabled === false
+                        ? `${d.promotionsThisWeek} promotions this week · evidence still required`
+                        : `${d.promotionsThisWeek}/${d.config.promote.maxPerWeek} promotions this week`
+                    }
                     on={tab === 'account'}
                     onClick={() => setSection('account')}
                   />

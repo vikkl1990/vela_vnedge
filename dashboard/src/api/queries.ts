@@ -195,7 +195,9 @@ export const usePositions = () =>
     queryKey: qk.positions,
     queryFn: api.positions,
     staleTime: LIVE_STALE,
-    refetchInterval: streamFallback,
+    // Reconcile the complete list even while per-position SSE events keep arriving.
+    refetchInterval: REFRESH.live,
+    refetchOnMount: 'always',
     retry: 1,
   })
 export const useTrades = (q: TradeQuery = {}) =>

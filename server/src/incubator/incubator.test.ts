@@ -200,6 +200,19 @@ test('a cohort carried by one market is not promoted', () => {
   assert.match(cohortVerdict(c, g).reasons.join(' '), /1\/5 markets positive/);
 });
 
+test('qualified cohort proposals are not truncated by a disabled weekly count quota',t=>{
+  const {db,store,cfg,insertTrade}=world();t.after(()=>db.db.close());
+  cfg.incubator.gate.pool='cohort';cfg.incubator.promote.maxPerWeek=0;cfg.incubator.promote.countLimitsEnabled=false;
+  const markets=['ETHUSD','SOLUSD','XRPUSD','ADAUSD','LINKUSD'];
+  for(const symbol of markets){
+    store.move({scannerId:'cohort',symbol,tf:'15m'},'shadow','test',null,null,T0);
+    for(const trade of series(8,20,2,2,T0+1000))insertTrade(2,'cohort',symbol,trade);
+  }
+  db.kvSet('risk.marketsToday',{enabled:true,at:T0+21*DAY,markets:markets.map(symbol=>({symbol,allowed:true,reasons:[],turnoverUsd:1e9}))});
+  const report=evaluate(store,cfg,T0+21*DAY);
+  assert.equal(report.proposed.length,5,JSON.stringify(report));
+});
+
 test('a cohort that fails on a full pooled sample retires together', () => {
   const { store, cfg, insertTrade, screen } = world();
   const markets = ['m1', 'm2', 'm3', 'm4', 'm5'];
@@ -277,6 +290,9 @@ test('decision 79: an enabled scanner without pairs is not in the fleet, and a s
   assert.equal(store.get().scanners.b, undefined, 'the refused save changed nothing');
   store.setScanner('b', { enabled: true, pairs: [{ symbol: 'SOLUSD', tf: '1h' }] });
   assert.equal(livePairs(store.get()).length, 3);
+  store.update({incubator:{...store.get().incubator,promote:{...store.get().incubator.promote,countLimitsEnabled:false}}});
+  store.setScanner('b',{enabled:true,pairs:[{symbol:'SOLUSD',tf:'1h'},{symbol:'XRPUSD',tf:'1h'}]});
+  assert.equal(livePairs(store.get()).length,4,'disabled allocation quotas do not block the config save');
 });
 
 test('decision 88: the screen judges the pass on the training part and demands a positive holdout it never looked at', () => {
