@@ -11,7 +11,7 @@ import {
   useStats,
 } from '../api/queries'
 import { MarketCanvas } from '../components/MarketCanvas'
-import { PositionsTable } from '../components/PositionsTable'
+import { PaperPositions } from '../components/PaperPositions'
 import { ErrorState, Loading, Pill, Section, Time } from '../components/kit'
 import { fmtMoney, fmtPct, fmtPnl, fmtPrice, pnlClass } from '../lib/format'
 import { patchSearch } from '../lib/researchNavigation'
@@ -333,13 +333,7 @@ export function Terminal() {
           }
           pad={false}
         >
-          {positions.isLoading ? (
-            <Loading kind="table" rows={2} cols={7} />
-          ) : positions.isError ? (
-            <ErrorState error={positions.error} onRetry={() => positions.refetch()} />
-          ) : (
-            <PositionsTable positions={visiblePositions} compact />
-          )}
+          <PaperPositions query={positions} visiblePositions={visiblePositions} compact />
         </Section>
         <section className="terminal-panel terminal-setups">
           <div className="terminal-panel-title">
