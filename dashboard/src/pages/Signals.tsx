@@ -1,3 +1,6 @@
+import { MarketScopeNote } from '../components/MarketScopeNote'
+import { setMarketScope, useMarketScope } from '../lib/marketScope'
+import { useClassOf } from '../lib/assetClass'
 import { useCallback, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useHealth, useMarkets, useScannerIndex, useSignalActivity, useSignals } from '../api/queries'
@@ -256,9 +259,16 @@ export function Signals() {
   )
   const signals = useSignals(q)
 
+  const [marketScope] = useMarketScope()
+  const classOf = useClassOf()
+  // the scope narrows by asset class unless the reader has picked one market, which is a stronger choice
+  const scoped = marketScope !== '' && !symbol
   const rows = useMemo(
-    () => (signals.data ?? []).filter((s) => !side || s.side === side),
-    [signals.data, side],
+    () =>
+      (signals.data ?? []).filter(
+        (s) => (!side || s.side === side) && (!scoped || classOf(s.symbol).group === marketScope),
+      ),
+    [signals.data, side, scoped, marketScope, classOf],
   )
   const symbolOptions = useMemo(() => {
     const names = new Set<string>((markets.data ?? []).map((m) => m.symbol))
@@ -268,12 +278,16 @@ export function Signals() {
   }, [markets.data, signals.data, symbol])
 
   const outcomes = useMemo(() => summarizeOutcomes(rows), [rows])
-  const filtered = Boolean(scanner || symbol || tf || kind || side)
-  const clearFilters = () => set({ scanner: null, symbol: null, tf: null, kind: null, side: null })
+  const filtered = Boolean(scanner || symbol || tf || kind || side || scoped)
+  const clearFilters = () => {
+    set({ scanner: null, symbol: null, tf: null, kind: null, side: null })
+    setMarketScope('')
+  }
   const pending = recovery?.pending ?? 0
 
   return (
     <div className="page signals-page">
+      {scoped && <MarketScopeNote scope={marketScope} shown={rows.length} of={(signals.data ?? []).length} />}
       <RouteHeader
         sub="Every alert the account's scanners raised, and what the account did with it. View only: nothing here can open a trade. Shadow-book runs are judged in the Incubator."
         actions={

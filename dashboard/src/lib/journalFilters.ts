@@ -1,5 +1,6 @@
 import type { TradeQuery } from '../api/types'
 import { isAssetGroup, isAssetSector } from '../../../shared/assetClass.ts'
+import type { MarketScope } from './marketScope.ts'
 
 const DAY = 86_400_000
 export const JOURNAL_PAGE_SIZE = 50
@@ -19,13 +20,16 @@ function utcDate(value: string): number | undefined {
 }
 
 /** Closing dates use UTC, matching Daily. The selected end day is inclusive. */
-export function journalFilters(params: URLSearchParams, now: number) {
+export function journalFilters(params: URLSearchParams, now: number, scope: MarketScope = '') {
   const scanner = params.get('scanner') ?? '',
     symbol = params.get('symbol') ?? ''
   const reason = params.get('reason') ?? '',
     tf = params.get('tf') ?? '',
     side = params.get('side') ?? ''
-  const group = params.get('group') ?? '',
+  // the page's own choice wins ('all' is a choice); with none, the market scope applies
+  const rawGroup = params.get('group')
+  const group = rawGroup === null ? scope : rawGroup === 'all' ? '' : rawGroup,
+    groupFromScope = rawGroup === null && scope !== '',
     sector = params.get('sector') ?? ''
   const period = params.get('period') || 'all'
   const start = params.get('start') ?? '',
@@ -68,7 +72,22 @@ export function journalFilters(params: URLSearchParams, now: number) {
     from,
     to,
   }
-  return { scanner, symbol, reason, tf, side, group, sector, period, start, end, page, query, error }
+  return {
+    scanner,
+    symbol,
+    reason,
+    tf,
+    side,
+    group,
+    groupFromScope,
+    sector,
+    period,
+    start,
+    end,
+    page,
+    query,
+    error,
+  }
 }
 
 export function updateJournalFilters(params: URLSearchParams, updates: Record<string, string>) {

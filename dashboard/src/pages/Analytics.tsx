@@ -1,3 +1,5 @@
+import { MarketScopeNote } from '../components/MarketScopeNote'
+import { useMarketScope } from '../lib/marketScope'
 import { useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
@@ -291,7 +293,8 @@ export function Analytics() {
   const [params, setParams] = useSearchParams()
   const effective = new URLSearchParams(params)
   if (!effective.has('period')) effective.set('period', '7d')
-  const f = journalFilters(effective, useNow(60_000))
+  const [marketScope] = useMarketScope()
+  const f = journalFilters(effective, useNow(60_000), marketScope)
   const { scanner, symbol, tf, side, reason, from, to, group: assetGroup, sector: assetSector } = f.query
   const filter = { scanner, symbol, tf, side, reason, from, to, group: assetGroup, sector: assetSector }
   const update = (v: Record<string, string>) => setParams(updateJournalFilters(effective, v))
@@ -334,10 +337,18 @@ export function Analytics() {
     setSearch('')
   }
   const filtered = Boolean(
-    f.symbol || f.tf || f.side || f.reason || f.scanner || f.group || f.sector || f.period !== '7d',
+    f.symbol ||
+    f.tf ||
+    f.side ||
+    f.reason ||
+    f.scanner ||
+    (f.group && !f.groupFromScope) ||
+    f.sector ||
+    f.period !== '7d',
   )
   return (
     <div className="page performance-page">
+      {f.groupFromScope && <MarketScopeNote scope={marketScope} />}
       <RouteHeader
         sub="Paper account and shadow research over one closing period, after costs. Then see which markets, timeframes and scanners add to it."
         actions={
@@ -389,10 +400,10 @@ export function Analytics() {
             <select
               className="select"
               aria-label="Performance asset class"
-              value={f.group}
+              value={f.group || 'all'}
               onChange={(e) => update({ group: e.target.value })}
             >
-              <option value="">All classes</option>
+              <option value="all">All classes</option>
               {ASSET_GROUPS.map((g) => (
                 <option key={g.key} value={g.key} title={g.hint}>
                   {g.label}

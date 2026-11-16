@@ -1,3 +1,5 @@
+import { MarketScopeNote } from '../components/MarketScopeNote'
+import { useMarketScope } from '../lib/marketScope'
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useRadar } from '../api/queries'
@@ -106,7 +108,10 @@ export default function Radar() {
   // the filters live in the URL so a link, Back and Forward all keep them (defaults stay out of it)
   const { params, set } = useResearchFilters()
   const hours = Number(choice(params.get('hours'), ['6', '24', '72', '168'], '24'))
-  const group = choice(params.get('group'), ['all', ...ASSET_GROUPS.map((g) => g.key as string)], 'all')
+  const [marketScope] = useMarketScope()
+  const ownGroup = params.get('group')
+  const group = choice(ownGroup, ['all', ...ASSET_GROUPS.map((g) => g.key as string)], marketScope || 'all')
+  const groupFromScope = ownGroup === null && marketScope !== ''
   const classOf = useClassOf()
   const sort = choice(params.get('sort'), ['turnover', 'signals', 'netR', 'pairs'], 'turnover')
   const onlyActive = params.get('active') !== '0'
@@ -148,6 +153,7 @@ export default function Radar() {
       .reduce((a, r) => a + r.slots, 0)
   return (
     <div className="page radar-page">
+      {groupFromScope && <MarketScopeNote scope={marketScope} />}
       <RouteHeader
         sub="Where the scanners sit and what they produce, for every market and timeframe. Counts combine account and ordinary shadow trades; experimental plans and unfilled orders are left out."
         actions={

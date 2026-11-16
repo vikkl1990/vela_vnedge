@@ -8093,3 +8093,17 @@ malformed-book and risk refusals remain terminal. Exchange executors do not use 
 No capital, risk, evidence, scanner-reading, fee or admission threshold changes. A wait creates no fill, fee or promotion evidence.
 The audit is in `docs/research/paper-copy-fills-2026-11-16/`. Regression tests cover the cancelled-order defect, causal recovery,
 expiry, restart, unchanged economics/policy, pilot disablement and executor isolation. No profit uplift is claimed from a data-gap fix.
+
+## 291. A market scope: one asset class that follows you between lists (16 November 2026)
+
+Asset class filters existed on each page (Journals and Performance in the URL, Radar's menu, the Workspace watchlist), so
+looking at only the meme coins meant choosing it again on every page. The top bar now has a market scope, remembered in this
+browser, that Journals, Performance, Radar and Signals use as their default asset class. A phone gets it in the menu drawer.
+
+It is a default, not a hidden filter. A page's own asset-class choice always wins, and "All classes" is a choice, written
+as `group=all`, not an absence. A page narrowed by the scope says so at the top with the way out ("Showing Meme only, from your
+market scope · 0 of 206 · Show all markets"), the select is lit while a class is chosen, and the Signals empty state explains
+the scope instead of claiming no alerts arrived. A stored value that is not a known class means every market, so a stale or
+edited value cannot hide everything. "Reset filters" on Performance does not count the scope as a filter the page set.
+
+Display only. It changes which rows a page shows, never what a scanner, gate or account does, and the Workspace watchlist and Home keep their own controls.
