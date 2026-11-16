@@ -7,7 +7,7 @@ import { EventEmitter } from 'node:events';
 import type { WsFunding, WsMark, WsTicker, WsQuote } from '../delta/ws.ts';
 
 export interface MarkState { markPrice: number; at: number; bestBid: number | null; bestAsk: number | null; quoteAt?: number | null; quoteExchangeAt?: number | null; quoteSource?: QuoteSource | null; bidSize?: number | null; askSize?: number | null; bookAt?: number | null }
-type QuoteSource = 'ob_l1' | 'ticker' | 'mark' | 'manual';
+type QuoteSource = 'ob_l1' | 'rest_depth' | 'ticker' | 'mark' | 'manual';
 interface QuoteState { bid: number; ask: number; at: number; exchangeAt: number | null; source: QuoteSource; bidSize: number | null; askSize: number | null; bookAt: number | null }
 /** Allowance for clock skew between Delta and this host when judging a quote by its exchange time. */
 export const QUOTE_SKEW_MS = 2000;

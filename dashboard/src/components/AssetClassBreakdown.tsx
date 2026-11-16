@@ -38,7 +38,9 @@ export function AssetClassBreakdown({
     >
       <div className="class-row class-row-head" role="row">
         <span role="columnheader">{kind === 'group' ? 'Class' : 'Sector'}</span>
-        <span role="columnheader">Share</span>
+        <span role="columnheader" className="class-share-heading">
+          Share
+        </span>
         <span role="columnheader" className="mono">
           R / trade
         </span>
