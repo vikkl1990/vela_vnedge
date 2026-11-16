@@ -1,4 +1,5 @@
 import { NavLink, useLocation } from 'react-router-dom'
+import { MarketScopeSelect } from './MarketScopeSelect'
 import { useExecution } from '../../api/queries'
 import { bookControlsForPath } from '../../lib/bookNavigation'
 import { LOCAL_TZ, fmtMoney, fmtPnl, pnlClass } from '../../lib/format'
@@ -118,6 +119,7 @@ export function Topbar({
 
       {controls.scope && <BookSwitch liveState={live.label} />}
       {controls.mlLens && <MlLensToggle />}
+      <MarketScopeSelect />
 
       <button
         type="button"

@@ -1,0 +1,46 @@
+/* ---------- market scope: the one asset-class choice that follows you between pages ---------- */
+.market-scope {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+.market-scope-label {
+  color: var(--text-muted, inherit);
+}
+.market-scope[data-active='true'] .select {
+  border-color: var(--accent, currentColor);
+  font-weight: 700;
+}
+.scope-note {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 6px 10px;
+  margin-bottom: 10px;
+  border: 1px solid var(--accent, var(--border));
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  font-size: 12.5px;
+}
+
+/* One copy in the top bar on a desktop, one in the drawer on a phone: never both, never neither. */
+.sidebar .market-scope {
+  display: none;
+}
+@media (max-width: 900px) {
+  .topbar .market-scope {
+    display: none;
+  }
+  .sidebar .market-scope {
+    display: flex;
+    padding: 8px 12px;
+  }
+}
+/* the word "Markets" goes first when the top bar is tight */
+@media (max-width: 1280px) {
+  .topbar .market-scope-label {
+    display: none;
+  }
+}
