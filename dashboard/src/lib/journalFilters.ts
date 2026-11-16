@@ -1,5 +1,5 @@
 import type { TradeQuery } from '../api/types'
-import { isAssetGroup, isAssetSector } from '../../../shared/assetClass'
+import { isAssetGroup, isAssetSector } from '../../../shared/assetClass.ts'
 
 const DAY = 86_400_000
 export const JOURNAL_PAGE_SIZE = 50
