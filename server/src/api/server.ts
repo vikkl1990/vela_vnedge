@@ -233,6 +233,7 @@ export class ApiServer {
     this.add('GET', '/api/markets', async () => a.markets());
     // every market the bot has seen or traded with its asset group and sector, so each page can show and filter by class
     this.add('GET', '/api/markets/classes', async () => a.assetClasses());
+    this.add('GET', '/api/markets/movers', async () => a.moversNow());
     this.add('GET', '/api/ticker', async (_r, _s, _p, url) => {
       const symbol = url.searchParams.get('symbol') ?? a.config.get().symbols[0];
       const price = a.paper.mark(symbol) ?? a.candles.lastPrice(symbol);
