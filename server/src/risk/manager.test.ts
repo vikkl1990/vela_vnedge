@@ -47,6 +47,26 @@ test('UTC day / ISO week boundaries', () => {
   assert.equal(isWeekend(T0), false);
 });
 
+test('manual resume preserves loss-window baselines, losses, scanner cooldowns and configuration', t => {
+  const {mgr,entry,closeAt,cfg}=setup(t,{cooldownAfterLosses:1,cooldownMinutes:60,maxDailyLossPct:15,maxWeeklyLossPct:30});
+  closeAt(entry().position!.id,95);mgr.kill('operator pause');
+  const before=mgr.state(),config=JSON.stringify(cfg);
+  assert.equal(before.scanners.s.inCooldown,true);
+  assert.deepEqual(mgr.resumeManual(),{ok:true});
+  const after=mgr.state();
+  assert.equal(after.manualHalt,null);assert.deepEqual(after.day,before.day);assert.deepEqual(after.week,before.week);
+  assert.deepEqual(after.scanners,before.scanners);assert.equal(JSON.stringify(cfg),config);
+  assert.match(entry().reason!,/cooldown/);
+});
+
+test('manual resume cannot clear a tripped loss limit', t => {
+  const {mgr,entry,closeAt}=setup(t,{maxDailyLossPct:1,maxWeeklyLossPct:30});
+  closeAt(entry().position!.id,90);mgr.kill('operator pause');
+  const before=mgr.state();
+  assert.equal(before.day.tripped,true);assert.equal(mgr.resumeManual().ok,false);
+  const after=mgr.state();assert.deepEqual(after.day,before.day);assert.deepEqual(after.week,before.week);assert.deepEqual(after.manualHalt,before.manualHalt);
+});
+
 test('daily kill switch trips on the day loss, blocks entries and resets when the UTC day rolls', t => {
   const { mgr, entry, closeAt, clock } = setup(t, { maxDailyLossPct: 15, maxWeeklyLossPct: 30 });
   const p = entry().position!;

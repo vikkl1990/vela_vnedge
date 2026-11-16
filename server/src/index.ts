@@ -28,6 +28,7 @@ async function shutdown(sig: string) {
   const hardExit = setTimeout(() => { log.error('shutdown timed out, exiting'); process.exit(1); }, app.config.get().ops.shutdownTimeoutMs + 10_000);
   hardExit.unref();
   api.close();
+  await app.telegram.stop();
   const r = await app.ops.shutdown(() => app.stop()); // drains in-flight script runs, stops timers, flushes the log
   log.info(`shutdown complete (${r.drained ? 'drained' : 'timed out'} after ${r.waitedMs} ms)`);
   process.exit(0);

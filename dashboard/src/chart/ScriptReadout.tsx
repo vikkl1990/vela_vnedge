@@ -60,7 +60,6 @@ export function ScriptReadout({
                   </td>
                   <td>
                     {Object.entries(r.plots)
-                      .slice(0, 6)
                       .map(
                         ([k, v]) =>
                           `${k}: ${v == null ? 'missing' : v.toLocaleString(undefined, { maximumFractionDigits: 5 })}`,

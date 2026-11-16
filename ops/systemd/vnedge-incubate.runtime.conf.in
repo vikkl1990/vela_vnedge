@@ -1,0 +1,7 @@
+[Service]
+UMask=0077
+Environment="PATH=@RUNTIME@/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+ExecStart=
+ExecStart=/usr/bin/bash /opt/vnedge/ops/service-entrypoint.sh incubate @RUNTIME@/bin/node --no-warnings=ExperimentalWarning --max-old-space-size=3072 src/cli/incubate.ts
+StandardOutput=journal
+StandardError=journal

@@ -234,7 +234,13 @@ export class Db {
 
   constructor(file = path.join(DATA_DIR, 'vnedge.db')) {
     this.file = file;
-    if (file !== ':memory:') fs.mkdirSync(path.dirname(file), { recursive: true });
+    if (file !== ':memory:') {
+      fs.mkdirSync(path.dirname(file), { recursive: true, mode:0o700 });
+      // SQLite creates sidecars with the database's permissions. Protect the
+      // database before enabling WAL, including CLI use outside systemd.
+      const fd=fs.openSync(file,fs.constants.O_CREAT|fs.constants.O_RDWR|fs.constants.O_NOFOLLOW,0o600);
+      try { fs.fchmodSync(fd,0o600); } finally { fs.closeSync(fd); }
+    }
     this.db = new DatabaseSync(file);
     // busy_timeout: the incubator's daily job writes from its own process while the bot runs
     this.db.exec('PRAGMA busy_timeout = 10000; PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON;');
@@ -329,11 +335,14 @@ export class Db {
    * then deletes snapshots in `dir` older than `keepDays`. Names: `vnedge-YYYYMMDD-HHMMSS.db`.
    */
   backup(dir: string, keepDays: number, now = Date.now()): BackupResult {
-    fs.mkdirSync(dir, { recursive: true });
+    fs.mkdirSync(dir, { recursive: true, mode:0o700 });
     const stamp = new Date(now).toISOString().replace(/[-:]/g, '').replace('T', '-').slice(0, 15);
     const file = path.join(dir, `vnedge-${stamp}.db`);
     const t0 = Date.now();
     try { fs.rmSync(file, { force: true }); } catch { /* ignore */ }
+    // An empty, private destination is accepted by VACUUM INTO and prevents a
+    // readable snapshot even if an operator's shell has umask 022.
+    fs.closeSync(fs.openSync(file,'wx',0o600));
     try { this.db.exec(`VACUUM INTO '${file.replace(/'/g, "''")}'`); }
     catch (e) { this.noteError(e); throw e; }
     const bytes = fs.statSync(file).size;
