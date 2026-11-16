@@ -8056,3 +8056,24 @@ the current reader and raw-run reading comparisons; integration tests verify tha
 the subsequent full exit closes it. The proposer requires version 2 grades, an explicit pass and replicability, zero run
 errors and successful coverage of each requested cell. Missing or stale grades cannot activate the historical shortlist.
 The accidental absolute `server/node_modules` symlink is removed. These fixes activate no plans and change no account policy.
+
+## 287. Size-based market access and asset-aware research (16 November 2026)
+
+The user requested a minimal turnover floor after the audit found $50k execution discovery versus $1M shadow, $2M copy and
+$5M full-promotion floors. Align the latter three with the existing execution floor only in paper mode with mandatory
+fresh actual-size depth, no exemptions and the existing cost ceiling. The guarded, atomic migration changes no other
+setting. Five compatible closes and positive net R for copying, all full-promotion statistics, prospective restoration
+rules and risk caps remain. Same-snapshot copy eligibility improves from 33 to 56; this is not a profit claim.
+
+Asset classes now inform research ordering through matching-policy training results from other markets in the same class
+and timeframe. Held-out outcomes and the target market are excluded; sparse estimates shrink and regular exploration
+remains. No class receives an entry veto or automatic promotion. Exact cell masks prevent research batches expanding into
+unrequested scanner-market combinations. Shadow scheduling completes the existing copy sample before the larger promotion
+sample, regardless of P&L; concurrency, account priority and stale-signal deadlines remain unchanged.
+
+The frequency estimate uses the full screen trade count over its full duration. OIL's class is energy even when tagged
+metal by Delta; authoritative non-meme tags override name fallbacks. Explicit non-crypto research configuration is honoured,
+while the VM remains crypto-only. The Pair Agents view explains classes and research selection.
+
+See `docs/research/asset-class-allocation-2026-11-16/` for the measured funnel and 54 public depth requests: 50/53 readable
+samples passed at $250 and $750, 46/53 at $1,500. Actual entry checks still refuse stale, insufficient or costly books.

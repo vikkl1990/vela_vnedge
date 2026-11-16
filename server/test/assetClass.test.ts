@@ -57,6 +57,14 @@ test('stocks, metals and oil are their own group', () => {
   assert.equal(classifySymbol('BNBUSD').group, 'large_alts');
 });
 
+test('authoritative non-meme tags override the fallback names; OIL stays energy despite Delta metal tag',()=>{
+ assert.equal(c('AIXBTUSD',['ai']).group,'alts');
+ assert.equal(c('VIRTUALUSD',['ai']).sector,'ai');
+ assert.equal(c('OILUSD',['metal'],'tradfi').sector,'energy');
+ assert.equal(c('NEWUSD',[],' TRADFI ').group,'tradfi');
+ assert.equal(c('NEWUSD',[' Meme ']).group,'meme');
+});
+
 test('anything that is not a USD perpetual symbol is Other', () => {
   assert.deepEqual(classifySymbol('FOO'), { group: 'other', sector: 'other', tags: [] });
   assert.equal(classifySymbol('').group, 'other');

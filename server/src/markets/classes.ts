@@ -15,14 +15,14 @@ export function registerProductSpecs(products: Iterable<{ symbol: string; produc
   const next = new Map<string, MarketSpecs>();
   for (const p of products) {
     const s = p.product_specs;
-    next.set(p.symbol, { tags: Array.isArray(s?.tags) ? s.tags.filter(t => typeof t === 'string') : [], topTag: typeof s?.top_tag === 'string' ? s.top_tag : null });
+    next.set(p.symbol.toUpperCase(), { tags: Array.isArray(s?.tags) ? s.tags.filter(t => typeof t === 'string') : [], topTag: typeof s?.top_tag === 'string' ? s.top_tag : null });
   }
   if (!next.size) return;
   specs.clear();
   for (const [k, v] of next) specs.set(k, v);
 }
 
-export const classOf = (symbol: string): AssetClass => classifySymbol(symbol, specs.get(symbol));
+export const classOf = (symbol: string): AssetClass => classifySymbol(symbol, specs.get(symbol.toUpperCase()));
 
 /** The symbols the trade history knows about that match a group and/or sector filter. */
 export function symbolsMatching(db: Db, group?: string, sector?: string): string[] {

@@ -10,6 +10,8 @@ import { isCrypto, type MarketVerdict } from '../risk/marketGate.ts';
 import type { IncubatorStore } from './store.ts';
 import type { ScreenQueue } from './screenQueue.ts';
 import type { ScreenResult } from './cycle.ts';
+import { classOf } from '../markets/classes.ts';
+import { researchFits, researchCellKey, type ResearchFit } from './researchFit.ts';
 
 const DAY = 86400_000, KEY = 'incubator.pairAgents', ACTOR = 'pair-agents';
 const cellKey = (id: string, symbol: string, tf: string) => JSON.stringify([id, symbol, tf]);
@@ -26,7 +28,7 @@ export function recordCoverage(db: Db, scannerId: string, symbol: string, tf: st
 }
 
 interface State { day: string; used: number; attempts: Record<string,number>; handled: string[]; nextAt: number; lastAt: number; status: string }
-export interface CoverageMarket { symbol: string; turnover: number; eligible: boolean; reasons: string[]; account: number; shadow: number; tracked: number; candidates: number; screened: number; passed: number; due: number; cells: number }
+export interface CoverageMarket { symbol: string; group: string; sector: string; turnover: number; eligible: boolean; reasons: string[]; account: number; shadow: number; tracked: number; candidates: number; screened: number; passed: number; due: number; cells: number }
 interface Market { symbol: string; description?: string; volume24h: number; price: number }
 export interface PairAgentDeps {
   db: Db; cfg: () => AppConfig; store: IncubatorStore; queue: ScreenQueue;
@@ -61,17 +63,21 @@ export class PairAgents {
     const evidence=new Map(db.all<{scanner_id:string;symbol:string;tf:string;at:number;signature:string;result:string}>('SELECT * FROM pair_screen_evidence')
       .filter(r=>r.at<=now && r.at>now-settings.refreshDays*DAY && r.signature===signatures.get(`${r.scanner_id}|${r.tf}`))
       .map(r=>[cellKey(r.scanner_id,r.symbol,r.tf),r]));
+    const fitFor=researchFits([...evidence.values()].flatMap(r=>{
+      try{return [{scannerId:r.scanner_id,symbol:r.symbol,tf:r.tf,result:JSON.parse(r.result) as ScreenResult}];}catch{return [];}
+    }));
     const pairs=new Map(store.list().map(r=>[cellKey(r.scannerId,r.symbol,r.tf),r]));
     const marketAttempts=new Map<string,number>();
     const active=new Set(['live','demote_proposed','shadow','proposed','tracked']);
-    const due: Array<{id:string;symbol:string;tf:string;attempt:number;turnover:number}>=[];
-    const markets:CoverageMarket[]=(await this.deps.markets()).filter(m=>/^[A-Z0-9]+USD$/.test(m.symbol)&&isCrypto(m.description)).map(m=>{
+    const due: Array<{id:string;symbol:string;tf:string;attempt:number;turnover:number;fit:ResearchFit}>=[];
+    const markets:CoverageMarket[]=(await this.deps.markets()).filter(m=>/^[A-Z0-9]+USD$/.test(m.symbol)&&(c.risk.marketGate?.cryptoOnly===false||isCrypto(m.description))).map(m=>{
       const verdict=this.deps.verdict(m.symbol,now), reasons=[...(verdict?.allowed===false?verdict.reasons:[])];
       if(c.universe.exclude?.includes(m.symbol))reasons.push('Excluded by operator');
       if(!(m.price>0&&Number.isFinite(m.price)))reasons.push('No valid market price');
       if(!Number.isFinite(m.volume24h)||m.volume24h<(c.risk.marketGate?.minTurnoverUsd??c.incubator.minTurnoverUsd))reasons.push('Below market turnover floor');
       if(c.risk.marketGate?.enabled&&!verdict)reasons.push('Waiting for market assessment');
-      const row:CoverageMarket={symbol:m.symbol,turnover:m.volume24h,eligible:!reasons.length,reasons,account:0,shadow:0,tracked:0,candidates:0,screened:0,passed:0,due:0,cells:scanners.length*tfs.length};
+      const {group,sector}=classOf(m.symbol);
+      const row:CoverageMarket={symbol:m.symbol,group,sector,turnover:m.volume24h,eligible:!reasons.length,reasons,account:0,shadow:0,tracked:0,candidates:0,screened:0,passed:0,due:0,cells:scanners.length*tfs.length};
       for(const sc of scanners)for(const tf of tfs){
         const key=cellKey(sc.id,m.symbol,tf),pair=pairs.get(key),e=evidence.get(key);
         const attempt=s.attempts[key]??0;
@@ -80,21 +86,24 @@ export class PairAgents {
         else if(pair?.stage==='shadow'||pair?.stage==='proposed')row.shadow++;
         else if(pair?.stage==='tracked')row.tracked++;
         else if(pair?.stage==='candidate')row.candidates++;
-        if(e){row.screened++;if(JSON.parse(e.result).pass)row.passed++;}
+        if(e){row.screened++;try{if(JSON.parse(e.result).pass)row.passed++;}catch{/* malformed history is not a passing result */}}
         if(active.has(pair?.stage??'')||e)continue;
         if(pair?.stage==='retired'&&now-pair.since<c.incubator.cooldownDays*DAY)continue;
         row.due++;
-        if(row.eligible&&(!attempt||now-attempt>=DAY))due.push({id:sc.id,symbol:m.symbol,tf,attempt,turnover:m.volume24h});
+        if(row.eligible&&(!attempt||now-attempt>=DAY))due.push({id:sc.id,symbol:m.symbol,tf,attempt,turnover:m.volume24h,fit:fitFor(sc.id,m.symbol,tf)});
       }
       return row;
     }).sort((a,b)=>b.turnover-a.turnover||a.symbol.localeCompare(b.symbol));
     // Visit other markets before trying another policy on the same high-turnover trio.
-    due.sort((a,b)=>(marketAttempts.get(a.symbol)??0)-(marketAttempts.get(b.symbol)??0)||a.attempt-b.attempt||b.turnover-a.turnover||a.symbol.localeCompare(b.symbol)||a.tf.localeCompare(b.tf)||a.id.localeCompare(b.id));
+    // Periodically explore by age alone. A weak class score never disables a cell.
+    const explore=s.used%4===3;
+    due.sort((a,b)=>(marketAttempts.get(a.symbol)??0)-(marketAttempts.get(b.symbol)??0)||a.attempt-b.attempt||b.turnover-a.turnover||a.symbol.localeCompare(b.symbol)||(!explore?b.fit.score-a.fit.score:0)||a.tf.localeCompare(b.tf)||a.id.localeCompare(b.id));
     const q=this.deps.queue.list();
     return {enabled:settings.enabled&&c.incubator.enabled,settings,at:now,lastAt:s.lastAt,status:s.status,usedToday:s.used,nextAt:s.nextAt,
       scannerCount:scanners.length,tfs,markets,eligible:markets.filter(m=>m.eligible).length,
       running:q.running?.actor===ACTOR?q.running:null,history:q.history.filter(j=>j.actor===ACTOR).slice(0,6),
-      queueBusy:!!q.running||q.queued.length>0||q.nightlyRunning, due};
+      queueBusy:!!q.running||q.queued.length>0||q.nightlyRunning,
+      researchMode:explore?'explore':'peer-fit',nextResearch:due.slice(0,5).map(({id,symbol,tf,fit})=>({id,symbol,tf,fit})),due};
   }
 
   async tick() {
@@ -125,8 +134,10 @@ export class PairAgents {
       const markets=[...new Set(view.due.filter(d=>d.tf===first.tf&&ids.includes(d.id)).map(d=>d.symbol))].slice(0,settings.marketsPerJob);
       const latest=this.deps.queue.list();
       if(latest.running||latest.queued.length||latest.nightlyRunning||this.deps.pressure()){save('Research queue became busy');return;}
-      const job=this.deps.queue.enqueue({label:`Pair agents · ${markets.join(', ')} · ${first.tf}`,ids,markets,tf:first.tf,actor:ACTOR,budgetMinutes:settings.budgetMinutes});
-      for(const id of ids)for(const symbol of markets)s.attempts[cellKey(id,symbol,first.tf)]=now;
+      const cells=view.due.filter(d=>d.tf===first.tf&&ids.includes(d.id)&&markets.includes(d.symbol)).map(({id,symbol})=>({id,symbol}));
+      const uniqueCells=[...new Map(cells.map(c=>[researchCellKey(c.id,c.symbol),c])).values()];
+      const job=this.deps.queue.enqueue({label:`Pair agents · ${markets.join(', ')} · ${first.tf}`,ids,markets,cells:uniqueCells,tf:first.tf,actor:ACTOR,budgetMinutes:settings.budgetMinutes});
+      for(const {id,symbol} of uniqueCells)s.attempts[cellKey(id,symbol,first.tf)]=now;
       s.attempts=Object.fromEntries(Object.entries(s.attempts).filter(([,at])=>at>now-30*DAY).sort((a,b)=>b[1]-a[1]).slice(0,20000));
       s.used++;s.nextAt=now+10*60_000;save(`Research submitted: ${job.label}`);
     } catch(e) {

@@ -5,6 +5,7 @@ import { api } from '../api/client'
 import { REFRESH } from '../api/refreshPolicy'
 import { fmtDateTime } from '../lib/format'
 import { Section } from './kit'
+import { groupLabel, sectorLabel } from '../../../shared/assetClass'
 
 export function PairAgentsPanel() {
   const q = useQuery({ queryKey: ['pair-agents'], queryFn: api.pairAgents, refetchInterval: REFRESH.normal })
@@ -29,10 +30,10 @@ export function PairAgentsPanel() {
             <div className="radar-tf">
               <b>Universe agent</b>
               <div>
-                {v.eligible} eligible / {v.markets.length} crypto pairs
+                {v.eligible} eligible / {v.markets.length} pairs
               </div>
               <p className="small muted">
-                All listed crypto perpetuals are assessed. No BTC/ETH/SOL-only restriction.
+                Market selection follows the configured universe. Asset classes guide research ordering.
               </p>
             </div>
             <div className="radar-tf">
@@ -71,6 +72,29 @@ export function PairAgentsPanel() {
             {v.settings.marketsPerJob} pairs per job. Fresh depth and sizing checks still apply at entry;
             watch-only cells do not allocate paper capital.
           </p>
+          {!!v.nextResearch?.length && (
+            <details>
+              <summary>
+                Next research ·{' '}
+                {v.researchMode === 'explore' ? 'exploring gaps' : 'scanner fit by asset class'}
+              </summary>
+              <p className="small muted">
+                Current-policy training results on other markets guide research, with regular exploration.
+                These scores are not paper qualifications or profit predictions. Each cell must still pass its
+                own screen and forward evidence.
+              </p>
+              {v.nextResearch.map((c) => (
+                <p key={`${c.id}:${c.symbol}:${c.tf}`}>
+                  <b>
+                    {c.symbol} {c.tf}
+                  </b>{' '}
+                  · {c.id}
+                  <br />
+                  <span className="small muted">{c.fit.reason}</span>
+                </p>
+              ))}
+            </details>
+          )}
           <details>
             <summary>Inspect every pair · assignments, completed screens and gaps</summary>
             <div className="toolbar">
@@ -115,6 +139,11 @@ export function PairAgentsPanel() {
                         <td>
                           <Link to={`/incubator?symbol=${encodeURIComponent(m.symbol)}`}>{m.symbol}</Link>
                           <div className="muted">${(m.turnover / 1e6).toFixed(2)}M / 24h</div>
+                          {m.group && (
+                            <div className="muted">
+                              {groupLabel(m.group)} · {sectorLabel(m.sector ?? 'other')}
+                            </div>
+                          )}
                         </td>
                         <td>{m.account}</td>
                         <td>{m.shadow}</td>

@@ -11,6 +11,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { logger } from '../log.ts';
 import type { Db } from '../db.ts';
+import { parseResearchCells, type ResearchCell } from './researchFit.ts';
 
 const log = logger.scoped('screen-queue');
 const KV = 'incubator.screenQueue';
@@ -25,6 +26,7 @@ export interface ScreenJob {
   ids: string[];
   tf: string;
   markets?: string[];
+  cells?: ResearchCell[];
   budgetMinutes?: number;
   actor: string;
   requestedAt: number;
@@ -100,16 +102,22 @@ export class ScreenQueue extends EventEmitter {
   }
 
   /** Queue a screen. The same list on the same timeframe already queued is returned rather than queued twice. */
-  enqueue(req: { label: string; ids: string[]; tf: string; markets?: string[]; actor: string; budgetMinutes?: number }): ScreenJob {
+  enqueue(req: { label: string; ids: string[]; tf: string; markets?: string[]; cells?: ResearchCell[]; actor: string; budgetMinutes?: number }): ScreenJob {
     if(req.budgetMinutes!==undefined&&(!Number.isInteger(req.budgetMinutes)||req.budgetMinutes<1||req.budgetMinutes>30))throw Object.assign(new Error('screen budget must be 1..30 minutes'),{status:400});
     if(req.markets)req={...req,markets:[...new Set(req.markets)].sort()};
     const ids = [...new Set(req.ids)].sort();
+    if(req.cells){
+      const keys=parseResearchCells(JSON.stringify(req.cells))!;
+      if(req.cells.some(c=>!ids.includes(c.id)||!req.markets?.includes(c.symbol)))throw new Error('Research cell is outside the requested scanners/markets');
+      req={...req,cells:[...keys].sort().map(k=>{const [id,symbol]=JSON.parse(k);return {id,symbol};})};
+    }
     for(const id of ids){const blocked=candleReplayBlock(id);if(blocked)throw Object.assign(Error(blocked),{status:400});}
     if (!ids.length) throw Object.assign(new Error('nothing to screen: no runnable script matched'), { status: 400 });
-    const key = `${ids.join(',')}|${req.tf}|${(req.markets ?? []).join(',')}`;
-    const same = [this.running, ...this.queued].find(j => j && `${[...j.ids].sort().join(',')}|${j.tf}|${(j.markets ?? []).join(',')}` === key);
+    const keyOf=(r:{ids:string[];tf:string;markets?:string[];cells?:ResearchCell[]})=>JSON.stringify([[...r.ids].sort(),r.tf,r.markets??[],r.cells??null]);
+    const key=keyOf({...req,ids});
+    const same = [this.running, ...this.queued].find(j => j && keyOf(j) === key);
     if (same) return same;
-    const job: ScreenJob = { id: `${this.now().toString(36)}${Math.floor(Math.random() * 1296).toString(36).padStart(2, '0')}`, label: req.label, ids, tf: req.tf, markets: req.markets?.length ? req.markets : undefined, actor: req.actor, budgetMinutes:req.budgetMinutes, requestedAt: this.now(), status: 'queued', tail: [] };
+    const job: ScreenJob = { id: `${this.now().toString(36)}${Math.floor(Math.random() * 1296).toString(36).padStart(2, '0')}`, label: req.label, ids, tf: req.tf, markets: req.markets?.length ? req.markets : undefined, cells:req.cells, actor: req.actor, budgetMinutes:req.budgetMinutes, requestedAt: this.now(), status: 'queued', tail: [] };
     this.queued.push(job);
     this.persist();
     log.info(`queued ${job.id}: ${job.label} (${ids.length} scripts, ${job.tf}) by ${req.actor}`);
@@ -150,6 +158,9 @@ export class ScreenQueue extends EventEmitter {
     // A background agent must not inherit CLI-only modes from the service environment.
     if(job.actor==='pair-agents')for(const key of ['SLICE','RESCREEN_SHADOW','RESCREEN_STAGES','DRY','ADD','LIMIT','OUT'])delete env[key];
     if (job.markets?.length) env.MARKETS = job.markets.join(',');
+    // Always clear inherited cell restrictions, including for ordinary manual jobs.
+    delete env.RESEARCH_CELLS;
+    if(job.cells)env.RESEARCH_CELLS=JSON.stringify(job.cells);
     if(job.budgetMinutes)env.BUDGET_MIN=String(job.budgetMinutes);
     job.status = 'running'; job.startedAt = this.now(); job.tail = [];
     this.running = job;
