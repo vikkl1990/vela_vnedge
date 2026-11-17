@@ -1,4 +1,5 @@
 import {gatedSignalPage} from '../evidence/gatedSignals.ts';
+import {positionsHealthReader} from './positionsHealth.ts';
 import {isAssetGroup,isAssetSector} from '../../../shared/assetClass.ts';
 import { pineLibraries } from '../pine/libraries.ts';
 import { costAudit } from '../paper/costAudit.ts';
@@ -381,6 +382,7 @@ export class ApiServer {
       });
     });
     this.add('GET', '/api/positions', () => a.paper.openPositions().map(p => a.paper.view(p, a.marks.mark(p.symbol) ?? null)));
+    this.add('GET', '/api/positions/health', positionsHealthReader(a));
     this.add('POST', '/api/positions/:id/close', (_r, _s, p) => { const pos = a.paper.closeManual(Number(p.id)); if (!pos) throw new HttpError(404, 'no open position'); return a.paper.view(pos); });
     // the path a trade took, for the forensic view: samples plus level events (decision 35)
     this.add('GET', '/api/positions/:id/path', (_r, _s, p) => {

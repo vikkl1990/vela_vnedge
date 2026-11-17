@@ -279,6 +279,7 @@ export const api = {
   // signals / positions / trades
   signals: (q: SignalQuery = {}) => get<Signal[]>(`/signals${qs(q)}`),
   positions: () => get<Position[]>('/positions'),
+  positionsHealth: () => get<import('../../../shared/positionHealth').PositionsHealth>('/positions/health'),
   closePosition: (id: number) => post<Position>(`/positions/${id}/close`),
   closeAll: () => post<{ requested: number; closed: number; pending: number }>('/paper/close-all'),
   trades: (q: TradeQuery = {}) => get<Trade[]>(`/trades${qs(q)}`),

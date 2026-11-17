@@ -1,0 +1,56 @@
+.position-health,
+.position-health-stop {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  white-space: normal;
+  min-width: 132px;
+  max-width: 250px;
+}
+.position-health-details {
+  text-align: left;
+  font-size: 12px;
+}
+.position-health-button {
+  align-self: flex-start;
+  margin-top: 4px;
+}
+.dialog.position-health-dialog {
+  width: min(640px, calc(100vw - 32px));
+  max-width: calc(100vw - 32px);
+  max-height: 85vh;
+  text-align: left;
+}
+.position-health-details p {
+  margin: 8px 0;
+  line-height: 1.5;
+}
+.position-health-details dl {
+  margin: 0;
+}
+.position-health-details dl > div {
+  padding: 5px 0;
+}
+.position-health-details dt {
+  font-weight: 600;
+}
+.position-health-details dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 640px) {
+  .position-health {
+    max-width: none;
+  }
+  .position-health-button {
+    min-height: 44px;
+  }
+}
+
+.position-desktop .position-identity {
+  max-width: 260px;
+  white-space: normal;
+}
+.position-health-details dt {
+  color: var(--text);
+}
