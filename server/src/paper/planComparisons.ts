@@ -196,7 +196,7 @@ export class PlanComparisons {
       const unresolved=(e:any)=>e.status!=='closed'&&(e.status==='open'||e.status==='pending'||['pending','processing','error','interrupted'].includes(e.action));
       const controlNet=cohorts.find(c=>c.id===control.id&&c.signature===control.signature)?.net??0;
       const candidateNet=cohorts.find(c=>c.id===candidate.id&&c.signature===candidate.signature)?.net??0;
-      comparisons.push({kind:['two-bar','profit-floor'].includes(control.comparison?.kind??'')?control.comparison!.kind:control.readingOverride?'reading':'exit',group,symbol:control.symbol,tf:control.tf,enabled:control.enabled&&candidate.enabled,
+      comparisons.push({kind:['two-bar','profit-floor'].includes(control.comparison?.kind??'')?control.comparison!.kind:control.comparison?.kind==='exit-policy'?'exit':control.readingOverride?'reading':'exit',group,symbol:control.symbol,tf:control.tf,enabled:control.enabled&&candidate.enabled,
         controlId:control.id,candidateId:candidate.id,controlLabel:control.label??control.id,candidateLabel:candidate.label??candidate.id,
         controlSignature:control.signature,candidateSignature:candidate.signature,controlNet,candidateNet,
         sharedSignals:shared.length,controlOnly:cm.size-shared.length,candidateOnly:vm.size-shared.length,
