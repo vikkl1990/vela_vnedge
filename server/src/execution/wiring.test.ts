@@ -36,7 +36,7 @@ test('maintenance completion discards an in-flight catalogue and immediately req
 test('L1 subscriptions include held and pending markets from both books even after scanner removal',()=>{
   const seen=new Map<string,string[]>();
   subscribeRealtime({resolvedSymbols:['BTCUSD'],scanners:{requiredSeries:()=>[]},paper:{openPositions:()=>[{symbol:'ETHUSD'}],pendingEntries:()=>[{symbol:'SOLUSD'}]},shadow:{openPositions:()=>[{symbol:'AINUSD'}],pendingEntries:()=>[{symbol:'ETHUSD'}]},incubator:{symbols:()=>['BTCUSD','XRPUSD']},orderFlow:{symbols:['BTCUSD']},depthRecorder:{symbols:['BTCUSD']},feed:{subscribe:(ch:string,sy:string[])=>seen.set(ch,sy)}} as any);
-  assert.deepEqual(seen.get('ob_l1'),['BTCUSD','ETHUSD','AINUSD','SOLUSD','XRPUSD','ARIAUSD','INITUSD','PARTIUSD']);
+  assert.deepEqual(seen.get('ob_l1'),['BTCUSD','ETHUSD','AINUSD','SOLUSD','XRPUSD','ARIAUSD','INITUSD','PARTIUSD','EVAAUSD']);
   assert.deepEqual(seen.get('all_trades'),seen.get('ob_l1'));
 });
 
@@ -57,7 +57,7 @@ test('explicit paper allocations receive execution feeds before any order exists
   const {seen, required, app} = allocationFixture();
   required.push({symbol: 'PARTIUSD', tf: '1h'}, {symbol: 'LTCUSD', tf: '1h'}, {symbol: 'PARTIUSD', tf: '15m'});
   subscribeRealtime(app as any);
-  for (const channel of channels) assert.deepEqual(seen.get(channel), ['BTCUSD', 'PARTIUSD', 'LTCUSD', 'ARIAUSD', 'INITUSD'], channel);
+  for (const channel of channels) assert.deepEqual(seen.get(channel), ['BTCUSD', 'PARTIUSD', 'LTCUSD', 'ARIAUSD', 'INITUSD', 'EVAAUSD'], channel);
   assert.deepEqual(seen.get('ob_updates'), ['BTCUSD'], 'full depth audit retains its bounded symbol set');
 });
 
@@ -66,7 +66,7 @@ test('a newly activated paper allocation gets execution feeds on configuration r
   subscribeRealtime(app as any);
   required.push({symbol: 'AAVEUSD', tf: '15m'});
   subscribeRealtime(app as any);
-  for (const channel of channels) assert.deepEqual(seen.get(channel), ['BTCUSD', 'AAVEUSD', 'ARIAUSD', 'INITUSD', 'PARTIUSD'], channel);
+  for (const channel of channels) assert.deepEqual(seen.get(channel), ['BTCUSD', 'AAVEUSD', 'ARIAUSD', 'INITUSD', 'PARTIUSD', 'EVAAUSD'], channel);
 });
 
 test('paper exit source prefers validated post-arrival depth, otherwise performs one bounded public read',async()=>{

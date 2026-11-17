@@ -6,7 +6,7 @@ import path from 'node:path';
 import {FocusedReplay,EXIT_STUDY_SYMBOLS} from './focusedReplay.ts';
 import {readReplay} from './replayArchive.ts';
 const T=1800000000000;
-test('study replay keeps the three pairs and explicit gaps even when the broad universe rotates',async t=>{
+test('study replay keeps the selected pairs and explicit gaps even when the broad universe rotates',async t=>{
  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'focused-replay-'));
  const r=new FocusedReplay({dir,now:()=>T,freeBytes:async()=>10*1024**3});t.after(async()=>{await r.close();await fs.rm(dir,{recursive:true,force:true});});
  r.setSymbols(['BTCUSD']);for(const symbol of [...EXIT_STUDY_SYMBOLS,'BTCUSD'])r.record(symbol,'trade',{price:1},T);

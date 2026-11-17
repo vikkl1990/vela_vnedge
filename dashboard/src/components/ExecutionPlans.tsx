@@ -28,7 +28,13 @@ export function ExecutionPlans() {
               <div key={c.group} style={{ marginBottom: 20 }}>
                 <strong>
                   {c.symbol} {c.tf} ·{' '}
-                  {c.kind === 'reading' ? 'Scanner reading comparison' : 'Profit-capture comparison'}
+                  {c.kind === 'reading'
+                    ? 'Scanner reading comparison'
+                    : c.kind === 'two-bar'
+                      ? 'Two-bar exit comparison'
+                      : c.kind === 'profit-floor'
+                        ? 'Early profit-floor comparison'
+                        : 'Profit-capture comparison'}
                 </strong>{' '}
                 <Pill>{c.enabled ? 'Forward shadow test' : 'Disabled'}</Pill>
                 <p className="small">
@@ -42,7 +48,11 @@ export function ExecutionPlans() {
                 </p>
                 <p className="small">
                   Both trades closed on {c.matchedClosed} matched signals · candidate difference{' '}
-                  {money(c.matchedDeltaNet)}.
+                  {money(c.matchedDeltaNet)}. Matched net: {money(c.matchedControlNet)} →{' '}
+                  {money(c.matchedCandidateNet)}. SL exits: {c.matchedControlStops} →{' '}
+                  {c.matchedCandidateStops}. All losing trades: {c.matchedControlLosses} →{' '}
+                  {c.matchedCandidateLosses}. Winners cut short: {c.matchedWinnersCut}. Entry mismatches
+                  excluded: {c.matchedEntryMismatch}. Research only; excluded from promotion evidence.
                 </p>
                 <p className="small muted">
                   The matched subset excludes unfilled and unfinished trades. Assess it alongside each plan’s
