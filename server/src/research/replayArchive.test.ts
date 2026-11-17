@@ -9,6 +9,17 @@ import {Db} from '../db.ts';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 const T=1800000000000;
+test('coverage is a conservative sealed-segment inventory, including gaps and retention boundaries',async t=>{
+ const {archive,advance,now}=await fixture(t);archive.setSymbols(['ETHUSD']);
+ assert.equal(archive.coverage('ETHUSD',T-1000,T).segments,0);
+ archive.record('ETHUSD','checkpoint',{observed:true},T);await archive.flush();advance(61000);
+ archive.record('ETHUSD','trade',{price:100},now());await archive.close();
+ const c=archive.coverage('ETHUSD',T-1000,now());
+ assert.equal(c.capturing,false);assert.ok(c.segments>0);assert.equal(c.checkpoints,1);
+ assert.ok(c.segmentsWithGaps>0);assert.ok(c.from!>T-1000);
+ assert.equal(archive.coverage('UNKNOWNUSD',T,now()).segments,0);
+ assert.equal('complete' in c,false);
+});
 async function fixture(t:any,opts:Record<string,unknown>={}){
  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'vnedge-replay-'));let now=T;
  const archive=new ReplayArchive({dir,now:()=>now,minFreeBytes:0,...opts});

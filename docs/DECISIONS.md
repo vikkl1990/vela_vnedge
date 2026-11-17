@@ -8144,6 +8144,14 @@ are unchanged, as are all capital, risk, evidence and entry/exit policies. Synth
 expiry without delaying injected paper jobs; CPU-bound waves still need live measurement. See
 `docs/research/research-capacity-and-peaks-2026-11-17.md` for the validation and separate peak-to-exit audit.
 
+## 298. Read-only open-position cost and protection visibility (17 November 2026)
+
+Open paper positions now show a net close-now estimate alongside the acknowledged SL, pending amendments/exits and the held policy's trail threshold. The estimate walks verified cached bids for longs and asks for shorts at the remaining contract size, then uses the existing exit accounting on a detached copy. It includes realized partial exits, booked funding, booked fees and the current estimated exit cash fee. Gross fee and eligible discount are separate. Missing, stale, non-causal or incomplete depth never produces a full-position profit estimate. No additional exchange requests or execution actions originate from the UI.
+
+The browser expires quote freshness using local monotonic time and request latency, and matches exposure identity before displaying independent health responses. A stop above entry is labelled a profit-level price, not a guaranteed protected profit. At-stop net is explicitly a hypothetical exact fill with standard exit fees; future funding and slippage remain unknown. Desired stops awaiting acknowledgement are not substituted for active stops.
+
+Data coverage shows the first-entry receipt, frozen/adopted/legacy policy, recorded unresolved funding and a cached replay-manifest inventory. Segment/checkpoint counts do not certify continuity. Research gaps and retention boundaries remain visible; these display fields do not qualify trades for promotion. Tests cover accounting, partial depth, stale/future observations, receipt identity, read-only behavior, pending protection, and rendered desktop/mobile views. Paper mode, execution settings, capital/risk limits, admission and evidence rules are unchanged.
+
 ## 297. Prospective failed-trade and early-profit-floor comparisons (17 November 2026)
 
 Add two independent exit-only comparisons for Trend Impulse: INIT 15m and PARTI 1h. The control keeps current exits.
