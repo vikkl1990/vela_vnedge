@@ -72,8 +72,8 @@ export class ShadowRunner {
     const key=`${r.scannerId}:${r.symbol}:${r.tf}`;
     if(this.scheduledBars.get(key)===barAt)this.scheduledBars.delete(key);
   }
-  private async runScheduled(r:PairRow,barAt:number,live:boolean,seenAt:number) {
-    try{await this.run(r,barAt,live,seenAt);}
+  private async runScheduled(r:PairRow,barAt:number,live:boolean,seenAt:number,rank?:number) {
+    try{await this.run(r,barAt,live,seenAt,rank);}
     catch(e){this.deps.store.noteShadowScan?.(r,barAt-TF_SECONDS[r.tf]*1000,'failed',String((e as Error)?.message??e));throw e;}
     finally{this.releaseScheduled(r,barAt);}
   }
@@ -295,7 +295,15 @@ export class ShadowRunner {
     const rank = (r: PairRow) => (r.stage === 'live' || focus?.held.has(r.symbol) ? 0 : canEnter(r) ? 1 : 2);
     // In copy mode, unqualified research cells must not consume the urgent lane.
     const copyable=(r:PairRow)=>r.stage!=='tracked' && (r.stage==='live' || !this.deps.store.copyRefusal(r,this.deps.cfgRef().incubator.mirror,this.turnoverOf(r.symbol)));
-    const urgent=due.filter(r=>holds(r)||(mirror&&copyable(r))).sort((a,b)=>rank(a)-rank(b));
+    // Rank across symbols in the shared mirror queue, not just within this
+    // symbol's callback. Research positions still precede ordinary research.
+    const mirrorRanks = new Map<PairRow, number>();
+    const urgent=due.filter(r=>{
+      const held=holds(r), canCopy=mirror&&copyable(r);
+      if(!held&&!canCopy)return false;
+      mirrorRanks.set(r,this.deps.accountHolds?.(r.scannerId,r.symbol,r.tf) ? 3 : canCopy ? 2 : 1);
+      return true;
+    }).sort((a,b)=>rank(a)-rank(b));
     const later = due.filter(r => !urgent.includes(r));
     const launch = (rows: PairRow[], live: boolean) => {
       if (!rows.length) return;
@@ -305,7 +313,7 @@ export class ShadowRunner {
         for(const r of rows)this.dispatch.enqueue(`${r.scannerId}:${r.symbol}:${r.tf}`,{r,barAt,seenAt},deadline);
         this.dispatch.drain();return;
       }
-      for (const r of rows) this.runScheduled(r, barAt, live, seenAt).catch(e => { this.noteError(r, String(e?.message ?? e)); log.warn(`shadow ${r.scannerId} ${symbol}: ${e?.message ?? e}`); });
+      for (const r of rows) this.runScheduled(r, barAt, live, seenAt, mirrorRanks.get(r)).catch(e => { this.noteError(r, String(e?.message ?? e)); log.warn(`shadow ${r.scannerId} ${symbol}: ${e?.message ?? e}`); });
     };
     launch(urgent, true);
     // Closed, integrity-checked bars are ready now. Pool priorities and reservations
@@ -354,7 +362,7 @@ export class ShadowRunner {
     if (keys.length > 60) delete this.stats.lastErrors[keys.sort((a, b) => this.stats.lastErrors[a].at - this.stats.lastErrors[b].at)[0]];
   }
 
-  private async run(rAtStart: PairRow, barAt = Date.now(), live = false, seenAt = Date.now()): Promise<void> {
+  private async run(rAtStart: PairRow, barAt = Date.now(), live = false, seenAt = Date.now(), rank?:number): Promise<void> {
     let r = rAtStart;
     const s = this.deps.registry.get(r.scannerId);
     if (!s || s.status !== 'ok') {this.deps.store.noteShadowScan?.(r,barAt-TF_SECONDS[r.tf]*1000,'unavailable','scanner unavailable');return;}
@@ -382,7 +390,7 @@ export class ShadowRunner {
     const win = this.marks.window(`${r.scannerId}:${r.symbol}:${r.tf}`, bars.at(-1)!.time, r.tf);
     const res = await this.deps.pool.run(
       { scannerId: s.id, source: s.patched, symbol: r.symbol, tf: r.tf, tickSize: market.tickSize, bars, tailBars: win.tailBars, plotTail: 400, inputs: inputs && Object.keys(inputs).length ? inputs : undefined, timezone: cfg.scanners[s.id]?.timezone },
-      { deadlineMs: budget, priority: live ? 'mirror' : 'shadow' });
+      { deadlineMs: budget, priority: live ? 'mirror' : 'shadow', ...(live&&rank!==undefined?{rank}:{}) });
     this.stats.runs++; this.stats.lastBarAt = bars.at(-1)!.time;
     if (live) this.noteWave(r.tf, barAt, seenAt, tPool, Date.now(), res.ms ?? 0);
     if (!res.ok) { this.deps.store.noteShadowScan?.(r,barAt-TF_SECONDS[r.tf]*1000,'failed',res.error??'unknown scanner error'); if (/too late to be useful/.test(res.error ?? '')) this.stats.expired++; else this.noteError(r, res.error ?? 'unknown'); return; }

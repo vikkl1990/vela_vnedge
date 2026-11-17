@@ -143,6 +143,28 @@ test('enrolled forward cells get timely research service while copy holds and wo
  releases.shift()!();await new Promise<void>(r=>setImmediate(r));runner.stop();
 });
 
+test('shadow dispatch ranks account exits and qualified copies globally without upgrading unqualified cells', async t => {
+  t.mock.timers.enable({apis:['Date','setTimeout'],now:1_000_000});
+  const cfg=structuredClone(DEFAULT_CONFIG); cfg.incubator.enabled=true;
+  cfg.incubator.mirror={enabled:true,minTrades:5};
+  const runner=new ShadowRunner({
+    store:{shadowFunnel:()=>({}),liveMarks:()=>undefined,setLiveMarks:()=>{},setShadowFunnel:()=>{},
+      copyRefusal:(r:any)=>r.scannerId==='copy'?null:'mirror held: insufficient evidence',marketsToday:()=>new Map()},
+    cfgRef:()=>cfg, paper:{openPositions:()=>[{scannerId:'held',symbol:'AAAUSD',tf:'15m'}]},
+    mirror:()=>{}, accountHolds:(id:string)=>id==='account',
+    pool:{size:8,reserved:2,stats:{queuedLive:1},rssReader:()=>0,memoryGuardBytes:1},
+  } as any) as any;
+  t.after(()=>runner.stop());
+  runner.pairs=['held','unqualified','copy','account'].map((scannerId,id)=>({
+    id,scannerId,symbol:scannerId==='held'||scannerId==='unqualified'?'AAAUSD':'BBBUSD',tf:'15m',stage:'shadow'}));
+  const got:Array<[string,boolean,number|undefined]>=[];
+  runner.run=async(r:any,_bar:number,live:boolean,_seen:number,rank?:number)=>{got.push([r.scannerId,live,rank]);};
+  runner.onBarClosed('AAAUSD','15m',Date.now());
+  runner.onBarClosed('BBBUSD','15m',Date.now());
+  assert.deepEqual(got,[['held',true,1],['copy',true,2],['account',true,3]]);
+  assert.equal(runner.dispatchStats.pending,1,'unqualified research is still bounded behind account work');
+});
+
 test('capped shadow diagnostics are labelled without changing counts or evidence', () => {
   const store={shadowFunnel:()=>({}),setShadowFunnel:()=>{},liveMarks:()=>undefined,setLiveMarks:()=>{}};
   const runner=new ShadowRunner({store,paper:new EventEmitter()} as any) as any;

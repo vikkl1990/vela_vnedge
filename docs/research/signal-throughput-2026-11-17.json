@@ -1,0 +1,681 @@
+{
+  "verifiedAtUtc": "2026-11-17T04:06:45.091000+00:00",
+  "baselineCommit": "2b8f3f5534ec196dac185a9df4894e4d1bf5c6e2",
+  "mode": "paper",
+  "change": "rank paper-held and qualified copy scans ahead of shadow-only positions within the mirror queue",
+  "constraints": [
+    "no configuration edits",
+    "risk caps unchanged",
+    "evidence rules unchanged",
+    "freshness deadlines unchanged",
+    "shadow held positions retain priority over ordinary research"
+  ],
+  "observations": {
+    "qualificationReadAt": 1794888250717,
+    "copyQualifiedCells": 61,
+    "copyQualifiedScanStates": {
+      "scanned": 61
+    },
+    "coincidentCloseUtc": "2026-11-17T04:00:00Z",
+    "researchExpiredAtClose": 748,
+    "researchScannedAtClose": 1061,
+    "researchUnavailableAtClose": 9,
+    "dispatchAfterClose": {
+      "offered": 21722,
+      "replaced": 0,
+      "expired": 1353,
+      "removed": 0,
+      "started": 20369,
+      "finished": 20369,
+      "failed": 0,
+      "maxPending": 1672,
+      "lastWaitMs": 290543,
+      "maxWaitMs": 292197,
+      "evidenceTurns": 13974,
+      "fairTurns": 5092,
+      "timelyTurns": 1303,
+      "pending": 0,
+      "inFlight": 0,
+      "at": 1794888402578
+    },
+    "previousSnapshotAt": 1794887958281,
+    "paperWindows": [
+      {
+        "label": "last24h",
+        "signals": [
+          {
+            "kind": "entry",
+            "n": 197,
+            "last_at": 1794887112247
+          },
+          {
+            "kind": "exit",
+            "n": 186,
+            "last_at": 1794887124013
+          }
+        ],
+        "positions": [
+          {
+            "bt": 0,
+            "status": "closed",
+            "n": 32
+          },
+          {
+            "bt": 0,
+            "status": "open",
+            "n": 5
+          },
+          {
+            "bt": 2,
+            "status": "closed",
+            "n": 612
+          },
+          {
+            "bt": 2,
+            "status": "open",
+            "n": 59
+          },
+          {
+            "bt": 2,
+            "status": "pending",
+            "n": 5
+          }
+        ],
+        "latency": {
+          "15m": {
+            "n": 1176,
+            "median": 4.818,
+            "p90": 13.387,
+            "max": 624.522
+          },
+          "1h": {
+            "n": 550,
+            "median": 9.225,
+            "p90": 67.001,
+            "max": 3093.651
+          },
+          "4h": {
+            "n": 8,
+            "median": 54.581,
+            "p90": 6693.214,
+            "max": 6693.214
+          }
+        }
+      },
+      {
+        "label": "previous24h",
+        "signals": [
+          {
+            "kind": "entry",
+            "n": 117,
+            "last_at": 1794800709480
+          },
+          {
+            "kind": "exit",
+            "n": 158,
+            "last_at": 1794799854069
+          },
+          {
+            "kind": "info",
+            "n": 1,
+            "last_at": 1794715225406
+          }
+        ],
+        "positions": [
+          {
+            "bt": 0,
+            "status": "closed",
+            "n": 37
+          },
+          {
+            "bt": 0,
+            "status": "open",
+            "n": 1
+          },
+          {
+            "bt": 2,
+            "status": "closed",
+            "n": 681
+          },
+          {
+            "bt": 2,
+            "status": "open",
+            "n": 36
+          }
+        ],
+        "latency": {
+          "15m": {
+            "n": 1207,
+            "median": 4.757,
+            "p90": 14.452,
+            "max": 867.001
+          },
+          "1h": {
+            "n": 615,
+            "median": 11.019,
+            "p90": 685.983,
+            "max": 866.194
+          },
+          "4h": {
+            "n": 10,
+            "median": 50.933499999999995,
+            "p90": 8065.571,
+            "max": 8065.571
+          }
+        }
+      }
+    ],
+    "entryOutcomeSnapshotAt": 1794888218968,
+    "entryOutcomes": {
+      "last24h": [
+        {
+          "action": "opened",
+          "n": 38
+        },
+        {
+          "action": "rejected:risk burst: a short entry was already taken in the last 120s; one at a time",
+          "n": 19
+        },
+        {
+          "action": "rejected:risk burst: a long entry was already taken in the last 120s; one at a time",
+          "n": 8
+        },
+        {
+          "action": "ignored:already in position",
+          "n": 8
+        },
+        {
+          "action": "rejected:risk max 1 positions on ETHUSD",
+          "n": 6
+        },
+        {
+          "action": "rejected:risk regime: choppy (efficiency 0.08 < 0.1)",
+          "n": 5
+        },
+        {
+          "action": "rejected:risk max 1 positions on INITUSD",
+          "n": 5
+        },
+        {
+          "action": "rejected:the scanner's own stop: the account takes only the ATR stop (decision 146)",
+          "n": 4
+        },
+        {
+          "action": "rejected:risk regime: choppy (efficiency 0.09 < 0.1)",
+          "n": 4
+        },
+        {
+          "action": "rejected:risk market: dead: $0.05M 24h turnover < $0.05M",
+          "n": 4
+        },
+        {
+          "action": "rejected:stop too tight for fees (1.04% stop vs 0.18% round-trip cost; need \u2265 6\u00d7)",
+          "n": 3
+        },
+        {
+          "action": "rejected:risk regime: choppy (efficiency 0.06 < 0.1)",
+          "n": 3
+        },
+        {
+          "action": "rejected:risk regime: choppy (efficiency 0.04 < 0.1)",
+          "n": 3
+        },
+        {
+          "action": "rejected:risk regime: choppy (efficiency 0.02 < 0.1)",
+          "n": 3
+        },
+        {
+          "action": "rejected:risk regime: choppy (efficiency 0.01 < 0.1)",
+          "n": 3
+        },
+        {
+          "action": "rejected:risk max 1 positions on AAVEUSD",
+          "n": 3
+        },
+        {
+          "action": "rejected:risk regime: choppy (efficiency 0.07 < 0.1)",
+          "n": 2
+        },
+        {
+          "action": "rejected:risk regime: choppy (efficiency 0.03 < 0.1)",
+          "n": 2
+        },
+        {
+          "action": "rejected:risk regime: choppy (efficiency 0.00 < 0.1)",
+          "n": 2
+        },
+        {
+          "action": "rejected:risk re-entry cooldown: ETHUSD stopped by linear-regression-channel-visible-range-volume-profile 23 min ago (all scanners wait 60 min)",
+          "n": 2
+        },
+        {
+          "action": "rejected:risk max 1 positions on ZECUSD",
+          "n": 2
+        },
+        {
+          "action": "rejected:risk market: fresh depth cost exceeds ceiling (0.321% for $248)",
+          "n": 2
+        },
+        {
+          "action": "rejected:risk market: fresh depth cost exceeds ceiling (0.309% for $249)",
+          "n": 2
+        },
+        {
+          "action": "rejected:risk market: fresh depth cost exceeds ceiling (0.308% for $247)",
+          "n": 2
+        },
+        {
+          "action": "rejected:risk market: fresh depth cost exceeds ceiling (0.296% for $249)",
+          "n": 2
+        },
+        {
+          "action": "rejected:risk market: fresh depth cost exceeds ceiling (0.285% for $248)",
+          "n": 2
+        },
+        {
+          "action": "rejected:unpriceable: no executable bid within 10000ms",
+          "n": 1
+        },
+        {
+          "action": "rejected:unpriceable: no executable ask within 10000ms",
+          "n": 1
+        },
+        {
+          "action": "rejected:stop too tight for fees (0.88% stop vs 0.18% round-trip cost; need \u2265 6\u00d7)",
+          "n": 1
+        },
+        {
+          "action": "rejected:stop too tight for fees (0.85% stop vs 0.14% round-trip cost; need \u2265 6\u00d7)",
+          "n": 1
+        },
+        {
+          "action": "rejected:stop too tight for fees (0.80% stop vs 0.17% round-trip cost; need \u2265 6\u00d7)",
+          "n": 1
+        },
+        {
+          "action": "rejected:stop too tight for fees (0.74% stop vs 0.15% round-trip cost; need \u2265 6\u00d7)",
+          "n": 1
+        },
+        {
+          "action": "rejected:stop too tight for fees (0.73% stop vs 0.16% round-trip cost; need \u2265 6\u00d7)",
+          "n": 1
+        },
+        {
+          "action": "rejected:stop too tight for fees (0.72% stop vs 0.15% round-trip cost; need \u2265 6\u00d7)",
+          "n": 1
+        },
+        {
+          "action": "rejected:stop too tight for fees (0.70% stop vs 0.15% round-trip cost; need \u2265 6\u00d7)",
+          "n": 1
+        },
+        {
+          "action": "rejected:stop too tight for fees (0.69% stop vs 0.14% round-trip cost; need \u2265 6\u00d7)",
+          "n": 1
+        },
+        {
+          "action": "rejected:stop too tight for fees (0.67% stop vs 0.21% round-trip cost; need \u2265 6\u00d7)",
+          "n": 1
+        },
+        {
+          "action": "rejected:stop too tight for fees (0.66% stop vs 0.18% round-trip cost; need \u2265 6\u00d7)",
+          "n": 1
+        },
+        {
+          "action": "rejected:stop too tight for fees (0.65% stop vs 0.15% round-trip cost; need \u2265 6\u00d7)",
+          "n": 1
+        },
+        {
+          "action": "rejected:stop too tight for fees (0.52% stop vs 0.15% round-trip cost; need \u2265 6\u00d7)",
+          "n": 1
+        },
+        {
+          "action": "rejected:stop too tight for fees (0.51% stop vs 0.16% round-trip cost; need \u2265 6\u00d7)",
+          "n": 1
+        },
+        {
+          "action": "rejected:stop too tight for fees (0.47% stop vs 0.21% round-trip cost; need \u2265 6\u00d7)",
+          "n": 1
+        },
+        {
+          "action": "rejected:stop too tight for fees (0.20% stop vs 0.21% round-trip cost; need \u2265 6\u00d7)",
+          "n": 1
+        },
+        {
+          "action": "rejected:risk regime: choppy (efficiency 0.05 < 0.1)",
+          "n": 1
+        },
+        {
+          "action": "rejected:risk re-entry cooldown: ZROUSD stopped by v-top-v-bottom 25 min ago (all scanners wait 60 min)",
+          "n": 1
+        },
+        {
+          "action": "rejected:risk re-entry cooldown: ZECUSD stopped by indicatorneo-support-resistance-alerts 24 min ago (all scanners wait 60 min)",
+          "n": 1
+        },
+        {
+          "action": "rejected:risk re-entry cooldown: EVAAUSD stopped by alternative-bar-types 59 min ago (all scanners wait 60 min)",
+          "n": 1
+        },
+        {
+          "action": "rejected:risk re-entry cooldown: ETHUSD stopped by linear-regression-channel-visible-range-volume-profile 8 min ago (all scanners wait 60 min)",
+          "n": 1
+        },
+        {
+          "action": "rejected:risk re-entry cooldown: ARIAUSD stopped by twiggs-money-flow 55 min ago (all scanners wait 60 min)",
+          "n": 1
+        },
+        {
+          "action": "rejected:risk re-entry cooldown: AINUSD stopped by scalping-ichimoku 15 min ago (all scanners wait 60 min)",
+          "n": 1
+        },
+        {
+          "action": "rejected:risk re-entry cooldown: AINUSD stopped by scalping-ichimoku 0 min ago (all scanners wait 60 min)",
+          "n": 1
+        },
+        {
+          "action": "rejected:risk max 1 positions on EVAAUSD",
+          "n": 1
+        },
+        {
+          "action": "rejected:risk max 1 positions on ARIAUSD",
+          "n": 1
+        },
+        {
+          "action": "rejected:risk market: fresh depth stale depth",
+          "n": 1
+        },
+        {
+          "action": "rejected:risk market: fresh depth cost exceeds ceiling (0.334% for $163)",
+          "n": 1
+        },
+        {
+          "action": "rejected:risk market: fresh depth cost exceeds ceiling (0.333% for $250)",
+          "n": 1
+        },
+        {
+          "action": "rejected:risk market: fresh depth cost exceeds ceiling (0.332% for $250)",
+          "n": 1
+        },
+        {
+          "action": "rejected:risk market: fresh depth cost exceeds ceiling (0.327% for $248)",
+          "n": 1
+        },
+        {
+          "action": "rejected:risk market: fresh depth cost exceeds ceiling (0.320% for $233)",
+          "n": 1
+        },
+        {
+          "action": "rejected:risk market: fresh depth cost exceeds ceiling (0.306% for $249)",
+          "n": 1
+        },
+        {
+          "action": "rejected:risk market: fresh depth cost exceeds ceiling (0.306% for $235)",
+          "n": 1
+        },
+        {
+          "action": "rejected:risk market: fresh depth cost exceeds ceiling (0.303% for $248)",
+          "n": 1
+        },
+        {
+          "action": "rejected:risk market: fresh depth cost exceeds ceiling (0.303% for $238)",
+          "n": 1
+        },
+        {
+          "action": "rejected:risk market: fresh depth cost exceeds ceiling (0.299% for $248)",
+          "n": 1
+        },
+        {
+          "action": "rejected:risk market: fresh depth cost exceeds ceiling (0.297% for $246)",
+          "n": 1
+        },
+        {
+          "action": "rejected:risk market: fresh depth cost exceeds ceiling (0.294% for $250)",
+          "n": 1
+        },
+        {
+          "action": "rejected:risk market: fresh depth cost exceeds ceiling (0.284% for $250)",
+          "n": 1
+        },
+        {
+          "action": "rejected:risk market: fresh depth cost exceeds ceiling (0.284% for $249)",
+          "n": 1
+        },
+        {
+          "action": "rejected:risk market: fresh depth cost exceeds ceiling (0.281% for $247)",
+          "n": 1
+        },
+        {
+          "action": "rejected:risk market: fresh depth cost exceeds ceiling (0.280% for $249)",
+          "n": 1
+        },
+        {
+          "action": "rejected:risk market: fresh depth cost exceeds ceiling (0.279% for $250)",
+          "n": 1
+        },
+        {
+          "action": "rejected:risk market: fresh depth cost exceeds ceiling (0.279% for $249)",
+          "n": 1
+        },
+        {
+          "action": "rejected:risk market: fresh depth cost exceeds ceiling (0.279% for $248)",
+          "n": 1
+        },
+        {
+          "action": "rejected:risk market: fresh depth cost exceeds ceiling (0.279% for $242)",
+          "n": 1
+        },
+        {
+          "action": "rejected:risk market: fresh depth cost exceeds ceiling (0.278% for $229)",
+          "n": 1
+        },
+        {
+          "action": "rejected:risk market: fresh depth cost exceeds ceiling (0.277% for $249)",
+          "n": 1
+        },
+        {
+          "action": "rejected:risk market: fresh depth cost exceeds ceiling (0.277% for $242)",
+          "n": 1
+        },
+        {
+          "action": "rejected:risk market: fresh depth cost exceeds ceiling (0.274% for $238)",
+          "n": 1
+        },
+        {
+          "action": "rejected:risk market: fresh depth cost exceeds ceiling (0.272% for $234)",
+          "n": 1
+        },
+        {
+          "action": "rejected:risk market: fresh depth cost exceeds ceiling (0.266% for $247)",
+          "n": 1
+        },
+        {
+          "action": "rejected:risk market: fresh depth cost exceeds ceiling (0.263% for $248)",
+          "n": 1
+        },
+        {
+          "action": "rejected:risk market: fresh depth cost exceeds ceiling (0.256% for $166)",
+          "n": 1
+        },
+        {
+          "action": "rejected:reversal: the held position could not be closed",
+          "n": 1
+        },
+        {
+          "action": "rejected:no fill: price did not come back to 72.4416 within 0.3333333333333333 15m bars",
+          "n": 1
+        },
+        {
+          "action": "rejected:no fill: price did not come back to 71.693 within 0.3333333333333333 15m bars",
+          "n": 1
+        },
+        {
+          "action": "rejected:no fill: price did not come back to 71.6335 within 0.3333333333333333 15m bars",
+          "n": 1
+        },
+        {
+          "action": "rejected:no fill: price did not come back to 0.3708 within 0.3333333333333333 15m bars",
+          "n": 1
+        },
+        {
+          "action": "rejected:entry alignment 1h EMA21: long requires bullish context",
+          "n": 1
+        },
+        {
+          "action": "pending:resting limit at 112.137, 0.1 ATR back, for 2 1h bars",
+          "n": 1
+        }
+      ],
+      "previous24h": [
+        {
+          "action": "opened",
+          "n": 36
+        },
+        {
+          "action": "rejected:risk max 1 positions on INITUSD",
+          "n": 14
+        },
+        {
+          "action": "rejected:risk max 1 positions on ETHUSD",
+          "n": 11
+        },
+        {
+          "action": "rejected:risk burst: a long entry was already taken in the last 120s; one at a time",
+          "n": 7
+        },
+        {
+          "action": "ignored:already in position",
+          "n": 7
+        },
+        {
+          "action": "rejected:risk burst: a short entry was already taken in the last 120s; one at a time",
+          "n": 6
+        },
+        {
+          "action": "rejected:risk regime: choppy (efficiency 0.01 < 0.1)",
+          "n": 3
+        },
+        {
+          "action": "rejected:risk regime: choppy (efficiency 0.06 < 0.1)",
+          "n": 2
+        },
+        {
+          "action": "rejected:the scanner's own stop: the account takes only the ATR stop (decision 146)",
+          "n": 1
+        },
+        {
+          "action": "rejected:risk regime: choppy (efficiency 0.09 < 0.1)",
+          "n": 1
+        },
+        {
+          "action": "rejected:risk regime: choppy (efficiency 0.08 < 0.1)",
+          "n": 1
+        },
+        {
+          "action": "rejected:risk regime: choppy (efficiency 0.07 < 0.1)",
+          "n": 1
+        },
+        {
+          "action": "rejected:risk regime: choppy (efficiency 0.05 < 0.1)",
+          "n": 1
+        },
+        {
+          "action": "rejected:risk max 1 positions on UNIUSD",
+          "n": 1
+        },
+        {
+          "action": "rejected:risk max 1 positions on EVAAUSD",
+          "n": 1
+        },
+        {
+          "action": "rejected:risk max 1 positions on BTCUSD",
+          "n": 1
+        },
+        {
+          "action": "rejected:risk market: fresh depth stale depth",
+          "n": 1
+        },
+        {
+          "action": "rejected:risk market: fresh depth cost exceeds ceiling (0.409% for $69)",
+          "n": 1
+        },
+        {
+          "action": "rejected:risk market: fresh depth cost exceeds ceiling (0.356% for $118)",
+          "n": 1
+        },
+        {
+          "action": "rejected:risk market: fresh depth cost exceeds ceiling (0.340% for $160)",
+          "n": 1
+        },
+        {
+          "action": "rejected:risk market: fresh depth cost exceeds ceiling (0.321% for $177)",
+          "n": 1
+        },
+        {
+          "action": "rejected:risk market: fresh depth cost exceeds ceiling (0.316% for $191)",
+          "n": 1
+        },
+        {
+          "action": "rejected:risk market: fresh depth cost exceeds ceiling (0.311% for $249)",
+          "n": 1
+        },
+        {
+          "action": "rejected:risk market: fresh depth cost exceeds ceiling (0.311% for $244)",
+          "n": 1
+        },
+        {
+          "action": "rejected:risk market: fresh depth cost exceeds ceiling (0.300% for $204)",
+          "n": 1
+        },
+        {
+          "action": "rejected:risk market: fresh depth cost exceeds ceiling (0.285% for $161)",
+          "n": 1
+        },
+        {
+          "action": "rejected:risk market: fresh depth cost exceeds ceiling (0.280% for $61)",
+          "n": 1
+        },
+        {
+          "action": "rejected:reversal refused, position kept: risk burst: a short entry was already taken in the last 120s; one at a time",
+          "n": 1
+        },
+        {
+          "action": "rejected:no fill: price did not come back to 70.5133 within 0.3333333333333333 15m bars",
+          "n": 1
+        },
+        {
+          "action": "rejected:no fill: price did not come back to 0.9625 within 2 1h bars",
+          "n": 1
+        },
+        {
+          "action": "rejected:no fill: price did not come back to 0.058568 within 2 1h bars",
+          "n": 1
+        },
+        {
+          "action": "rejected:entry alignment 1h EMA21: long requires bullish context",
+          "n": 1
+        },
+        {
+          "action": "ignored:entry already pending",
+          "n": 1
+        }
+      ]
+    }
+  },
+  "limitations": [
+    "Rolling-window counts change while the service continues trading.",
+    "Direct scanner_run_log excludes mirror scans; shadow latest receipts are not an all-cycle history.",
+    "Some shadow position scans have the same scanner and market as a copy-qualified cell.",
+    "This scheduling correction does not increase total compute capacity or prove higher profit.",
+    "Post-deploy busy 4h-cycle latency needs prospective measurement."
+  ],
+  "validation": {
+    "targetedTests": 30,
+    "targetedFailures": 0,
+    "serverTypecheck": "pass",
+    "fullServerSuite": {
+      "tests": 1672,
+      "pass": 1672,
+      "fail": 0
+    }
+  }
+}

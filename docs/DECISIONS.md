@@ -8114,3 +8114,19 @@ read-only through the existing shared evidence policy. Tracked observations rema
 retain separate IDs and histories. Native-stop refusals are labelled as policy refusals, not stopped trades. Failed
 eligibility reads remain unverified. This is a diagnostic correction, with no admission, risk, margin or execution changes.
 The dated audit is `docs/research/scanner-attention-2026-11-16.md`.
+
+## 295. Paper decisions precede shadow-only positions in the mirror queue (17 November 2026)
+
+At the 04:00 UTC close, all 61 current copy-qualified cells scanned, but their receipts arrived 45–129 seconds after
+close. The mirror queue mixed these with 91 shadow-only held cells in arrival order across symbols. Sorting inside
+one symbol's callback did not establish priority across that shared queue.
+
+Keep direct account scans first. Within the mirror tier, rank scans for held account positions first, then qualified
+copy candidates, then shadow-only positions. Equal ranks keep arrival order; held shadow positions still run before
+ordinary research. Do not preempt a running script. Existing deadlines, worker reservations, memory limits, readers,
+entry validation, evidence policies, capital and risk settings are unchanged. Ranking grants no admission permission.
+
+This addresses avoidable paper waiting, not the whole research-capacity problem: 748 ordinary research scans expired
+at that close. More generated signals also did not mean more affordable entries: the audited rolling 24 hours had
+38 depth-cost refusals versus 10 previously. No fee/chop/burst gate is relaxed and no profit uplift is claimed.
+The audit and validation are in `docs/research/signal-throughput-2026-11-17.json`.
