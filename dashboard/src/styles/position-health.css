@@ -48,9 +48,50 @@
 }
 
 .position-desktop .position-identity {
+  min-width: 200px;
   max-width: 260px;
   white-space: normal;
 }
 .position-health-details dt {
   color: var(--text);
+}
+
+.position-layout {
+  container: trade-positions / inline-size;
+  min-width: 0;
+}
+@container trade-positions (max-width: 1120px) {
+  .position-layout .position-desktop {
+    display: none;
+  }
+  .position-layout .position-cards {
+    display: grid;
+    gap: 12px;
+    padding: 12px;
+  }
+  .position-layout .position-card {
+    padding: 12px;
+    border: 1px solid var(--border-strong);
+    border-radius: 8px;
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  .position-layout .position-card > .link {
+    display: block;
+    margin-top: 8px;
+  }
+  .position-layout .position-metrics {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+  }
+  .position-layout .position-metrics dt {
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .position-layout .position-metrics dd {
+    margin: 4px 0 0;
+    font-size: 14px;
+    font-variant-numeric: tabular-nums;
+  }
 }

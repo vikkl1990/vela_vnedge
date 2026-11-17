@@ -75,6 +75,7 @@ test('net close estimate, active stop and coverage render without trading on des
   faults,
 }, info) => {
   void faults
+  if (info.project.name === 'desktop') await page.setViewportSize({ width: 2000, height: 1000 })
   await page.route('**/api/positions', (r) => r.fulfill({ json: [p] }))
   await page.route('**/api/positions/health', (r) => r.fulfill({ json: { at: Date.now(), positions: [h] } }))
   await page.goto('/')

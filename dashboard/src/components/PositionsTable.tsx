@@ -410,7 +410,7 @@ export function PositionsTable({ positions, compact = false }: { positions: Posi
   }, [markets, compact, dense, narrow, pending, anyRealized, healthById, health.data, health.isError, clock])
 
   return (
-    <>
+    <div className="position-layout">
       <div className="position-cards" aria-label="Open positions">
         {positions.length === 0 && <p className="muted">No open positions</p>}
         {positions.map((p) => {
@@ -595,6 +595,6 @@ export function PositionsTable({ positions, compact = false }: { positions: Posi
           })
         }}
       />
-    </>
+    </div>
   )
 }
