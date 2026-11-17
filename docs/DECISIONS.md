@@ -8130,3 +8130,16 @@ This addresses avoidable paper waiting, not the whole research-capacity problem:
 at that close. More generated signals also did not mean more affordable entries: the audited rolling 24 hours had
 38 depth-cost refusals versus 10 previously. No fee/chop/burst gate is relaxed and no profit uplift is claimed.
 The audit and validation are in `docs/research/signal-throughput-2026-11-17.json`.
+
+## 296. Release research compute permits before asynchronous admission (17 November 2026)
+
+After Pine returns, pricing and admission may still await depth. Separate compute permits from bounded outstanding
+results so those waits do not leave workers idle behind a research backlog. Keep the existing six-worker research
+limit on the eight-worker VM, with at most four outstanding results per compute permit (24 total). Cell ownership
+lasts through settlement, and release is idempotent even after a new run of the same cell starts. Failed/early-returned
+runs also release their permit. Diagnostics distinguish computing from settling.
+
+Paper/mirror priority, reserved workers, memory checks, per-cell exclusivity, fairness and the original signal deadline
+are unchanged, as are all capital, risk, evidence and entry/exit policies. Synthetic load validation removes I/O-caused
+expiry without delaying injected paper jobs; CPU-bound waves still need live measurement. See
+`docs/research/research-capacity-and-peaks-2026-11-17.md` for the validation and separate peak-to-exit audit.

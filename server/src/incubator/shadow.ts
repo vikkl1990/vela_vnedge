@@ -72,8 +72,8 @@ export class ShadowRunner {
     const key=`${r.scannerId}:${r.symbol}:${r.tf}`;
     if(this.scheduledBars.get(key)===barAt)this.scheduledBars.delete(key);
   }
-  private async runScheduled(r:PairRow,barAt:number,live:boolean,seenAt:number,rank?:number) {
-    try{await this.run(r,barAt,live,seenAt,rank);}
+  private async runScheduled(r:PairRow,barAt:number,live:boolean,seenAt:number,rank?:number,releaseCompute?:()=>void) {
+    try{await this.run(r,barAt,live,seenAt,rank,releaseCompute);}
     catch(e){this.deps.store.noteShadowScan?.(r,barAt-TF_SECONDS[r.tf]*1000,'failed',String((e as Error)?.message??e));throw e;}
     finally{this.releaseScheduled(r,barAt);}
   }
@@ -106,11 +106,14 @@ export class ShadowRunner {
     this.deps = deps;
     this.dispatch=new ShadowDispatch({
       limit:()=>Math.max(1,(deps.pool.size??1)-(deps.pool.reserved??0)),
+      // Pricing and admission can wait on I/O after Pine releases its worker.
+      // Bound retained results separately; never borrow reserved paper workers.
+      maxInFlight:()=>4*Math.max(1,(deps.pool.size??1)-(deps.pool.reserved??0)),
       ready:()=>!deps.pool.stats.queuedLive && !deps.pool.stats.queuedMirror && deps.pool.rssReader()<deps.pool.memoryGuardBytes*SHADOW_MEMORY_SHARE,
       priority:({r})=>evidencePriority(r,this.deps.cfgRef().incubator),
       timely:({r})=>this.readingCells.has(`${r.scannerId}:${r.symbol}:${r.tf}`) || (r.stage==='tracked'&&this.timelyCells.has(`${r.scannerId}:${r.symbol}:${r.tf}`))
         || (['shadow','proposed'].includes(r.stage)&&this.forwardCells.has(`${r.scannerId}:${r.symbol}:${r.tf}`)),
-      run:({r,barAt,seenAt})=>this.runScheduled(r,barAt,false,seenAt),
+      run:({r,barAt,seenAt},releaseCompute)=>this.runScheduled(r,barAt,false,seenAt,undefined,releaseCompute),
       dropped:({r,barAt},reason)=>{this.releaseScheduled(r,barAt);this.deps.store.noteShadowScan?.(r,barAt-TF_SECONDS[r.tf]*1000,reason,reason==='expired'?'scan could not start within the unchanged signal-age window':'cell no longer scheduled');},
       error:(e,{r})=>{this.noteError(r,String((e as any)?.message??e));log.warn(`shadow ${r.scannerId} ${r.symbol}: ${String(e)}`);}
     });
@@ -362,7 +365,7 @@ export class ShadowRunner {
     if (keys.length > 60) delete this.stats.lastErrors[keys.sort((a, b) => this.stats.lastErrors[a].at - this.stats.lastErrors[b].at)[0]];
   }
 
-  private async run(rAtStart: PairRow, barAt = Date.now(), live = false, seenAt = Date.now(), rank?:number): Promise<void> {
+  private async run(rAtStart: PairRow, barAt = Date.now(), live = false, seenAt = Date.now(), rank?:number,releaseCompute?:()=>void): Promise<void> {
     let r = rAtStart;
     const s = this.deps.registry.get(r.scannerId);
     if (!s || s.status !== 'ok') {this.deps.store.noteShadowScan?.(r,barAt-TF_SECONDS[r.tf]*1000,'unavailable','scanner unavailable');return;}
@@ -391,6 +394,7 @@ export class ShadowRunner {
     const res = await this.deps.pool.run(
       { scannerId: s.id, source: s.patched, symbol: r.symbol, tf: r.tf, tickSize: market.tickSize, bars, tailBars: win.tailBars, plotTail: 400, inputs: inputs && Object.keys(inputs).length ? inputs : undefined, timezone: cfg.scanners[s.id]?.timezone },
       { deadlineMs: budget, priority: live ? 'mirror' : 'shadow', ...(live&&rank!==undefined?{rank}:{}) });
+    releaseCompute?.();
     this.stats.runs++; this.stats.lastBarAt = bars.at(-1)!.time;
     if (live) this.noteWave(r.tf, barAt, seenAt, tPool, Date.now(), res.ms ?? 0);
     if (!res.ok) { this.deps.store.noteShadowScan?.(r,barAt-TF_SECONDS[r.tf]*1000,'failed',res.error??'unknown scanner error'); if (/too late to be useful/.test(res.error ?? '')) this.stats.expired++; else this.noteError(r, res.error ?? 'unknown'); return; }
