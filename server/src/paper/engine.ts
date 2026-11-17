@@ -1,3 +1,4 @@
+import {twoBarFailure} from './failedTradeExit.ts';
 import {nativeGeometryError} from '../scanners/plotLifecycle.ts';
 import {BASKET_SCANNER,BASKET_MARKER,basketRefusal,basketLevels,basketSizing,basketStopRisk,sizeBasketEntry} from './basket.ts';
 import {PartialExits} from './partialExits.ts';
@@ -471,6 +472,11 @@ export class PaperEngine extends EventEmitter {
         this.exitExecution.amend(p,desired,at,cfg.latencyMs);
         if(ack||desired!==activeStop||p.trailOff!==offBefore)this.persist(p);
         this.recordPath(p,price,at,ack?'stop acknowledged':undefined);
+        // Only the explicitly versioned research candidate. A candle or restart
+        // catch-up cannot trigger this rule; onTrade already validates tick freshness.
+        if(this.book===2&&qty>0&&twoBarFailure(p,price,at)){
+          this.requestExit(p,'two_bar_failure',p.qtyOpen,price,at);return;
+        }
         const maxHold=p.executionPlan?.maxHoldMinutes;
         if(maxHold&&at-p.entryAt>=maxHold*60000)this.requestExit(p,'plan_time',p.qtyOpen,price,at);
         const scratch=structuredClone(p),stall=earlyStallExit(scratch,price,at,cfg);

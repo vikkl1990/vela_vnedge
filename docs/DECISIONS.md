@@ -8143,3 +8143,27 @@ Paper/mirror priority, reserved workers, memory checks, per-cell exclusivity, fa
 are unchanged, as are all capital, risk, evidence and entry/exit policies. Synthetic load validation removes I/O-caused
 expiry without delaying injected paper jobs; CPU-bound waves still need live measurement. See
 `docs/research/research-capacity-and-peaks-2026-11-17.md` for the validation and separate peak-to-exit audit.
+
+## 297. Prospective failed-trade and early-profit-floor comparisons (17 November 2026)
+
+Add two independent exit-only comparisons for Trend Impulse: INIT 15m and PARTI 1h. The control keeps current exits.
+The candidate may request a market exit after two elapsed bar durations if the observed peak stayed below +0.2R
+and a fresh trade is at or below −0.5R. Original stop/liquidation priority, delayed submission, executable depth,
+fees, funding, partial settlement and restart recovery remain in force. Candles cannot trigger this experimental exit.
+A candle-only backtest refuses the candidate instead of silently ignoring its tick-dependent rule.
+
+Add a separate SuperTrend Cluster / EVAA 15m comparison: the candidate sets a +0.1R price floor after +0.3R,
+while retaining the current +0.5R trail, tightening steps, stall behavior and all entry settings. The floor is gross
+price R, not guaranteed net profit: fees, depth and gaps still determine the realised result. Research evidence is
+promising but insufficient for paper; the fixed settings are prospective hypotheses, not fitted per future trade.
+
+All six arms are isolated book-2 plans with separate frozen identities and full fees. Existing 81 plans, paper mode,
+capital, risk settings, admission and promotion evidence remain unchanged. The research-plan bound becomes 87;
+worker permits, queue deadlines and paper priority do not change. Paired results require equal entry time, price,
+size, original stop and risk, and report net, SLs, all losing trades and winners cut short. Research plans cannot
+supply promotion evidence. Lower SL counts alone are not proof of improvement.
+
+Capture INIT, PARTI and EVAA tick/depth in the bounded focused archive (ARIA retention continues), freeze entry
+context and plan policy, and retain depth from actual exit reads without extra REST calls. Missing observations
+remain missing. The rollout script is additive, idempotent and dry-run capable; it changes only the six plans after
+checking their baseline. Deploy only after validation and do not rewrite existing paper positions.

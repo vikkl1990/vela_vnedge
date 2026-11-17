@@ -1,3 +1,4 @@
+import {isTwoBarCell,TWO_BAR_EXIT} from './failedTradeExit.ts';
 import {MARKITTICK_NATIVE} from '../scanners/markitTick.ts';
 import {plotLifecycle,TREND_CONTINUATION} from '../scanners/plotLifecycle.ts';
 import {nativeReentry} from '../scanners/nativeLifecycle.ts';
@@ -17,9 +18,9 @@ import { exitConfigFor } from './logic.ts';
 import { scannerExitPolicy, entryPolicy, ownExitsOverride } from './policy.ts';
 import { adaptPlan } from './planStudy.ts';
 
-// Bounded research capacity: 73 existing plans plus six VNEDGE/Stealth import cells.
+// Bounded research capacity: 81 existing plans plus four two-bar arms and two EVAA early-floor arms.
 // This does not change account positions, allocation or risk limits.
-export const MAX_RESEARCH_PLANS = 81;
+export const MAX_RESEARCH_PLANS = 87;
 /** Explicit TP experiment; original stop and sizing stay fixed. Trail changes are opt-in and labeled. */
 export interface TakeProfitPlan {
   mode: 'native' | 'r';
@@ -34,10 +35,12 @@ export interface ProfitCapturePlan {
   floorAtR: number;
   floorKeepR: number;
 }
-export interface PlanComparison { group: string; role: 'control' | 'candidate'; kind?: 'exit-policy' }
+export interface PlanComparison { group: string; role: 'control' | 'candidate'; kind?: 'exit-policy' | 'two-bar' | 'profit-floor' }
 /** Interpretation only: changing Pine inputs or trading rules requires a different experiment. */
 export type ReadingOverride = {version:number} & Pick<Partial<ScannerConfig>,'reader'|'sources'|'labels'|'sides'|'labelStyles'|'invert'|'edge'>;
 export interface ExecutionPlan {
+  profitFloor?: {afterR:number;keepR:number};
+  failedTradeExit?: typeof TWO_BAR_EXIT;
   basket?: 'rsi-volume-ladder-v1';
   /** Same native initial stop/entry; replace author TP with account R ladder, trail and floor. */
   exitPolicy?: 'account-ladder' | 'own-exits';
@@ -57,6 +60,8 @@ export interface ExecutionPlan {
   readingOverride?: ReadingOverride;
 }
 export interface ExecutionPlanSnapshot {
+  profitFloor?: {afterR:number;keepR:number};
+  failedTradeExit?: typeof TWO_BAR_EXIT;
   basket?: ExecutionPlan['basket'];
   exitPolicy?: ExecutionPlan['exitPolicy'];
   /** Absent on legacy basket cohorts; never reinterpret their recorded R. */
@@ -78,14 +83,14 @@ export interface ExecutionPlanSnapshot {
   /** A native full-close instruction may precede a fresh same-side entry on one bar. */
   nativeReentryVersion?: 1;
 }
-export function takeProfitLabel(p: Pick<ExecutionPlanSnapshot,'paper'|'takeProfit'|'basket'> & Partial<Pick<ExecutionPlanSnapshot,'sourceScannerId'|'exitPolicy'>>): string {
+export function takeProfitLabel(p: Pick<ExecutionPlanSnapshot,'paper'|'takeProfit'|'basket'> & Partial<Pick<ExecutionPlanSnapshot,'sourceScannerId'|'exitPolicy'|'failedTradeExit'>>): string {
   if(p.sourceScannerId===TREND_CONTINUATION)return 'Native 2×ATR stop · one 2R target · no trailing stop';
   if(plotLifecycle(p.sourceScannerId))return p.sourceScannerId?.startsWith('machine-learning')?'Native Supertrend stop and flip exit · no fixed TP':'Native stop and TP1/TP2 milestones · closes at TP3';
   if(p.basket)return 'Basket: up to 3 entries · $150 total margin · 4% shared target · 3% below lowest fill stop';
   const c=p.paper, ladder=c.fallbackRR.join('/'), allocation=c.tpSplit.map(x=>`${Math.round(x*100)}%`).join('/');
   const trail=c.trailAfterR>0?`trail from ${c.trailAfterR}R · ${c.trailAtrMult>0?`${c.trailAtrMult} ATR distance`:c.trailGiveBackPct>0?`${c.trailGiveBackPct}% peak giveback`:`${c.trailDistanceR||1}R distance`}`:'trail off';
   const floor=c.floorAtR>0?` · floor ${c.floorKeepR}R from ${c.floorAtR}R`:'';
-  return `${c.scriptTargets==='ignore'?'R ladder':c.scriptTargets==='widen'?'Native widened':'Native; fallback'} ${ladder}R · ${allocation} · ${trail}${floor}${c.trailSteps?.length?' · stepped tightening':''}${c.trailStall?.minutes?` · tightens after ${c.trailStall.minutes}m without a new peak`:''}`;
+  return `${c.scriptTargets==='ignore'?'R ladder':c.scriptTargets==='widen'?'Native widened':'Native; fallback'} ${ladder}R · ${allocation} · ${trail}${floor}${c.trailSteps?.length?' · stepped tightening':''}${c.trailStall?.minutes?` · tightens after ${c.trailStall.minutes}m without a new peak`:''}${p.failedTradeExit?' · two-bar loss exit at ≤−0.5R if peak <+0.2R (shadow only)':''}`;
 }
 const stable = (v: unknown) => JSON.stringify(v, (_k,x) => x && typeof x === 'object' && !Array.isArray(x) ? Object.fromEntries(Object.entries(x).sort(([a],[b])=>a.localeCompare(b))) : x);
 export const planScannerId = (p: Pick<ExecutionPlanSnapshot,'id'|'revision'|'signature'>) => `plan:${p.id}:v${p.revision}:${p.signature}`;
@@ -114,8 +119,9 @@ export function planSnapshot(cfg: AppConfig, p: ExecutionPlan, sourceHash: strin
     ...(p.takeProfit.trailAfterR!==undefined?{trailAfterR:p.takeProfit.trailAfterR}:{})});
   if(p.trailing)Object.assign(paper,{trailAfterR:p.trailing.afterR,trailGiveBackPct:p.trailing.giveBackPct,
     floorAtR:p.trailing.floorAtR,floorKeepR:p.trailing.floorKeepR,trailAtrMult:0,trailDistanceR:0,trailSteps:[],trailStall:undefined});
+  if(p.profitFloor)Object.assign(paper,{floorAtR:p.profitFloor.afterR,floorKeepR:p.profitFloor.keepR});
   if(p.maxStopLossPct!==undefined)paper.maxStopLossPct=paper.maxStopLossPct>0?Math.min(paper.maxStopLossPct,p.maxStopLossPct):p.maxStopLossPct;
-  const result = {...(p.exitPolicy?{exitPolicy:p.exitPolicy}:{}),...(p.basket?{basket:p.basket,basketAccountingVersion:BASKET_ACCOUNTING_VERSION as 2}:{}),id:p.id,revision:p.revision,executionVersion:CAUSAL_EXIT_VERSION,sourceHash,reading:sc?structuredClone(sc):null,sourceScannerId:p.scannerId,variant:p.variant,symbol:p.symbol,tf:p.tf,
+  const result = {...(p.profitFloor?{profitFloor:structuredClone(p.profitFloor)}:{}),...(p.failedTradeExit?{failedTradeExit:p.failedTradeExit}:{}),...(p.exitPolicy?{exitPolicy:p.exitPolicy}:{}),...(p.basket?{basket:p.basket,basketAccountingVersion:BASKET_ACCOUNTING_VERSION as 2}:{}),id:p.id,revision:p.revision,executionVersion:CAUSAL_EXIT_VERSION,sourceHash,reading:sc?structuredClone(sc):null,sourceScannerId:p.scannerId,variant:p.variant,symbol:p.symbol,tf:p.tf,
     paper,exitMode,requireAtrStop:Boolean(paper.skipScriptStops),referenceEquity:p.referenceEquity,maxHoldMinutes:p.maxHoldMinutes,
     ...(p.takeProfit?{takeProfit:structuredClone(p.takeProfit)}:{}),...(p.label?{label:p.label}:{}),
     ...(p.comparison?{comparison:structuredClone(p.comparison)}:{})};
@@ -141,6 +147,7 @@ export function planEvents(events: ScanEvent[], bars: Bar[], p: ExecutionPlanSna
   return p.variant === 'current' ? events.map(ev=>protectEntry(ev,p.reading?.entryProtection)) : adaptPlan(events,bars,p.variant);
 }
 export function planBacktest(p: ExecutionPlanSnapshot) {
+  if(p.failedTradeExit)throw Error('two-bar exit requires causal tick/depth replay; candle-only backtest is unsupported');
   if(p.basket)throw Error('basket execution requires stateful shadow replay; single-position candle backtest is unsupported');
   const le=p.paper.limitEntry;
   return {cfg:p.paper,exitMode:p.exitMode,scannerExitResolved:true as const,requireAtrStop:p.requireAtrStop,
@@ -196,7 +203,14 @@ export function validateExecutionPlans(plans: ExecutionPlan[] | undefined, tfs: 
       if(!t||![t.afterR,t.giveBackPct,t.floorAtR,t.floorKeepR].every(Number.isFinite)||t.afterR<=0||t.afterR>10||t.giveBackPct<=0||t.giveBackPct>=100||t.floorAtR<0||t.floorAtR>10||t.floorKeepR<0||(t.floorAtR===0?t.floorKeepR!==0:t.floorKeepR>=t.floorAtR))errors.push(`executionPlans.${p.id}: invalid profit-capture trail or floor`);
       if(p.takeProfit?.trailAfterR!==undefined)errors.push(`executionPlans.${p.id}: specify trail activation in only one place`);
     }
-    if(p.comparison!==undefined&&(!p.comparison||!/^[a-z0-9][a-z0-9-]{0,79}$/.test(p.comparison.group??'')||!['control','candidate'].includes(p.comparison.role)||p.comparison.kind!==undefined&&p.comparison.kind!=='exit-policy'))errors.push(`executionPlans.${p.id}: invalid comparison group or role`);
+    if(p.comparison!==undefined&&(!p.comparison||!/^[a-z0-9][a-z0-9-]{0,79}$/.test(p.comparison.group??'')||!['control','candidate'].includes(p.comparison.role)||p.comparison.kind!==undefined&&!['exit-policy','two-bar','profit-floor'].includes(p.comparison.kind)))errors.push(`executionPlans.${p.id}: invalid comparison group or role`);
+    if(p.failedTradeExit!==undefined&&(p.failedTradeExit!==TWO_BAR_EXIT||p.comparison?.kind!=='two-bar'||p.comparison.role!=='candidate'))errors.push(`executionPlans.${p.id}: two-bar exit requires its explicit shadow candidate`);
+    if(p.comparison?.kind==='two-bar'&&(!isTwoBarCell(p.scannerId,p.symbol,p.tf)||p.variant!=='current'||p.readingOverride||p.trailing||p.takeProfit||p.profitFloor||p.basket||p.maxHoldMinutes!==undefined||p.exitPolicy!==undefined))errors.push(`executionPlans.${p.id}: two-bar study requires the reviewed Trend Impulse cell and unchanged entry/exit policy`);
+    if(p.profitFloor!==undefined){
+      const f=p.profitFloor;
+      if(!f||![f.afterR,f.keepR].every(Number.isFinite)||f.afterR<=0||f.afterR>10||f.keepR<0||f.keepR>=f.afterR||p.comparison?.kind!=='profit-floor'||p.comparison.role!=='candidate')errors.push(`executionPlans.${p.id}: profit floor requires a valid explicit shadow candidate`);
+    }
+    if(p.comparison?.kind==='profit-floor'&&(p.variant!=='current'||p.readingOverride||p.trailing||p.takeProfit||p.failedTradeExit||p.basket||p.maxHoldMinutes!==undefined||p.exitPolicy!==undefined))errors.push(`executionPlans.${p.id}: floor-only study requires unchanged entry and other exits`);
     if(p.takeProfit!==undefined){
       const tp=p.takeProfit;
       if(!tp||!['native','r'].includes(tp.mode)||p.variant==='current')errors.push(`executionPlans.${p.id}: target experiments require a native/ATR level-exit plan`);
@@ -212,6 +226,16 @@ export function validateExecutionPlans(plans: ExecutionPlan[] | undefined, tfs: 
       const control=pair.find(p=>p.comparison?.role==='control'),candidate=pair.find(p=>p.comparison?.role==='candidate');
       const identity=(p:ExecutionPlan)=>Object.fromEntries(Object.entries(p).filter(([k])=>!['id','label','comparison','exitPolicy'].includes(k)));
       if(pair.length!==2||!control||!candidate||pair.some(p=>p.comparison?.kind!=='exit-policy')||control.exitPolicy!=='account-ladder'||candidate.exitPolicy!==undefined||stable(identity(control))!==stable(identity(candidate)))errors.push(`executionPlans comparison ${group}: exit policies must share exactly the same source, reading, entry and risk settings`);
+    }
+    if(pair.some(p=>p.comparison?.kind==='two-bar')){
+      const control=pair.find(p=>p.comparison?.role==='control'),candidate=pair.find(p=>p.comparison?.role==='candidate');
+      const identity=(p:ExecutionPlan)=>Object.fromEntries(Object.entries(p).filter(([k])=>!['id','label','comparison','failedTradeExit'].includes(k)));
+      if(pair.length!==2||!control||!candidate||pair.some(p=>p.comparison?.kind!=='two-bar')||control.failedTradeExit!==undefined||candidate.failedTradeExit!==TWO_BAR_EXIT||stable(identity(control))!==stable(identity(candidate)))errors.push(`executionPlans comparison ${group}: two-bar arms must differ only in the failed-trade exit`);
+    }
+    if(pair.some(p=>p.comparison?.kind==='profit-floor')){
+      const control=pair.find(p=>p.comparison?.role==='control'),candidate=pair.find(p=>p.comparison?.role==='candidate');
+      const identity=(p:ExecutionPlan)=>Object.fromEntries(Object.entries(p).filter(([k])=>!['id','label','comparison','profitFloor'].includes(k)));
+      if(pair.length!==2||!control||!candidate||pair.some(p=>p.comparison?.kind!=='profit-floor')||control.profitFloor!==undefined||!candidate.profitFloor||stable(identity(control))!==stable(identity(candidate)))errors.push(`executionPlans comparison ${group}: floor arms must differ only in the profit floor`);
     }
     const comparable=(p:ExecutionPlan)=>[p.scannerId,p.symbol,p.tf,p.variant,p.referenceEquity,p.maxStopLossPct,p.maxHoldMinutes,p.enabled,p.takeProfit];
     if(pair.length!==2||new Set(pair.map(p=>p.comparison!.role)).size!==2||stable(comparable(pair[0]))!==stable(comparable(pair[1])))errors.push(`executionPlans comparison ${group}: control and candidate must share source, entry/target policy, sizing and enabled state`);

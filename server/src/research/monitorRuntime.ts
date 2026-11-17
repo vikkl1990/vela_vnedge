@@ -58,12 +58,14 @@ export class MonitorRuntime {
    const m=this.markets.get(symbol);if(m)this.app.replayArchive?.record(symbol,'study_market_sample',{...m,depth:undefined},now,'entry-invalidation-observer');
   }
   const currentContexts=new Set<string>();
-  for(const {position:p,book,scope,exitPending,marketQty} of inputs){
+  for(const {position:p,book,scope,exitPending,marketQty,config} of inputs){
    if(!EXIT_STUDY_SYMBOLS.some(s=>s===p.symbol))continue;
    const key=`${p.id}:${p.entryAt}`;currentContexts.add(key);
    if(!this.capturedContexts.has(key))this.app.replayArchive?.record(p.symbol,'study_entry_context',{
     positionId:p.id,entryAt:p.entryAt,book,scope,scannerId:p.scannerId,tf:p.tf,side:p.side,entryPrice:p.entryPrice,
-    originalStop:p.slOriginal,policyId:p.policy?.id??null,sourceHash:p.policy?.sourceHash??null,signalBar:frozenSignalBar(this.app.db,p),
+    originalStop:p.slOriginal,policyId:p.policy?.id??null,sourceHash:p.policy?.sourceHash??p.executionPlan?.sourceHash??null,
+    executionPlan:p.executionPlan??null,qty:p.qty,contractValue:p.contractValue,riskAmount:p.riskAmount,
+    entryFills:p.fills.filter(f=>f.reason==='entry'),exitConfig:config,signalBar:frozenSignalBar(this.app.db,p),
     observedAfterEntryMs:now-p.entryAt},now,'entry-invalidation-observer');
    this.app.replayArchive?.record(p.symbol,'study_position_sample',{positionId:p.id,entryAt:p.entryAt,book,scope,
     quote:this.markets.get(p.symbol)?{price:this.markets.get(p.symbol)!.price,at:this.markets.get(p.symbol)!.priceAt}:null,

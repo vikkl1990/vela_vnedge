@@ -74,7 +74,12 @@ export function wireRealtime(app: App): void {
   app.shadow.exitQuantity=(p,market)=>app.paper.previewDepthQuantity({scannerId:p.scannerId,symbol:p.symbol,tf:p.tf,price:p.entryPrice,sl:p.slOriginal!,at:p.entryAt,market,maker:p.fills[0]?.liquidity==='maker'});
   const exitPump=new PaperExitPump({
     pending:()=>books.flatMap(b=>b.pendingExits()).sort((a,b)=>a.ready_at-b.ready_at||a.id-b.id),
-    fetch:(symbol,readyAt)=>readPaperExitBook(app,symbol,readyAt),
+    fetch:async(symbol,readyAt)=>{
+      const book=await readPaperExitBook(app,symbol,readyAt);
+      // Reuse the real exit request: retain REST/WS depth at receipt, never fetch extra or backdate it.
+      app.replayArchive?.record(symbol,'exit_depth',book,book.receivedAt,'paper-exit-depth');
+      return book;
+    },
     apply:(symbol,book,at)=>{for(const b of books)b.settleExits(symbol,book,at);}
   });
   const exitTimer=setInterval(()=>exitPump.tick(),100);exitTimer.unref();
