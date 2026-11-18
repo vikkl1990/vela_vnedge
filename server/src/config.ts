@@ -573,6 +573,7 @@ export interface RiskConfig {
   closeAllOnKill: boolean;
   /** Total open + pending count ceiling; 0 disables only this ceiling. */
   maxPositionsTotal: number;
+  /** Per-market open + pending count ceiling; 0 disables only this ceiling. */
   maxPositionsPerSymbol: number;
   /** Cap |Σ side × notional × corr(symbol, BTCUSD)| as % of equity (0 = off). Correlation over the last `corrBars` closed bars of the entry timeframe. */
   maxBetaExposurePct: number;
@@ -1011,7 +1012,7 @@ export function validateRealismAndRisk(c: AppConfig): string[] {
   pct(r.maxDailyLossPct, 'maxDailyLossPct'); pct(r.maxWeeklyLossPct, 'maxWeeklyLossPct'); pct(r.perScannerDailyLossPct, 'perScannerDailyLossPct');
   pct(r.maxBetaExposurePct, 'maxBetaExposurePct', 100_000);
   if (!Number.isInteger(r.maxPositionsTotal) || r.maxPositionsTotal < 0) errs.push('risk.maxPositionsTotal must be a non-negative integer (0 disables the cap)');
-  if (!(r.maxPositionsPerSymbol >= 1)) errs.push('risk.maxPositionsPerSymbol must be ≥ 1');
+  if (!Number.isSafeInteger(r.maxPositionsPerSymbol) || r.maxPositionsPerSymbol < 0) errs.push('risk.maxPositionsPerSymbol must be an integer ≥ 0 (0 = no count limit)');
   if (!(r.perScannerMaxPositions >= 1)) errs.push('risk.perScannerMaxPositions must be ≥ 1');
   if (!(r.corrBars >= 5 && r.corrBars <= 500)) errs.push('risk.corrBars must be 5..500');
   if (!(r.cooldownAfterLosses >= 0 && r.cooldownMinutes >= 0)) errs.push('risk.cooldownAfterLosses and cooldownMinutes must be ≥ 0');

@@ -128,7 +128,7 @@ Checked per entry before sizing, in this order; the first failure is recorded as
 
 1. Manual halt (`POST /api/risk/kill`), applied even when `risk.enabled` is false.
 2. Daily / weekly kill switch: `(equity − periodStartEquity) / periodStartEquity × 100 ≤ −maxDailyLossPct` (`maxWeeklyLossPct`), equity including unrealized P&L. The day is the UTC day, the week starts Monday 00:00 UTC; a new period restarts from the current equity and clears the trip. `closeAllOnKill` flattens the book when a switch trips.
-3. Position caps: open + pending entries ≥ `maxPositionsTotal`, per symbol ≥ `maxPositionsPerSymbol`, per scanner ≥ `perScannerMaxPositions`.
+3. Position caps: open + pending entries ≥ `maxPositionsTotal`, per symbol ≥ `maxPositionsPerSymbol`, per scanner ≥ `perScannerMaxPositions`. Zero disables the total or per-symbol count ceiling independently; margin reservations, stop-risk and other risk checks still apply.
 4. Per-scanner daily budget: the scanner's net realized P&L since the day start (closed trades plus partial exits and funding on open positions) ≤ `−perScannerDailyLossPct` % of the day-start equity.
 5. Cooldown: after `cooldownAfterLosses` consecutive losing trades (net P&L < 0; a winning trade resets the count) the scanner is paused for `cooldownMinutes` from the loss.
 6. Regime filter: no entries on Saturday/Sunday UTC (`noWeekend`) and none when `ATR(14) / price × 100 < minAtrPct` (skipped when no ATR is available); scanner ids in `exempt` bypass it.

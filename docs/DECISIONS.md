@@ -8175,3 +8175,26 @@ Capture INIT, PARTI and EVAA tick/depth in the bounded focused archive (ARIA ret
 context and plan policy, and retain depth from actual exit reads without extra REST calls. Missing observations
 remain missing. The rollout script is additive, idempotent and dry-run capable; it changes only the six plans after
 checking their baseline. Deploy only after validation and do not rewrite existing paper positions.
+
+## 299. Optional per-market position count without resetting compatible readiness (18 November 2026)
+
+The operator requested removal of the one-position-per-pair limit after a held ETH 4h position
+blocked entries from other scanners. `risk.maxPositionsPerSymbol: 0` now disables only that count
+ceiling; positive integers retain the existing open-plus-pending check. Reject negative, fractional
+and non-finite settings. Risk status reports an absent ceiling as null and Settings explains zero.
+
+The reviewed migration changes only this field from one to zero, requires paper mode with production
+disabled, supports dry-run, backs up the config and writes atomically. It does not close or resize
+held positions, replay rejected signals, alter scanner duplicate detection, or change margin, stop-risk,
+loss limits, cooldowns, burst guards, scanner caps, entry costs or qualification requirements.
+
+Readiness may retain immutable historical trades when only account or market count capacity expands.
+Verify policy hashes and all other execution, source, reader, size, fees and risk terms; tightening is
+incompatible. Existing unrelated-cell and same-size replay proofs compose with the expansion. Keep
+winners and losers and all evidence exclusions. No historical fills or profits are changed, and the
+existing strategy identity, copying, promotion and leverage qualification remain unchanged. Historical
+readiness is not evidence of performance at the newly permitted concurrency.
+
+Integration coverage verifies multiple scanners filling the same market, duplicate-cell protection,
+restart persistence, rechecking finite limits at fill, pending margin reservation, remaining scanner and
+kill-switch limits, and preservation of compatible readiness without weakening source or sizing proofs.

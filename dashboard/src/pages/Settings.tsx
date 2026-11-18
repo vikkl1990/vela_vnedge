@@ -185,7 +185,8 @@ const SECTIONS: Section[] = [
         label: 'Positions per market',
         kind: 'number',
         step: '1',
-        validate: num(1, 20),
+        hint: '0 removes this count limit; margin and all other risk checks still apply',
+        validate: num(0, 20),
       },
       {
         path: 'risk.perScannerMaxPositions',

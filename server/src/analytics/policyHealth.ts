@@ -73,7 +73,7 @@ export function policyHealth(db:Db,paper:PaperEngine,shadow:PaperEngine,now=Date
       pending:engine.pendingEntries().length,reservedMargin:engine.pendingEntries().reduce((n,p)=>n+(p.reservation?.margin??0),0)};
   });
   return {at:now,windowDays:30,books,haltEvents:db.get<{n:number}>('SELECT COUNT(*) n FROM risk_halts WHERE at>=?',now-30*86400000)?.n??0,
-    qualification:'Current source, scanner interpretation, execution, fees and risk caps. Readiness can retain expanded count limits, unrelated-cell maker settings, and recorded entries whose quantity and stop risk replay identically after removal of drawdown sizing. Promotion and leverage qualification are unchanged.',
+    qualification:'Current source, scanner interpretation, execution, fees and risk caps. Readiness can retain expanded account or market count limits, unrelated-cell maker settings, and recorded entries whose quantity and stop risk replay identically after removal of drawdown sizing. Promotion and leverage qualification are unchanged.',
     limitations:['Execution replay covers recorded inputs. Historical depth and order queues are not reconstructed.',
       'Compatible trades retain their actual returns and observed frequency. They do not establish performance at higher concurrency.',
       'Forward profitability and exchange lifecycle certification are still required before live activation.']};
