@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {DEFAULT_CONFIG} from '../config.ts';
 import {resolveTradePolicy,tradePolicyIdFor,type TradePolicy} from '../paper/tradePolicy.ts';
 import {strategyIdFor} from '../paper/strategyIdentity.ts';
-import {capacityExpansionCompatible} from './readinessCompatibility.ts';
+import {capacityExpansionCompatible,additionalReadinessCompatibility} from './readinessCompatibility.ts';
 
 function policies(){
   const cfg=structuredClone(DEFAULT_CONFIG),cell={scannerId:'s',symbol:'BTCUSD',tf:'1h'};
@@ -39,13 +39,31 @@ const changes:Record<string,(p:TradePolicy)=>void>={
   feeGate:p=>{p.paper.minRiskFeeRatio++;},slippage:p=>{p.paper.slippageBps++;},
   stops:p=>{p.paper.skipScriptStops=!p.paper.skipScriptStops;},
   dailyLoss:p=>{p.risk.maxDailyLossPct++;},weeklyLoss:p=>{p.risk.maxWeeklyLossPct++;},
-  perSymbol:p=>{p.risk.maxPositionsPerSymbol++;},perScanner:p=>{p.risk.perScannerMaxPositions++;},
+  perSymbolTightening:p=>{p.risk.maxPositionsPerSymbol=1;},perScanner:p=>{p.risk.perScannerMaxPositions++;},
   regime:p=>{p.risk.regime={...p.risk.regime,enabled:!p.risk.regime?.enabled};},
   cooldown:p=>{p.risk.reentryCooldownMinutes++;},ml:p=>{p.ml.minProb+=.1;},
 };
 for(const [name,change]of Object.entries(changes))test(`count expansion does not admit a changed ${name} policy`,()=>{
   const {old,current}=policies();change(current);reidentify(current);
   assert.equal(capacityExpansionCompatible(old,current),false);
+});
+
+test('removing the market count ceiling preserves exact execution evidence but cannot hide changed risk or fees',()=>{
+ const cfg=structuredClone(DEFAULT_CONFIG),cell={scannerId:'s',symbol:'BTCUSD',tf:'1h'};
+ cfg.risk.maxPositionsPerSymbol=1;const old=resolveTradePolicy(cfg,cell,'source');
+ cfg.risk.maxPositionsPerSymbol=0;const current=resolveTradePolicy(cfg,cell,'source');
+ assert.equal(old.strategyId,current.strategyId);assert.notEqual(old.id,current.id);
+ assert.equal(capacityExpansionCompatible(old,current),true);
+ assert.equal(capacityExpansionCompatible(current,old),false);
+ for(const n of [-1,.5,NaN,Infinity]){
+  const invalid=structuredClone(current);invalid.risk.maxPositionsPerSymbol=n;reidentify(invalid);
+  assert.equal(capacityExpansionCompatible(old,invalid),false);
+  assert.equal(additionalReadinessCompatibility(old,invalid),null);
+ }
+ const changed=structuredClone(current);changed.paper.maxStopLossPct++;reidentify(changed);
+ assert.equal(capacityExpansionCompatible(old,changed),false);
+ const scopedOld=structuredClone(old);scopedOld.sizing.makerQuoteCells=[{scannerId:'unrelated',symbol:'SOLUSD',tf:'15m'}];reidentify(scopedOld);
+ assert.equal(additionalReadinessCompatibility(scopedOld,current),'scope','retain already permitted unrelated-cell compatibility');
 });
 
 test('missing, adopted, invalid and tampered policy snapshots fail closed',()=>{
