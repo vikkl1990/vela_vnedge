@@ -8198,3 +8198,22 @@ readiness is not evidence of performance at the newly permitted concurrency.
 Integration coverage verifies multiple scanners filling the same market, duplicate-cell protection,
 restart persistence, rechecking finite limits at fill, pending margin reservation, remaining scanner and
 kill-switch limits, and preservation of compatible readiness without weakening source or sizing proofs.
+
+## 300. Prospective scanner-specific half-stop observations (19 November 2026)
+
+Evaluate earlier exits for SuperTrend Cluster, AI Predictive Flow and the SOL 15m continuation-maker
+without changing an actual trade. Future filled paper and regular shadow entries supply separate
+reference cohorts. The candidate observes −0.5 price R, then prices the exit from fresh depth after
+configured latency. A second arm adds three seconds and five bps adverse execution. Fees, offer
+timing, funding and partial fills use existing accounting. Protective actual exits have priority.
+
+Freeze enrollment at first deployment; retain each entry's policy and source. Report unchanged trades,
+coverage failures, full SLs, all losses and winners cut alongside base/stress net. Missing observations,
+changed exposure, replaced identities and censored fills cannot manufacture improvement. Study state
+and the two trial inserts are atomic; restart preserves the clock and pending fills. Research tables
+cannot supply promotion evidence and this module has no trading/configuration authority.
+
+The positive nine-trade retrospective subset motivates this test only: the global control lost money.
+Paper adoption requires prospective benefit after stress and winner damage plus existing evidence
+requirements. No risk, capital, sizing, admission, allocation or execution setting changes. The UI is
+under Trade health → What-if exits. See the dated scanner-early-exit research record for the protocol.

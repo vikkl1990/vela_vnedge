@@ -53,6 +53,38 @@ export interface MonitorTrial {
   risk: number
 }
 export interface TradeMonitorView {
+  scannerExitStudy?: {
+    rule: string
+    startedAt: number
+    mode: 'shadow-advisory'
+    promotionEligible: false
+    description: string
+    groups: Array<{
+      key: string
+      scanner: string
+      symbol: string
+      tf: string
+      book: number
+      policyId: string
+      enrolled: number
+      closed: number
+      covered: number
+      unavailable: number
+      missingActual: number
+      baselineNet: number | null
+      candidateNet: number | null
+      baselineR: number
+      candidateR: number
+      stressDeltaR: number
+      stopsBefore: number
+      stopsAfter: number
+      losersBefore: number
+      losersAfter: number
+      winnersCut: number
+      winnersLost: number
+      winnerGivebackR: number
+    }>
+  }
   invalidationStudy?: {
     rule: string
     startedAt: number
