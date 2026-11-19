@@ -3,10 +3,13 @@ import type {Db} from '../db.ts';
 import {TF_SECONDS,type PaperConfig} from '../config.ts';
 import {fillExit,type Position} from '../paper/logic.ts';
 import {priceExit,type ExitBook} from '../paper/exitExecution.ts';
+import {ScannerEarlyExitStudy,SCANNER_EARLY_EXIT,SCANNER_EARLY_STRESS,earlyExitCell} from './scannerEarlyExit.ts';
 import {ShadowInvalidationStudy,ARIA_RULE,ARIA_STRESS_RULE} from './shadowInvalidation.ts';
 
 export const MONITOR_VERSION='recovery-observer-v1';
 export const MONITOR_RULES=[
+ {id:SCANNER_EARLY_EXIT,name:'Scanner-specific half-stop study',description:'Prospective SuperTrend Cluster, AI Predictive Flow and SOL continuation-maker only; hypothetical exit at −0.5 price R. No actual exits.'},
+ {id:SCANNER_EARLY_STRESS,name:'Scanner-specific half-stop stress',description:'Same trigger, configured delay +3 seconds and 5 bps adverse execution. No promotion evidence.'},
  {id:'drawdown-050-v1',name:'−0.5R control',description:'Observe an exit when price reaches −0.5R. This control failed historical validation; it is not a trading recommendation.'},
  {id:'persistent-loss-v1',name:'Persistent loss',description:'After one source-timeframe bar, two observations at least a minute apart below −0.35R, with peak below +0.1R. Experimental; never executes.'},
  {id:ARIA_RULE,name:'ARIA confirmed signal-wick failure',description:'Prospective Elliott Wave ARIA 15m shadow only; confirmed on minute samples. Fresh depth after configured delay +1s; never closes the actual trade.'},
@@ -28,6 +31,7 @@ const net=(p:Position)=>p.realizedPnl-p.fees;
 export class OpenTradeMonitor {
  readonly db:Db;private states=new Map<string,State>();private pending=new Map<number,Trial>();
  readonly invalidation:ShadowInvalidationStudy;
+ readonly scannerExits:ScannerEarlyExitStudy;
  private lastMaintenance=0;private lastTick=0;
  constructor(db:Db,now=Date.now()){
   this.db=db;
@@ -45,12 +49,22 @@ export class OpenTradeMonitor {
   for(const r of db.all<{payload:string}>('SELECT payload FROM advisory_trade_states')){const s:State=JSON.parse(r.payload);this.states.set(key(s),s);}
   for(const r of db.all<Trial>("SELECT * FROM advisory_exits WHERE status IN ('waiting','partial')"))this.pending.set(r.id,r);
   this.invalidation=new ShadowInvalidationStudy(db,now);
+  this.scannerExits=new ScannerEarlyExitStudy(db,now);
  }
  observe(inputs:WatchInput[],markets:Map<string,MarketObservation>,setup:(p:Position)=>unknown,now=Date.now()){
   this.lastTick=now;const active=new Set(inputs.map(x=>key(x.position)));
   for(const input of inputs){
    const p=input.position,m=markets.get(p.symbol),unit=Math.abs(p.entryPrice-(p.slOriginal??p.entryPrice));
    if(p.status!=='open'||!(p.riskAmount>0)||!(unit>0))continue;
+   if(earlyExitCell(p.scannerId,p.symbol,p.tf)){
+    const pendingBefore=new Map(this.pending);
+    try{this.db.transaction(()=>{
+     if(this.scannerExits.observe(p,input.book,input.scope,m?.price??null,m?.priceAt??null,now,input.exitPending)){
+      this.trigger(input,SCANNER_EARLY_EXIT,now,{extraLatencyMs:0,maxWaitMs:30000,slippageBps:0});
+      this.trigger(input,SCANNER_EARLY_STRESS,now,{extraLatencyMs:3000,maxWaitMs:30000,slippageBps:5});
+     }
+    });}catch(error){this.pending=pendingBefore;throw error;}
+   }
    if(this.invalidation.observe(p,input.book,input.scope,m?.price??null,m?.priceAt??null,now,input.exitPending)){
     this.trigger(input,ARIA_RULE,now,{extraLatencyMs:1000,maxWaitMs:30000,slippageBps:0});
     this.trigger(input,ARIA_STRESS_RULE,now,{extraLatencyMs:3000,maxWaitMs:30000,slippageBps:5});
@@ -75,8 +89,8 @@ export class OpenTradeMonitor {
     this.db.run('INSERT OR IGNORE INTO advisory_checkpoints(position_id,entry_at,book,scope,symbol,checkpoint,at,payload) VALUES(?,?,?,?,?,?,?,?)',p.id,p.entryAt,input.book,input.scope,p.symbol,cp,now,JSON.stringify(payload));s.seen.push(cp);changed=true;
    }
    if(!input.exitPending&&!protective&&r>-1){
-    if(r<=-.5)this.trigger(input,MONITOR_RULES[0].id,now);
-    if(s.persistAt!==null&&now-s.persistAt>=60000)this.trigger(input,MONITOR_RULES[1].id,now);
+    if(r<=-.5)this.trigger(input,'drawdown-050-v1',now);
+    if(s.persistAt!==null&&now-s.persistAt>=60000)this.trigger(input,'persistent-loss-v1',now);
    }
    this.save(s,now,changed);
   }
@@ -152,6 +166,7 @@ export class OpenTradeMonitor {
    AND (actual_net IS NULL OR EXISTS(SELECT 1 FROM advisory_reconcile r WHERE r.position_id=advisory_exits.position_id AND r.entry_at=advisory_exits.entry_at))`,now);
   this.db.run('DELETE FROM advisory_reconcile');
   this.invalidation.reconcile(now);
+  this.scannerExits.reconcile(now);
   this.db.run("UPDATE advisory_exits SET status='censored',delta=NULL,error='Actual position unavailable or reset' WHERE status='filled' AND actual_net IS NULL AND NOT EXISTS(SELECT 1 FROM positions p WHERE p.id=position_id AND p.entry_at=advisory_exits.entry_at)");
   this.db.run('DELETE FROM advisory_exit_liquidity WHERE at<?',now-86400000);
   // Bound storage independently of trading journals. Keep 90 days / 200k checkpoints and 50k trials.
@@ -165,7 +180,7 @@ export class OpenTradeMonitor {
    sum(CASE WHEN status='filled' AND actual_net IS NOT NULL THEN delta ELSE 0 END) deltaUsd,
    sum(CASE WHEN status='filled' AND actual_net IS NOT NULL THEN delta/json_extract(payload,'$.position.riskAmount') ELSE 0 END) deltaR,
    sum(status IN ('unpriced','censored')) unavailable,sum(status='filled' AND actual_net>0 AND net<0) winnersLost FROM advisory_exits GROUP BY book,scope,rule`);
-  return {mode:'advisory' as const,version:MONITOR_VERSION,at:this.lastTick,rules:MONITOR_RULES,positions:[...this.states.values()],trials:rows,summary,invalidationStudy:this.invalidation.view()};
+  return {mode:'advisory' as const,version:MONITOR_VERSION,at:this.lastTick,rules:MONITOR_RULES,positions:[...this.states.values()],trials:rows,summary,invalidationStudy:this.invalidation.view(),scannerExitStudy:this.scannerExits.view()};
  }
  detail(id:number){return this.db.all<any>('SELECT checkpoint,at,payload FROM advisory_checkpoints WHERE position_id=? ORDER BY at LIMIT 100',id).map(x=>({...x,payload:JSON.parse(x.payload)}));}
 }

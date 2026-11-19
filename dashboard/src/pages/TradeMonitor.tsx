@@ -17,6 +17,7 @@ import {
   Toolbar,
 } from '../components/kit'
 import { PairHeatmap } from '../components/PairHeatmap'
+import { ScannerExitStudy } from '../components/ScannerExitStudy'
 
 import type { TradeMonitorView } from '../api/tradeMonitor'
 import { fmtAge, fmtPnl, fmtPnlUsd } from '../lib/format'
@@ -292,6 +293,7 @@ export function TradeMonitor() {
                     after both the what-if fill and the real trade have finished. More early exits do not mean
                     better performance.
                   </Callout>
+                  {d.scannerExitStudy && <ScannerExitStudy study={d.scannerExitStudy} />}
                   {d.invalidationStudy && (
                     <Section
                       title="ARIA · prospective shadow comparison"
