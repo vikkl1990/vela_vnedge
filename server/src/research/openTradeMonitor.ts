@@ -5,9 +5,11 @@ import {fillExit,type Position} from '../paper/logic.ts';
 import {priceExit,type ExitBook} from '../paper/exitExecution.ts';
 import {ScannerEarlyExitStudy,SCANNER_EARLY_EXIT,SCANNER_EARLY_STRESS,earlyExitCell} from './scannerEarlyExit.ts';
 import {ShadowInvalidationStudy,ARIA_RULE,ARIA_STRESS_RULE} from './shadowInvalidation.ts';
+import {ConditionalExitStudy,EXIT_ARMS,conditionalRule} from './conditionalExit.ts';
 
 export const MONITOR_VERSION='recovery-observer-v1';
 export const MONITOR_RULES=[
+ ...EXIT_ARMS.flatMap(arm=>[false,true].map(stress=>({id:conditionalRule(arm,stress),name:`Conditional ${arm}${stress?' stress':''}`,description:'Scanner-specific prospective advisory comparison; same filled entry, executable depth and fees. No actual exits or promotion evidence.'}))),
  {id:SCANNER_EARLY_EXIT,name:'Scanner-specific half-stop study',description:'Prospective SuperTrend Cluster, AI Predictive Flow and SOL continuation-maker only; hypothetical exit at −0.5 price R. No actual exits.'},
  {id:SCANNER_EARLY_STRESS,name:'Scanner-specific half-stop stress',description:'Same trigger, configured delay +3 seconds and 5 bps adverse execution. No promotion evidence.'},
  {id:'drawdown-050-v1',name:'−0.5R control',description:'Observe an exit when price reaches −0.5R. This control failed historical validation; it is not a trading recommendation.'},
@@ -32,6 +34,7 @@ export class OpenTradeMonitor {
  readonly db:Db;private states=new Map<string,State>();private pending=new Map<number,Trial>();
  readonly invalidation:ShadowInvalidationStudy;
  readonly scannerExits:ScannerEarlyExitStudy;
+ readonly conditionalExits:ConditionalExitStudy;
  private lastMaintenance=0;private lastTick=0;
  constructor(db:Db,now=Date.now()){
   this.db=db;
@@ -50,6 +53,7 @@ export class OpenTradeMonitor {
   for(const r of db.all<Trial>("SELECT * FROM advisory_exits WHERE status IN ('waiting','partial')"))this.pending.set(r.id,r);
   this.invalidation=new ShadowInvalidationStudy(db,now);
   this.scannerExits=new ScannerEarlyExitStudy(db,now);
+  this.conditionalExits=new ConditionalExitStudy(db,now);
  }
  observe(inputs:WatchInput[],markets:Map<string,MarketObservation>,setup:(p:Position)=>unknown,now=Date.now()){
   this.lastTick=now;const active=new Set(inputs.map(x=>key(x.position)));
@@ -62,6 +66,14 @@ export class OpenTradeMonitor {
      if(this.scannerExits.observe(p,input.book,input.scope,m?.price??null,m?.priceAt??null,now,input.exitPending)){
       this.trigger(input,SCANNER_EARLY_EXIT,now,{extraLatencyMs:0,maxWaitMs:30000,slippageBps:0});
       this.trigger(input,SCANNER_EARLY_STRESS,now,{extraLatencyMs:3000,maxWaitMs:30000,slippageBps:5});
+     }
+     const eligible=((input.book===0&&input.scope==='paper')||(input.book===2&&input.scope==='shadow'))&&!p.executionPlan&&!p.basket&&p.entryAt>=this.conditionalExits.startedAt;
+     const close=eligible&&m?.depth?estimateExit(input,m.depth,now):null;
+     const sample=m?.price!=null&&m.priceAt!=null
+      ?{at:now,price:m.price,priceAt:m.priceAt,depthAt:m.depth?.receivedAt??null,netR:close?.coverage===1?close.netR:null,exitPending:input.exitPending}:null;
+     for(const arm of this.conditionalExits.observe(p,input.book,input.scope,sample,now)){
+      this.trigger(input,conditionalRule(arm),now,{extraLatencyMs:0,maxWaitMs:30000,slippageBps:0});
+      this.trigger(input,conditionalRule(arm,true),now,{extraLatencyMs:3000,maxWaitMs:30000,slippageBps:5});
      }
     });}catch(error){this.pending=pendingBefore;throw error;}
    }
@@ -167,6 +179,7 @@ export class OpenTradeMonitor {
   this.db.run('DELETE FROM advisory_reconcile');
   this.invalidation.reconcile(now);
   this.scannerExits.reconcile(now);
+  this.conditionalExits.reconcile(now);
   this.db.run("UPDATE advisory_exits SET status='censored',delta=NULL,error='Actual position unavailable or reset' WHERE status='filled' AND actual_net IS NULL AND NOT EXISTS(SELECT 1 FROM positions p WHERE p.id=position_id AND p.entry_at=advisory_exits.entry_at)");
   this.db.run('DELETE FROM advisory_exit_liquidity WHERE at<?',now-86400000);
   // Bound storage independently of trading journals. Keep 90 days / 200k checkpoints and 50k trials.
@@ -180,7 +193,7 @@ export class OpenTradeMonitor {
    sum(CASE WHEN status='filled' AND actual_net IS NOT NULL THEN delta ELSE 0 END) deltaUsd,
    sum(CASE WHEN status='filled' AND actual_net IS NOT NULL THEN delta/json_extract(payload,'$.position.riskAmount') ELSE 0 END) deltaR,
    sum(status IN ('unpriced','censored')) unavailable,sum(status='filled' AND actual_net>0 AND net<0) winnersLost FROM advisory_exits GROUP BY book,scope,rule`);
-  return {mode:'advisory' as const,version:MONITOR_VERSION,at:this.lastTick,rules:MONITOR_RULES,positions:[...this.states.values()],trials:rows,summary,invalidationStudy:this.invalidation.view(),scannerExitStudy:this.scannerExits.view()};
+  return {mode:'advisory' as const,version:MONITOR_VERSION,at:this.lastTick,rules:MONITOR_RULES,positions:[...this.states.values()],trials:rows,summary,invalidationStudy:this.invalidation.view(),scannerExitStudy:this.scannerExits.view(),conditionalExitStudy:this.conditionalExits.view()};
  }
  detail(id:number){return this.db.all<any>('SELECT checkpoint,at,payload FROM advisory_checkpoints WHERE position_id=? ORDER BY at LIMIT 100',id).map(x=>({...x,payload:JSON.parse(x.payload)}));}
 }

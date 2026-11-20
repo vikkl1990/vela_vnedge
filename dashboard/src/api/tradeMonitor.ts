@@ -53,6 +53,7 @@ export interface MonitorTrial {
   risk: number
 }
 export interface TradeMonitorView {
+  conditionalExitStudy?: TradeMonitorView['scannerExitStudy']
   scannerExitStudy?: {
     rule: string
     startedAt: number
@@ -66,6 +67,10 @@ export interface TradeMonitorView {
       tf: string
       book: number
       policyId: string
+      arm?: 'invalidation' | 'protection' | 'combined'
+      stressWinnersCut?: number
+      profitFactorBefore?: number | null
+      profitFactorAfter?: number | null
       enrolled: number
       closed: number
       covered: number

@@ -8217,3 +8217,19 @@ The positive nine-trade retrospective subset motivates this test only: the globa
 Paper adoption requires prospective benefit after stress and winner damage plus existing evidence
 requirements. No risk, capital, sizing, admission, allocation or execution setting changes. The UI is
 under Trade health → What-if exits. See the dated scanner-early-exit research record for the protocol.
+
+## 301. Conditional exit research is not paper exit approval (20 November 2026)
+
+Build independent setup-invalidation, conditional net-profit protection and combined advisory
+arms for SuperTrend Cluster, AI Predictive Flow and SOL 15m continuation-maker. Freeze signal
+structure at entry and require persistence; do not infer author-native exits or overwrite readers.
+Use fresh prices independently from executable net depth, preserve delayed/stressed settlement,
+and report unavailable trades and damage to winners. Research writes advisory tables only and
+never supplies promotion evidence or changes risk/capital settings.
+
+The 48h retrospective test had ten references. Only one protection comparison was fully priced;
+it reduced an AAVE winner from $4.8740 to $1.9323 ($1.4893 stressed). Other trades lacked continuous
+coverage. Therefore neither an actual-exit rollout nor a VM deployment is approved by these
+results. Preserve the research branch and frozen hypotheses, investigate observation pauses,
+and require independent prospective evidence before adoption. See the dated conditional-exit
+and Vela/Quant assessment records. Chart upgrades and hosted backtests are separate work.

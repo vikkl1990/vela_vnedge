@@ -294,6 +294,12 @@ export function TradeMonitor() {
                     better performance.
                   </Callout>
                   {d.scannerExitStudy && <ScannerExitStudy study={d.scannerExitStudy} />}
+                  {d.conditionalExitStudy && (
+                    <ScannerExitStudy
+                      study={d.conditionalExitStudy}
+                      title="Setup invalidation and conditional profit protection"
+                    />
+                  )}
                   {d.invalidationStudy && (
                     <Section
                       title="ARIA · prospective shadow comparison"
