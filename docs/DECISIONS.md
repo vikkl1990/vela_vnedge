@@ -8217,3 +8217,18 @@ The positive nine-trade retrospective subset motivates this test only: the globa
 Paper adoption requires prospective benefit after stress and winner damage plus existing evidence
 requirements. No risk, capital, sizing, admission, allocation or execution setting changes. The UI is
 under Trade health → What-if exits. See the dated scanner-early-exit research record for the protocol.
+
+
+## 301. Vela 0.10.13 and versioned upstream lifecycle comparisons (20 November 2026)
+
+The dashboard upgrades Vela from 0.10.5 to 0.10.13; the current bridge remains 0.3.4 and PineTS remains 0.13.1. Runtime source changes are separate from the UI upgrade.
+
+AVT v2, Kalman SuperTrend Sentinel v1 and Bar Size Balance Exit v1 are new, disabled scanner identities. Exact SHA-256 pins append observation plots without changing author conditions or existing scanners. Entry geometry, old-side reversal, TP milestones and causal stop amendments have explicit readers. Native TP1/TP2 touches do not imply partial quantities. A new source hash fails closed.
+
+Eighteen experimental plans compare account exits with author exits across BTCUSD, ETHUSD and SOLUSD 15m: nine source runs, two exit arms each, same native initial SL, entry, fees and risk settings. Only the new controls suppress author exit/amendment instructions. Existing AVT remains untouched; this is not an overwrite or a direct v1/v2 performance claim. The research-plan bound rises from 87 to 105 for these explicit studies; paper capacity, scheduling priority, sizing, risk and evidence rules do not change. Experimental plans cannot qualify for promotion or copy admission. No historical fills are written.
+
+Both arms retain the hard risk stop. This deliberately differs from Bar Size Balance's candle-close SL. Its balance exit waits at least three bars (45 minutes at 15m); it is not immediate protection. Willy's TP-first ambiguous-bar statistics and TP1-as-win labels are not performance evidence. Native target levels are instructions; actual fills use the existing causal execution engine and full fees.
+
+MarkitTick joins the full weekly source scan. A separate low-priority daily metadata check covers all seven authors; it never downloads protected source, installs a scanner or changes configuration. Failed/incomplete catalogues are reported explicitly and cannot erase the previous observed metadata. Weekly source verification remains authoritative.
+
+Validation: all three sources preserve author alerts/shapes and closed-bar prefix parity on the saved ETH fixture. Nine recent 1,000-bar Delta India runs produced entries (see `docs/research/upstream-validation-20261120/runtime.json`). These are mechanics/feasibility checks, not profitability evidence. Paired execution tests cover delayed fills, fees, frozen restart policies, hard risk ceilings, separate exits and exclusion from promotion. Paper admission awaits evidence under existing rules.

@@ -1,0 +1,22 @@
+[Unit]
+Description=VN EDGE public scanner metadata check
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/opt/vnedge/server
+Environment=OUT=data CATALOGUE_ONLY=1
+UMask=0077
+ExecStart=/opt/vnedge-runtime/node-v24.22.3-linux-arm64/bin/node --no-warnings=ExperimentalWarning src/cli/library-sync.ts
+Nice=15
+CPUWeight=10
+IOWeight=10
+MemoryMax=256M
+TimeoutStartSec=10min
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/vnedge/data/library/updates
+StandardOutput=journal
+StandardError=journal
+
