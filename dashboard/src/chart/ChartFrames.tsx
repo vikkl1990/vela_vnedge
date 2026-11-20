@@ -5,6 +5,7 @@ import { DELTA_TIMEFRAMES } from '../lib/timeframes'
 import { useFrameSync } from './useFrameSync'
 import type { AuthorLedger } from './tradeComparison'
 import { VelaChart, type ChartScript } from './VelaChart'
+import type { PositionOverlay } from './positionOverlay'
 
 /**
  * One market on several timeframes at once, every frame drawing the same scripts, so a scanner's
@@ -15,6 +16,7 @@ export function ChartFrames({
   symbol,
   tfs,
   scripts,
+  positionOverlay,
   tickSize,
   onScriptError,
   onScriptReady,
@@ -29,6 +31,7 @@ export function ChartFrames({
   symbol: string
   tfs: string[]
   scripts: ChartScript[]
+  positionOverlay?: PositionOverlay | null
   tickSize?: number
   height?: number | string
   marks?: TimelineMark[]
@@ -63,6 +66,7 @@ export function ChartFrames({
               tf={tf}
               height="100%"
               scripts={scripts}
+              positionOverlay={positionOverlay}
               tickSize={tickSize}
               onScriptError={onScriptError}
               onScriptReady={onScriptReady}

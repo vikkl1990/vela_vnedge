@@ -7,6 +7,7 @@ import type {ExitBook} from '../paper/exitExecution.ts';
 import {logger} from '../log.ts';
 import {EXIT_STUDY_SYMBOLS} from './focusedReplay.ts';
 import {frozenSignalBar} from './shadowInvalidation.ts';
+import {earlyExitCell} from './scannerEarlyExit.ts';
 const log=logger.scoped('trade-monitor');
 
 export class MonitorRuntime {
@@ -15,6 +16,7 @@ export class MonitorRuntime {
  private timer:ReturnType<typeof setInterval>;private pump:ReturnType<typeof setInterval>;private stopped=false;
  private busy=new Set<string>();private lastFetch=new Map<string,number>();private nextFetch=0;private lastSample=0;
  private capturedContexts=new Set<string>();
+ private recentPaperSymbols:string[]=[];private recentAt=0;private lastTick=0;
  constructor(app:App,factory?:()=>DeltaFeed){
   this.app=app;this.monitor=new OpenTradeMonitor(app.db);this.depth=new AdvisoryDepthPool(app.db,factory);
   app.db.db.exec(`CREATE TABLE IF NOT EXISTS advisory_market_samples(symbol TEXT NOT NULL,bucket INTEGER NOT NULL,observed_at INTEGER NOT NULL,depth_at INTEGER,
@@ -36,11 +38,47 @@ export class MonitorRuntime {
   return {kind:'closed-bar context; not a scanner invalidation verdict',lastClosedBarAt:bars.at(-1)?.time??null,lastClose:bars.at(-1)?.close??null,
    trend21:bars.length>=21?trendSide(bars.map(b=>b.close),21):null,trend50:bars.length>=50?trendSide(bars.map(b=>b.close),50):null,availableAt:Date.now()};
  }
+ /** Called after an actual entry commits. Capture must never affect the fill or invent its past. */
+ captureEntry(position:Position,book:number,now=Date.now()){
+  if(this.stopped||!(book===0||earlyExitCell(position.scannerId,position.symbol,position.tf)||EXIT_STUDY_SYMBOLS.some(s=>s===position.symbol)))return;
+  try{
+   this.app.replayArchive?.includeStudy(position.symbol,now);
+   const engine=book===0?this.app.paper:this.app.shadow;
+   const scope=book===0?'paper':this.app.db.get<{evidence_scope:string}>('SELECT evidence_scope FROM positions WHERE id=?',position.id)?.evidence_scope??'legacy-shadow';
+   this.recordContext({position,book,scope,...engine.advisoryObservation(position)},now);
+  }catch(e){log.warn(`entry capture unavailable: ${String(e)}`);}
+ }
+ captureClosed(position:Position,book:number,now=Date.now()){
+  if(this.stopped||!(book===0||earlyExitCell(position.scannerId,position.symbol,position.tf)))return;
+  try{this.recentAt=0;this.app.replayArchive?.includeStudy(position.symbol,now);
+   this.app.replayArchive?.record(position.symbol,'study_actual_close',{positionId:position.id,entryAt:position.entryAt,exitAt:position.exitAt,book,policyId:position.policy?.id??null},now,'trade-monitor');
+  }catch(e){log.warn(`close capture unavailable: ${String(e)}`);}
+ }
+ private recordContext({position:p,book,scope,config}:WatchInput,now:number){
+  const key=`${p.id}:${p.entryAt}`;if(this.capturedContexts.has(key))return;
+  this.app.replayArchive?.record(p.symbol,'study_entry_context',{
+   positionId:p.id,entryAt:p.entryAt,book,scope,scannerId:p.scannerId,tf:p.tf,side:p.side,entryPrice:p.entryPrice,
+   originalStop:p.slOriginal,policyId:p.policy?.id??null,sourceHash:p.policy?.sourceHash??p.executionPlan?.sourceHash??null,
+   executionPlan:p.executionPlan??null,qty:p.qty,contractValue:p.contractValue,riskAmount:p.riskAmount,
+   entryFills:p.fills.filter(f=>f.reason==='entry'),exitConfig:config,signalBar:frozenSignalBar(this.app.db,p),
+   observedAfterEntryMs:now-p.entryAt},now,'entry-invalidation-observer');
+  this.capturedContexts.add(key);
+ }
  tick(now=Date.now()){
   if(this.stopped)return;
+  if(this.lastTick&&now-this.lastTick>10000)this.app.replayArchive?.record('*','observer_gap',{previousAt:this.lastTick,observedAt:now,delayMs:now-this.lastTick-5000},now,'trade-monitor');
+  this.lastTick=now;
   const snapshot=new Map(this.app.marks.quoteSummary(10000,now).rows.map(q=>[q.symbol,q])),inputs=this.inputs();
+  if(now-this.recentAt>=60000){
+   // Keep the tape after the actual exit so a longer-hold candidate can be judged.
+   // Restarts recover this selection from the journal, not a volatile timer.
+   this.recentPaperSymbols=this.app.db.all<{symbol:string}>(`SELECT DISTINCT symbol FROM positions WHERE status='closed' AND exit_at>=? AND
+    (bt=0 OR (bt=2 AND (scanner_id IN ('supertrend-cluster-zeiierman','ai-predictive-flow-zeiierman') OR (scanner_id='trend-impulse-channels-zeiierman-maker' AND symbol='SOLUSD' AND tf='15m'))))`,now-86400000).map(r=>r.symbol);this.recentAt=now;
+   if(this.recentPaperSymbols.length)for(const channel of ['ob_l1','all_trades'])this.app.feed.subscribe(channel,this.recentPaperSymbols);
+  }
+  this.app.replayArchive?.setStudySymbols([...this.recentPaperSymbols,...inputs.filter(x=>x.book===0||earlyExitCell(x.position.scannerId,x.position.symbol,x.position.tf)).map(x=>x.position.symbol),...this.app.paper.pendingEntries().map(p=>p.symbol)],now);
   // Selected research capture reuses advisory sockets; execution book sources stay unchanged.
-  const capture=[...new Set(['BTCUSD','ETHUSD','SOLUSD',...EXIT_STUDY_SYMBOLS,
+  const capture=[...new Set(['BTCUSD','ETHUSD','SOLUSD',...EXIT_STUDY_SYMBOLS,...this.recentPaperSymbols,
    ...this.app.scanners.requiredSeries().map(s=>s.symbol),...inputs.map(x=>x.position.symbol),
    ...this.app.paper.pendingEntries().map(x=>x.symbol),...this.app.shadow.pendingEntries().map(x=>x.symbol),
    ...(this.app.config.get().executionPlans??[]).filter(p=>p.enabled).map(p=>p.symbol)])];
@@ -54,19 +92,15 @@ export class MonitorRuntime {
     // still apply their own stricter one-second limit in priceExit.
     depth:this.depth.recorder.bookAt(symbol,now,10000),depthAt:this.depth.recorder.observedAt(symbol),flow:this.app.orderFlow.summary(symbol,now),funding:this.app.marks.funding(symbol)??null});
   }
-  for(const symbol of EXIT_STUDY_SYMBOLS){
-   const m=this.markets.get(symbol);if(m)this.app.replayArchive?.record(symbol,'study_market_sample',{...m,depth:undefined},now,'entry-invalidation-observer');
+  for(const symbol of this.symbols){
+   if(!this.app.replayArchive?.capturesStudy(symbol))continue;
+   const m=this.markets.get(symbol),q=snapshot.get(symbol);if(m)this.app.replayArchive.record(symbol,'study_market_sample',{...m,depth:undefined,priceExchangeAt:q?.exchangeAt??null,priceReceivedAt:q?.receivedAt??null},now,'entry-invalidation-observer');
   }
   const currentContexts=new Set<string>();
   for(const {position:p,book,scope,exitPending,marketQty,config} of inputs){
-   if(!EXIT_STUDY_SYMBOLS.some(s=>s===p.symbol))continue;
+   if(!this.app.replayArchive?.capturesStudy(p.symbol))continue;
    const key=`${p.id}:${p.entryAt}`;currentContexts.add(key);
-   if(!this.capturedContexts.has(key))this.app.replayArchive?.record(p.symbol,'study_entry_context',{
-    positionId:p.id,entryAt:p.entryAt,book,scope,scannerId:p.scannerId,tf:p.tf,side:p.side,entryPrice:p.entryPrice,
-    originalStop:p.slOriginal,policyId:p.policy?.id??null,sourceHash:p.policy?.sourceHash??p.executionPlan?.sourceHash??null,
-    executionPlan:p.executionPlan??null,qty:p.qty,contractValue:p.contractValue,riskAmount:p.riskAmount,
-    entryFills:p.fills.filter(f=>f.reason==='entry'),exitConfig:config,signalBar:frozenSignalBar(this.app.db,p),
-    observedAfterEntryMs:now-p.entryAt},now,'entry-invalidation-observer');
+   this.recordContext({position:p,book,scope,exitPending,marketQty,config},now);
    this.app.replayArchive?.record(p.symbol,'study_position_sample',{positionId:p.id,entryAt:p.entryAt,book,scope,
     quote:this.markets.get(p.symbol)?{price:this.markets.get(p.symbol)!.price,at:this.markets.get(p.symbol)!.priceAt}:null,
     stop:p.sl,qtyOpen:p.qtyOpen,marketQty,exitPending},now,'entry-invalidation-observer');
@@ -122,7 +156,7 @@ export class MonitorRuntime {
     researchOpen:positions.filter(p=>p.book===2&&!['shadow','legacy-shadow'].includes(p.scope)).length,
     worstOpenR:positions.length&&positions.some(p=>p.r!==null)?Math.min(...positions.filter(p=>p.r!==null).map(p=>p.r!)):null};
   });
-  return {...monitor,generatedAt:now,pairs,connections:this.depth.summary(),marketError,replay:this.app.replayArchive?.status(),retention:'Compact flow/depth: 72h, up to 500k rows each. Checkpoints/trials: 90d, up to 200k/50k. Broad replay: 14-day target / 16 GiB. Dedicated ARIA/INIT/PARTI replay: 21-day target / 4 GiB, 4 GiB free-disk reserve; gaps remain explicit.'};
+  return {...monitor,generatedAt:now,pairs,connections:this.depth.summary(),marketError,replay:this.app.replayArchive?.status(),retention:'Compact flow/depth: 72h, up to 500k rows each. Checkpoints/trials: 90d, up to 200k/50k. Broad replay: 14-day target / 16 GiB. Focused studies and active/recent paper pairs: 21-day target / 4 GiB, 4 GiB free-disk reserve. Recent paper pairs remain captured for 24h after closure; gaps remain explicit.'};
  }
  stop(){this.stopped=true;clearInterval(this.timer);clearInterval(this.pump);this.depth.stop();}
 }

@@ -1,9 +1,15 @@
 import type { Position } from '../api/types'
-import type { ChartScript } from './VelaChart'
-import { pineString } from './pineString.ts'
+import type { NativeIndicatorContext, NativeIndicatorDescriptor, NativeIndicatorOutput } from '@luxalgo/vela'
 
 /** A price the overlay can draw, with its label and colour role. */
 type Level = { price: number; label: string; role: 'entry' | 'stop' | 'target' | 'peak'; dashed?: boolean }
+export interface PositionOverlay {
+  id: string
+  title: string
+  symbol: string
+  levels: Level[]
+}
+export const POSITION_LEVELS = 'vnedge.position-levels'
 
 const ROLE_COLOR: Record<Level['role'], string> = {
   entry: '#1878f2',
@@ -13,18 +19,14 @@ const ROLE_COLOR: Record<Level['role'], string> = {
 }
 
 /**
- * The position's own levels, as a Pine overlay the chart can run.
- *
- * The chart executes Pine, so the levels are drawn by a generated script rather than through the
- * chart's drawing API: one horizontal line per level, labelled with its distance in R so the picture
- * answers the question the table cannot — where price is now, relative to everything that will end
- * this trade.
+ * Recorded position levels, sent directly to Vela's native renderer. Updating the
+ * stop or peak does not compile Pine or replay scanner history.
  *
  * Targets carrying no contracts are drawn faintly and marked, because they cannot fill (decision 38),
  * and the stop is drawn twice when the floor or the trail has moved it: where it started, and where
  * it now stands.
  */
-export function positionOverlay(p: Position, peakR?: number | null): ChartScript {
+export function positionOverlay(p: Position, peakR?: number | null): PositionOverlay {
   const dir = p.side === 'long' ? 1 : -1
   const original = p.slOriginal ?? p.sl ?? p.entryPrice
   const risk = Math.abs(p.entryPrice - original) || 1
@@ -58,22 +60,73 @@ export function positionOverlay(p: Position, peakR?: number | null): ChartScript
       dashed: true,
     })
 
-  const body = levels
-    .map((l) => {
-      const style = l.dashed ? 'hline.style_dashed' : 'hline.style_solid'
-      return `hline(${l.price}, ${pineString(l.label)}, color = color.new(color.rgb(${hexToRgb(ROLE_COLOR[l.role])}), ${l.dashed ? 45 : 0}), linestyle = ${style}, linewidth = ${l.role === 'entry' ? 2 : 1})`
-    })
-    .join('\n')
-
   return {
     id: `position-${p.id}`,
     title: `#${p.id} ${p.symbol} ${p.side}`,
-    overlay: true,
-    source: `//@version=5\nindicator("Position #${p.id}", overlay = true)\n${body}\n`,
+    symbol: p.symbol,
+    levels: levels.filter((l) => Number.isFinite(l.price) && l.price > 0),
   }
 }
 
-function hexToRgb(hex: string): string {
-  const v = hex.replace('#', '')
-  return `${parseInt(v.slice(0, 2), 16)}, ${parseInt(v.slice(2, 4), 16)}, ${parseInt(v.slice(4, 6), 16)}`
+/** Native outputs cannot be dragged into changing an order. They are display only. */
+export const positionLevelsIndicator: NativeIndicatorDescriptor = {
+  type: POSITION_LEVELS,
+  title: 'Recorded position levels',
+  paneHint: 'price',
+  overlay: true,
+  multiInstance: true,
+  legend: false,
+  inputsSchema: () => [],
+  defaultInputs: () => ({}),
+  create() {
+    // Context is assigned at start; no polling or worker exists for this overlay.
+    let context: NativeIndicatorContext | null = null
+    let payload = ''
+    const paint = () => {
+      if (!context) return
+      let out: NativeIndicatorOutput = { priceLines: [] }
+      try {
+        const p = JSON.parse(payload) as PositionOverlay
+        // Today's stop must never be presented as the stop in a historical replay.
+        if (context.live && context.symbol.replace(/^delta:/, '') === p.symbol && Array.isArray(p.levels))
+          out = {
+            priceLines: p.levels
+              .filter((l) => Number.isFinite(l.price) && l.price > 0 && l.role in ROLE_COLOR)
+              .map((l, i) => ({
+                id: `${context!.id}:${i}`,
+                paneId: '',
+                price: l.price,
+                title: l.label,
+                color: ROLE_COLOR[l.role] + (l.dashed ? '8c' : ''),
+                lineStyle: l.dashed ? 'dashed' : 'solid',
+                width: l.role === 'entry' ? 2 : 1,
+              })),
+          }
+      } catch {
+        /* Malformed display data must not break the chart. */
+      }
+      context.emit(out)
+    }
+    return {
+      start(c, inputs) {
+        context = c
+        payload = String(inputs.levels ?? '')
+        paint()
+      },
+      setInputs(inputs) {
+        const next = String(inputs.levels ?? '')
+        if (next !== payload) {
+          payload = next
+          paint()
+        }
+      },
+      onBars() {},
+      onViewport() {},
+      suspend() {},
+      resume: paint,
+      stop() {
+        context = null
+      },
+    }
+  },
 }
