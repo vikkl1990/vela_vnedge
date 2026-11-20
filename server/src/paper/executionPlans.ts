@@ -1,3 +1,4 @@
+import {upstreamLifecycle} from '../scanners/upstreamLifecycle.ts';
 import {isTwoBarCell,TWO_BAR_EXIT} from './failedTradeExit.ts';
 import {MARKITTICK_NATIVE} from '../scanners/markitTick.ts';
 import {plotLifecycle,TREND_CONTINUATION} from '../scanners/plotLifecycle.ts';
@@ -18,9 +19,9 @@ import { exitConfigFor } from './logic.ts';
 import { scannerExitPolicy, entryPolicy, ownExitsOverride } from './policy.ts';
 import { adaptPlan } from './planStudy.ts';
 
-// Bounded research capacity: 81 existing plans plus four two-bar arms and two EVAA early-floor arms.
+// Bounded research capacity: 87 existing plans plus 18 upstream lifecycle comparison arms.
 // This does not change account positions, allocation or risk limits.
-export const MAX_RESEARCH_PLANS = 87;
+export const MAX_RESEARCH_PLANS = 105;
 /** Explicit TP experiment; original stop and sizing stay fixed. Trail changes are opt-in and labeled. */
 export interface TakeProfitPlan {
   mode: 'native' | 'r';
@@ -85,7 +86,7 @@ export interface ExecutionPlanSnapshot {
 }
 export function takeProfitLabel(p: Pick<ExecutionPlanSnapshot,'paper'|'takeProfit'|'basket'> & Partial<Pick<ExecutionPlanSnapshot,'sourceScannerId'|'exitPolicy'|'failedTradeExit'>>): string {
   if(p.sourceScannerId===TREND_CONTINUATION)return 'Native 2×ATR stop · one 2R target · no trailing stop';
-  if(plotLifecycle(p.sourceScannerId))return p.sourceScannerId?.startsWith('machine-learning')?'Native Supertrend stop and flip exit · no fixed TP':'Native stop and TP1/TP2 milestones · closes at TP3';
+  if(plotLifecycle(p.sourceScannerId)&&p.exitPolicy!=='account-ladder')return p.sourceScannerId?.startsWith('machine-learning')?'Native Supertrend stop and flip exit · no fixed TP':'Native stop and TP1/TP2 milestones · closes at TP3';
   if(p.basket)return 'Basket: up to 3 entries · $150 total margin · 4% shared target · 3% below lowest fill stop';
   const c=p.paper, ladder=c.fallbackRR.join('/'), allocation=c.tpSplit.map(x=>`${Math.round(x*100)}%`).join('/');
   const trail=c.trailAfterR>0?`trail from ${c.trailAfterR}R · ${c.trailAtrMult>0?`${c.trailAtrMult} ATR distance`:c.trailGiveBackPct>0?`${c.trailGiveBackPct}% peak giveback`:`${c.trailDistanceR||1}R distance`}`:'trail off';
@@ -98,7 +99,7 @@ export function planSnapshot(cfg: AppConfig, p: ExecutionPlan, sourceHash: strin
   const original = cfg.scanners[p.scannerId];
   const override={...p.readingOverride};delete override.version;
   const sc=p.readingOverride?{...original,...override}:original;
-  const exitMode = p.exitPolicy==='own-exits' ? 'script' : p.variant === 'current' ? sc?.exitMode ?? 'both' : 'levels';
+  const exitMode = upstreamLifecycle(p.scannerId)&&p.exitPolicy==='account-ladder' ? 'levels' : p.exitPolicy==='own-exits' ? 'script' : p.variant === 'current' ? sc?.exitMode ?? 'both' : 'levels';
   const base = p.exitPolicy==='own-exits' ? ownExitsOverride(cfg.paper) : p.exitPolicy==='account-ladder' ? undefined : p.variant === 'current' ? scannerExitPolicy(cfg,p.scannerId) : sc?.exit;
   const entry = entryPolicy(cfg,p.tf,'account',{scannerId:p.scannerId});
   const paper = structuredClone(withProductFees(scannerEntryConfig(exitConfigFor(cfg.paper,p.symbol,base,p.tf),original,p.tf),fees,p.symbol));
@@ -175,7 +176,7 @@ export function validateExecutionPlans(plans: ExecutionPlan[] | undefined, tfs: 
     else if(p.exitPolicy!==undefined&&(p.exitPolicy!=='account-ladder'||p.comparison?.kind!=='exit-policy'||p.comparison.role!=='control'))errors.push(`executionPlans.${p.id}: account ladder requires an explicit exit-policy control`);
     if(p.comparison?.kind==='exit-policy'){
       const sc=cfg?.scanners[p.scannerId];
-      if(!MARKITTICK_NATIVE[p.scannerId]||p.variant!=='current'||!p.readingOverride||p.takeProfit||p.trailing||p.basket||p.maxHoldMinutes!==undefined||p.readingOverride.invert||p.readingOverride.reader!==2||Object.keys(p.readingOverride).some(k=>!['version','reader'].includes(k))||cfg&&(sc?.reader!==2||sc?.entryProtection!=='native'||sc?.exitMode!=='levels'))errors.push(`executionPlans.${p.id}: exit comparison requires a validated native MarkitTick bracket and unmodified entry policy`);
+      if((!MARKITTICK_NATIVE[p.scannerId]&&!upstreamLifecycle(p.scannerId))||p.variant!=='current'||!p.readingOverride||p.takeProfit||p.trailing||p.basket||p.maxHoldMinutes!==undefined||p.readingOverride.invert||p.readingOverride.reader!==2||Object.keys(p.readingOverride).some(k=>!['version','reader'].includes(k))||cfg&&(sc?.reader!==2||sc?.entryProtection!=='native'||sc?.exitMode!==(upstreamLifecycle(p.scannerId)?'both':'levels')))errors.push(`executionPlans.${p.id}: exit comparison requires a validated native bracket or upstream lifecycle and unmodified entry policy`);
     }
     if(p.basket!==undefined&&(p.basket!=='rsi-volume-ladder-v1'||p.scannerId!==BASKET_SCANNER||p.variant!=='current'||!p.readingOverride||p.takeProfit||p.trailing||p.comparison))errors.push(`executionPlans.${p.id}: basket requires its versioned source and unmodified native bracket`);
     if(plotLifecycle(p.scannerId)&&(p.variant!=='current'||!p.readingOverride||p.trailing||p.takeProfit||p.basket||p.readingOverride.invert||p.readingOverride.reader!==undefined&&p.readingOverride.reader!==2))errors.push(`executionPlans.${p.id}: native plot lifecycle requires its versioned current reading and native exit policy`);
