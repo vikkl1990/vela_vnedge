@@ -21,3 +21,15 @@ test('focused capture disk reserve fails observably without throwing or stopping
  r.setSymbols([]);r.record('INITUSD','trade',{price:1},T);await r.flush();
  assert.equal(r.status().failures,0);assert.match(r.status().entryInvalidationStudy.lastError!,/free disk reserve/);assert.ok(r.status().entryInvalidationStudy.failures>0);
 });
+
+test('new paper and scanner-study markets get immediate focused capture within the same storage limits',async t=>{
+ const dir=await fs.mkdtemp(path.join(os.tmpdir(),'focused-active-'));
+ const r=new FocusedReplay({dir,now:()=>T,freeBytes:async()=>10*1024**3});t.after(async()=>{await r.close();await fs.rm(dir,{recursive:true,force:true});});
+ r.setSymbols(['BTCUSD']);r.includeStudy('BLESSUSD',T);r.record('BLESSUSD','study_entry_context',{positionId:1},T);
+ r.setStudySymbols(['BLESSUSD','SOLUSD'],T+1);r.setSymbols(['ETHUSD'],T+1);r.record('BLESSUSD','quote',{price:1},T+1);
+ r.setStudySymbols([],T+2);r.record('BLESSUSD','quote',{price:2},T+2);assert.equal(r.capturesStudy('BLESSUSD'),false);
+ await r.close();const rows=[];for await(const e of readReplay(r.study.dir))rows.push(e);
+ assert.deepEqual(rows.filter(x=>x.symbol==='BLESSUSD').map(x=>x.kind),['study_entry_context','quote']);
+ assert.equal(r.status().entryInvalidationStudy.retention.maxBytes,4*1024**3);
+ assert.equal(r.status().entryInvalidationStudy.retention.minFreeBytes,4*1024**3);
+});

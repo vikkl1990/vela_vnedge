@@ -223,9 +223,9 @@ export function ChartPage() {
     return rows.length ? Math.max(...rows.map((r) => r.r)) : null
   }, [path.data])
 
-  const allScripts = useMemo<ChartScript[]>(
-    () => (showPosition && position ? [...scripts, positionOverlay(position, peakR)] : scripts),
-    [scripts, showPosition, position, peakR],
+  const positionLevels = useMemo(
+    () => (showPosition && position ? positionOverlay(position, peakR) : null),
+    [showPosition, position, peakR],
   )
 
   const [allSignalFrames, setAllSignalFrames] = useState(false)
@@ -617,14 +617,15 @@ export function ChartPage() {
         <div className="chart-main" style={{ position: 'relative' }}>
           {symbol && view === 'frames' ? (
             <ChartFrames
-              key={`${symbol}:${frames.join(',')}`}
+              key={symbol}
               onScriptRun={recordRun}
               marksByFrame={Object.fromEntries(frames.map((frame) => [frame, marksFor(frame)]))}
               captureLedger={showAuthors}
               onAuthorLedger={recordLedger}
               symbol={symbol}
               tfs={frames}
-              scripts={allScripts}
+              scripts={scripts}
+              positionOverlay={positionLevels}
               tickSize={market?.tickSize}
               onScriptError={(id, err) => setScriptErrors((e) => ({ ...e, [id]: err.message }))}
               onScriptReady={(id) =>
@@ -638,7 +639,6 @@ export function ChartPage() {
             />
           ) : symbol ? (
             <VelaChart
-              key={`${symbol}:${tf}`}
               captureLedger={showAuthors}
               onAuthorLedger={recordLedger}
               onScriptRun={(r) => recordRun(tf, r)}
@@ -646,7 +646,8 @@ export function ChartPage() {
               symbol={symbol}
               tf={tf}
               height="100%"
-              scripts={allScripts}
+              scripts={scripts}
+              positionOverlay={positionLevels}
               tickSize={market?.tickSize}
               onScriptError={(id, err) => setScriptErrors((e) => ({ ...e, [id]: err.message }))}
               onScriptReady={(id) =>

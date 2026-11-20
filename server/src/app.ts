@@ -56,6 +56,7 @@ import type { DepthRecorder } from './execution/depthRecorder.ts';
 import type { OrderFlowStore } from './orderflow/store.ts';
 import type { MonitorRuntime } from './research/monitorRuntime.ts';
 import type { FocusedReplay } from './research/focusedReplay.ts';
+import type {ExecutionTiming} from './execution/executionTiming.ts';
 import {eligibleEvidence} from './evidence/trades.ts';
 import { TapeAudit } from './execution/tapeAudit.ts';
 import { TF_SECONDS } from './config.ts';
@@ -124,6 +125,7 @@ export class App {
   orderFlow!: OrderFlowStore;
   tradeMonitor!: MonitorRuntime;
   replayArchive!: FocusedReplay;
+  executionTiming!: ExecutionTiming;
   readonly advisoryFeedFactory:(()=>DeltaFeed)|undefined;
   stopExecutionAudit?: () => void | Promise<void>;
   readonly risk: RiskManager;

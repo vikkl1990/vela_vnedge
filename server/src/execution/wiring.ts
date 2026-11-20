@@ -3,6 +3,7 @@ import { MonitorRuntime } from '../research/monitorRuntime.ts';
 import {FocusedReplay,EXIT_STUDY_SYMBOLS} from '../research/focusedReplay.ts';
 import path from 'node:path';
 import {PaperExitPump} from './paperExitPump.ts';
+import {ExecutionTiming} from './executionTiming.ts';
 import { AccountAudit } from './accountAudit.ts';
 import { AccountObserver } from '../connections/observer.ts';
 import { DepthRecorder } from './depthRecorder.ts';
@@ -68,19 +69,29 @@ export function wireRealtime(app: App): void {
   // The incubator's shadow book gets exactly the same market data as the live book, so its evidence
   // describes the same fills, liquidation and funding a promoted pair would see.
   const books = [app.paper, app.shadow];
+  const timing=app.executionTiming=new ExecutionTiming(app.db);
   for(const b of books)b.causalExits=app.config.get().execution.mode==='paper';
   // Freeze the deployable quantity at entry; shadow's research purse must not
   // consume fictitious millions of dollars of depth or change size at exit.
   app.shadow.exitQuantity=(p,market)=>app.paper.previewDepthQuantity({scannerId:p.scannerId,symbol:p.symbol,tf:p.tf,price:p.entryPrice,sl:p.slOriginal!,at:p.entryAt,market,maker:p.fills[0]?.liquidity==='maker'});
   const exitPump=new PaperExitPump({
     pending:()=>books.flatMap(b=>b.pendingExits()).sort((a,b)=>a.ready_at-b.ready_at||a.id-b.id),
-    fetch:async(symbol,readyAt)=>{
-      const book=await readPaperExitBook(app,symbol,readyAt);
-      // Reuse the real exit request: retain REST/WS depth at receipt, never fetch extra or backdate it.
-      app.replayArchive?.record(symbol,'exit_depth',book,book.receivedAt,'paper-exit-depth');
+    paperExposure:()=>app.paper.openPositions().length>0,
+    cached:(symbol,readyAt,at)=>{
+      const book=app.depthRecorder?.bookAt(symbol,at,1000);
+      if(!book||book.receivedAt<readyAt)return null;
       return book;
     },
-    apply:(symbol,book,at)=>{for(const b of books)b.settleExits(symbol,book,at);}
+    observe:event=>{timing.record(event);if(event.kind==='loop-delay')app.replayArchive?.record('*','processing_gap',event,event.at,'exit-pump');},
+    fetch:async(symbol,readyAt)=>{
+      const book=await readPaperExitBook(app,symbol,readyAt);
+      return book;
+    },
+    apply:(symbol,book,at)=>{
+      // Retain exactly the observation offered to settlement; no extra fetch or backdating.
+      if(book)app.replayArchive?.record(symbol,'exit_depth',book,at,'paper-exit-depth');
+      for(const b of books)b.settleExits(symbol,book,at);
+    }
   });
   const exitTimer=setInterval(()=>exitPump.tick(),100);exitTimer.unref();
   const flow = app.orderFlow = new OrderFlowStore(app.db);
@@ -118,12 +129,13 @@ export function wireRealtime(app: App): void {
     app.feed.unsubscribe('ob_updates',depth.symbols); app.feed.subscribe('ob_updates',depth.symbols);
   },600_000);
   const depthTimer=setInterval(()=>{
+    timing.flush();
     try{depth.flush();}catch(e:any){log.warn(`depth audit: ${e.message}`);}
     try{flow.flush();}catch(e:any){log.warn(`order flow: ${e.message}`);}
     void replay.flush();
   },5000);
   for(const t of [auditTimer,historyTimer,depthTimer])t.unref();
-  app.stopExecutionAudit=async()=>{app.tradeMonitor.stop();exitPump.stop();clearInterval(exitTimer);app.accountObserver.stop();stopStatus();for(const t of [auditTimer,historyTimer,depthTimer,timer])clearInterval(t);depth.disconnect();try{depth.flush();flow.connection(false);}catch(e:any){log.warn(`audit shutdown flush: ${e.message}`);}await replay.close();};
+  app.stopExecutionAudit=async()=>{app.tradeMonitor.stop();exitPump.stop();clearInterval(exitTimer);app.accountObserver.stop();stopStatus();for(const t of [auditTimer,historyTimer,depthTimer,timer])clearInterval(t);depth.disconnect();try{depth.flush();flow.connection(false);}catch(e:any){log.warn(`audit shutdown flush: ${e.message}`);}timing.flush();await replay.close();};
   const status = app.exchangeStatus ?? new TradingStatus();
   const stopStatus = wireTradingStatus(app, status);
   for (const b of books) b.entryBlock = (symbol, at) => status.block(symbol, at);
@@ -154,7 +166,9 @@ export function wireRealtime(app: App): void {
     }
   };
   for (const engine of books) engine.on('position', (e: any) => {
+    if(e.type==='closed')app.tradeMonitor.captureClosed(e.position,engine.book);
     if (e.type !== 'opened') return;
+    app.tradeMonitor.captureEntry(e.position,engine.book);
     if (queue.length >= 100) { app.db.run('UPDATE entry_execution SET depth_state=? WHERE position_id=?','skipped queue full',e.position.id); return; }
     const p = e.position;
     queue.push({ id: p.id, symbol: p.symbol, side: p.side, qty: p.qty, entryAt: p.entryAt }); drain();
