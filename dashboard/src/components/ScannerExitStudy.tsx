@@ -9,17 +9,20 @@ const names: Record<string, string> = {
 }
 const r = (value: number) => `${value >= 0 ? '+' : ''}${value.toFixed(2)}R`
 
-export function ScannerExitStudy({ study }: { study: NonNullable<TradeMonitorView['scannerExitStudy']> }) {
+export function ScannerExitStudy({
+  study,
+  title = 'Scanner-specific earlier exits',
+}: {
+  study: NonNullable<TradeMonitorView['scannerExitStudy']>
+  title?: string
+}) {
   return (
-    <Section
-      title="Scanner-specific earlier exits"
-      hint="Prospective shadow evaluation · paper exits unchanged"
-    >
+    <Section title={title} hint="Prospective shadow evaluation · paper exits unchanged">
       <p className="small muted">{study.description}</p>
       <DataTable
         rows={study.groups}
         rowKey={(g) => g.key}
-        caption="Scanner-specific earlier exit comparison"
+        caption={title}
         pageSize={15}
         emptyLabel="Waiting for future SuperTrend Cluster, AI Predictive Flow or SOL maker fills. Existing trades are not enrolled."
         columns={[
@@ -29,6 +32,15 @@ export function ScannerExitStudy({ study }: { study: NonNullable<TradeMonitorVie
             render: (g) => (
               <>
                 <b>{names[g.scanner] ?? g.scanner}</b>
+                {g.arm && (
+                  <div>
+                    {g.arm === 'invalidation'
+                      ? 'Setup invalidation'
+                      : g.arm === 'protection'
+                        ? 'Conditional profit protection'
+                        : 'Combined'}
+                  </div>
+                )}
                 <div>
                   {g.symbol} · {g.tf} · {g.book === 0 ? 'Paper reference' : 'Shadow reference'}
                 </div>
@@ -72,7 +84,14 @@ export function ScannerExitStudy({ study }: { study: NonNullable<TradeMonitorVie
           {
             key: 'winners',
             header: 'Winners cut / turned nonpositive',
-            render: (g) => `${g.winnersCut} / ${g.winnersLost}`,
+            render: (g) => (
+              <>
+                <span>{`${g.winnersCut} / ${g.winnersLost}`}</span>
+                {g.stressWinnersCut !== undefined && (
+                  <div className="small muted">Stress cut: {g.stressWinnersCut}</div>
+                )}
+              </>
+            ),
           },
           {
             key: 'giveback',
