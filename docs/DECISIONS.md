@@ -8338,3 +8338,13 @@ Pre-deploy coverage verification found that MUSD had no research depth samples i
 ## 313. Evaluate dashboard depth freshness after market discovery completes (21 November 2026)
 
 Post-deploy verification found that Trade Health's async view retained its request-start clock while awaiting market discovery. A fresh book received during that wait then appeared to come from the future, and the read-only response mislabeled it stale. Default evaluation time is now sampled after the await; explicitly supplied audit clocks stay fixed. A delayed-discovery regression verifies fresh depth without changing positions or configuration. Execution freshness validation, maker timing, account/risk settings and evidence identities are unchanged.
+
+## 314. Give paired maker studies timely research turns and durable source-scan receipts (21 November 2026)
+
+The twelve maker comparisons had no forward entry events when audited. Rerunning the deployed sources with their configured readings reproduced all twelve saved signal lists. Eleven post-activation sources had identical candle-history hashes and no entry; BNB's earlier 4h signal predates study activation and must not be backfilled. This is not evidence that an admission gate discarded a profitable signal.
+
+Two collection gaps are corrected. Maker-fill comparisons now qualify for the existing bounded timely research turns, sharing one source job per cell. They still yield to queued paper and mirrored work, retain the existing reserved workers, memory ceiling, fairness turns and unchanged signal-age deadline. Previously the category was omitted while reading/filter experiments were included; some source runs finished more than three minutes after close.
+
+A read-only source-scan callback records both maker arms on every successful source scan, including zero entries and extraction-drop counts. It uses the already-extracted events, does not rerun Pine or prepare depth, never admits orders, and cannot prevent source admission if receipt persistence fails. Same-bar retries remain idempotent. Existing source-event routing, signatures, readings, fees, fills, risk caps, account config and evidence exclusion are unchanged. No historical receipt or fill is invented.
+
+The comparison view shows scan counts and latest scan time before a first trade, identifies successful scans with no entry, and displays unmeasured closed outcomes instead of implying zero-risk profitability. Paper remains on its current fill model. Tick/depth V2 can only be considered for paper after forward execution accuracy and complete-cohort profit/SL evidence pass the existing policy.
