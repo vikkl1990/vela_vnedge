@@ -79,7 +79,8 @@ export interface Position {
   peakAt?: number;
   worstR?: number;
   worstAt?: number;
-  /** When the position was actually filled; entryAt uses this same chronology. */
+  /** First fill's exchange event time when known; entryAt is the observed accounting time.
+   * Later partial entries must never reset this fee/funding clock. */
   openedAt?: number;
   /** Fingerprint of the settings that produced this trade (decision 90). */
   configFp?: string;

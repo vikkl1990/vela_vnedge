@@ -331,6 +331,7 @@ export function JournalDetailPanel({ book, id, onClose }: { book: string; id: nu
                         features: d.features,
                         entryExecution: d.entryExecution,
                         entryFillEvidence: d.entryFillEvidence,
+                        makerFillReports: d.makerFillReports,
                         basketEntries: d.basketEntries,
                       },
                       null,

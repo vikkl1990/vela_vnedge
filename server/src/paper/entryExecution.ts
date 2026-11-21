@@ -10,11 +10,13 @@ export interface EntryDepthSnapshot {
  bids:Array<{price:number;size:number}>; asks:Array<{price:number;size:number}>;
 }
 export interface LimitFillObservation {
+ model?:'tick-depth-v1';
+ arrivalAt?:number;arrivalDepth?:EntryAdmissionDepth;fillDepth?:EntryAdmissionDepth;
  placedAt:number; expiresAt:number; eventAt:number; observedAt:number;
  trigger: {kind:'trade';price:number;qty:number} | {kind:'candle';time:number;high:number;low:number;close:number;volume?:number};
 }
 export interface EntryAdmissionDepth {
- source:'l2-rest'; receivedAt:number; exchangeAt:number; evaluatedAt:number;
+ source:'l2-rest'|'l2-ws'; receivedAt:number; exchangeAt:number; evaluatedAt:number;
  checkedQty:number; contractValue:number; virtualQty?:number;
  bids:Array<{price:number;size:number}>; asks:Array<{price:number;size:number}>;
 }

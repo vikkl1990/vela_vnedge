@@ -114,9 +114,9 @@ test('a refresh requested as the previous pass settles is not lost',async t=>{
  assert.equal(passes,2);
 });
 
-test('the SOL maker reference gets bounded timely research turns without taking account reservations',async t=>{
+for(const id of ['sol-maker-half-stop-reference','sol-maker-tick-depth-reference'])test(id+' gets bounded timely turns without taking account reservations',async t=>{
  const f=fixture(t),pool=f.runner.deps.pool;
- f.cfg.executionPlans=[{id:'sol-maker-half-stop-reference',revision:1,enabled:true,scannerId:'trend-impulse-channels-zeiierman-maker',symbol:'SOLUSD',tf:'15m',variant:'current',referenceEquity:1000}];
+ f.cfg.executionPlans=[{id,revision:1,enabled:true,scannerId:'trend-impulse-channels-zeiierman-maker',symbol:'SOLUSD',tf:'15m',variant:'current',referenceEquity:1000}];
  pool.stats.queuedLive=1;await f.runner.sync();await flush();assert.equal(f.runner.dispatchStats.started,0);
  pool.stats.queuedLive=0;pool.stats.queuedMirror=1;f.runner.dispatch.drain();await flush();assert.equal(f.runner.dispatchStats.started,0);
  pool.stats.queuedMirror=0;f.runner.dispatch.drain();await flush();assert.equal(f.runner.dispatchStats.timelyTurns,1);
