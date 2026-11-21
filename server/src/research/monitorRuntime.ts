@@ -149,9 +149,13 @@ export class MonitorRuntime {
    this.monitor.settle(t.symbol,book,observedAt,this.current);
   }).catch(e=>log.debug(`advisory depth unavailable: ${String(e)}`)).finally(()=>this.busy.delete(t.symbol));
  }
- async view(now=Date.now()){
+ async view(now?:number){
   let listed:Array<{symbol:string;change24hPct:number;volume24h:number}>=[];let marketError:string|null=null;
   try{listed=await this.app.markets();}catch{marketError='Market list unavailable; showing retained active pairs';}
+  // Market discovery may await I/O while live depth keeps arriving. Assess the
+  // completed response, not a clock from before that await (which makes new
+  // observations appear to come from the future).
+  now ??= Date.now();
   const monitor=this.monitor.view();
   const totals=this.app.db.all<any>(`SELECT symbol,bt,count(*) trades,sum(realized_pnl-fees) net,sum((realized_pnl-fees)/risk_amount) r,sum(exit_reason='sl') stops
    FROM positions WHERE status='closed' AND exit_at>=? AND risk_amount>0 AND (bt=0 OR (bt=2 AND evidence_scope IN ('shadow','legacy-shadow'))) GROUP BY symbol,bt`,now-86400000);
