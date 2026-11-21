@@ -83,10 +83,13 @@ export function fillComparison(db:Db,id:number):FillComparison|null{
    }else if(matches.length>1)depth.status='Ambiguous depth reports';
   }
   if(depth.price!==null){depth.deltaBps=delta(o.price,depth.price,o.side);if(Math.abs(depth.deltaBps)>1e-6)depth.status+=' · price differs';}
-  const matches=audits.filter(t=>t.at===o.at&&t.side===o.side&&t.paper_price===o.price);
+  // Older audits mistook later maker partials for market entries after their first
+  // fill consumed the placement tracker. Never use that taker benchmark for a maker.
+  const passiveEntry=o.reason==='entry'&&o.price_source?.startsWith('limit-');
+  const matches=passiveEntry?[]:audits.filter(t=>t.at===o.at&&t.side===o.side&&t.paper_price===o.price);
   const duplicateOrder=orders.filter(v=>v.at===o.at&&v.side===o.side&&v.price===o.price).length>1;
   const t=matches.length===1&&!duplicateOrder?matches[0]:null,extra=parse(t?.extra??null);
-  const status=matches.length>1||(matches.length>0&&duplicateOrder)?'Ambiguous tape records':!t?'No tape benchmark retained':extra?.unobserved?'Unobserved trigger / restart':(extra?.lateSec??0)>10?'Late print; not a fill-accuracy benchmark':!(t.prints>0)?'No observed print':'Public print benchmark; not executable depth';
+  const status=passiveEntry?'Maker fill; inspect recorded print/depth evidence':matches.length>1||(matches.length>0&&duplicateOrder)?'Ambiguous tape records':!t?'No tape benchmark retained':extra?.unobserved?'Unobserved trigger / restart':(extra?.lateSec??0)>10?'Late print; not a fill-accuracy benchmark':!(t.prints>0)?'No observed print':'Public print benchmark; not executable depth';
   const valid=t&&t.prints>0&&!extra?.unobserved&&(extra?.lateSec??0)<=10;
   return {id:o.id,at:o.at,reason:o.reason,side:o.side,qty:o.qty,price:o.price,source:o.price_source,depth,
    tape:{status,first:t?.first_print??null,vwap:t?.tape_price??null,deltaBps:valid&&t.tape_price>0?delta(o.price,t.tape_price,o.side):null},maker};

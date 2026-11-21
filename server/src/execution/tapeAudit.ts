@@ -117,6 +117,15 @@ export class TapeAudit {
         this.limits.delete(key);
         return;   // a maker fill at its own price: the queue is the question, recorded with the limit
       }
+      // The first maker partial finishes the limit's placement audit. Later partials
+      // (including after restart) still have passive fills, not market executions.
+      // Their exact print/depth/quantity receipts live in paper_maker_reports.
+      if (o.reason === 'entry') {
+        const order = this.db.get<{price_source:string|null}>(
+          'SELECT price_source FROM orders WHERE position_id=? AND bt=? AND at=? AND side=? AND qty=? AND price=? AND reason=\'entry\' ORDER BY id DESC LIMIT 1',
+          o.positionId, book, o.at, o.side, o.qty, o.price);
+        if (order?.price_source?.startsWith('limit-')) return;
+      }
       // decision 201: funding is a cash adjustment, not an order — nothing on the tape to compare it with
       if (o.reason === 'funding') return;
       const report=engine.exitExecution?.state(o.positionId) && o.reason!=='entry' ? this.db.get<any>('SELECT i.id,i.trigger_at,i.ready_at,r.at FROM paper_exit_reports r JOIN paper_exit_intents i ON i.id=r.intent_id WHERE i.position_id=? AND r.at=? ORDER BY r.id DESC LIMIT 1',o.positionId,o.at) : undefined;
@@ -210,13 +219,23 @@ export class TapeAudit {
 
   summary(since = Date.now() - 14 * 86_400_000): TapeAuditSummary {
     // decision 201: rows written for funding before it was excluded are left out of every count
-    const rows = this.db.all<any>("SELECT * FROM tape_audit WHERE at >= ? AND kind != 'market exit (funding)' ORDER BY at DESC", since);
+    const rows = this.db.all<any>(`SELECT t.*,
+      CASE WHEN t.kind='market entry' AND EXISTS (
+        SELECT 1 FROM orders o WHERE o.position_id=t.position_id AND o.bt=t.book AND o.at=t.at
+        AND o.side=t.side AND o.price=t.paper_price AND o.reason='entry' AND o.price_source LIKE 'limit-%')
+      AND NOT EXISTS (
+        SELECT 1 FROM orders o WHERE o.position_id=t.position_id AND o.bt=t.book AND o.at=t.at
+        AND o.side=t.side AND o.price=t.paper_price AND o.reason='entry' AND coalesce(o.price_source,'') NOT LIKE 'limit-%')
+      THEN 1 ELSE 0 END AS maker_partial
+      FROM tape_audit t WHERE t.at>=? AND t.kind!='market exit (funding)' ORDER BY t.at DESC`, since)
+      .map(({maker_partial,...r}) => maker_partial ? {...r,kind:'resting maker partial',tape_price:null,first_print:null,worst_print:null,prints:null,slip_bps:null,slip_r:null,
+        extra:JSON.stringify({originalKind:r.kind,correction:'Recorded maker partial; market-print benchmark is inapplicable. Inspect its maker print/depth receipt.'})} : r);
     const bookName = (b: number) => (b === 0 ? 'account' : 'shadow');
     const q = (xs: number[], p: number) => (xs.length ? xs[Math.min(xs.length - 1, Math.floor(xs.length * p))] : null);
     const groups = new Map<string, any[]>();
     const lateOf = (r: any) => { try { return (r.extra ? JSON.parse(r.extra).lateSec : 0) ?? 0; } catch { return 0; } };
     const unobservedOf = (r: any) => { try { return Boolean(r.extra && JSON.parse(r.extra).unobserved); } catch { return false; } };
-    for (const r of rows.filter(r => r.kind !== 'resting limit')) { const k = `${r.book}|${r.kind}`; const g = groups.get(k) ?? []; g.push(r); groups.set(k, g); }
+    for (const r of rows.filter(r => r.kind !== 'resting limit' && r.kind !== 'resting maker partial')) { const k = `${r.book}|${r.kind}`; const g = groups.get(k) ?? []; g.push(r); groups.set(k, g); }
     const fills = [...groups].map(([k, g0]) => {
       let g = g0;
       const [b, kind] = k.split('|');
