@@ -148,7 +148,7 @@ export function wireRealtime(app: App): void {
   app.stopExecutionAudit=async()=>{app.tradeMonitor.stop();exitPump.stop();clearInterval(exitTimer);app.accountObserver.stop();stopStatus();for(const t of [auditTimer,historyTimer,depthTimer,timer])clearInterval(t);depth.disconnect();try{depth.flush();flow.connection(false);}catch(e:any){log.warn(`audit shutdown flush: ${e.message}`);}timing.flush();await replay.close();};
   const status = app.exchangeStatus ?? new TradingStatus();
   const stopStatus = wireTradingStatus(app, status);
-  for (const b of books) b.entryBlock = (symbol, at) => status.block(symbol, at);
+  for (const b of books) b.entryBlock = (symbol, at) => app.runtime?.entryBlock ?? status.block(symbol, at);
   app.db.run('CREATE TABLE IF NOT EXISTS funding_guard_blocks (symbol TEXT PRIMARY KEY, until_at INTEGER NOT NULL)');
   for (const b of books) b.fundingEntryBlock = (symbol,side,tf,notional,risk,at) => {
     if (!app.config.get().paper.fundingGuard?.enabled) return null;

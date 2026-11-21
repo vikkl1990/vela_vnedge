@@ -70,7 +70,7 @@ test('enabling is atomic and idempotent; paper, risk, ML, scanners and existing 
  enableTwoBarShadow(file);const after=fs.readFileSync(file,'utf8'),next=JSON.parse(after);assert.equal(next.executionPlans.length,6);
  delete next.executionPlans;const old=JSON.parse(before);delete old.executionPlans;assert.deepEqual(next,old);
  assert.equal(enableTwoBarShadow(file).changed,false);assert.equal(fs.readFileSync(file,'utf8'),after);
- const bad=JSON.parse(after);bad.executionPlans[1].referenceEquity=2000;fs.writeFileSync(file,JSON.stringify(bad));assert.throws(()=>enableTwoBarShadow(file),/no overwrite/);
+ const bad=JSON.parse(after);bad.executionPlans[1].referenceEquity=2000;fs.writeFileSync(file,JSON.stringify(bad));assert.throws(()=>enableTwoBarShadow(file),/Saved configuration fails validation/);
 });
 
 test('EVAA floor activates before the original trail, preserves its steps and fills causally after reversal',t=>{

@@ -41,7 +41,7 @@ test('activation adds only a disabled research scanner and four fresh plans; rep
  for(const p of snaps){assert.deepEqual(p.paper,snaps[0].paper);assert.equal(p.paper.maxStopLossPct,cfg.paper.maxStopLossPct);assert.equal(p.paper.marginPerTrade,cfg.paper.marginPerTrade);}
  assert.equal(c.scanners[SOL_MAKER_FILTER_OFF].inputs?.TrendFilter,false);assert.equal(c.scanners[SOL_MAKER_FILTER_SOURCE].inputs?.TrendFilter,undefined);
  assert.equal(c.scanners[SOL_MAKER_FILTER_OFF].enabled,false);
- next.executionPlans[0].revision=2;fs.writeFileSync(file,JSON.stringify(next));assert.throws(()=>enableSolTrendFilter(file),/refusing overwrite/);
+ next.executionPlans[0].revision=2;fs.writeFileSync(file,JSON.stringify(next));assert.throws(()=>enableSolTrendFilter(file),/Saved configuration fails validation/);
 });
 test('study refuses live mode, input drift, changed exits, missing arms and research scanner account activation',t=>{
  for(const change of [

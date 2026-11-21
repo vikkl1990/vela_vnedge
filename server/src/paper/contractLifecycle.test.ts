@@ -33,7 +33,7 @@ test('two native shadow plans preserve existing 34 experiments and all account, 
  assert.equal(enableContractLifecycleShadow(file).changed,false);
  while(next.executionPlans.length<=MAX_RESEARCH_PLANS)next.executionPlans.push({...raw.executionPlans[0],id:`overflow-${next.executionPlans.length}`});
  fs.writeFileSync(file,JSON.stringify(next));
- assert.throws(()=>enableContractLifecycleShadow(file),new RegExp(String(MAX_RESEARCH_PLANS)));
+ assert.throws(()=>enableContractLifecycleShadow(file),/Saved configuration fails validation/);
 });
 test('native policy is separate, has no fallback TP, and matrix keeps the legacy gap visible',t=>{
  const {cfg}=fixture(t),registry=new ScannerRegistry();

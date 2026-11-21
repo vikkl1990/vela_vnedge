@@ -1,37 +1,32 @@
 import { App } from './app.ts';
 import { ApiServer } from './api/server.ts';
 import { logger } from './log.ts';
-import { attachRawMetrics } from './ops/routes.ts';
+import { ProcessSupervisor } from './runtime.ts';
 
 const log = logger.scoped('main');
-const PORT = Number(process.env.PORT ?? 8787);
-const HOST = process.env.HOST ?? '127.0.0.1';
-
-const app = new App();
-const api = new ApiServer(app);
-attachRawMetrics((api as unknown as { server?: import('node:http').Server }).server, app); // Prometheus text for GET /api/metrics
-
+let app: App | undefined;
+let api: ApiServer | undefined;
+const supervisor = new ProcessSupervisor({
+  mark(fatal, reason) {
+    app?.runtime.stop(fatal, reason);
+    if (fatal && app) app.lastError = reason;
+  },
+  async shutdown(fatal) {
+    api?.close();
+    if (app) await app.ops.shutdown(() => app!.stop(), fatal);
+    logger.flush();
+  },
+  timeoutMs: () => (app?.config.get().ops.shutdownTimeoutMs ?? 20_000) + 10_000,
+  report: message => log.warn(message),
+  exit: code => process.exit(code),
+});
+supervisor.install();
 try {
-  await api.listen(PORT, HOST);
-} catch (e: any) {
-  if (e?.code === 'EADDRINUSE') { console.error(`\nPort ${PORT} is already in use — another VNEdge instance is probably running. Stop it or start with PORT=<other> npm start.\n`); process.exit(1); }
-  throw e;
+  app = new App();
+  api = new ApiServer(app);
+  await api.listen(Number(process.env.PORT ?? 8787), process.env.HOST ?? '127.0.0.1');
+  await app.start();
+  log.info(`VNEdge ready — ${app.registry.runnable().length} runnable scanners, symbols ${app.config.get().symbols.join(',')} tf ${app.config.get().timeframes.join(',')}`);
+} catch {
+  supervisor.request('startup');
 }
-await app.start();
-log.info(`VNEdge ready — ${app.registry.runnable().length} runnable scanners, symbols ${app.config.get().symbols.join(',')} tf ${app.config.get().timeframes.join(',')}`);
-
-let stopping = false;
-async function shutdown(sig: string) {
-  if (stopping) return;
-  stopping = true;
-  log.warn(`${sig} received, shutting down`);
-  const hardExit = setTimeout(() => { log.error('shutdown timed out, exiting'); process.exit(1); }, app.config.get().ops.shutdownTimeoutMs + 10_000);
-  hardExit.unref();
-  api.close();
-  await app.telegram.stop();
-  const r = await app.ops.shutdown(() => app.stop()); // drains in-flight script runs, stops timers, flushes the log
-  log.info(`shutdown complete (${r.drained ? 'drained' : 'timed out'} after ${r.waitedMs} ms)`);
-  process.exit(0);
-}
-process.on('SIGINT', () => shutdown('SIGINT'));
-process.on('SIGTERM', () => shutdown('SIGTERM'));

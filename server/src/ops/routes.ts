@@ -1,6 +1,5 @@
 /**
  * Ops endpoints, registered through the route-extension hook:
- *   GET  /api/metrics               Prometheus text (see `attachRawMetrics` for the content type)
  *   GET  /api/ops                   integrity / alerts / ops status (same object as in /api/health)
  *   GET  /api/ops/integrity         integrity counters plus the gaps currently present per series
  *   POST /api/ops/integrity/check   run gap scan, clock and symbol checks now
@@ -10,7 +9,6 @@
  *   POST /api/ops/alerts/test       send a test message (or run the condition evaluation with {"evaluate":true})
  *   POST /api/ops/logs/rotate       rotate the log file now
  */
-import type http from 'node:http';
 import type { App } from '../app.ts';
 import type { RouteAdder } from '../api/extensions.ts';
 import { Db } from '../db.ts';
@@ -18,9 +16,6 @@ import { logger } from '../log.ts';
 
 export function opsRoutes(add: RouteAdder, app: App): void {
   const ops = app.ops;
-  // The generic router always JSON-encodes; `attachRawMetrics` answers this path with text/plain before
-  // the router runs, so this handler only serves clients that ask for JSON (or when raw is not attached).
-  add('GET', '/api/metrics', (_p, url) => url.searchParams.get('format') === 'json' ? ops.metrics.snapshot() : { contentType: 'text/plain; version=0.0.4', text: ops.metrics.render() });
   add('GET', '/api/ops', () => ops.status());
   // the process minute by minute (decision 80): rss, queue, runs and signals per hour, close lag, for the Overview graphs
   add('GET', '/api/ops/metrics/history', (_p, url) => { const hours = Math.min(14 * 24, Math.max(1, Number(url.searchParams.get('hours')) || 24)); return { hours, rows: app.db.all('SELECT at, rss, heap, rss_pct rssPct, queued, busy, recycled, runs_h runsH, signals_h signalsH, feed_up feedUp, open_positions openPositions, close_lag_s closeLagS FROM ops_metrics WHERE at > ? ORDER BY at', Date.now() - hours * 3_600_000) }; });
@@ -45,32 +40,4 @@ export function opsRoutes(add: RouteAdder, app: App): void {
     return { delivered, configured: ops.alerts.configured, lastSent: ops.alerts.lastSent };
   });
   add('POST', '/api/ops/logs/rotate', () => ({ rotated: logger.rotate(), ...logger.fileStats() }));
-}
-
-/**
- * Serve `GET /api/metrics` as `text/plain` straight from the HTTP server, ahead of the JSON
- * router (Prometheus needs the exposition format, and the route hook cannot set headers).
- * The existing `request` listeners are wrapped so the router never sees a metrics scrape; the
- * JSON route above remains as a fallback when this is not attached.
- */
-export function attachRawMetrics(server: http.Server | undefined | null, app: App): boolean {
-  if (!server || typeof server.listeners !== 'function') return false;
-  const inner = server.listeners('request') as Array<(req: http.IncomingMessage, res: http.ServerResponse) => void>;
-  server.removeAllListeners('request');
-  server.on('request', (req: http.IncomingMessage, res: http.ServerResponse) => {
-    const url = req.url ?? '';
-    const p = url.split('?')[0];
-    if ((req.method === 'GET' || req.method === 'HEAD') && (p === '/api/metrics' || p === '/metrics') && !url.includes('format=json')) {
-      try {
-        const text = app.ops.metrics.render();
-        res.writeHead(200, { 'Content-Type': 'text/plain; version=0.0.4; charset=utf-8', 'Cache-Control': 'no-store', 'Access-Control-Allow-Origin': '*', 'Content-Length': Buffer.byteLength(text) });
-        res.end(req.method === 'HEAD' ? undefined : text);
-      } catch (e: any) {
-        res.writeHead(500, { 'Content-Type': 'text/plain' }); res.end(`metrics failed: ${e?.message ?? e}`);
-      }
-      return;
-    }
-    for (const l of inner) l.call(server, req, res);
-  });
-  return true;
 }

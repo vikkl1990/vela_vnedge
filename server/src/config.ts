@@ -1060,8 +1060,9 @@ export class ConfigStore {
   private cfg: AppConfig;
   private listeners: Array<(next: AppConfig, prev: AppConfig) => void> = [];
   private readonly file: string;
-  /** Modification time of the file when it was last read or written by this store. */
-  private seenMtimeMs = 0;
+  private seenRevision: string | null = null;
+  private checkedRevision: string | null = null;
+  private fileError: string | null = null;
 
   constructor(file = CONFIG_FILE) {
     this.file = file;
@@ -1071,31 +1072,70 @@ export class ConfigStore {
 
   private read(): AppConfig {
     let stored: Partial<AppConfig> = {};
-    if (fs.existsSync(this.file)) {
-      try { stored = JSON.parse(fs.readFileSync(this.file, 'utf8')); } catch { stored = {}; }
-      this.seenMtimeMs = fs.statSync(this.file).mtimeMs;
-    }
-    const cfg = deepMerge(structuredClone(DEFAULT_CONFIG), stored);
-    // per-script specs (scripts/specs.json, tracked): how each script is read — its entry channel,
-    // timezone, rule, inputs. They are defaults: anything set in config.json for the scanner wins.
-    if (process.env.SPECS !== '0') {
-      for (const [id, spec] of Object.entries(loadSpecs())) {
-        const cur = cfg.scanners[id];
-        cfg.scanners[id] = { enabled: false, symbols: null, timeframes: null, exitMode: 'both', ...spec, ...((cur ?? {}) as Partial<ScannerConfig>) } as ScannerConfig;
+    let revision: string | null = null;
+    let fd: number | undefined;
+    try {
+      fd = fs.openSync(this.file, 'r');
+      revision = this.revision(fs.fstatSync(fd));
+      stored = JSON.parse(fs.readFileSync(fd, 'utf8'));
+      if (!stored || typeof stored !== 'object' || Array.isArray(stored)) throw new Error();
+    } catch (e: any) {
+      // Only a genuinely absent first-run file may use defaults. Never include parser excerpts:
+      // malformed JSON can contain credentials, and a corrupt saved file must fail closed.
+      if (e?.code !== 'ENOENT' || this.seenRevision !== null) throw new Error('Saved configuration is missing, unreadable or invalid; restore a valid config file');
+      // A dangling link is a broken saved configuration, not a first installation.
+      try { fs.lstatSync(this.file); throw new Error('Saved configuration is unavailable'); }
+      catch (missing: any) { if (missing?.code !== 'ENOENT') throw new Error('Saved configuration is unavailable'); }
+    } finally { if (fd !== undefined) fs.closeSync(fd); }
+    try {
+      const cfg = deepMerge(structuredClone(DEFAULT_CONFIG), stored);
+      // per-script specs (scripts/specs.json, tracked): how each script is read — its entry channel,
+      // timezone, rule, inputs. They are defaults: anything set in config.json for the scanner wins.
+      if (process.env.SPECS !== '0') {
+        for (const [id, spec] of Object.entries(loadSpecs())) {
+          const cur = cfg.scanners[id];
+          cfg.scanners[id] = { enabled: false, symbols: null, timeframes: null, exitMode: 'both', ...spec, ...((cur ?? {}) as Partial<ScannerConfig>) } as ScannerConfig;
+        }
       }
-    }
-    if (process.env.VNEDGE_SYMBOLS) cfg.symbols = process.env.VNEDGE_SYMBOLS.split(',').map(s => s.trim()).filter(Boolean);
-    if (process.env.VNEDGE_TIMEFRAMES) cfg.timeframes = process.env.VNEDGE_TIMEFRAMES.split(',').map(s => s.trim()).filter(Boolean);
-    return cfg;
+      if (process.env.VNEDGE_SYMBOLS) cfg.symbols = process.env.VNEDGE_SYMBOLS.split(',').map(s => s.trim()).filter(Boolean);
+      if (process.env.VNEDGE_TIMEFRAMES) cfg.timeframes = process.env.VNEDGE_TIMEFRAMES.split(',').map(s => s.trim()).filter(Boolean);
+      if (validateConfig(cfg).length) throw new Error();
+      this.seenRevision = revision;
+      this.checkedRevision = revision;
+      this.fileError = null;
+      return cfg;
+    } catch { throw new Error('Saved configuration fails validation; restore a valid config file'); }
+  }
+
+  private revision(s: fs.Stats): string { return `${s.dev}:${s.ino}:${s.size}:${s.mtimeMs}:${s.ctimeMs}`; }
+  private diskRevision(): string | null {
+    try { return this.revision(fs.statSync(this.file)); }
+    catch (e: any) { if (e?.code === 'ENOENT' && this.seenRevision === null) return null; throw new Error('Saved configuration is missing or unreadable'); }
+  }
+
+  /** Health check only: a disk edit never silently changes the running execution settings. */
+  status(): { valid: boolean; error: string | null } {
+    try {
+      const revision = this.diskRevision();
+      if (revision !== this.checkedRevision) {
+        const saved = this.seenRevision;
+        try { this.read(); } finally { this.seenRevision = saved; }
+      }
+      this.fileError = null;
+    } catch { this.fileError = 'Saved configuration is invalid or unavailable; running with the last valid settings and refusing writes'; }
+    return { valid: this.fileError === null, error: this.fileError };
   }
 
   /** Re-read the file if something else wrote it since we last did, so a change lands on top of it. */
   private refreshIfChangedOnDisk(): void {
-    if (!fs.existsSync(this.file)) return;
-    const mtime = fs.statSync(this.file).mtimeMs;
-    if (mtime === this.seenMtimeMs) return;
-    console.warn(`[config] ${this.file} was changed outside this process; reloading it before applying the change`);
-    this.cfg = this.read();
+    try {
+      if (this.diskRevision() === this.seenRevision) return;
+      const next = this.read();
+      this.cfg = next;
+    } catch {
+      this.fileError = 'Saved configuration is invalid or unavailable; running with the last valid settings and refusing writes';
+      throw new Error(this.fileError);
+    }
   }
 
   get(): AppConfig { return this.cfg; }
@@ -1106,8 +1146,8 @@ export class ConfigStore {
     const errs = validateConfig(next);
     if (errs.length) throw new Error('Invalid config: ' + errs.join('; '));
     const prev = this.cfg;
+    this.save(next);
     this.cfg = next;
-    this.save();
     for (const l of this.listeners) l(next, prev);
     return next;
   }
@@ -1126,21 +1166,24 @@ export class ConfigStore {
     const cells = Object.entries({ ...this.cfg.scanners, [id]: next }).filter(([, v]) => v.enabled && !v.hidden).reduce((n, [, v]) => n + cellsOf(v), 0);
     const cap = this.cfg.incubator?.promote?.maxFleet ?? 20;
     if (this.cfg.incubator?.promote?.countLimitsEnabled !== false && cells > cap) throw Object.assign(new Error(`refused: the live fleet would have ${cells} cells, above incubator.promote.maxFleet (${cap}); raise the limit deliberately or add fewer pairs`), { status: 400 });
-    this.cfg = { ...this.cfg, scanners: { ...this.cfg.scanners, [id]: next } };
-    this.save();
+    const cfg = { ...this.cfg, scanners: { ...this.cfg.scanners, [id]: next } };
+    this.save(cfg);
+    this.cfg = cfg;
     return next;
   }
 
   onChange(l: (next: AppConfig, prev: AppConfig) => void) { this.listeners.push(l); return () => { this.listeners=this.listeners.filter(x=>x!==l); }; }
 
   /** Write atomically (temp file + rename), so another process never reads a half-written file. */
-  private save() {
+  private save(cfg: AppConfig) {
     const tmp = `${this.file}.${randomUUID()}.tmp`;
     try {
-      fs.writeFileSync(tmp, JSON.stringify(this.cfg, null, 2), {mode:0o600,flag:'wx'});
+      fs.writeFileSync(tmp, JSON.stringify(cfg, null, 2), {mode:0o600,flag:'wx'});
       fs.renameSync(tmp, this.file);
     } finally { try { fs.unlinkSync(tmp); } catch { /* already renamed */ } }
-    this.seenMtimeMs = fs.statSync(this.file).mtimeMs;
+    this.seenRevision = this.diskRevision();
+    this.checkedRevision = this.seenRevision;
+    this.fileError = null;
   }
 }
 
