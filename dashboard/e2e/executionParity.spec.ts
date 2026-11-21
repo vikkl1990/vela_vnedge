@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto'
+import { chartHistoryText } from '../../shared/chartVerification'
 import type { Vela } from '@luxalgo/vela'
 import { test, expect, scanners } from './fixtures'
 import type { SignalReceipt, FillComparison } from '../../shared/chartVerification'
@@ -13,7 +15,7 @@ const bars = Array.from({ length: 200 }, (_, i) => ({
   volume: 1000,
 }))
 const source =
-  '//@version=5\nindicator("Signal parity", overlay=true)\nplot(7,"Value")\nplotshape(close > open, title="Buy", style=shape.triangleup)'
+  '//@version=5\nindicator("Signal parity", overlay=true)\nplot(7,"Value")\nplotshape(close > open, title="Buy", style=shape.triangleup)\nplotshape(close < open, title="Buy", style=shape.triangledown)'
 
 test('closed-bar chart checks expose agreement, differences and input context without trading writes', async ({
   page,
@@ -31,14 +33,21 @@ test('closed-bar chart checks expose agreement, differences and input context wi
     inputs: {},
     timezone: 'UTC',
     historyFrom: T,
-    bars: 200,
+    bars: 199,
+    historyHash: createHash('sha256')
+      .update(chartHistoryText(bars, T + 198 * M))
+      .digest('hex'),
     candle: bars[198],
-    outputs: { Value: { kind: 'plot', value: 7 }, Buy: { kind: 'shape', value: 1 } },
+    outputs: {
+      Value: { kind: 'plot', value: 7 },
+      Buy: { kind: 'shape', value: 1 },
+      'Buyplotshape#1': { kind: 'shape', value: 0 },
+    },
     signals: [{ kind: 'entry', side: 'long', label: 'Buy', source: 'shape' }],
     signalCoverage: 'shape',
     truncated: false,
   }
-  await page.route('**/api/scanners', (r) => r.fulfill({ json: scanners.slice(0, 1) }))
+  await page.route(/\/api\/scanners(?:\?.*)?$/, (r) => r.fulfill({ json: scanners.slice(0, 1) }))
   await page.route('**/api/scanners/*/source', (r) =>
     r.fulfill({
       json: {
@@ -62,6 +71,9 @@ test('closed-bar chart checks expose agreement, differences and input context wi
   await expect(panel).toContainText('Closed-bar outputs differ', { timeout: 30000 })
   await expect(panel).toContainText('Value')
   receipt.outputs.Value.value = 7
+  receipt.historyHash = 'different'
+  await page.reload()
+  await expect(panel).toContainText('Candle data differs; outputs not comparable', { timeout: 30000 })
   receipt.sourceHash = 'different'
   await page.reload()
   await expect(panel).toContainText('Source, inputs or execution context differs', { timeout: 30000 })

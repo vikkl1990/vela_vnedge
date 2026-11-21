@@ -148,6 +148,7 @@ export function VelaChart({
     let chart: VelaType | null = null
     let pineEngine: InstanceType<PineModule['PineWorkerEngine']> | null = null
     let firstBar: (id: string) => number | null = () => null
+    let history: ReturnType<typeof withScriptTimezones>['history'] = () => null
     let generation = 0
     const latestRuns = new Map<string, { run: ScriptRun; contextKey: string }>()
     const requests = new Map<string, { key: string; serial: number }>()
@@ -278,6 +279,7 @@ export function VelaChart({
                   (id) => scriptsRef.current.find((s) => `vn:${s.id}` === id)?.timezone,
                 )
                 firstBar = adapter.firstBar
+                history = adapter.history
                 chart.registerEngine('pine', adapter.engine)
                 setPineReady(true)
               })
@@ -313,6 +315,7 @@ export function VelaChart({
                 market = { ...marketRef.current },
                 context = scriptContextKey(script)
               const time = run.forming ? run.time - tfMs(market.tf) : run.time
+              const inputHistory = history(run.id, time)
               const handle = handlesRef.current.get(script.id)?.handle
               const expected = handle ? scriptInputs(handle.inputs, script.inputs) : {}
               const actual = handle?.inputValues() ?? {}
@@ -325,7 +328,10 @@ export function VelaChart({
               // worker transfer per series. Raw plot values also retain boolean shapes.
               void handle
                 ?.context(['plots'])
-                .then((snapshot) => {
+                .then(async (snapshot) => {
+                  const digest = inputHistory
+                    ? await crypto.subtle.digest('SHA-256', new TextEncoder().encode(inputHistory.text))
+                    : null
                   if (
                     cancelled ||
                     !snapshot ||
@@ -335,19 +341,18 @@ export function VelaChart({
                     JSON.stringify(handle.inputValues()) !== JSON.stringify(actual)
                   )
                     return
-                  const values = Object.entries(snapshot.plots)
-                    .slice(0, 80)
-                    .map(([key, points]) => {
-                      const value = points.findLast((p) => p.time === time)?.value
-                      return [
-                        key,
-                        typeof value === 'boolean'
-                          ? Number(value)
-                          : typeof value === 'number' && Number.isFinite(value)
-                            ? value
-                            : null,
-                      ] as const
-                    })
+                  const rawValues = Object.entries(snapshot.plots).filter(([key]) => !key.startsWith('__'))
+                  const values = rawValues.slice(0, 512).map(([key, points]) => {
+                    const value = points.findLast((p) => p.time === time)?.value
+                    return [
+                      key,
+                      typeof value === 'boolean'
+                        ? Number(value)
+                        : typeof value === 'number' && Number.isFinite(value)
+                          ? value
+                          : null,
+                    ] as const
+                  })
                   cbRef.current.onSignalCheck?.({
                     scannerId: script.id,
                     symbol: market.symbol,
@@ -355,10 +360,15 @@ export function VelaChart({
                     barTime: time,
                     sourceHash: script.sourceHash ?? null,
                     historyFrom: firstBar(run.id),
+                    historyHash: digest
+                      ? Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join('')
+                      : undefined,
+                    historyBars: inputHistory?.count,
                     inputs: script.inputs ?? {},
                     inputsChanged,
                     timezone: script.timezone ?? 'UTC',
                     complete: run.complete,
+                    valuesTruncated: rawValues.length > 512,
                     values: Object.fromEntries(values),
                   })
                 })
