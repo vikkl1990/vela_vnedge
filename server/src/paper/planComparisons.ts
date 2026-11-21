@@ -1,4 +1,5 @@
 import type { AppConfig } from '../config.ts';
+import {solFilterPlan} from '../scanners/solMakerExperiment.ts';
 import type { Db } from '../db.ts';
 import type { Bar } from '../data/candleStore.ts';
 import {extractEvents, type ScanEvent} from '../scanners/extractor.ts';
@@ -90,7 +91,7 @@ export class PlanComparisons {
   observeScan(input:ComparisonScan){
     const snapshots=new Map<string,{p:ExecutionPlanSnapshot;enabled:boolean}>();
     for(const d of this.cfg().executionPlans??[]){
-      if(!d.enabled||!d.readingOverride||d.scannerId!==input.scannerId||d.symbol!==input.symbol||d.tf!==input.tf)continue;
+      if(!d.enabled||(!d.readingOverride&&!solFilterPlan(d))||d.scannerId!==input.scannerId||d.symbol!==input.symbol||d.tf!==input.tf)continue;
       const p=planSnapshot(this.cfg(),d,this.sourceHash(d.scannerId),input.market.productFees??this.paper.marketFeesFor?.(input.symbol));
       snapshots.set(planScannerId(p),{p,enabled:true});
     }
@@ -107,6 +108,9 @@ export class PlanComparisons {
         .filter(e=>e.kind!=='entry'||e.barTime>=input.bars.at(-1)!.time);
       this.remember(input,p);
       if(enabled)this.db.run('INSERT OR IGNORE INTO execution_plan_scans VALUES(?,?,?,?,?,?)',scannerId,input.bars.at(-1)!.time,input.at,events.filter(e=>e.kind==='entry').length,events.filter(e=>e.kind==='exit').length,JSON.stringify(drops));
+      // Input studies already consume the normal source-event path. This receipt
+      // exposes successful zero-signal runs without admitting the event twice.
+      if(!p.readingOverride)continue;
       for(const event of events){
         if(event.kind==='info'||(!enabled&&event.kind==='entry'))continue;
         this.execute({...input,event,refusal:event.kind==='entry'?input.refusal(event):null},p);

@@ -2716,5 +2716,30 @@
         "factor": 1
       }
     }
+  },
+  "trend-impulse-channels-zeiierman-maker-filter-off": {
+    "sources": [
+      "shape"
+    ],
+    "labels": [
+      "Upper Retest",
+      "Lower Retest"
+    ],
+    "sides": {
+      "upper retest": "long",
+      "lower retest": "short"
+    },
+    "entryLimit": {
+      "tfs": [
+        "15m"
+      ],
+      "atr": 0.1,
+      "minutes": 5
+    },
+    "exitMode": "both",
+    "enabled": false,
+    "inputs": {
+      "TrendFilter": false
+    }
   }
 }

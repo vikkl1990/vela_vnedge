@@ -1,4 +1,5 @@
 import {upstreamLifecycle} from '../scanners/upstreamLifecycle.ts';
+import {SOL_MAKER_FILTER_OFF,SOL_MAKER_FILTER_SOURCE,SOL_FILTER_PLAN_PREFIX,solFilterPlan} from '../scanners/solMakerExperiment.ts';
 import {isTwoBarCell,TWO_BAR_EXIT} from './failedTradeExit.ts';
 import {MARKITTICK_NATIVE} from '../scanners/markitTick.ts';
 import {plotLifecycle,TREND_CONTINUATION} from '../scanners/plotLifecycle.ts';
@@ -19,9 +20,9 @@ import { exitConfigFor } from './logic.ts';
 import { scannerExitPolicy, entryPolicy, ownExitsOverride } from './policy.ts';
 import { adaptPlan } from './planStudy.ts';
 
-// Bounded research capacity: 105 existing plans plus one SOL maker advisory reference.
+// Bounded research capacity: 107 existing plans plus four isolated SOL filter/fill arms.
 // This does not change account positions, allocation or risk limits.
-export const MAX_RESEARCH_PLANS = 107;
+export const MAX_RESEARCH_PLANS = 111;
 /** Explicit TP experiment; original stop and sizing stay fixed. Trail changes are opt-in and labeled. */
 export interface TakeProfitPlan {
   mode: 'native' | 'r';
@@ -167,7 +168,9 @@ export function validateExecutionPlans(plans: ExecutionPlan[] | undefined, tfs: 
   for(const p of plans){
     if(!p || !/^[a-z0-9][a-z0-9-]{0,79}$/.test(p.id??'') || ids.has(p.id))errors.push('executionPlans requires unique safe ids');
     if(!p)continue;ids.add(p.id);
-    if(p.makerFill!==undefined&&(p.makerFill!=='tick-depth-v1'||p.scannerId!=='trend-impulse-channels-zeiierman-maker'||p.symbol!=='SOLUSD'||p.tf!=='15m'||p.variant!=='current'||p.basket||p.readingOverride||p.takeProfit||p.trailing||p.exitPolicy||p.comparison||p.failedTradeExit||p.profitFloor||p.maxHoldMinutes!==undefined))errors.push(`executionPlans.${p.id}: tick-depth maker requires the isolated SOL maker reference and unchanged exits`);
+    if(p.makerFill!==undefined&&(p.makerFill!=='tick-depth-v1'||!(p.scannerId===SOL_MAKER_FILTER_SOURCE||solFilterPlan(p))||p.symbol!=='SOLUSD'||p.tf!=='15m'||p.variant!=='current'||p.basket||p.readingOverride||p.takeProfit||p.trailing||p.exitPolicy||p.comparison||p.failedTradeExit||p.profitFloor||p.maxHoldMinutes!==undefined))errors.push(`executionPlans.${p.id}: tick-depth maker requires the isolated SOL maker reference and unchanged exits`);
+    if(p.scannerId===SOL_MAKER_FILTER_OFF&&!solFilterPlan(p))errors.push(`executionPlans.${p.id}: filter-off scanner requires its versioned SOL study`);
+    if(typeof p.id==='string'&&p.id.startsWith(SOL_FILTER_PLAN_PREFIX)&&(!solFilterPlan(p)||p.variant!=='current'||p.referenceEquity!==1000||p.basket||p.readingOverride||p.takeProfit||p.trailing||p.exitPolicy||p.comparison||p.failedTradeExit||p.profitFloor||p.maxHoldMinutes!==undefined||p.maxStopLossPct!==undefined||(p.id.endsWith('-tick')?p.makerFill!=='tick-depth-v1':p.makerFill!==undefined)))errors.push(`executionPlans.${p.id}: filter study must retain current entry, exits and risk`);
     // Validate effective basket prerequisites at save time, using the same policy
     // resolver as execution (including symbol/scanner overrides and the plan cap).
     if(p.basket&&cfg){
@@ -224,6 +227,15 @@ export function validateExecutionPlans(plans: ExecutionPlan[] | undefined, tfs: 
       if(tp?.mode==='r'&&(!Array.isArray(tp.rr)||tp.rr.length!==3||!tp.rr.every((n,i,a)=>Number.isFinite(n)&&n>0&&(i===0||n>a[i-1]))))errors.push(`executionPlans.${p.id}: TP R ladder must be three increasing positive values`);
       if(tp?.mode==='native'&&tp.rr!==undefined)errors.push(`executionPlans.${p.id}: native targets cannot specify an R ladder`);
       if(tp?.trailAfterR!==undefined&&(!Number.isFinite(tp.trailAfterR)||tp.trailAfterR<0||tp.trailAfterR>10))errors.push(`executionPlans.${p.id}: TP trail activation must be 0..10R`);
+    }
+  }
+  const filterPlans=plans.filter(p=>typeof p?.id==='string'&&p.id.startsWith(SOL_FILTER_PLAN_PREFIX));
+  if(filterPlans.length){
+    if(filterPlans.length!==4||filterPlans.some(p=>!solFilterPlan(p))||new Set(filterPlans.map(p=>p.enabled)).size!==1)errors.push('SOL filter study requires all four arms with the same enabled state');
+    if(cfg){
+      const on=cfg.scanners[SOL_MAKER_FILTER_SOURCE],off=cfg.scanners[SOL_MAKER_FILTER_OFF];
+      const normalized=(s:ScannerConfig|undefined)=>{if(!s)return null;const {enabled:_e,hidden:_h,symbols:_s,timeframes:_t,pairs:_p,...c}=structuredClone(s);if(c.inputs){delete c.inputs.TrendFilter;if(!Object.keys(c.inputs).length)delete c.inputs;}return c;};
+      if(!on||!off||off.enabled||off.inputs?.TrendFilter!==false||on.inputs?.TrendFilter===false||on.inputs?.['Filter by Trend']!==undefined||stable(normalized(on))!==stable(normalized(off)))errors.push('SOL filter study scanners must differ only in TrendFilter, with research scanner disabled');
     }
   }
   for(const group of new Set(plans.filter(p=>p?.comparison).map(p=>p.comparison!.group))){

@@ -6,6 +6,7 @@ import {PartialMakerLedger,makerSlice,makerPrintKey,makerDepthEvidence,type Make
 import {reclaimRestoreRefusal,recoverReclaim,nextReclaimMinute,type ReclaimCheckpoint} from './reclaimRecovery.ts';
 import {isExecutableTrade} from '../execution/tradeFreshness.ts';
 import {quoteMakerCell,passiveMakerPrice,tradedVolume,makerTapeCell,freshMakerPrint} from './makerPricing.ts';
+import {SOL_MAKER_FILTER_OFF,solMakerRiskSource} from '../scanners/solMakerExperiment.ts';
 import {qualifiedEvidence,evidenceCoverage} from '../evidence/trades.ts';
 import {PaperExitExecution,CAUSAL_EXIT_VERSION,type ExitBook} from './exitExecution.ts';
 import {recordGatedSignal,type GateStage} from '../evidence/gatedSignals.ts';
@@ -188,7 +189,7 @@ export class PaperEngine extends EventEmitter {
   risk: RiskGate | null = null;
   alignmentBars?: (symbol:string,tf:string)=>import('../data/candleStore.ts').Bar[];
   private alignmentBlock(cell:{scannerId:string;symbol:string;tf:string;policy?:TradePolicy;executionPlan?:ExecutionPlanSnapshot},side:Side,at:number):string|null {
-    const rule=alignmentRule(cell.policy?.paper??cell.executionPlan?.paper??this.paper,cell.executionPlan?.sourceScannerId??cell.scannerId,cell.symbol,cell.tf);
+    const rule=alignmentRule(cell.policy?.paper??cell.executionPlan?.paper??this.paper,solMakerRiskSource(cell.executionPlan?.sourceScannerId??cell.scannerId),cell.symbol,cell.tf);
     return rule?alignmentRefusal(rule,side,this.alignmentBars?.(cell.symbol,rule.contextTf)??[],at):null;
   }
   /**
@@ -654,6 +655,7 @@ export class PaperEngine extends EventEmitter {
   }
 
   onEntry(ev: ScanEvent, ctx: EntryContext): EntryDecision {
+    if(ctx.scannerId===SOL_MAKER_FILTER_OFF&&!ctx.executionPlan)return {action:'rejected',reason:'SOL trend-filter variant requires an isolated research plan'};
     if(ctx.scannerId===BASKET_SCANNER&&!ctx.executionPlan?.basket)return {action:'rejected',reason:'basket scanner requires an isolated execution plan'};
     if(ctx.executionPlan?.basket){
       if(this.book!==2||this.cfgRef().execution.mode!=='paper'||this.executionIntent||!this.causalExits||ctx.executionPlan.sourceScannerId!==BASKET_SCANNER||ev.side!=='long'||ev.label!==BASKET_MARKER||ctx.executionPlan.paper.limitEntry?.enabled)return {action:'rejected',reason:'basket requires its paper-only shadow adapter and market entries'};

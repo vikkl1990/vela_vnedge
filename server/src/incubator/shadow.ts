@@ -1,4 +1,5 @@
 import {SOL_MAKER_REFERENCE_ID,SOL_MAKER_TICK_REFERENCE_ID,SOL_MAKER_SCANNER} from '../research/solMakerStudy.ts';
+import {solFilterPlan,solMakerRiskSource} from '../scanners/solMakerExperiment.ts';
 import {sourceHash} from '../paper/fingerprint.ts';
 import {sameExitSource} from '../scanners/boundExits.ts';
 import {policyReading} from '../paper/tradePolicy.ts';
@@ -53,7 +54,7 @@ export type FunnelKind = 'opened' | 'pending' | 'regime' | 'cost' | 'market' | '
  */
 export function shadowRefusal(inp: { regime: RiskConfig['regime'] | undefined; scannerId: string; symbol: string; at: number; price: number; atr?: number; bars: Bar[]; market: { allowed: boolean; reasons: string[] } | null | undefined }): { kind: 'market' | 'regime'; reason: string } | null {
   if (inp.market && !inp.market.allowed) return { kind: 'market', reason: `market: ${inp.market.reasons.join('; ') || 'not allowed'}` };
-  const regime = regimeRefusal(inp.regime, inp.scannerId, { at: inp.at, price: inp.price, atr: inp.atr }, inp.bars);
+  const regime = regimeRefusal(inp.regime, solMakerRiskSource(inp.scannerId), { at: inp.at, price: inp.price, atr: inp.atr }, inp.bars);
   return regime ? { kind: 'regime', reason: regime } : null;
 }
 /** Decision 201: background shadow scans stop above this share of the pool's memory guard. */
@@ -242,7 +243,7 @@ export class ShadowRunner {
     this.timelyCells=this.deps.timelyResearch?.()??new Set();
     this.forwardCells=this.deps.store.forwardCollectionKeys?.()??new Set();
     this.readingCells=new Set([
-      ...(cfg.executionPlans??[]).filter(p=>p.enabled&&(p.readingOverride||([SOL_MAKER_REFERENCE_ID,SOL_MAKER_TICK_REFERENCE_ID].includes(p.id)&&p.revision===1&&p.scannerId===SOL_MAKER_SCANNER&&p.symbol==='SOLUSD'&&p.tf==='15m'))).map(p=>`${p.scannerId}:${p.symbol}:${p.tf}`),
+      ...(cfg.executionPlans??[]).filter(p=>p.enabled&&(p.readingOverride||solFilterPlan(p)||([SOL_MAKER_REFERENCE_ID,SOL_MAKER_TICK_REFERENCE_ID].includes(p.id)&&p.revision===1&&p.scannerId===SOL_MAKER_SCANNER&&p.symbol==='SOLUSD'&&p.tf==='15m'))).map(p=>`${p.scannerId}:${p.symbol}:${p.tf}`),
       ...this.deps.paper.openPositions().filter(p=>p.executionPlan?.readingOverride).map(p=>`${p.executionPlan!.sourceScannerId}:${p.symbol}:${p.tf}`),
     ]);
     if (!cfg.incubator?.enabled) { this.pairs = [];this.dispatch.prune(new Set()); return; }
@@ -438,7 +439,7 @@ export class ShadowRunner {
     const events = extractEvents(res.alerts, res.shapes, { barMs: (TF_SECONDS[r.tf] ?? 0) * 1000, drawn: res.labels, scannerId: s.id, sinceBarTime: win.since, derived, ...READ.extract })
       .filter(ev => !(ev.kind === 'entry' && ev.barTime < lastBar.time));
     // Interpretation experiments see the raw output even when today's reader found no entry.
-    if(this.deps.compareScan && ((cfg.executionPlans??[]).some(p=>p.enabled&&p.readingOverride&&p.scannerId===s.id&&p.symbol===r.symbol&&p.tf===r.tf)
+    if(this.deps.compareScan && ((cfg.executionPlans??[]).some(p=>p.enabled&&(p.readingOverride||solFilterPlan(p))&&p.scannerId===s.id&&p.symbol===r.symbol&&p.tf===r.tf)
       ||this.deps.paper.openPositions().some(p=>p.executionPlan?.readingOverride&&p.executionPlan.sourceScannerId===s.id&&p.symbol===r.symbol&&p.tf===r.tf))){
       if(this.deps.paper.prepareEntryDepth)await this.deps.paper.prepareEntryDepth(r.symbol);
       const at=Date.now(),refPrice=this.deps.paper.mark(r.symbol)??lastBar.close,atr=lastAtr(bars,14);
