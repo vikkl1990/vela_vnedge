@@ -43,6 +43,8 @@ test('fill comparison reconstructs causal exit depth, keeps missing entry eviden
  saved.consumedQty=3;saved.bids=[{price:100,size:3},{price:96.8,size:1000}];saved.asks=[{price:101,size:1000}];
  x.db.run('UPDATE paper_exit_reports SET depth=?',JSON.stringify(saved));
  assert.equal(fillComparison(x.db,p.id)!.fills[1].depth.price,96.8);
+ saved.consumedQty=0;saved.bids=[{price:96.8,size:1}];x.db.run('UPDATE paper_exit_reports SET depth=?',JSON.stringify(saved));
+ assert.equal(fillComparison(x.db,p.id)!.fills[1].depth.price,null);assert.match(fillComparison(x.db,p.id)!.fills[1].depth.status,/Incomplete depth/);
  x.db.run('UPDATE paper_exit_reports SET depth=?',JSON.stringify({receivedAt:T+4000,exchangeAt:T+4000,bids:[{price:90,size:100}],asks:[{price:91,size:100}]}));
  assert.equal(fillComparison(x.db,p.id)!.fills[1].depth.price,null);
  assert.equal(fillComparison(x.db,999),null);
@@ -57,11 +59,27 @@ test('tape benchmarks exclude late/restart records, compare the correct side, an
 });
 test('maker report comparisons retain executable size and passive-depth limits without claiming queue proof',t=>{
  const x=fixture(t);x.enter();x.bar(T+2000);const p=x.e.openPositions()[0],o=x.db.get<any>('SELECT * FROM orders WHERE position_id=?',p.id)!;
- const evidence={limit:{model:'tick-depth-v1',arrivalAt:T+1500,trigger:{kind:'trade',price:99.9,qty:20},fillDepth:{receivedAt:T+2000}}};
+ const depth=(at:number,qty:number)=>({receivedAt:at,exchangeAt:at,evaluatedAt:at,checkedQty:qty,bids:[{price:99.8,size:1000}],asks:[{price:100.2,size:1000}]});
+ const evidence={ref:o.price,limit:{model:'tick-depth-v1',placedAt:T,expiresAt:T+10000,eventAt:o.at-10,observedAt:o.at,arrivalAt:T+1500,trigger:{kind:'trade',price:99.9,qty:20},arrivalDepth:depth(T+1500,1),fillDepth:depth(o.at,7)}};
  x.db.run('INSERT INTO paper_maker_reports VALUES(?,?,?,?,?,?,?,?)',o.id,p.id,0,o.at,7,o.qty,'print-key',JSON.stringify(evidence));
  const f=fillComparison(x.db,p.id)!.fills[0];
  assert.match(f.maker!,/7 executable contracts \/ 20 printed at 99.9/);assert.match(f.maker!,/queue position unverified/);
  assert.equal(f.depth.price,null);assert.equal(f.depth.deltaBps,null);assert.equal(f.depth.receivedAt,T+2000);
+ assert.match(f.depth.status,/evidence consistent/);
+ const initial=structuredClone(evidence);
+ for(const mutate of [
+  (e:any)=>e.limit.fillDepth.receivedAt=o.at+1,
+  (e:any)=>e.limit.fillDepth.bids[0].size=1,
+  (e:any)=>e.limit.trigger.qty=6,
+  (e:any)=>e.limit.trigger.price=101,
+  (e:any)=>e.limit.eventAt=T+1499,
+  (e:any)=>e.limit.arrivalDepth.asks[0].price=99.9,
+  (e:any)=>e.ref=102,
+ ]){
+  const bad=structuredClone(initial);mutate(bad);x.db.run('UPDATE paper_maker_reports SET evidence=?',JSON.stringify(bad));
+  assert.doesNotMatch(fillComparison(x.db,p.id)!.fills[0].depth.status,/evidence consistent/);
+ }
+
 });
 test('entry comparison separates the saved book observation clock from later synchronous evaluation',t=>{
  const x=fixture(t);x.enter();x.bar(T+2000);const p=x.e.openPositions()[0];

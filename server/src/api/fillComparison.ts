@@ -6,6 +6,31 @@ import {priceExit,type ExitBook} from '../paper/exitExecution.ts';
 const parse=(s:string|null)=>{try{return s?JSON.parse(s):null;}catch{return null;}};
 const delta=(actual:number,reference:number,side:string)=>((reference-actual)/actual*10000*(side==='buy'?1:-1))||0;
 const levels=(v:unknown):v is Array<{price:number;size:number}>=>Array.isArray(v)&&v.every(l=>l&&Number.isFinite(Number(l.price))&&Number.isFinite(Number(l.size))&&Number(l.price)>0&&Number(l.size)>=0);
+/** Verify the recorded passive model, not a hypothetical taker VWAP or queue priority. */
+function makerCheck(db:Db,pos:any,o:any,mr:any,me:any,observation:any):string{
+ const l=observation,t=l.trigger,arrival=l.arrivalDepth,fill=l.fillDepth;
+ if(!mr||mr.book!==pos.bt||mr.qty!==o.qty||mr.at!==o.at||!(Number.isSafeInteger(mr.market_qty)&&mr.market_qty>0)||me?.ref!==o.price)
+  return 'Maker report does not match the recorded order';
+ if(t?.kind!=='trade'||!Number.isSafeInteger(t.qty)||t.qty<mr.market_qty||!Number.isFinite(t.price)||!(t.price>0)||
+    (pos.side==='long'?t.price>o.price:t.price<o.price))
+  return 'Maker print price or quantity does not support the fill';
+ if([l.placedAt,l.arrivalAt,l.expiresAt,l.eventAt,l.observedAt].some(v=>!Number.isFinite(v)||v<=0)||
+    l.placedAt>l.arrivalAt||l.arrivalAt>l.eventAt||l.eventAt>l.observedAt||l.observedAt!==o.at||o.at>=l.expiresAt)
+  return 'Maker timing is inconsistent';
+ for(const [book,at,qty] of [[arrival,l.arrivalAt,1],[fill,o.at,mr.market_qty]] as const){
+  if(!book||!levels(book.bids)||!levels(book.asks)||book.evaluatedAt!==at||book.checkedQty<qty||book.receivedAt<l.placedAt)
+   return 'Maker depth evidence is incomplete';
+  for(const side of ['long','short'] as const){
+   const check=priceExit(book,side,qty,at,1000);
+   if(check.error||check.qty!==qty)return 'Maker depth is stale, invalid or insufficient';
+  }
+ }
+ if(pos.side==='long'?o.price>=Math.min(...arrival.asks.map((v:{price:number})=>v.price)):o.price<=Math.max(...arrival.bids.map((v:{price:number})=>v.price)))
+  return 'Maker order crossed the book on arrival';
+ const used=db.get<{n:number}>(`SELECT coalesce(sum(m.market_qty),0) n FROM paper_maker_reports m JOIN positions p ON p.id=m.position_id WHERE m.book=? AND p.symbol=? AND m.print_key=? AND m.order_id<=? ${pos.bt===2?'AND m.position_id=?':''}`,pos.bt,pos.symbol,mr.print_key,o.id,...(pos.bt===2?[pos.id]:[]))?.n??0;
+ if(used>t.qty)return 'Maker reports exceed the observed print quantity';
+ return 'Tick/depth model evidence consistent; queue priority unverified';
+}
 /** Recorded evidence only: no market fetch, replay run, or inferred historical book. */
 export function fillComparison(db:Db,id:number):FillComparison|null{
  const pos=db.get<any>('SELECT id,bt,symbol,side FROM positions WHERE id=?',id);if(!pos)return null;
@@ -23,7 +48,10 @@ export function fillComparison(db:Db,id:number):FillComparison|null{
   if(observation){
    maker=observation.trigger?.kind==='candle'?'Candle-model fill; tick timing and queue unverified':observation.model==='tick-depth-v1'?'Tick/depth quantity model; exchange queue position unverified':'Trade-through model; queue position unverified';
    if(mr&&observation.trigger?.kind==='trade')maker+=` · ${mr.market_qty} executable contracts / ${observation.trigger.qty} printed at ${observation.trigger.price}`;
-   if(observation.fillDepth){depth.receivedAt=observation.fillDepth.receivedAt??null;depth.readyAt=observation.arrivalAt??null;depth.status='Passive maker depth retained; queue priority unverified';}
+   if(observation.model==='tick-depth-v1'){
+    depth.receivedAt=observation.fillDepth?.receivedAt??null;depth.readyAt=observation.arrivalAt??null;
+    depth.status=makerCheck(db,pos,o,mr,me,observation);
+   }
   }
   else if(o.price_source==='limit-candle-model')maker='Candle-model fill; no tick timing or queue proof';
   if(entry?.order_id===o.id){
@@ -49,8 +77,8 @@ export function fillComparison(db:Db,id:number):FillComparison|null{
      for(const e of prior){const d=parse(e.depth);if(d&&levels(d.bids)&&levels(d.asks)&&depthBookKey(d)===r.book_key)used+=e.qty;}
     }
     const result=book&&levels(book.bids)&&levels(book.asks)&&book.receivedAt>=r.ready_at?priceExit(book,r.side,r.market_qty,r.at,1000,used):null;
-    depth.receivedAt=book?.receivedAt??null;depth.readyAt=r.ready_at;depth.price=result&&!result.error?result.price:null;
-    depth.status=depth.price!==null?(recordedConsumption?'Recorded exit depth':'Reconstructed exit depth; prior consumption inferred'):result?.error??'Depth predates order arrival or is missing';
+    depth.receivedAt=book?.receivedAt??null;depth.readyAt=r.ready_at;depth.price=result&&!result.error&&result.qty===r.market_qty?result.price:null;
+    depth.status=depth.price!==null?(recordedConsumption?'Recorded exit depth':'Reconstructed exit depth; prior consumption inferred'):result?.error??(result?'Incomplete depth for recorded exit quantity':'Depth predates order arrival or is missing');
    }else if(matches.length>1)depth.status='Ambiguous depth reports';
   }
   if(depth.price!==null){depth.deltaBps=delta(o.price,depth.price,o.side);if(Math.abs(depth.deltaBps)>1e-6)depth.status+=' · price differs';}
