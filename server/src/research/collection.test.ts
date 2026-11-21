@@ -41,3 +41,17 @@ test('late prints invalidate compact summaries and reconnects require fresh cove
  assert.equal(db.get<any>("SELECT covered FROM advisory_flow_minutes WHERE symbol='INITUSD'")!.covered,0);
  f.connection(false,T+M+12000);assert.equal(f.summary('INITUSD',T+M+12000).covered,false);
 });
+
+test('alphabetic additions and removals preserve retained socket ownership and verified books',t=>{
+ const db=new Db(':memory:');t.after(()=>db.db.close());const feeds:Feed[]=[];
+ const pool=new AdvisoryDepthPool(db,()=>{const f=new Feed();feeds.push(f);return f;});t.after(()=>pool.stop());
+ const symbols=Array.from({length:200},(_,i)=>`X${String(i).padStart(3,'0')}USD`);pool.setSymbols(symbols);
+ const symbol='X099USD',owner=feeds.find(f=>f.subscriptions.has(symbol))!,other=feeds.find(f=>f!==owner)!;
+ const at=Date.now(),snap={sy:symbol,action:'snapshot',seq:1,ts:at*1000,a:[['101','2']],b:[['100','3']],cs:crc32('101:2|100:3')};
+ owner.emit('depth',snap);assert.ok(pool.recorder.bookAt(symbol,Date.now()));
+ pool.setSymbols(['AAAUSD',...symbols]);assert.ok(owner.subscriptions.has(symbol));assert.ok(pool.recorder.bookAt(symbol,Date.now()));
+ other.emit('status',{connected:false});assert.ok(pool.recorder.bookAt(symbol,Date.now()),'an unrelated disconnect cannot invalidate retained book');
+ pool.setSymbols([symbol]);assert.equal(pool.summary().connections,1);assert.ok(pool.recorder.bookAt(symbol,Date.now()));
+ pool.setSymbols(['AAAUSD']);assert.equal(pool.recorder.bookAt(symbol,Date.now()),null);
+ owner.emit('depth',snap);assert.equal(pool.recorder.bookAt(symbol,Date.now()),null,'removed subscriptions cannot revive a book');
+});

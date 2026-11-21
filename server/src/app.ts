@@ -25,7 +25,7 @@ import { aliasMap, duplicateGroups } from './scanners/identity.ts';
 import { ShadowRunner } from './incubator/shadow.ts';
 import { dailyReport } from './analytics/daily.ts';
 import { listTrackers, removeTracker, saveTracker, trackerView, timelyTrackerKeys } from './incubator/tracker.ts';
-import { approve as incubatorApprove, demote as incubatorDemote, reject as incubatorReject, evaluate as incubatorEvaluate, admitOnly as incubatorAdmitOnly, candidateBlockers, syncLive as incubatorSyncLive, autoPromote as incubatorAutoPromote, livePairs } from './incubator/cycle.ts';
+import { approve as incubatorApprove, demote as incubatorDemote, reject as incubatorReject, evaluate as incubatorEvaluate, evaluateCooperative, admitOnly as incubatorAdmitOnly, candidateBlockers, syncLive as incubatorSyncLive, autoPromote as incubatorAutoPromote, livePairs } from './incubator/cycle.ts';
 import { pairStats } from './incubator/gate.ts';
 import { ConfigStore, type ScannerConfig, DATA_DIR, ROOT_DIR, type AppConfig } from './config.ts';
 import { band, learnBook } from './analytics/learning.ts';
@@ -1072,7 +1072,7 @@ export class App {
   private async performIncubatorEvaluate(actor: string) {
     const cfg = this.config.get();
     const synced = incubatorSyncLive(this.incubatorStore, cfg);
-    const report = incubatorEvaluate(this.incubatorStore, cfg, Date.now(), { needsRescreen: id => this.registry.get(id)?.scriptType === 'strategy', unavailable: id => this.incubatorUnavailable(id) });
+    const report = await evaluateCooperative(this.incubatorStore, cfg, Date.now(), { needsRescreen: id => this.registry.get(id)?.scriptType === 'strategy', unavailable: id => this.incubatorUnavailable(id) },()=>this.config.get()===cfg);
     let promoted: string[] = [], blocked: string[] = [];
     if (cfg.incubator.enabled && cfg.execution.mode==='paper' && cfg.incubator.promote.auto) {
       ({ promoted, blocked } = incubatorAutoPromote(this.incubatorStore, cfg, (sid, patch) => { this.config.setScanner(sid, patch); }));

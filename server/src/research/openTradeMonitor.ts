@@ -3,7 +3,7 @@ import type {Db} from '../db.ts';
 import {TF_SECONDS,type PaperConfig} from '../config.ts';
 import {fillExit,type Position} from '../paper/logic.ts';
 import {priceExit,type ExitBook} from '../paper/exitExecution.ts';
-import {ScannerEarlyExitStudy,SCANNER_EARLY_EXIT,SCANNER_EARLY_STRESS,earlyExitCell} from './scannerEarlyExit.ts';
+import {ScannerEarlyExitStudy,SCANNER_EARLY_EXIT,SCANNER_EARLY_STRESS,earlyExitPosition} from './scannerEarlyExit.ts';
 import {ShadowInvalidationStudy,ARIA_RULE,ARIA_STRESS_RULE} from './shadowInvalidation.ts';
 
 export const MONITOR_VERSION='recovery-observer-v1';
@@ -56,7 +56,7 @@ export class OpenTradeMonitor {
   for(const input of inputs){
    const p=input.position,m=markets.get(p.symbol),unit=Math.abs(p.entryPrice-(p.slOriginal??p.entryPrice));
    if(p.status!=='open'||!(p.riskAmount>0)||!(unit>0))continue;
-   if(earlyExitCell(p.scannerId,p.symbol,p.tf)){
+   if(earlyExitPosition(p)){
     const pendingBefore=new Map(this.pending);
     try{this.db.transaction(()=>{
      if(this.scannerExits.observe(p,input.book,input.scope,m?.price??null,m?.priceAt??null,now,input.exitPending)){

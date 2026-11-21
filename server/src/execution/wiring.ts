@@ -148,7 +148,10 @@ export function wireRealtime(app: App): void {
   };
   app.feed.on('status', ({ connected }: { connected: boolean }) => { try { flow.connection(connected); } catch(e:any) { log.warn(`order flow connection: ${e.message}`); } if (!connected) { replay.record('*','gap',{reason:'execution feed disconnected; trades/marks/funding unavailable'},Date.now(),'execution-feed');depth.disconnect(); app.marks.invalidateQuotes(); } });
   app.feed.on('quote', q => {replay.record(q.symbol,'quote',q,Date.now(),'execution-feed');app.marks.onWsQuote(q);});
-  app.feed.on('quoteGap', ({ symbols }: { symbols: string[] }) => app.marks.invalidateQuotes(symbols));
+  app.feed.on('quoteGap', ({ symbols, at }: { symbols: string[]; at?:number }) => {
+    for(const symbol of symbols)replay.record(symbol,'quote_gap',{reason:'L1 unavailable; cached quote invalidated'},at??Date.now(),'execution-feed');
+    app.marks.invalidateQuotes(symbols);
+  });
   // Depth observation is deliberately asynchronous and labelled post-entry; it never changes an entry.
   const queue: Array<{ id: number; symbol: string; side: 'long' | 'short'; qty: number; entryAt: number }> = [];
   let busy = 0;

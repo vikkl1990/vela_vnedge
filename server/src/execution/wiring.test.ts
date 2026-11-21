@@ -57,7 +57,7 @@ test('explicit paper allocations receive execution feeds before any order exists
   const {seen, required, app} = allocationFixture();
   required.push({symbol: 'PARTIUSD', tf: '1h'}, {symbol: 'LTCUSD', tf: '1h'}, {symbol: 'PARTIUSD', tf: '15m'});
   subscribeRealtime(app as any);
-  for (const channel of channels) assert.deepEqual(seen.get(channel), ['BTCUSD', 'PARTIUSD', 'LTCUSD', 'ARIAUSD', 'INITUSD', 'EVAAUSD'], channel);
+  for (const channel of channels) assert.deepEqual(seen.get(channel), ['BTCUSD', 'PARTIUSD', 'LTCUSD', 'ARIAUSD', 'INITUSD', 'EVAAUSD', 'SOLUSD'], channel);
   assert.deepEqual(seen.get('ob_updates'), ['BTCUSD'], 'full depth audit retains its bounded symbol set');
 });
 
@@ -66,7 +66,7 @@ test('a newly activated paper allocation gets execution feeds on configuration r
   subscribeRealtime(app as any);
   required.push({symbol: 'AAVEUSD', tf: '15m'});
   subscribeRealtime(app as any);
-  for (const channel of channels) assert.deepEqual(seen.get(channel), ['BTCUSD', 'AAVEUSD', 'ARIAUSD', 'INITUSD', 'PARTIUSD', 'EVAAUSD'], channel);
+  for (const channel of channels) assert.deepEqual(seen.get(channel), ['BTCUSD', 'AAVEUSD', 'ARIAUSD', 'INITUSD', 'PARTIUSD', 'EVAAUSD', 'SOLUSD'], channel);
 });
 
 test('paper exit source prefers validated post-arrival depth, otherwise performs one bounded public read',async()=>{

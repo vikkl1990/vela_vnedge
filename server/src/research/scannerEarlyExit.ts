@@ -1,3 +1,4 @@
+import {solMakerReference,solReferencePolicy,SOL_MAKER_REFERENCE_ID} from './solMakerStudy.ts';
 import type {Db} from '../db.ts';
 import type {Position} from '../paper/logic.ts';
 import {CAUSAL_EXIT_VERSION} from '../paper/exitExecution.ts';
@@ -9,6 +10,7 @@ export const EARLY_EXIT_SCANNERS=['supertrend-cluster-zeiierman','ai-predictive-
 export function earlyExitCell(scanner:string,symbol:string,tf:string){
  return scanner===EARLY_EXIT_SCANNERS[0]||scanner===EARLY_EXIT_SCANNERS[1]||scanner===EARLY_EXIT_SCANNERS[2]&&symbol==='SOLUSD'&&tf==='15m';
 }
+export function earlyExitPosition(p:Position){return earlyExitCell(p.scannerId,p.symbol,p.tf)||solMakerReference(p);}
 interface Cohort {position_id:number;entry_at:number;book:number;scanner:string;symbol:string;tf:string;policy_id:string;source_hash:string;qty:number;entry_price:number;original_stop:number;status:string;reason:string|null;last_at:number}
 
 /** Paired, prospective exit observations. Has no engine, executor or configuration setter. */
@@ -26,20 +28,23 @@ export class ScannerEarlyExitStudy {
   this.startedAt=db.get<{started_at:number}>('SELECT started_at FROM advisory_scanner_exit_studies WHERE rule=?',SCANNER_EARLY_EXIT)!.started_at;
  }
  observe(p:Position,book:number,scope:string,price:number|null,priceAt:number|null,now:number,exitPending:boolean):boolean {
-  if(!earlyExitCell(p.scannerId,p.symbol,p.tf)||!((book===0&&scope==='paper')||(book===2&&scope==='shadow'))
-   ||p.status!=='open'||p.executionPlan||p.basket||p.entryAt<this.startedAt||p.entryAt>now)return false;
+  const reference=solMakerReference(p);
+  if(!earlyExitPosition(p)||!((!p.executionPlan&&((book===0&&scope==='paper')||(book===2&&scope==='shadow')))||(reference&&book===2&&scope==='experiment'))
+   ||p.status!=='open'||p.basket||p.entryAt<this.startedAt||p.entryAt>now)return false;
+  const referencePolicy=reference?solReferencePolicy(p):null;
+  const policyId=referencePolicy?.id??p.policy?.id;
   let row=this.db.get<Cohort>('SELECT * FROM advisory_scanner_exit_cohort WHERE position_id=? AND entry_at=?',p.id,p.entryAt);
   if(!row){
    const policy=p.policy;
-   const valid=policy?.sourceHash&&policy.adoptedAt==null&&policy.sim>=CAUSAL_EXIT_VERSION&&tradePolicyIdFor(policy)===policy.id;
+   const valid=reference?!!referencePolicy:policy?.sourceHash&&policy.adoptedAt==null&&policy.sim>=CAUSAL_EXIT_VERSION&&tradePolicyIdFor(policy)===policy.id;
    const unit=Math.abs(p.entryPrice-(p.slOriginal??p.entryPrice));
    const reason=!valid?'Missing, adopted or unverifiable entry policy':now-p.entryAt>10000?'Observation started late':!(unit>0&&p.riskAmount>0)?'Invalid original risk':p.qtyOpen!==p.qty?'Partial exit preceded observation':null;
    this.db.run('INSERT INTO advisory_scanner_exit_cohort(position_id,entry_at,book,scanner,symbol,tf,policy_id,source_hash,qty,entry_price,original_stop,status,reason,last_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
-    p.id,p.entryAt,book,p.scannerId,p.symbol,p.tf,policy?.id??'unknown',policy?.sourceHash??'unknown',p.qty,p.entryPrice,p.slOriginal??p.entryPrice,reason?'unverified':'watching',reason,p.entryAt);
+    p.id,p.entryAt,book,p.scannerId,p.symbol,p.tf,policyId??'unknown',referencePolicy?.sourceHash??policy?.sourceHash??'unknown',p.qty,p.entryPrice,p.slOriginal??p.entryPrice,reason?'unverified':'watching',reason,p.entryAt);
    row=this.db.get<Cohort>('SELECT * FROM advisory_scanner_exit_cohort WHERE position_id=? AND entry_at=?',p.id,p.entryAt)!;
   }
   if(row.status!=='watching'&&row.status!=='triggered')return false;
-  const changed=row.policy_id!==p.policy?.id||p.policy?.adoptedAt!=null||row.qty!==p.qty||row.entry_price!==p.entryPrice||row.original_stop!==p.slOriginal;
+  const changed=row.policy_id!==policyId||p.policy?.adoptedAt!=null||row.qty!==p.qty||row.entry_price!==p.entryPrice||row.original_stop!==p.slOriginal;
   if(changed){this.invalidate(p,'Entry exposure or bound policy changed');return false;}
   if(row.status==='triggered')return false;
   if(now<row.last_at)return false;
@@ -61,8 +66,18 @@ export class ScannerEarlyExitStudy {
    FROM positions p LEFT JOIN trade_policies t ON t.id=p.policy_id
    WHERE p.status='closed' AND p.entry_at>=? AND p.entry_at>=? AND ((p.bt=0 AND p.evidence_scope='account') OR (p.bt=2 AND p.evidence_scope='shadow'))
    AND (p.scanner_id IN (?,?) OR (p.scanner_id=? AND p.symbol='SOLUSD' AND p.tf='15m'))`,this.startedAt,now-90*86400000,...EARLY_EXIT_SCANNERS);
+  this.db.run(`INSERT OR IGNORE INTO advisory_scanner_exit_cohort(position_id,entry_at,book,scanner,symbol,tf,policy_id,source_hash,qty,entry_price,original_stop,status,reason,last_at)
+   SELECT p.id,p.entry_at,p.bt,p.scanner_id,p.symbol,p.tf,coalesce(p.policy_id,'unknown'),coalesce(t.source_hash,'unknown'),p.qty,p.entry_price,coalesce(p.sl_original,p.entry_price),'unverified','No prospective observations before closure',p.entry_at
+   FROM positions p LEFT JOIN trade_policies t ON t.id=p.policy_id WHERE p.status='closed' AND p.entry_at>=? AND p.entry_at>=?
+   AND p.bt=2 AND p.evidence_scope='experiment' AND p.symbol='SOLUSD' AND p.tf='15m'
+   AND p.scanner_id LIKE ? AND json_extract(p.fills,'$.executionPlan.id')=? AND json_extract(p.fills,'$.executionPlan.revision')=1`,this.startedAt,now-90*86400000,`plan:${SOL_MAKER_REFERENCE_ID}:v1:%`,SOL_MAKER_REFERENCE_ID);
   this.db.run(`UPDATE advisory_scanner_exit_cohort AS c SET status='unverified',reason='Entry exposure or bound policy changed'
-   WHERE status IN ('watching','triggered') AND EXISTS(SELECT 1 FROM positions p WHERE p.id=c.position_id AND p.entry_at=c.entry_at AND (p.qty!=c.qty OR p.entry_price!=c.entry_price OR p.sl_original!=c.original_stop OR p.policy_id IS NOT c.policy_id OR p.policy_adopted_at IS NOT NULL))`);
+   WHERE status IN ('watching','triggered') AND EXISTS(SELECT 1 FROM positions p WHERE p.id=c.position_id AND p.entry_at=c.entry_at AND (p.qty!=c.qty OR p.entry_price!=c.entry_price OR p.sl_original!=c.original_stop OR (p.scanner_id NOT LIKE 'plan:sol-maker-half-stop-reference:v1:%' AND p.policy_id IS NOT c.policy_id) OR p.policy_adopted_at IS NOT NULL))`);
+  for(const row of this.db.all<{position_id:number;entry_at:number;policy_id:string;fills:string;scanner_id:string;symbol:string;tf:string}>(`SELECT c.position_id,c.entry_at,c.policy_id,p.fills,p.scanner_id,p.symbol,p.tf FROM advisory_scanner_exit_cohort c JOIN positions p ON p.id=c.position_id AND p.entry_at=c.entry_at WHERE c.status IN ('watching','triggered') AND c.scanner LIKE ?`,`plan:${SOL_MAKER_REFERENCE_ID}:v1:%`)){
+   let identity:string|undefined;
+   try{identity=solReferencePolicy({executionPlan:JSON.parse(row.fills).executionPlan,scannerId:row.scanner_id,symbol:row.symbol,tf:row.tf} as Position)?.id;}catch{ /* corrupt snapshot stays unavailable */ }
+   if(identity!==row.policy_id)this.db.run("UPDATE advisory_scanner_exit_cohort SET status='unverified',reason='Research reference snapshot changed' WHERE position_id=? AND entry_at=?",row.position_id,row.entry_at);
+  }
   this.db.run(`UPDATE advisory_scanner_exit_cohort AS c SET
    status=CASE WHEN last_at>=p.exit_at-15000 THEN 'unchanged' ELSE 'unverified' END,
    reason=CASE WHEN last_at>=p.exit_at-15000 THEN NULL ELSE 'Observation gap before actual close' END
@@ -99,7 +114,7 @@ export class ScannerEarlyExitStudy {
    recent:rows.slice(0,30).map(r=>({positionId:r.position_id,entryAt:r.entry_at,scanner:r.scanner,symbol:r.symbol,tf:r.tf,book:r.book,status:r.status,reason:r.reason,baseStatus:r.base_status,stressStatus:r.stress_status}))};
  }
 }
-function emptyGroup(c:Cohort,key:string){return {key,scanner:c.scanner,symbol:c.symbol,tf:c.tf,book:c.book,policyId:c.policy_id,sourceHash:c.source_hash,
+function emptyGroup(c:Cohort,key:string){return {key,referenceKind:c.scanner.startsWith(`plan:${SOL_MAKER_REFERENCE_ID}:`)?'research-control':'regular',scanner:c.scanner,symbol:c.symbol,tf:c.tf,book:c.book,policyId:c.policy_id,sourceHash:c.source_hash,
  enrolled:0,closed:0,covered:0,unavailable:0,missingActual:0,triggered:0,baselineR:0,candidateR:0,stressR:0,
  baselineNet:c.book===0?0:null,candidateNet:c.book===0?0:null,stressNet:c.book===0?0:null,
  stopsBefore:0,stopsAfter:0,stressStops:0,losersBefore:0,losersAfter:0,stressLosers:0,winnersCut:0,winnersLost:0,winnerGivebackR:0};}

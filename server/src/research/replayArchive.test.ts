@@ -146,3 +146,13 @@ test('export CLI preserves gap warnings, refuses overwrite and removes a corrupt
  const [m]=await replayManifests(dir);await fs.appendFile(path.join(dir,m.id+'.ndjson.gz'),'corrupt');
  await assert.rejects(promisify(execFile)(process.execPath,args),/checksum mismatch/);await assert.rejects(fs.access(out));
 });
+
+test('newly focused symbol checkpoints its next verified update without relabeling old depth as fresh',t=>{
+ const d=new Db(':memory:');t.after(()=>d.db.close());const r=new DepthRecorder(d,['SOLUSD'],()=>{},false),captured: any[]=[];
+ r.setCapture((s,k,p,at)=>captured.push({s,k,p,at}));
+ const snap={sy:'SOLUSD',action:'snapshot',seq:1,ts:T*1000,a:[['101','3']],b:[['99','2']],cs:crc32('101:3|99:2')};
+ r.onDepth(snap,T);captured.length=0;r.requestCheckpoint('SOLUSD');
+ assert.equal(captured.length,0);assert.equal(r.bookAt('SOLUSD',T+2000,1000),null);
+ r.onDepth({...snap,action:'update',seq:2,ts:(T+3000)*1000,a:[],b:[]},T+3001);
+ const cp=captured.find(x=>x.k==='checkpoint');assert.equal(cp.at,T+3001);assert.equal(cp.p.ts,(T+3000)*1000);assert.equal(cp.p.seq,2);
+});

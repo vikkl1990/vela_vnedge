@@ -284,8 +284,14 @@ export class IncubatorStore {
     enrollRestoration(this.db,cell,policy,this.evidenceConfig(),exact,compatible,at);
   }
   startRestorations(at=Date.now()) {
+    for(const _ of this.startRestorationSteps(at)){ /* synchronous CLI */ }
+  }
+  *startRestorationSteps(at=Date.now()):Generator<void> {
     if(!this.policyFor)return;
-    for(const cell of this.list(['shadow','proposed']))this.ensureRestoration(cell,this.policyFor(cell),at);
+    for(const cell of this.list(['shadow','proposed'])){
+      yield;
+      if(this.get(cell.id)?.stage===cell.stage)this.ensureRestoration(cell,this.policyFor(cell),at);
+    }
   }
   /** Enrolled forward experiments need timely collection even while copying is held.
    * This is scheduling metadata only: no new enrollment, qualification or stage change. */
