@@ -12,7 +12,7 @@ test('fatal latch immediately blocks entries, is monotonic and never mutates ris
       timeoutMs: () => 1000, report: () => {}, exit: resolve,
     });
     assert.equal(state.entryBlock, null);
-    supervisor.request('SIGTERM'); assert.ok(state.entryBlock);
+    supervisor.request('SIGTERM'); assert.equal(state.entryBlock, null, 'ordinary restart must not cancel pending makers through a gate rejection');
     supervisor.request('uncaughtException'); supervisor.request('SIGTERM');
     assert.equal(state.state, 'failed');
   });
@@ -48,6 +48,6 @@ for (const mode of ['exception', 'rejection', 'hung', 'signal', 'startup']) test
     child.on('error', reject); child.on('close', code => resolve({ code, out }));
   });
   assert.equal(result.code, mode === 'signal' ? 0 : 1, result.out);
-  assert.match(result.out, /blocked=true/); assert.equal(result.out.split('cleanup').length - 1, 1);
+  assert.match(result.out, mode === 'signal' ? /blocked=false/ : /blocked=true/); assert.equal(result.out.split('cleanup').length - 1, 1);
   assert.ok(!result.out.includes('secret-canary'));
 });

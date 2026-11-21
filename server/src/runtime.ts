@@ -6,7 +6,9 @@ export class RuntimeState {
     if (fatal) { this.state = 'failed'; this.reason = reason; }
     else if (this.state === 'running') { this.state = 'stopping'; this.reason = reason; }
   }
-  get entryBlock(): string | null { return this.state === 'running' ? null : `Runtime ${this.state}: entries stopped`; }
+  // Ordinary deployment still drains with the established pending-order lifecycle. Returning a
+  // gate rejection while stopping would cancel valid resting setups before they can be saved.
+  get entryBlock(): string | null { return this.state === 'failed' ? 'Runtime failed: entries stopped' : null; }
 }
 
 interface SupervisorDependencies {
