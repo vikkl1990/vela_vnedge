@@ -438,6 +438,7 @@ export class ShadowRunner {
     // decision 125: read from the bar after the last one this pair acted on; entries on a superseded bar are stale and dropped
     const events = extractEvents(res.alerts, res.shapes, { barMs: (TF_SECONDS[r.tf] ?? 0) * 1000, drawn: res.labels, scannerId: s.id, sinceBarTime: win.since, derived, ...READ.extract })
       .filter(ev => !(ev.kind === 'entry' && ev.barTime < lastBar.time));
+    this.deps.store.noteChartReceipt?.(s.id,r.symbol,r.tf,s.patched,cfg.scanners[s.id],bars,res,events);
     // Interpretation experiments see the raw output even when today's reader found no entry.
     if(this.deps.compareScan && ((cfg.executionPlans??[]).some(p=>p.enabled&&(p.readingOverride||solFilterPlan(p))&&p.scannerId===s.id&&p.symbol===r.symbol&&p.tf===r.tf)
       ||this.deps.paper.openPositions().some(p=>p.executionPlan?.readingOverride&&p.executionPlan.sourceScannerId===s.id&&p.symbol===r.symbol&&p.tf===r.tf))){

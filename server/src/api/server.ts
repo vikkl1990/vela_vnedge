@@ -1,3 +1,5 @@
+import {fillComparison} from './fillComparison.ts';
+import {chartReceipt} from '../scanners/chartReceipts.ts';
 import {gatedSignalPage} from '../evidence/gatedSignals.ts';
 import {positionsHealthReader} from './positionsHealth.ts';
 import {isAssetGroup,isAssetSector} from '../../../shared/assetClass.ts';
@@ -349,6 +351,14 @@ export class ApiServer {
     this.add('GET', '/api/pine-library', (_r, _s, _p, url) => {
       try { return pineLibraries().get(url.searchParams.get('path') ?? '', url.searchParams.get('hash') ?? ''); }
       catch (error) { throw new HttpError(409, (error as Error).message); }
+    });
+    this.add('GET','/api/scanners/:id/chart-receipt',(_r,_s,p,url)=>{
+      if(!a.registry.get(p.id))throw new HttpError(404,'unknown scanner');
+      return chartReceipt(a.db,p.id,url.searchParams.get('symbol')??'',url.searchParams.get('tf')??'');
+    });
+    this.add('GET','/api/positions/:id/fill-comparison',(_r,_s,p)=>{
+      const id=Number(p.id);if(!Number.isSafeInteger(id)||id<1)throw new HttpError(400,'Invalid position');
+      const result=fillComparison(a.db,id);if(!result)throw new HttpError(404,'No such position');return result;
     });
     this.add('GET', '/api/scanners/:id/source', (_r, _s, p) => { const s = a.registry.get(p.id); if (!s) throw new HttpError(404, 'unknown scanner'); const read = a.config.get().scanners[p.id]; return { id: s.id, name: s.name, source: s.source, patched: s.patched, patches: s.patches, sourceHash: sourceHash(s.patched), inputs: read?.inputs ?? {}, timezone: read?.timezone ?? 'UTC' }; });
     this.add('GET', '/api/scanners/:id/overlay', (_r, _s, p, url) => {

@@ -1,4 +1,4 @@
-/** Prospective shadow lifecycle: notifications request quantities; only reports complete targets. */
+/** Durable partial-target lifecycle: notifications request quantities; only reports complete targets. */
 import type {Db} from '../db.ts';
 import type {Position} from './logic.ts';
 import {stopReason,fillExit,type Fill} from './logic.ts';
@@ -18,6 +18,10 @@ export class PartialExits {
   for(let i=0;i<=index;i++)if(!p.tpHit[i])this.db.run(`INSERT OR IGNORE INTO paper_partial_requests(position_id,target,at,reference) VALUES(?,?,?,?)`,p.id,i,at,reference);
  }
  full(p:Position,reason:string,at:number,reference:number){
+  if(!Number.isFinite(at)||at<p.entryAt||!Number.isFinite(reference)||reference<=0)return;
+  // A protective/full close replaces the unfilled target remainder; confirmed fills stay booked.
+  const active=this.ledger.active(p.id);
+  if(active&&/^tp[123]$/.test(active.reason))this.db.run("UPDATE paper_exit_intents SET status='cancelled',last_error='superseded by full close',updated_at=? WHERE id=?",at,active.id);
   this.db.run(`INSERT INTO paper_partial_requests(position_id,target,at,reference,full_reason,full_at,full_reference) VALUES(?,-1,?,?,?,?,?)
    ON CONFLICT(position_id,target) DO UPDATE SET full_reason=coalesce(full_reason,excluded.full_reason),full_at=coalesce(full_at,excluded.full_at),full_reference=coalesce(full_reference,excluded.full_reference)`,p.id,at,reference,reason,at,reference);
  }

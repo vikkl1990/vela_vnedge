@@ -1,3 +1,4 @@
+import {lifecycleIdentity} from './lifecycleIdentity.ts';
 import {upstreamLifecycle} from '../scanners/upstreamLifecycle.ts';
 import {SOL_MAKER_FILTER_OFF,SOL_MAKER_FILTER_SOURCE,SOL_FILTER_PLAN_PREFIX,solFilterPlan} from '../scanners/solMakerExperiment.ts';
 import {isTwoBarCell,TWO_BAR_EXIT} from './failedTradeExit.ts';
@@ -126,7 +127,7 @@ export function planSnapshot(cfg: AppConfig, p: ExecutionPlan, sourceHash: strin
     floorAtR:p.trailing.floorAtR,floorKeepR:p.trailing.floorKeepR,trailAtrMult:0,trailDistanceR:0,trailSteps:[],trailStall:undefined});
   if(p.profitFloor)Object.assign(paper,{floorAtR:p.profitFloor.afterR,floorKeepR:p.profitFloor.keepR});
   if(p.maxStopLossPct!==undefined)paper.maxStopLossPct=paper.maxStopLossPct>0?Math.min(paper.maxStopLossPct,p.maxStopLossPct):p.maxStopLossPct;
-  const result = {...(p.profitFloor?{profitFloor:structuredClone(p.profitFloor)}:{}),...(p.failedTradeExit?{failedTradeExit:p.failedTradeExit}:{}),...(p.exitPolicy?{exitPolicy:p.exitPolicy}:{}),...(p.basket?{basket:p.basket,basketAccountingVersion:BASKET_ACCOUNTING_VERSION as 2}:{}),id:p.id,revision:p.revision,executionVersion:CAUSAL_EXIT_VERSION,sourceHash,reading:sc?structuredClone(sc):null,sourceScannerId:p.scannerId,variant:p.variant,symbol:p.symbol,tf:p.tf,
+  const result = {...lifecycleIdentity(paper),...(p.profitFloor?{profitFloor:structuredClone(p.profitFloor)}:{}),...(p.failedTradeExit?{failedTradeExit:p.failedTradeExit}:{}),...(p.exitPolicy?{exitPolicy:p.exitPolicy}:{}),...(p.basket?{basket:p.basket,basketAccountingVersion:BASKET_ACCOUNTING_VERSION as 2}:{}),id:p.id,revision:p.revision,executionVersion:CAUSAL_EXIT_VERSION,sourceHash,reading:sc?structuredClone(sc):null,sourceScannerId:p.scannerId,variant:p.variant,symbol:p.symbol,tf:p.tf,
     paper,exitMode,requireAtrStop:Boolean(paper.skipScriptStops),referenceEquity:p.referenceEquity,maxHoldMinutes:p.maxHoldMinutes,
     ...(p.takeProfit?{takeProfit:structuredClone(p.takeProfit)}:{}),...(p.label?{label:p.label}:{}),
     ...(p.comparison?{comparison:structuredClone(p.comparison)}:{})};

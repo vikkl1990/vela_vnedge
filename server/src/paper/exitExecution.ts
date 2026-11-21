@@ -76,7 +76,7 @@ export class PaperExitExecution {
   apply(qty,r.price,i.reason);
   const status=complete||p.qtyOpen===0?'filled':'partial';
   this.db.run('UPDATE paper_exit_intents SET filled_qty=filled_qty+?,market_filled=market_filled+?,status=?,last_error=NULL,updated_at=? WHERE id=?',qty,r.qty,status,at,i.id);
-  this.db.run('INSERT INTO paper_exit_reports(intent_id,at,qty,market_qty,price,book_key,depth) VALUES(?,?,?,?,?,?,?)',i.id,at,qty,r.qty,r.price,key,JSON.stringify(book));
+  this.db.run('INSERT INTO paper_exit_reports(intent_id,at,qty,market_qty,price,book_key,depth) VALUES(?,?,?,?,?,?,?)',i.id,at,qty,r.qty,r.price,key,JSON.stringify({...book,consumedQty:used}));
   this.db.run('INSERT INTO paper_exit_liquidity(scope,symbol,side,book_key,consumed,at) VALUES(?,?,?,?,?,?) ON CONFLICT(scope,symbol,side,book_key) DO UPDATE SET consumed=consumed+excluded.consumed,at=excluded.at',scope,p.symbol,p.side,key,r.qty,at);
   this.db.run('DELETE FROM paper_exit_liquidity WHERE at<?',at-86400000);
   return true;
