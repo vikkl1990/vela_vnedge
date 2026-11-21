@@ -6,6 +6,14 @@ import {AdvisoryDepthPool} from './depthPool.ts';
 import {OrderFlowStore} from '../orderflow/store.ts';
 import {crc32} from '../execution/depthRecorder.ts';
 const T=1_800_000_000_000,M=60000;
+test('one-character Delta bases receive verified depth; malformed symbols remain excluded',t=>{
+ const db=new Db(':memory:');t.after(()=>db.db.close());const feeds:Feed[]=[];
+ const pool=new AdvisoryDepthPool(db,()=>{const f=new Feed();feeds.push(f);return f;});t.after(()=>pool.stop());
+ pool.setSymbols(['MUSD','SUSD','MUSD','USD','../MUSD','MUSDT','mUSD','A'.repeat(25)+'USD']);
+ assert.deepEqual(pool.recorder.symbols,['MUSD','SUSD']);
+ feeds[0].emit('depth',{sy:'MUSD',action:'snapshot',seq:1,ts:Date.now()*1000,a:[['1.01','2']],b:[['1','3']],cs:crc32('1.01:2|1:3')});
+ assert.ok(pool.recorder.bookAt('MUSD',Date.now()));assert.equal(feeds[0].subscriptions.size,2);
+});
 class Feed extends EventEmitter {subscriptions=new Set<string>();stopped=false;start(){this.emit('status',{connected:true});}stop(){this.stopped=true;this.emit('status',{connected:false});}subscribe(_c:string,symbols:string[]){symbols.forEach(s=>this.subscriptions.add(s));assert.ok(this.subscriptions.size<=100);}unsubscribe(_c:string,symbols:string[]){symbols.forEach(s=>this.subscriptions.delete(s));}}
 test('all active depth pairs are sharded below Delta limit, without touching the raw execution tape',t=>{
  const db=new Db(':memory:');t.after(()=>db.db.close());const feeds:Feed[]=[];
