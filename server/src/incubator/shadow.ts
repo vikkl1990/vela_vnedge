@@ -1,4 +1,4 @@
-import {SOL_MAKER_REFERENCE_ID,SOL_MAKER_SCANNER} from '../research/solMakerStudy.ts';
+import {SOL_MAKER_REFERENCE_ID,SOL_MAKER_TICK_REFERENCE_ID,SOL_MAKER_SCANNER} from '../research/solMakerStudy.ts';
 import {sourceHash} from '../paper/fingerprint.ts';
 import {sameExitSource} from '../scanners/boundExits.ts';
 import {policyReading} from '../paper/tradePolicy.ts';
@@ -242,7 +242,7 @@ export class ShadowRunner {
     this.timelyCells=this.deps.timelyResearch?.()??new Set();
     this.forwardCells=this.deps.store.forwardCollectionKeys?.()??new Set();
     this.readingCells=new Set([
-      ...(cfg.executionPlans??[]).filter(p=>p.enabled&&(p.readingOverride||(p.id===SOL_MAKER_REFERENCE_ID&&p.revision===1&&p.scannerId===SOL_MAKER_SCANNER&&p.symbol==='SOLUSD'&&p.tf==='15m'))).map(p=>`${p.scannerId}:${p.symbol}:${p.tf}`),
+      ...(cfg.executionPlans??[]).filter(p=>p.enabled&&(p.readingOverride||([SOL_MAKER_REFERENCE_ID,SOL_MAKER_TICK_REFERENCE_ID].includes(p.id)&&p.revision===1&&p.scannerId===SOL_MAKER_SCANNER&&p.symbol==='SOLUSD'&&p.tf==='15m'))).map(p=>`${p.scannerId}:${p.symbol}:${p.tf}`),
       ...this.deps.paper.openPositions().filter(p=>p.executionPlan?.readingOverride).map(p=>`${p.executionPlan!.sourceScannerId}:${p.symbol}:${p.tf}`),
     ]);
     if (!cfg.incubator?.enabled) { this.pairs = [];this.dispatch.prune(new Set()); return; }

@@ -245,7 +245,7 @@ for (const book of [0, 2]) for (const reason of ['exchange feed disconnected', '
   test(`restored limit waits for status without cancelling or backfilling: book ${book}, ${reason}`, t => {
     const { db, cfg, at, enter } = setup('4h', { fillSource: 'tape' }, book); t.after(() => db.db.close());
     enter();
-    const restored = new PaperEngine(db, () => cfg, { book });
+    const restored = new PaperEngine(db, () => cfg, { book,now:()=>at+500 });
     let block: string | null = reason; restored.entryBlock = () => block;
     const before = restored.pendingEntries()[0], expiry = before.limit!.expiresAt;
     restored.housekeeping(at + 1000);

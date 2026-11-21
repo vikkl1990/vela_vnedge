@@ -113,9 +113,19 @@ export function wireRealtime(app: App): void {
   });
   depth.disconnect();
   const replay=app.replayArchive=new FocusedReplay({dir:path.join(DATA_DIR,'replay')});
+  depth.setCapture((symbol,kind,payload,at)=>{
+    if(symbol==='SOLUSD')replay.record(symbol,kind,payload,at,'maker-execution-depth');
+  });
   app.tradeMonitor=new MonitorRuntime(app,app.advisoryFeedFactory);
   app.tradeMonitor.depth.recorder.setCapture((symbol,kind,payload,at)=>replay.record(symbol,kind,payload,at,'advisory-depth'));
-  app.feed.on('depth', (m:unknown) => depth.onDepth(m));
+  for(const b of books)b.makerFillBook=(symbol,at)=>depth.bookAt(symbol,at,1000);
+  app.feed.on('depth', (m:unknown) => {
+    const at=Date.now();depth.onDepth(m,at);
+    const packet=m as {sy?:string;symbol?:string}|null;
+    const symbol=String(packet?.sy??packet?.symbol??'');
+    // Only opted-in shadow makers consume these observations; account rules are untouched.
+    if(symbol==='SOLUSD')app.shadow.observeMakerBook(symbol,depth.bookAt(symbol,at,1000),at);
+  });
   let auditing=false, staging=false;
   const auditTimer=setInterval(() => {
     if (auditing || !app.executor) return;

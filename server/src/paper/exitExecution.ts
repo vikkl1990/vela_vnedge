@@ -1,4 +1,4 @@
-import {createHash} from 'node:crypto';
+import {depthBookKey} from './depthLiquidity.ts';
 import type {Db} from '../db.ts';
 import type {Position} from './logic.ts';
 
@@ -64,7 +64,7 @@ export class PaperExitExecution {
   const i=this.active(p.id);if(!i||at<i.ready_at)return false;
   // A restarted engine may only use observations obtained after the intent became executable.
   if(book&&book.receivedAt<i.ready_at){this.error(i,'depth predates exit arrival',at);return false;}
-  const key=book?createHash('sha256').update(JSON.stringify([book.exchangeAt,book.bids,book.asks])).digest('hex'):'';
+  const key=book?depthBookKey(book):'';
   // Shadow cells are independent trials. Account positions compete for the same observed liquidity.
   const scope=this.book===2?`2:${p.id}`:String(this.book);
   const used=this.db.get<{consumed:number}>('SELECT consumed FROM paper_exit_liquidity WHERE scope=? AND symbol=? AND side=? AND book_key=?',scope,p.symbol,p.side,key)?.consumed??0;

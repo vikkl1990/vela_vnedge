@@ -6,15 +6,17 @@ import { commissionRatePct } from './costs.ts';
 /** Detached book actually used by the pricing pass, not the later diagnostic REST read. */
 export interface EntryDepthSnapshot {
  source:'l2-rest'; receivedAt:number; exchangeAt:number; evaluatedAt:number;
- side:'long'|'short'; requestedQty:number; vwap:number;
+ side:'long'|'short'; requestedQty:number; vwap:number; consumedQty?:number;
  bids:Array<{price:number;size:number}>; asks:Array<{price:number;size:number}>;
 }
 export interface LimitFillObservation {
+ model?:'tick-depth-v1';
+ arrivalAt?:number;arrivalDepth?:EntryAdmissionDepth;fillDepth?:EntryAdmissionDepth;
  placedAt:number; expiresAt:number; eventAt:number; observedAt:number;
  trigger: {kind:'trade';price:number;qty:number} | {kind:'candle';time:number;high:number;low:number;close:number;volume?:number};
 }
 export interface EntryAdmissionDepth {
- source:'l2-rest'; receivedAt:number; exchangeAt:number; evaluatedAt:number;
+ source:'l2-rest'|'l2-ws'; receivedAt:number; exchangeAt:number; evaluatedAt:number;
  checkedQty:number; contractValue:number; virtualQty?:number;
  bids:Array<{price:number;size:number}>; asks:Array<{price:number;size:number}>;
 }
@@ -67,11 +69,12 @@ export function recordEntryFillEvidence(db:Db,p:Position,book:number,source:stri
 }
 
 /** Sizes are contracts. Incomplete depth reports coverage, never an invented full-size fill. */
-export function depthFill(levels: Array<{price: string | number; size: string | number}>, qty: number, side: 'long' | 'short') {
+export function depthFill(levels: Array<{price: string | number; size: string | number}>, qty: number, side: 'long' | 'short', consumed=0) {
   const sorted=levels.map(l=>({p:Number(l.price),q:Number(l.size)})).filter(l=>l.p>0&&Number.isFinite(l.p)&&l.q>0&&Number.isFinite(l.q)).sort((a,b)=>side==='long'?a.p-b.p:b.p-a.p);
   if (!(qty>0) || !sorted.length) return { coverage: 0, vwap: null, impactBps: null };
-  let filled=0,value=0;
-  for(const l of sorted){const n=Math.min(qty-filled,l.q);filled+=n;value+=n*l.p;if(filled>=qty)break;}
+  let filled=0,value=0,skip=consumed;
+  for(const l of sorted){const used=Math.min(skip,l.q);skip-=used;const n=Math.min(qty-filled,l.q-used);filled+=n;value+=n*l.p;if(filled>=qty)break;}
+  if(!filled)return {coverage:0,vwap:null,impactBps:null};
   const vwap=value/filled;
   return {coverage:filled/qty,vwap,impactBps:(vwap/sorted[0].p-1)*10000*(side==='long'?1:-1)};
 }
