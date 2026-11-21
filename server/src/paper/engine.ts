@@ -34,7 +34,7 @@ import type { Side, ExitType, ScanEvent } from '../scanners/extractor.ts';
 import { logger } from '../log.ts';
 import { configFingerprint, sourceHash } from './fingerprint.ts';
 import {
-  feeFor, slip, roundTick, giveBackPct, type Position, type Fill, type PriceBar, type LevelResult, applyLiveBar, openR, reversalAllowed, applyScriptExit, applyTrade, applyMark, applyFunding, checkRiskVsFees, trendExit, computeStats, fillExit, openPosition, resolveLevels, sizeContracts, recordLeverage, unrealized, notionalOf, rMultiple, type TradeStats, exitConfigFor, earlyStallExit, splitLegs, liquidationPrice, pnlOf, modelTrail } from './logic.ts';
+  feeFor, slip, roundTick, giveBackPct, type Position, type Fill, type PriceBar, type LevelResult, applyLiveBar, openR, reversalAllowed, applyScriptExit, applyTrade, applyMark, applyFunding, checkRiskVsFees, trendExit, computeStats, fillExit, openPosition, resolveLevels, sizeContracts, recordLeverage, unrealized, notionalOf, rMultiple, type TradeStats, exitConfigFor, earlyStallExit, earlyCutExit, staleExit, splitLegs, liquidationPrice, pnlOf, modelTrail } from './logic.ts';
 import type { StructureLevel } from './luxExits.ts';
 import { classOf, matchesClass } from '../markets/classes.ts';
 
@@ -449,7 +449,7 @@ export class PaperEngine extends EventEmitter {
     return {config:structuredClone(this.configFor(p)),marketQty:this.book===0?p.qtyOpen:frozen?Math.max(1,Math.ceil(frozen.market_qty*p.qtyOpen/p.qty)):null,
       exitPending:!!this.exitExecution.active(p.id)};
   }
-  private partial(p:Position){return this.book===2 && p.executionPlan?.partialExitVersion===1 && this.causal(p);}
+  private partial(p:Position){return this.causal(p) && (p.executionPlan?.partialExitVersion===1 || p.legs.filter(q=>q>0).length>1);}
   private causal(p:Position){return this.causalExits&&!this.executionIntent&&this.cfgRef().execution.mode==='paper'&&(p.executionPlan?.executionVersion??p.policy?.sim??0)>=CAUSAL_EXIT_VERSION;}
   pendingExits(){return this.exitExecution.pending().filter(i=>{const p=this.open.get(i.position_id);return !!p&&this.causal(p);});}
   /** Reports and position accounting share one transaction and rollback checkpoint. */
@@ -519,6 +519,10 @@ export class PaperEngine extends EventEmitter {
         }
         const maxHold=p.executionPlan?.maxHoldMinutes;
         if(maxHold&&at-p.entryAt>=maxHold*60000)this.requestExit(p,'plan_time',p.qtyOpen,price,at);
+        const early=earlyCutExit(structuredClone(p),price,at,cfg);
+        if(early){this.requestExit(p,early.reason,p.qtyOpen,price,at);return;}
+        const stale=staleExit(structuredClone(p),{time:at,close:price},cfg,(TF_SECONDS[p.tf]??0)*1000);
+        if(stale){this.requestExit(p,stale.reason,p.qtyOpen,price,at);return;}
         const scratch=structuredClone(p),stall=earlyStallExit(scratch,price,at,cfg);
         if(stall)this.requestExit(p,stall.reason,p.qtyOpen,price,at);
         if(cfg.trendExit?.enabled){const f=trendExit(structuredClone(p),this.trendFor?.(p.symbol,p.tf,cfg.trendExit.emaLen),price,at,cfg);if(f)this.requestExit(p,f.reason,p.qtyOpen,price,at);}

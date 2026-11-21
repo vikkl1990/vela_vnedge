@@ -1,3 +1,4 @@
+import type { ChartObservation } from '../../../shared/chartVerification'
 import type { ScriptRun, TimelineMark } from '@luxalgo/vela'
 import { useState, type ReactNode } from 'react'
 import { ChipSelect } from '../components/kit'
@@ -23,6 +24,7 @@ export function ChartFrames({
   onScriptRun,
   captureLedger,
   onAuthorLedger,
+  onSignalCheck,
   marksByFrame,
   height = '100%',
   marks,
@@ -37,6 +39,7 @@ export function ChartFrames({
   marks?: TimelineMark[]
   marksByFrame?: Record<string, TimelineMark[]>
   captureLedger?: boolean
+  onSignalCheck?: (observation: ChartObservation) => void
   onAuthorLedger?: (ledger: AuthorLedger) => void
   positionBadge?: ReactNode
   onScriptError?: (id: string, err: Error) => void
@@ -59,6 +62,7 @@ export function ChartFrames({
               {symbol} · {tf}
             </span>
             <VelaChart
+              onSignalCheck={onSignalCheck}
               marks={marksByFrame?.[tf] ?? marks}
               captureLedger={captureLedger}
               onAuthorLedger={onAuthorLedger}

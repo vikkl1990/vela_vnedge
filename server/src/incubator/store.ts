@@ -1,3 +1,4 @@
+import {recordChartReceipt,type ChartReceiptArgs} from '../scanners/chartReceipts.ts';
 import {recoverPendingFunnel} from './pendingFunnel.ts';
 import {emptyRotation, type RotationState} from './rotation.ts';
 import type {TradePolicy} from '../paper/tradePolicy.ts';
@@ -51,6 +52,7 @@ export function funnelClass(action: string): 'opened' | 'pending' | 'regime' | '
 
 export class IncubatorStore {
   private db: Db;
+  noteChartReceipt(...args:ChartReceiptArgs){recordChartReceipt(this.db,...args);}
   /** Installed by the runtime/screen composition root. Raw history stays available for audit. */
   policyFor?: (cell:{scannerId:string;symbol:string;tf:string})=>TradePolicy;
   evidenceConfig?:()=>AppConfig;

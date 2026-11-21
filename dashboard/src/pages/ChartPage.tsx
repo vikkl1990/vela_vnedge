@@ -1,3 +1,5 @@
+import type { ChartObservation } from '../../../shared/chartVerification'
+import { SignalChecks } from '../chart/SignalChecks'
 import type { ScriptRun } from '@luxalgo/vela'
 import { useInfiniteQuery, useQueries } from '@tanstack/react-query'
 import { useEffect, useMemo, useState } from 'react'
@@ -100,6 +102,7 @@ export function ChartPage() {
   }
   const [showPosition, setShowPosition] = useState(true)
   const [scriptErrors, setScriptErrors] = useState<Record<string, string>>({})
+  const [signalChecks, setSignalChecks] = useState<Record<string, ChartObservation>>({})
   const [runs, setRuns] = useState<Record<string, ScriptSnapshot>>({})
   const [readoutOpen, setReadoutOpen] = useState(false)
   const [showClosed, setShowClosed] = useState(true)
@@ -169,6 +172,16 @@ export function ChartPage() {
     for (const s of addedScanners) if (!ids.includes(s.id)) ids.push(s.id)
     return ids
   }, [enabledScanners, shownSelection, addedScanners, heldScanner])
+
+  const recordSignalCheck = (o: ChartObservation) =>
+    setSignalChecks((prev) =>
+      retainChartRecord(
+        prev,
+        `${o.symbol}:${o.tf}:${o.scannerId}`,
+        o,
+        activeChartKeys(symbol, view === 'frames' ? frames : [tf], selectedIds),
+      ),
+    )
 
   const recordLedger = (ledger: AuthorLedger) =>
     setLedgers((prev) =>
@@ -620,6 +633,7 @@ export function ChartPage() {
               key={symbol}
               onScriptRun={recordRun}
               marksByFrame={Object.fromEntries(frames.map((frame) => [frame, marksFor(frame)]))}
+              onSignalCheck={recordSignalCheck}
               captureLedger={showAuthors}
               onAuthorLedger={recordLedger}
               symbol={symbol}
@@ -639,6 +653,7 @@ export function ChartPage() {
             />
           ) : symbol ? (
             <VelaChart
+              onSignalCheck={recordSignalCheck}
               captureLedger={showAuthors}
               onAuthorLedger={recordLedger}
               onScriptRun={(r) => recordRun(tf, r)}
@@ -711,6 +726,14 @@ export function ChartPage() {
           error={closedTrades.error?.message}
         />
       )}
+      <SignalChecks
+        observations={Object.values(signalChecks).filter(
+          (o) =>
+            o.symbol === symbol &&
+            (view === 'frames' ? frames.includes(o.tf) : o.tf === tf) &&
+            selectedIds.includes(o.scannerId),
+        )}
+      />
       <ScriptReadout
         open={readoutOpen}
         onOpenChange={setReadoutOpen}

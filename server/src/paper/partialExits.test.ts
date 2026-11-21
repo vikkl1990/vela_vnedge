@@ -17,11 +17,12 @@ function fixture(t:any,corrected=true){
  const settle=(at:number,size=1000,price=103)=>{now=at;return e.settleExits('ETHUSD',{receivedAt:at,exchangeAt:at,bids:[{price,size}],asks:[{price:price+.1,size}]},at);};
  return {get e(){return e;},get p(){return e.position(p.id)!;},db,id,settle,at:(at:number)=>{now=at;},request:(type:'tp1'|'tp2'|'tp3'|'sl',at:number)=>{now=at;e.onScriptExit(id,'ETHUSD','15m',type,999,at,'both','long');},restart:()=>{e=new PaperEngine(db,()=>cfg,{book:2,now:()=>now});e.causalExits=true;}};
 }
-test('baseline loses later simultaneous target requests; corrected shadow completes every requested leg once at real depth',t=>{
+test('ordinary and native shadow complete every requested leg once at real depth',t=>{
  const old=fixture(t,false),x=fixture(t);old.request('tp3',T+200);x.request('tp3',T+200);
  assert.equal(x.p.fills.length,1);const original=x.p.qty;
  for(const at of [T+300,T+400,T+500]){old.settle(at);x.settle(at);}
- assert.equal(old.p.status,'open');assert.equal(old.p.tpHit[0],false);
+ assert.equal(old.p.status,'closed');assert.equal(old.p.tpHit[0],true);
+ assert.deepEqual(old.p.fills.slice(1).map(f=>f.reason),['tp1','tp2','tp3']);
  assert.equal(x.p.status,'closed');assert.equal(x.p.qtyOpen,0);assert.equal(x.p.fills.slice(1).reduce((n,f)=>n+f.qty,0),original);
  assert.deepEqual(x.p.fills.slice(1).map(f=>f.reason),['tp1','tp2','tp3']);
  assert.ok(x.p.fills.slice(1).every(f=>f.price===103&&f.liquidity==='taker'));

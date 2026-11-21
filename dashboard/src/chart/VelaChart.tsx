@@ -1,3 +1,4 @@
+import type { ChartObservation } from '../../../shared/chartVerification'
 import type { IndicatorHandle, ScriptRun, TimelineMark, Vela as VelaType } from '@luxalgo/vela'
 import { useEffect, useRef, useState } from 'react'
 import { api } from '../api/client'
@@ -43,6 +44,7 @@ interface Props {
   onChartReady?: (chart: VelaType | null) => void
   onScriptRun?: (run: ScriptRun) => void
   captureLedger?: boolean
+  onSignalCheck?: (observation: ChartObservation) => void
   onAuthorLedger?: (ledger: AuthorLedger) => void
 }
 
@@ -81,6 +83,7 @@ export function VelaChart({
   onScriptRun,
   captureLedger = false,
   onAuthorLedger,
+  onSignalCheck,
   marks,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
@@ -114,10 +117,19 @@ export function VelaChart({
     onChartReady,
     onScriptRun,
     onAuthorLedger,
+    onSignalCheck,
     captureLedger,
   })
   useEffect(() => {
-    cbRef.current = { onScriptError, onScriptReady, onChartReady, onScriptRun, onAuthorLedger, captureLedger }
+    cbRef.current = {
+      onScriptError,
+      onScriptReady,
+      onChartReady,
+      onScriptRun,
+      onAuthorLedger,
+      onSignalCheck,
+      captureLedger,
+    }
   })
   useEffect(() => {
     cbRef.current.onChartReady?.(ready ? chartRef.current : null)
@@ -140,6 +152,7 @@ export function VelaChart({
     const latestRuns = new Map<string, { run: ScriptRun; contextKey: string }>()
     const requests = new Map<string, { key: string; serial: number }>()
     let serial = 0
+    const signalRequests = new Map<string, number>()
     const collect = (run: ScriptRun) => {
       if (!cbRef.current.captureLedger || cancelled) return
       const script = scriptsRef.current.find((s) => `vn:${s.id}` === run.id)
@@ -286,6 +299,73 @@ export function VelaChart({
             const script = scriptsRef.current.find((s) => `vn:${s.id}` === run.id)
             if (script) latestRuns.set(run.id, { run, contextKey: scriptContextKey(script) })
             cbRef.current.onScriptRun?.(run)
+            if (
+              script &&
+              venue === 'delta' &&
+              cbRef.current.onSignalCheck &&
+              run.complete &&
+              run.cause !== 'tick' &&
+              !chart?.replay.state.active
+            ) {
+              const ticket = ++serial
+              signalRequests.set(run.id, ticket)
+              const epoch = generation,
+                market = { ...marketRef.current },
+                context = scriptContextKey(script)
+              const time = run.forming ? run.time - tfMs(market.tf) : run.time
+              const handle = handlesRef.current.get(script.id)?.handle
+              const expected = handle ? scriptInputs(handle.inputs, script.inputs) : {}
+              const actual = handle?.inputValues() ?? {}
+              const inputsChanged =
+                !handle ||
+                Object.entries(expected).some(
+                  ([key, value]) => JSON.stringify(actual[key]) !== JSON.stringify(value),
+                )
+              // One selected context transfer per closed bar, rather than one full
+              // worker transfer per series. Raw plot values also retain boolean shapes.
+              void handle
+                ?.context(['plots'])
+                .then((snapshot) => {
+                  if (
+                    cancelled ||
+                    !snapshot ||
+                    epoch !== generation ||
+                    signalRequests.get(run.id) !== ticket ||
+                    !scriptsRef.current.some((s) => s.id === script.id && scriptContextKey(s) === context) ||
+                    JSON.stringify(handle.inputValues()) !== JSON.stringify(actual)
+                  )
+                    return
+                  const values = Object.entries(snapshot.plots)
+                    .slice(0, 80)
+                    .map(([key, points]) => {
+                      const value = points.findLast((p) => p.time === time)?.value
+                      return [
+                        key,
+                        typeof value === 'boolean'
+                          ? Number(value)
+                          : typeof value === 'number' && Number.isFinite(value)
+                            ? value
+                            : null,
+                      ] as const
+                    })
+                  cbRef.current.onSignalCheck?.({
+                    scannerId: script.id,
+                    symbol: market.symbol,
+                    tf: market.tf,
+                    barTime: time,
+                    sourceHash: script.sourceHash ?? null,
+                    historyFrom: firstBar(run.id),
+                    inputs: script.inputs ?? {},
+                    inputsChanged,
+                    timezone: script.timezone ?? 'UTC',
+                    complete: run.complete,
+                    values: Object.fromEntries(values),
+                  })
+                })
+                .catch(() => {
+                  /* Missing chart observations are never converted to a successful comparison. */
+                })
+            }
             collect(run)
           })
           chart.renderer.set('scalePriceOnly', true)
@@ -563,6 +643,7 @@ export function VelaChart({
   useEffect(() => {
     if (!ready || !chartRef.current) return
     chartRef.current.marks.defineGroup({ id: 'bot-decisions', label: 'Bot journal decisions' })
+    chartRef.current.marks.defineGroup({ id: 'fill-evidence', label: 'Tick and depth comparisons' })
     chartRef.current.marks.defineGroup({ id: 'bot-fills', label: 'Recorded bot fills' })
     chartRef.current.marks.defineGroup({
       id: 'author-simulation',

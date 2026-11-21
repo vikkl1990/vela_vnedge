@@ -1,3 +1,4 @@
+import {recordChartReceipt} from './chartReceipts.ts';
 import {candleReplayBlock} from '../paper/basket.ts';
 import {transientTradingBlock} from '../delta/tradingStatus.ts';
 import {recordGatedSignal} from '../evidence/gatedSignals.ts';
@@ -569,6 +570,7 @@ export class ScannerEngine extends EventEmitter {
         const since = win.since;
         const events = extractEvents(liveRes.alerts, liveRes.shapes, { drawn: liveRes.labels, scannerId: s.id, sinceBarTime: since, derived, ...READ.extract, drops })
           .filter(ev => { if (ev.kind === 'entry' && ev.barTime < lastBar.time) { drops['entry: superseded bar'] = (drops['entry: superseded bar'] ?? 0) + 1; return false; } return true; });
+        recordChartReceipt(this.db,s.id,symbol,tf,s.patched,cfg.scanners[s.id],bars,liveRes,events);
         if (since < lastBar.time && events.some(ev => ev.barTime < lastBar.time)) log.info(`${key}: ${events.filter(ev => ev.barTime < lastBar.time).length} event(s) from a superseded bar read on this run`);
         for (const ev of [...events].sort((a,b)=>Number(b.kind==='exit')-Number(a.kind==='exit'))) await this.handleLiveEvent(s, symbol, tf, ev, bars, market, exitMode, lastBar);
         this.marks.advance(key, lastBar.time);
