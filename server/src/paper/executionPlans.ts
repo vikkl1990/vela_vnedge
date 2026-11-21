@@ -21,9 +21,9 @@ import { exitConfigFor } from './logic.ts';
 import { scannerExitPolicy, entryPolicy, ownExitsOverride } from './policy.ts';
 import { adaptPlan } from './planStudy.ts';
 
-// Bounded research capacity: 107 existing plans plus four isolated SOL filter/fill arms.
+// Bounded research capacity: 111 existing plans plus twelve paired maker studies.
 // This does not change account positions, allocation or risk limits.
-export const MAX_RESEARCH_PLANS = 111;
+export const MAX_RESEARCH_PLANS = 135;
 /** Explicit TP experiment; original stop and sizing stay fixed. Trail changes are opt-in and labeled. */
 export interface TakeProfitPlan {
   mode: 'native' | 'r';
@@ -38,7 +38,7 @@ export interface ProfitCapturePlan {
   floorAtR: number;
   floorKeepR: number;
 }
-export interface PlanComparison { group: string; role: 'control' | 'candidate'; kind?: 'exit-policy' | 'two-bar' | 'profit-floor' }
+export interface PlanComparison { group: string; role: 'control' | 'candidate'; kind?: 'exit-policy' | 'two-bar' | 'profit-floor' | 'maker-fill' }
 /** Interpretation only: changing Pine inputs or trading rules requires a different experiment. */
 export type ReadingOverride = {version:number} & Pick<Partial<ScannerConfig>,'reader'|'sources'|'labels'|'sides'|'labelStyles'|'invert'|'edge'>;
 export interface ExecutionPlan {
@@ -173,7 +173,7 @@ export function validateExecutionPlans(plans: ExecutionPlan[] | undefined, tfs: 
     // setup, using the research depth feed; it never enables account copying.
     const makerSource=p.makerFill==='tick-depth-v1'?(p.scannerId===SOL_MAKER_FILTER_SOURCE||solFilterPlan(p))&&p.symbol==='SOLUSD'&&p.tf==='15m'
       :p.makerFill==='tick-depth-v2'&&!!cfg?.scanners[p.scannerId]&&!!entryPolicy(cfg,p.tf,'account',{scannerId:p.scannerId});
-    if(p.makerFill!==undefined&&(!makerSource||p.variant!=='current'||p.basket||p.readingOverride||p.takeProfit||p.trailing||p.exitPolicy||p.comparison||p.failedTradeExit||p.profitFloor||p.maxHoldMinutes!==undefined))errors.push(`executionPlans.${p.id}: tick-depth maker requires a configured resting maker setup and unchanged exits`);
+    if(p.makerFill!==undefined&&(!makerSource||p.variant!=='current'||p.basket||p.readingOverride||p.takeProfit||p.trailing||p.exitPolicy||(p.comparison&&p.comparison.kind!=='maker-fill')||p.failedTradeExit||p.profitFloor||p.maxHoldMinutes!==undefined))errors.push(`executionPlans.${p.id}: tick-depth maker requires a configured resting maker setup and unchanged exits`);
     if(p.scannerId===SOL_MAKER_FILTER_OFF&&!solFilterPlan(p))errors.push(`executionPlans.${p.id}: filter-off scanner requires its versioned SOL study`);
     if(typeof p.id==='string'&&p.id.startsWith(SOL_FILTER_PLAN_PREFIX)&&(!solFilterPlan(p)||p.variant!=='current'||p.referenceEquity!==1000||p.basket||p.readingOverride||p.takeProfit||p.trailing||p.exitPolicy||p.comparison||p.failedTradeExit||p.profitFloor||p.maxHoldMinutes!==undefined||p.maxStopLossPct!==undefined||(p.id.endsWith('-tick')?p.makerFill!=='tick-depth-v1':p.makerFill!==undefined)))errors.push(`executionPlans.${p.id}: filter study must retain current entry, exits and risk`);
     // Validate effective basket prerequisites at save time, using the same policy
@@ -217,7 +217,8 @@ export function validateExecutionPlans(plans: ExecutionPlan[] | undefined, tfs: 
       if(!t||![t.afterR,t.giveBackPct,t.floorAtR,t.floorKeepR].every(Number.isFinite)||t.afterR<=0||t.afterR>10||t.giveBackPct<=0||t.giveBackPct>=100||t.floorAtR<0||t.floorAtR>10||t.floorKeepR<0||(t.floorAtR===0?t.floorKeepR!==0:t.floorKeepR>=t.floorAtR))errors.push(`executionPlans.${p.id}: invalid profit-capture trail or floor`);
       if(p.takeProfit?.trailAfterR!==undefined)errors.push(`executionPlans.${p.id}: specify trail activation in only one place`);
     }
-    if(p.comparison!==undefined&&(!p.comparison||!/^[a-z0-9][a-z0-9-]{0,79}$/.test(p.comparison.group??'')||!['control','candidate'].includes(p.comparison.role)||p.comparison.kind!==undefined&&!['exit-policy','two-bar','profit-floor'].includes(p.comparison.kind)))errors.push(`executionPlans.${p.id}: invalid comparison group or role`);
+    if(p.comparison!==undefined&&(!p.comparison||!/^[a-z0-9][a-z0-9-]{0,79}$/.test(p.comparison.group??'')||!['control','candidate'].includes(p.comparison.role)||p.comparison.kind!==undefined&&!['exit-policy','two-bar','profit-floor','maker-fill'].includes(p.comparison.kind)))errors.push(`executionPlans.${p.id}: invalid comparison group or role`);
+    if(p.comparison?.kind==='maker-fill'&&(p.variant!=='current'||p.readingOverride||p.trailing||p.takeProfit||p.failedTradeExit||p.profitFloor||p.basket||p.maxHoldMinutes!==undefined||p.exitPolicy!==undefined))errors.push(`executionPlans.${p.id}: maker study requires unchanged entries, exits and reading`);
     if(p.failedTradeExit!==undefined&&(p.failedTradeExit!==TWO_BAR_EXIT||p.comparison?.kind!=='two-bar'||p.comparison.role!=='candidate'))errors.push(`executionPlans.${p.id}: two-bar exit requires its explicit shadow candidate`);
     if(p.comparison?.kind==='two-bar'&&(!isTwoBarCell(p.scannerId,p.symbol,p.tf)||p.variant!=='current'||p.readingOverride||p.trailing||p.takeProfit||p.profitFloor||p.basket||p.maxHoldMinutes!==undefined||p.exitPolicy!==undefined))errors.push(`executionPlans.${p.id}: two-bar study requires the reviewed Trend Impulse cell and unchanged entry/exit policy`);
     if(p.profitFloor!==undefined){
@@ -245,6 +246,11 @@ export function validateExecutionPlans(plans: ExecutionPlan[] | undefined, tfs: 
   }
   for(const group of new Set(plans.filter(p=>p?.comparison).map(p=>p.comparison!.group))){
     const pair=plans.filter(p=>p?.comparison?.group===group);
+    if(pair.some(p=>p.comparison?.kind==='maker-fill')){
+      const control=pair.find(p=>p.comparison?.role==='control'),candidate=pair.find(p=>p.comparison?.role==='candidate');
+      const identity=(p:ExecutionPlan)=>Object.fromEntries(Object.entries(p).filter(([k])=>!['id','label','comparison','makerFill'].includes(k)));
+      if(pair.length!==2||!control||!candidate||pair.some(p=>p.comparison?.kind!=='maker-fill')||control.makerFill!==undefined||candidate.makerFill!=='tick-depth-v2'||stable(identity(control))!==stable(identity(candidate)))errors.push(`executionPlans comparison ${group}: maker arms must differ only in their fill model`);
+    }
     if(pair.some(p=>p.comparison?.kind==='exit-policy')){
       const control=pair.find(p=>p.comparison?.role==='control'),candidate=pair.find(p=>p.comparison?.role==='candidate');
       const identity=(p:ExecutionPlan)=>Object.fromEntries(Object.entries(p).filter(([k])=>!['id','label','comparison','exitPolicy'].includes(k)));
