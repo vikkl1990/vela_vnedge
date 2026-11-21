@@ -23,9 +23,9 @@ function fixture(t:any,corrected=true,fillSource:'tape'|'candles'='tape'){
  const settle=(at:number,size=1000)=>{at=stamp(at);now=at;return e.settleExits('ETHUSD',{receivedAt:at,exchangeAt:at,bids:[{price:100.9,size}],asks:[{price:101.1,size}]},at);};
  return {get e(){return e;},get p(){return e.position(p.id)!;},db,cfg,id,tick,settle,pendingId:pending.pendingId!,restart:()=>{e=new PaperEngine(db,()=>cfg,{book:2,now:()=>now});e.causalExits=true;}};
 }
-test('legacy cancels a causal reversal; corrected shadow waits for full close before a newly priced entry',t=>{
+test('all causal readers wait for full close before a newly priced entry',t=>{
  const old=fixture(t,false),x=fixture(t);old.tick(T+300);x.tick(T+300);
- assert.equal(old.e.pendingEntries().length,0);assert.equal(x.e.pendingEntries().length,1);
+ assert.equal(old.e.pendingEntries().length,1);assert.equal(x.e.pendingEntries().length,1);
  assert.equal(x.p.status,'open');assert.equal(x.p.fills.length,1);assert.equal(x.e.pendingExits().length,1);
  x.settle(T+400,1);assert.equal(x.p.qtyOpen,x.p.qty-1);
  x.tick(T+450);assert.equal(x.e.pendingEntries().length,1);assert.equal(x.e.openPositions().length,1);
@@ -55,7 +55,7 @@ test('restart cancels an unfilled reversal but preserves the protective exit; no
 test('the VM candle-entry mode and 1500ms latency also wait for a causal reversal close',t=>{
  const old=fixture(t,false,'candles'),x=fixture(t,true,'candles');
  old.tick(T+300);x.tick(T+300);
- assert.equal(old.e.pendingEntries().length,0);assert.equal(x.e.pendingEntries().length,1);
+ assert.equal(old.e.pendingEntries().length,1);assert.equal(x.e.pendingEntries().length,1);
  assert.equal(x.p.status,'open');assert.equal(x.e.pendingExits()[0].ready_at,T+6000);
  x.settle(T+400);assert.equal(x.p.status,'closed');x.tick(T+500,100.8);
  assert.equal(x.e.openPositions().length,1);assert.equal(x.e.openPositions()[0].side,'short');

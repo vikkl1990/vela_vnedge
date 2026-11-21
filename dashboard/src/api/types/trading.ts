@@ -151,6 +151,7 @@ export interface Order {
     | 'tape-limit-model'
     | 'limit-candle-model'
     | 'limit-tape-model'
+    | 'limit-tick-depth-model'
     | null
   liquidity?: 'maker' | 'taker' | null
   id: number

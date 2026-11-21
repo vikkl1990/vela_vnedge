@@ -21,7 +21,7 @@ import { adaptPlan } from './planStudy.ts';
 
 // Bounded research capacity: 105 existing plans plus one SOL maker advisory reference.
 // This does not change account positions, allocation or risk limits.
-export const MAX_RESEARCH_PLANS = 106;
+export const MAX_RESEARCH_PLANS = 107;
 /** Explicit TP experiment; original stop and sizing stay fixed. Trail changes are opt-in and labeled. */
 export interface TakeProfitPlan {
   mode: 'native' | 'r';
@@ -40,6 +40,8 @@ export interface PlanComparison { group: string; role: 'control' | 'candidate'; 
 /** Interpretation only: changing Pine inputs or trading rules requires a different experiment. */
 export type ReadingOverride = {version:number} & Pick<Partial<ScannerConfig>,'reader'|'sources'|'labels'|'sides'|'labelStyles'|'invert'|'edge'>;
 export interface ExecutionPlan {
+  /** Shadow-only quantity-bounded maker replay; never infer entries from candles. */
+  makerFill?: 'tick-depth-v1';
   profitFloor?: {afterR:number;keepR:number};
   failedTradeExit?: typeof TWO_BAR_EXIT;
   basket?: 'rsi-volume-ladder-v1';
@@ -61,6 +63,7 @@ export interface ExecutionPlan {
   readingOverride?: ReadingOverride;
 }
 export interface ExecutionPlanSnapshot {
+  makerFill?: ExecutionPlan['makerFill'];
   profitFloor?: {afterR:number;keepR:number};
   failedTradeExit?: typeof TWO_BAR_EXIT;
   basket?: ExecutionPlan['basket'];
@@ -128,7 +131,7 @@ export function planSnapshot(cfg: AppConfig, p: ExecutionPlan, sourceHash: strin
     ...(p.comparison?{comparison:structuredClone(p.comparison)}:{})};
   if(p.basket && (paper.sizingMode!=='margin'||paper.marginPerTrade!==150||!(paper.maxStopLossPct!>0)||Object.keys(sc?.inputs??{}).length))throw Error('basket requires $150 margin, a stop cap and reviewed default inputs');
   const native = nativeReentry(p.scannerId,sc?.reader);
-  const versioned = {...result,...(sc?.reader===3||p.basket||plotLifecycle(p.scannerId)?{partialExitVersion:1 as const}:{}),
+  const versioned = {...result,...(p.makerFill?{makerFill:p.makerFill}:{}),...(sc?.reader===3||p.basket||plotLifecycle(p.scannerId)?{partialExitVersion:1 as const}:{}),
     ...(native?{reversalEntryVersion:1 as const,nativeReentryVersion:1 as const}:{}),
     ...(p.readingOverride?{readingOverride:structuredClone(p.readingOverride)}:{})};
   // Presentation/grouping edits must not reset evidence for an identical policy.
@@ -148,6 +151,7 @@ export function planEvents(events: ScanEvent[], bars: Bar[], p: ExecutionPlanSna
   return p.variant === 'current' ? events.map(ev=>protectEntry(ev,p.reading?.entryProtection)) : adaptPlan(events,bars,p.variant);
 }
 export function planBacktest(p: ExecutionPlanSnapshot) {
+  if(p.makerFill)throw Error('maker fill study requires recorded ticks and depth; candles cannot qualify it');
   if(p.failedTradeExit)throw Error('two-bar exit requires causal tick/depth replay; candle-only backtest is unsupported');
   if(p.basket)throw Error('basket execution requires stateful shadow replay; single-position candle backtest is unsupported');
   const le=p.paper.limitEntry;
@@ -163,6 +167,7 @@ export function validateExecutionPlans(plans: ExecutionPlan[] | undefined, tfs: 
   for(const p of plans){
     if(!p || !/^[a-z0-9][a-z0-9-]{0,79}$/.test(p.id??'') || ids.has(p.id))errors.push('executionPlans requires unique safe ids');
     if(!p)continue;ids.add(p.id);
+    if(p.makerFill!==undefined&&(p.makerFill!=='tick-depth-v1'||p.scannerId!=='trend-impulse-channels-zeiierman-maker'||p.symbol!=='SOLUSD'||p.tf!=='15m'||p.variant!=='current'||p.basket||p.readingOverride||p.takeProfit||p.trailing||p.exitPolicy||p.comparison||p.failedTradeExit||p.profitFloor||p.maxHoldMinutes!==undefined))errors.push(`executionPlans.${p.id}: tick-depth maker requires the isolated SOL maker reference and unchanged exits`);
     // Validate effective basket prerequisites at save time, using the same policy
     // resolver as execution (including symbol/scanner overrides and the plan cap).
     if(p.basket&&cfg){

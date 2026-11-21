@@ -1,4 +1,4 @@
-import {solMakerReference,solReferencePolicy,SOL_MAKER_REFERENCE_ID} from './solMakerStudy.ts';
+import {solMakerReference,solReferencePolicy,SOL_MAKER_REFERENCE_ID,SOL_MAKER_TICK_REFERENCE_ID} from './solMakerStudy.ts';
 import type {Db} from '../db.ts';
 import type {Position} from '../paper/logic.ts';
 import {CAUSAL_EXIT_VERSION} from '../paper/exitExecution.ts';
@@ -66,14 +66,14 @@ export class ScannerEarlyExitStudy {
    FROM positions p LEFT JOIN trade_policies t ON t.id=p.policy_id
    WHERE p.status='closed' AND p.entry_at>=? AND p.entry_at>=? AND ((p.bt=0 AND p.evidence_scope='account') OR (p.bt=2 AND p.evidence_scope='shadow'))
    AND (p.scanner_id IN (?,?) OR (p.scanner_id=? AND p.symbol='SOLUSD' AND p.tf='15m'))`,this.startedAt,now-90*86400000,...EARLY_EXIT_SCANNERS);
-  this.db.run(`INSERT OR IGNORE INTO advisory_scanner_exit_cohort(position_id,entry_at,book,scanner,symbol,tf,policy_id,source_hash,qty,entry_price,original_stop,status,reason,last_at)
+  for(const id of [SOL_MAKER_REFERENCE_ID,SOL_MAKER_TICK_REFERENCE_ID])this.db.run(`INSERT OR IGNORE INTO advisory_scanner_exit_cohort(position_id,entry_at,book,scanner,symbol,tf,policy_id,source_hash,qty,entry_price,original_stop,status,reason,last_at)
    SELECT p.id,p.entry_at,p.bt,p.scanner_id,p.symbol,p.tf,coalesce(p.policy_id,'unknown'),coalesce(t.source_hash,'unknown'),p.qty,p.entry_price,coalesce(p.sl_original,p.entry_price),'unverified','No prospective observations before closure',p.entry_at
    FROM positions p LEFT JOIN trade_policies t ON t.id=p.policy_id WHERE p.status='closed' AND p.entry_at>=? AND p.entry_at>=?
    AND p.bt=2 AND p.evidence_scope='experiment' AND p.symbol='SOLUSD' AND p.tf='15m'
-   AND p.scanner_id LIKE ? AND json_extract(p.fills,'$.executionPlan.id')=? AND json_extract(p.fills,'$.executionPlan.revision')=1`,this.startedAt,now-90*86400000,`plan:${SOL_MAKER_REFERENCE_ID}:v1:%`,SOL_MAKER_REFERENCE_ID);
+   AND p.scanner_id LIKE ? AND json_extract(p.fills,'$.executionPlan.id')=? AND json_extract(p.fills,'$.executionPlan.revision')=1`,this.startedAt,now-90*86400000,`plan:${id}:v1:%`,id);
   this.db.run(`UPDATE advisory_scanner_exit_cohort AS c SET status='unverified',reason='Entry exposure or bound policy changed'
-   WHERE status IN ('watching','triggered') AND EXISTS(SELECT 1 FROM positions p WHERE p.id=c.position_id AND p.entry_at=c.entry_at AND (p.qty!=c.qty OR p.entry_price!=c.entry_price OR p.sl_original!=c.original_stop OR (p.scanner_id NOT LIKE 'plan:sol-maker-half-stop-reference:v1:%' AND p.policy_id IS NOT c.policy_id) OR p.policy_adopted_at IS NOT NULL))`);
-  for(const row of this.db.all<{position_id:number;entry_at:number;policy_id:string;fills:string;scanner_id:string;symbol:string;tf:string}>(`SELECT c.position_id,c.entry_at,c.policy_id,p.fills,p.scanner_id,p.symbol,p.tf FROM advisory_scanner_exit_cohort c JOIN positions p ON p.id=c.position_id AND p.entry_at=c.entry_at WHERE c.status IN ('watching','triggered') AND c.scanner LIKE ?`,`plan:${SOL_MAKER_REFERENCE_ID}:v1:%`)){
+   WHERE status IN ('watching','triggered') AND EXISTS(SELECT 1 FROM positions p WHERE p.id=c.position_id AND p.entry_at=c.entry_at AND (p.qty!=c.qty OR p.entry_price!=c.entry_price OR p.sl_original!=c.original_stop OR (p.scanner_id NOT LIKE 'plan:sol-maker-half-stop-reference:v1:%' AND p.scanner_id NOT LIKE 'plan:sol-maker-tick-depth-reference:v1:%' AND p.policy_id IS NOT c.policy_id) OR p.policy_adopted_at IS NOT NULL))`);
+  for(const row of this.db.all<{position_id:number;entry_at:number;policy_id:string;fills:string;scanner_id:string;symbol:string;tf:string}>(`SELECT c.position_id,c.entry_at,c.policy_id,p.fills,p.scanner_id,p.symbol,p.tf FROM advisory_scanner_exit_cohort c JOIN positions p ON p.id=c.position_id AND p.entry_at=c.entry_at WHERE c.status IN ('watching','triggered') AND (c.scanner LIKE ? OR c.scanner LIKE ?)`,`plan:${SOL_MAKER_REFERENCE_ID}:v1:%`,`plan:${SOL_MAKER_TICK_REFERENCE_ID}:v1:%`)){
    let identity:string|undefined;
    try{identity=solReferencePolicy({executionPlan:JSON.parse(row.fills).executionPlan,scannerId:row.scanner_id,symbol:row.symbol,tf:row.tf} as Position)?.id;}catch{ /* corrupt snapshot stays unavailable */ }
    if(identity!==row.policy_id)this.db.run("UPDATE advisory_scanner_exit_cohort SET status='unverified',reason='Research reference snapshot changed' WHERE position_id=? AND entry_at=?",row.position_id,row.entry_at);
@@ -114,7 +114,7 @@ export class ScannerEarlyExitStudy {
    recent:rows.slice(0,30).map(r=>({positionId:r.position_id,entryAt:r.entry_at,scanner:r.scanner,symbol:r.symbol,tf:r.tf,book:r.book,status:r.status,reason:r.reason,baseStatus:r.base_status,stressStatus:r.stress_status}))};
  }
 }
-function emptyGroup(c:Cohort,key:string){return {key,referenceKind:c.scanner.startsWith(`plan:${SOL_MAKER_REFERENCE_ID}:`)?'research-control':'regular',scanner:c.scanner,symbol:c.symbol,tf:c.tf,book:c.book,policyId:c.policy_id,sourceHash:c.source_hash,
+function emptyGroup(c:Cohort,key:string){return {key,referenceKind:[SOL_MAKER_REFERENCE_ID,SOL_MAKER_TICK_REFERENCE_ID].some(id=>c.scanner.startsWith(`plan:${id}:`))?'research-control':'regular',scanner:c.scanner,symbol:c.symbol,tf:c.tf,book:c.book,policyId:c.policy_id,sourceHash:c.source_hash,
  enrolled:0,closed:0,covered:0,unavailable:0,missingActual:0,triggered:0,baselineR:0,candidateR:0,stressR:0,
  baselineNet:c.book===0?0:null,candidateNet:c.book===0?0:null,stressNet:c.book===0?0:null,
  stopsBefore:0,stopsAfter:0,stressStops:0,losersBefore:0,losersAfter:0,stressLosers:0,winnersCut:0,winnersLost:0,winnerGivebackR:0};}

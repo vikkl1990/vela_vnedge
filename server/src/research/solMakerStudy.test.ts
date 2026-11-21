@@ -56,3 +56,17 @@ test('live source signal creates a resting maker reference; only fresh crossing 
  assert.equal(solMakerReference({...p,scannerId:SOL_MAKER_SCANNER}),false);
  const changed={...p.executionPlan!,revision:2};assert.equal(solMakerReference({...p,executionPlan:changed,scannerId:planScannerId(changed)}),false);
 });
+
+
+test('tick-depth study activation retains its control and every account, risk and evidence setting',t=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'sol-tick-study-'));t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
+ const file=path.join(dir,'config.json'),cfg=config();fs.writeFileSync(file,JSON.stringify(cfg));enableSolMakerStudy(file);
+ const before=fs.readFileSync(file,'utf8'),old=JSON.parse(before);
+ assert.equal(enableSolMakerStudy(file,true,true).changed,true);assert.equal(fs.readFileSync(file,'utf8'),before);
+ enableSolMakerStudy(file,false,true);const next=JSON.parse(fs.readFileSync(file,'utf8'));
+ assert.deepEqual(next.executionPlans[0],old.executionPlans[0]);assert.equal(next.executionPlans[1].makerFill,'tick-depth-v1');
+ const {executionPlans:_,...a}=old,{executionPlans:__,...b}=next;assert.deepEqual(a,b);
+ assert.equal(enableSolMakerStudy(file,false,true).changed,false);
+ const c=new ConfigStore(file).get(),control=planSnapshot(c,next.executionPlans[0],'same-source'),candidate=planSnapshot(c,next.executionPlans[1],'same-source');
+ assert.deepEqual(control.paper,candidate.paper);assert.deepEqual(control.reading,candidate.reading);assert.notEqual(control.signature,candidate.signature);
+});

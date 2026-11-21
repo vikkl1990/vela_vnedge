@@ -42,7 +42,7 @@ test('committed reclaim checkpoint resumes with identical uninterrupted order, s
  a.e.onTrade('SOLUSD',99,100,historicalTime,pa.at+1);assert.equal(a.e.openPositions().length,0,'late downtime print cannot fill a newly placed order');
  a.e.onBar('SOLUSD',{time:T+3*M,open:100,high:100.5,low:99,close:100,volume:100},pa.at+1,{historical:true});
  assert.equal(a.e.openPositions().length,0,'historical candle cannot fill');
- for(const f of [a,b]){const order=f.e.pendingEntries()[0];f.at(order.at+1000);f.e.onTrade('SOLUSD',100,1,order.at+1000,order.at+1000);}
+ for(const f of [a,b]){const order=f.e.pendingEntries()[0];f.at(order.dueAt+1);f.e.onTrade('SOLUSD',100,1,order.dueAt+1,order.dueAt+1);}
  assert.equal(a.e.openPositions()[0].entryPrice,b.e.openPositions()[0].entryPrice);assert.equal(a.e.openPositions()[0].qty,b.e.openPositions()[0].qty);
  assert.equal(a.e.openPositions()[0].policy!.strategyId,b.e.openPositions()[0].policy!.strategyId);
  assert.equal(reclaimStatus(a.db,a.cfg,a.e,T+5*M).trials[0].usedToday,1);
