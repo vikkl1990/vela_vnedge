@@ -113,3 +113,30 @@ test('a refresh requested as the previous pass settles is not lost',async t=>{
  await f.runner.sync();await late;
  assert.equal(passes,2);
 });
+
+test('the SOL maker reference gets bounded timely research turns without taking account reservations',async t=>{
+ const f=fixture(t),pool=f.runner.deps.pool;
+ f.cfg.executionPlans=[{id:'sol-maker-half-stop-reference',revision:1,enabled:true,scannerId:'trend-impulse-channels-zeiierman-maker',symbol:'SOLUSD',tf:'15m',variant:'current',referenceEquity:1000}];
+ pool.stats.queuedLive=1;await f.runner.sync();await flush();assert.equal(f.runner.dispatchStats.started,0);
+ pool.stats.queuedLive=0;pool.stats.queuedMirror=1;f.runner.dispatch.drain();await flush();assert.equal(f.runner.dispatchStats.started,0);
+ pool.stats.queuedMirror=0;f.runner.dispatch.drain();await flush();assert.equal(f.runner.dispatchStats.timelyTurns,1);
+ assert.equal(f.cfg.paper.maxSignalAgeSec,300);assert.equal(f.runner.deps.pool.reserved,2);
+});
+test('large close-time qualification yields to timers and still checks every cell before scheduling',async t=>{
+ const f=fixture(t);f.cfg.incubator.mirror!.enabled=true;f.runner.deps.mirror=()=>{};
+ for(let i=0;i<80;i++)f.store.move({scannerId:`extra-${i}`,symbol:'BTCUSD',tf:'15m'},'shadow','test');
+ let checked=0;f.store.copyRefusal=()=>{checked++;const until=performance.now()+.5;while(performance.now()<until){}return 'insufficient evidence';};
+ let turns=0,done=false;const pulse=()=>{turns++;if(!done)setImmediate(pulse);};setImmediate(pulse);
+ await f.runner.sync();
+ for(let i=0;i<100&&checked<81;i++)await flush();done=true;
+ assert.equal(checked,81);assert.ok(turns>1);assert.equal(f.runner.dispatchStats.offered,81);
+ assert.equal(f.runner.stats.mirrored,0);
+});
+
+test('stopping during cooperative qualification releases work without launching scans',async t=>{
+ const f=fixture(t);f.cfg.incubator.mirror!.enabled=true;f.runner.deps.mirror=()=>{};
+ for(let i=0;i<40;i++)f.store.move({scannerId:`extra-${i}`,symbol:'BTCUSD',tf:'15m'},'shadow','test');
+ f.store.copyRefusal=()=>{const until=performance.now()+1;while(performance.now()<until){}return 'insufficient evidence';};
+ setImmediate(()=>f.runner.stop());await f.runner.sync();await flush();await flush();
+ assert.equal(f.runner.scheduledBars.size,0);assert.equal(f.runner.dispatchStats.started,0);assert.deepEqual(f.seen,[]);
+});
