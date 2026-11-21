@@ -57,10 +57,10 @@ test('tape benchmarks exclude late/restart records, compare the correct side, an
  x.db.run('UPDATE tape_audit SET extra=NULL');assert.equal(fillComparison(x.db,p.id)!.fills[0].tape.deltaBps,100);
  x.db.run(sql,...values);assert.equal(fillComparison(x.db,p.id)!.fills[0].tape.status,'Ambiguous tape records');
 });
-test('maker report comparisons retain executable size and passive-depth limits without claiming queue proof',t=>{
+for(const model of ['tick-depth-v1','tick-depth-v2'])test(model+' report comparisons retain executable size and passive-depth limits without claiming queue proof',t=>{
  const x=fixture(t);x.enter();x.bar(T+2000);const p=x.e.openPositions()[0],o=x.db.get<any>('SELECT * FROM orders WHERE position_id=?',p.id)!;
  const depth=(at:number,qty:number)=>({receivedAt:at,exchangeAt:at,evaluatedAt:at,checkedQty:qty,bids:[{price:99.8,size:1000}],asks:[{price:100.2,size:1000}]});
- const evidence={ref:o.price,limit:{model:'tick-depth-v1',placedAt:T,expiresAt:T+10000,eventAt:o.at-10,observedAt:o.at,arrivalAt:T+1500,trigger:{kind:'trade',price:99.9,qty:20},arrivalDepth:depth(T+1500,1),fillDepth:depth(o.at,7)}};
+ const evidence={ref:o.price,limit:{model,placedAt:T,expiresAt:T+10000,eventAt:o.at-10,observedAt:o.at,arrivalAt:T+1500,trigger:{kind:'trade',price:99.9,qty:20},arrivalDepth:depth(T+1500,1),fillDepth:depth(o.at,7)}};
  x.db.run('INSERT INTO paper_maker_reports VALUES(?,?,?,?,?,?,?,?)',o.id,p.id,0,o.at,7,o.qty,'print-key',JSON.stringify(evidence));
  const f=fillComparison(x.db,p.id)!.fills[0];
  assert.match(f.maker!,/7 executable contracts \/ 20 printed at 99.9/);assert.match(f.maker!,/queue position unverified/);

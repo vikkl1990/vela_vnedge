@@ -2,7 +2,7 @@ import {twoBarFailure} from './failedTradeExit.ts';
 import {nativeGeometryError} from '../scanners/plotLifecycle.ts';
 import {BASKET_SCANNER,BASKET_MARKER,basketRefusal,basketLevels,basketSizing,basketStopRisk,sizeBasketEntry} from './basket.ts';
 import {PartialExits} from './partialExits.ts';
-import {PartialMakerLedger,makerSlice,makerPrintKey,makerDepthEvidence,type MakerProgress} from './partialMaker.ts';
+import {PartialMakerLedger,makerSlice,makerPrintKey,makerDepthEvidence,tickDepthMaker,type MakerProgress} from './partialMaker.ts';
 import {reclaimRestoreRefusal,recoverReclaim,nextReclaimMinute,type ReclaimCheckpoint} from './reclaimRecovery.ts';
 import {isExecutableTrade} from '../execution/tradeFreshness.ts';
 import {quoteMakerCell,passiveMakerPrice,tradedVolume,makerTapeCell,freshMakerPrint} from './makerPricing.ts';
@@ -312,7 +312,7 @@ export class PaperEngine extends EventEmitter {
       let pe:PendingEntry;
       try{
         pe=JSON.parse(row.state) as PendingEntry;const p=this.open.get(row.position_id);
-        if(!p||!pe.makerPartial||pe.id!==row.position_id||p.qty!==pe.makerPartial.filledQty||!(pe.executionPlan?.makerFill==='tick-depth-v1'||this.makerTape(pe)||this.configFor(pe).fillSource==='tape')||!pe.limit)throw Error('inconsistent partial maker recovery');
+        if(!p||!pe.makerPartial||pe.id!==row.position_id||p.qty!==pe.makerPartial.filledQty||!(tickDepthMaker(pe.executionPlan?.makerFill)||this.makerTape(pe)||this.configFor(pe).fillSource==='tape')||!pe.limit)throw Error('inconsistent partial maker recovery');
         if(p.qtyOpen!==p.qty||this.exitExecution.active(p.id)||pe.limit.expiresAt<=this.now()||!this.planEnabled(pe.executionPlan)){
           this.partialMaker.save(pe.id,pe,'cancelled',this.now(),'recovery: expired, disabled or exit already started');continue;
         }
@@ -1071,18 +1071,23 @@ export class PaperEngine extends EventEmitter {
     return held;
   }
 
-  private partialMakerModel(pe:PendingEntry){return pe.executionPlan?.makerFill==='tick-depth-v1'||(this.causalExits&&this.cfgRef().execution.mode==='paper'&&!this.executionIntent&&(this.makerTape(pe)||this.configFor(pe).fillSource==='tape'));}
-  makerFillBook?: (symbol:string,at:number)=>ExitBook|null;
+  private partialMakerModel(pe:PendingEntry){return tickDepthMaker(pe.executionPlan?.makerFill)||(this.causalExits&&this.cfgRef().execution.mode==='paper'&&!this.executionIntent&&(this.makerTape(pe)||this.configFor(pe).fillSource==='tape'));}
+  makerFillBook?: (symbol:string,at:number,model?:ExecutionPlanSnapshot['makerFill'])=>ExitBook|null;
+  needsMakerBook(symbol:string,at:number,model:ExecutionPlanSnapshot['makerFill']):boolean {
+    for(const pe of this.pending.values())if(pe.symbol===symbol&&pe.executionPlan?.makerFill===model&&pe.limit&&!pe.makerArrival&&at>=pe.dueAt&&at<pe.limit.expiresAt)return true;
+    return false;
+  }
   private makerTape(pe:PendingEntry,cfg=this.configFor(pe)){
     if(this.cfgRef().execution.mode!=='paper'||this.executionIntent)return false;
-    if(pe.executionPlan?.makerFill)return this.book===2&&pe.executionPlan.makerFill==='tick-depth-v1';
+    if(pe.executionPlan?.makerFill)return this.book===2&&tickDepthMaker(pe.executionPlan.makerFill);
     return !!cfg.makerTapeCells?.length&&makerTapeCell(cfg,pe);
   }
   /** A post-only arrival is acknowledged only from a fresh book after configured latency. */
-  observeMakerBook(symbol:string,book:ExitBook|null,at=this.now()){
+  observeMakerBook(symbol:string,book:ExitBook|null,at=this.now(),model?:ExecutionPlanSnapshot['makerFill']){
     // Rollback restores the map; iterate a snapshot so a failed write cannot loop forever.
     for(const pe of [...this.pending.values()]){
-      if(pe.symbol!==symbol||pe.executionPlan?.makerFill!=='tick-depth-v1'||!this.makerTape(pe)||pe.makerArrival||!pe.limit||at<pe.dueAt||at>=pe.limit.expiresAt||!book||book.receivedAt<pe.dueAt)continue;
+      if(model!==undefined&&pe.executionPlan?.makerFill!==model)continue;
+      if(pe.symbol!==symbol||!tickDepthMaker(pe.executionPlan?.makerFill)||!this.makerTape(pe)||pe.makerArrival||!pe.limit||at<pe.dueAt||at>=pe.limit.expiresAt||!book||book.receivedAt<pe.dueAt)continue;
       const depth=makerDepthEvidence(book,at,1,pe.market.contractValue);if(!depth)continue;
       const passive=pe.side==='long'?pe.limit.price<Math.min(...depth.asks.map(l=>l.price)):pe.limit.price>Math.max(...depth.bids.map(l=>l.price));
       if(!passive){this.cancelPending(pe.id,'post-only maker would cross at observed arrival');continue;}
@@ -1099,8 +1104,8 @@ export class PaperEngine extends EventEmitter {
 
   /** Decision 185: fill a resting limit at its own price as a maker; levels from the fill, every gate asked again. */
   private fillLimit(pe: PendingEntry, at: number, eventAt:number, observation:LimitFillObservation['trigger'],printId?:string|number): Position | null {
-    if(pe.executionPlan?.makerFill==='tick-depth-v1'&&(!this.makerTape(pe)||!this.causalExits)){this.cancelPending(pe.id,'partial maker model unavailable outside paper tape execution');return null;}
-    const partial=this.partialMakerModel(pe)&&observation.kind==='trade',strict=pe.executionPlan?.makerFill==='tick-depth-v1',held=this.open.get(pe.id);
+    if(tickDepthMaker(pe.executionPlan?.makerFill)&&(!this.makerTape(pe)||!this.causalExits)){this.cancelPending(pe.id,'partial maker model unavailable outside paper tape execution');return null;}
+    const partial=this.partialMakerModel(pe)&&observation.kind==='trade',strict=tickDepthMaker(pe.executionPlan?.makerFill),held=this.open.get(pe.id);
     const key=observation.kind==='trade'?makerPrintKey(eventAt,observation.price,observation.qty,printId):'';
     const available=partial&&observation.kind==='trade'?this.partialMaker.available(pe.id,pe.symbol,key,observation.qty):0;
     if(partial&&(!available||observation.kind!=='trade'||(strict&&(!pe.makerArrival||eventAt<pe.makerArrival.at))))return null;
@@ -1160,7 +1165,7 @@ export class PaperEngine extends EventEmitter {
     const evidence:EntryFillEvidence={};
     let makerDepth:ReturnType<typeof makerDepthEvidence>=null;
     if(strict){
-      const depth=makerDepthEvidence(this.makerFillBook?.(pe.symbol,at)??null,at,size.qty,pe.market.contractValue);
+      const depth=makerDepthEvidence(this.makerFillBook?.(pe.symbol,at,pe.executionPlan?.makerFill)??null,at,size.qty,pe.market.contractValue);
       if(!depth){this.pending.set(pe.id,pe);return null;}
       makerDepth=depth;
       evidence.admissionDepth=depth;
@@ -1173,7 +1178,7 @@ export class PaperEngine extends EventEmitter {
       const x = this.risk.exposureCheck({ symbol: pe.symbol, side: pe.side, tf: pe.tf, notional: size.qty * pe.market.contractValue * L.price });
       if (x) return cancel(`risk ${x}`);
     }
-    const context:FillContext={...evidence,ref:L.price,source:strict?'limit-tick-depth-model':observation.kind==='trade'?'limit-tape-model':'limit-candle-model',limit:{placedAt:pe.at,expiresAt:L.expiresAt,eventAt,observedAt:at,trigger:observation,...(strict?{model:'tick-depth-v1',arrivalAt:pe.makerArrival!.at,arrivalDepth:pe.makerArrival!.depth,fillDepth:makerDepth!}:{})}};
+    const context:FillContext={...evidence,ref:L.price,source:strict?'limit-tick-depth-model':observation.kind==='trade'?'limit-tape-model':'limit-candle-model',limit:{placedAt:pe.at,expiresAt:L.expiresAt,eventAt,observedAt:at,trigger:observation,...(strict?{model:pe.executionPlan!.makerFill!,arrivalAt:pe.makerArrival!.at,arrivalDepth:pe.makerArrival!.depth,fillDepth:makerDepth!}:{})}};
     let slice:{qty:number;marketQty:number}|null=null;
     if(partial){
       if(held&&(held.qtyOpen!==held.qty||this.exitExecution.active(held.id)))return cancel('exit already started');
@@ -1356,7 +1361,7 @@ export class PaperEngine extends EventEmitter {
   /** Expire pending entries that neither the tape nor a candle could fill within a minute past their due time. */
   housekeeping(now = this.now()): void {
     for (const pe of [...this.pending.values()]) {
-      if(pe.executionPlan?.makerFill==='tick-depth-v1'&&(!this.makerTape(pe)||!this.causalExits)){this.cancelPending(pe.id,'partial maker model unavailable outside paper tape execution');continue;}
+      if(tickDepthMaker(pe.executionPlan?.makerFill)&&(!this.makerTape(pe)||!this.causalExits)){this.cancelPending(pe.id,'partial maker model unavailable outside paper tape execution');continue;}
       if (pe.features?.reclaim_trial && !this.reclaimAvailable(pe,pe.reclaim?.ruleKey??pe.reclaimRuleKey)) {this.cancelPending(pe.id,'reclaim trial disabled or changed');continue;}
       if (pe.reclaim) {
         if (now>=pe.reclaim.state.at+pe.reclaim.state.options.setupMinutes*60_000+30_000) this.cancelPending(pe.id,'reclaim setup expired');
@@ -1380,13 +1385,20 @@ export class PaperEngine extends EventEmitter {
   onTrade(symbol: string, price: number, qty: number, time: number, observedAt = this.now(), tradeId?:string): void {
     // Reject before marks, tape liveness, pending orders or stops can change.
     // A delayed packet is history, even if it is the first print after a restart.
-    if (!isExecutableTrade({price,qty,timeMs:time},observedAt) || time < (this.lastTradeTime.get(symbol) ?? -Infinity)) return;
-    this.lastTradeTime.set(symbol, time);
-    this.lastTradeAt.set(symbol, observedAt);
-    this.marks.set(symbol, price);
+    if (!isExecutableTrade({price,qty,timeMs:time},observedAt)) return;
+    const reordered=time < (this.lastTradeTime.get(symbol) ?? -Infinity);
+    if(!reordered){
+      this.lastTradeTime.set(symbol, time);
+      this.lastTradeAt.set(symbol, observedAt);
+      this.marks.set(symbol, price);
+    }
     const filled = new Set<number>();
     for (const pe of [...this.pending.values()]) {
       const cfg=this.configFor(pe),makerTape=!!pe.limit&&this.makerTape(pe,cfg);
+      // V2 matches fresh public executions in receipt order. A slightly reordered
+      // print can fill a resting order but cannot rewind marks, trails or tape age.
+      // V1 and every account policy retain their original monotonic semantics.
+      if(reordered&&pe.executionPlan?.makerFill!=='tick-depth-v2')continue;
       if ((cfg.fillSource !== 'tape'&&!makerTape) || pe.reclaim || pe.symbol !== symbol || time < pe.dueAt) continue;
       if(pe.depthObservedFrom!==undefined&&time<=pe.depthObservedFrom)continue;
       if(pe.limit&&pe.makerObservedFrom!==undefined&&time<=pe.makerObservedFrom)continue;
@@ -1395,7 +1407,7 @@ export class PaperEngine extends EventEmitter {
       if (pe.limit && !(time >= pe.at && this.limitTouched(pe, price, price))) continue;
       const held=pe.makerPartial?this.open.get(pe.id):undefined;
       if(held){
-        if(this.causal(held))this.causalPrice(held,price,observedAt,qty,time,tradeId);
+        if(this.causal(held)&&!reordered)this.causalPrice(held,price,observedAt,qty,time,tradeId);
         const stop=held.sl!==null&&(held.side==='long'?price<=held.sl:price>=held.sl);
         const target=held.tp.some((tp,i)=>!held.tpHit[i]&&held.legs[i]>0&&(held.side==='long'?price>=tp:price<=tp));
         // If a causal exit transaction failed, leave its restored remainder intact
@@ -1429,6 +1441,7 @@ export class PaperEngine extends EventEmitter {
       else try { const pos=this.commitDecision(fill); if(pos)filled.add(pos.id); }
       catch(e) { log.error(`tape fill for #${pe.id} ${symbol} rolled back: ${String(e)}`); }
     }
+    if(reordered)return;
     const mark = this.markPrices.get(symbol)?.price;
     for (const pos of [...this.open.values()]) {
       if(pos.symbol===symbol&&this.causal(pos)&&!filled.has(pos.id)&&time>=pos.entryAt){this.causalPrice(pos,price,observedAt,qty,time,tradeId);continue;}

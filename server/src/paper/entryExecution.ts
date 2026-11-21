@@ -10,7 +10,7 @@ export interface EntryDepthSnapshot {
  bids:Array<{price:number;size:number}>; asks:Array<{price:number;size:number}>;
 }
 export interface LimitFillObservation {
- model?:'tick-depth-v1';
+ model?:'tick-depth-v1'|'tick-depth-v2';
  arrivalAt?:number;arrivalDepth?:EntryAdmissionDepth;fillDepth?:EntryAdmissionDepth;
  placedAt:number; expiresAt:number; eventAt:number; observedAt:number;
  trigger: {kind:'trade';price:number;qty:number} | {kind:'candle';time:number;high:number;low:number;close:number;volume?:number};

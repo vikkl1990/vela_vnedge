@@ -117,14 +117,18 @@ export function wireRealtime(app: App): void {
     if(symbol==='SOLUSD')replay.record(symbol,kind,payload,at,'maker-execution-depth');
   });
   app.tradeMonitor=new MonitorRuntime(app,app.advisoryFeedFactory);
-  app.tradeMonitor.depth.recorder.setCapture((symbol,kind,payload,at)=>replay.record(symbol,kind,payload,at,'advisory-depth'));
-  for(const b of books)b.makerFillBook=(symbol,at)=>depth.bookAt(symbol,at,1000);
+  app.tradeMonitor.depth.recorder.setCapture((symbol,kind,payload,at)=>{
+    replay.record(symbol,kind,payload,at,'advisory-depth');
+    if((kind==='snapshot'||kind==='update')&&app.shadow.needsMakerBook(symbol,at,'tick-depth-v2'))app.shadow.observeMakerBook(symbol,app.tradeMonitor.depth.recorder.bookAt(symbol,at,1000),at,'tick-depth-v2');
+  });
+  for(const b of books)b.makerFillBook=(symbol,at,model)=>model==='tick-depth-v2'&&b===app.shadow
+    ?app.tradeMonitor.depth.recorder.bookAt(symbol,at,1000):depth.bookAt(symbol,at,1000);
   app.feed.on('depth', (m:unknown) => {
     const at=Date.now();depth.onDepth(m,at);
     const packet=m as {sy?:string;symbol?:string}|null;
     const symbol=String(packet?.sy??packet?.symbol??'');
     // Only opted-in shadow makers consume these observations; account rules are untouched.
-    if(symbol==='SOLUSD')app.shadow.observeMakerBook(symbol,depth.bookAt(symbol,at,1000),at);
+    if(symbol==='SOLUSD')app.shadow.observeMakerBook(symbol,depth.bookAt(symbol,at,1000),at,'tick-depth-v1');
   });
   let auditing=false, staging=false;
   const auditTimer=setInterval(() => {

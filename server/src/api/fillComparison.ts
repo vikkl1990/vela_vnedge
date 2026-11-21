@@ -3,6 +3,7 @@ import type {FillComparison} from '../../../shared/chartVerification.ts';
 import {depthBookKey} from '../paper/depthLiquidity.ts';
 import {depthFill} from '../paper/entryExecution.ts';
 import {priceExit,type ExitBook} from '../paper/exitExecution.ts';
+import {tickDepthMaker} from '../paper/partialMaker.ts';
 const parse=(s:string|null)=>{try{return s?JSON.parse(s):null;}catch{return null;}};
 const delta=(actual:number,reference:number,side:string)=>((reference-actual)/actual*10000*(side==='buy'?1:-1))||0;
 const levels=(v:unknown):v is Array<{price:number;size:number}>=>Array.isArray(v)&&v.every(l=>l&&Number.isFinite(Number(l.price))&&Number.isFinite(Number(l.size))&&Number(l.price)>0&&Number(l.size)>=0);
@@ -46,9 +47,9 @@ export function fillComparison(db:Db,id:number):FillComparison|null{
   const mr=makerReports.find(r=>r.order_id===o.id&&r.qty===o.qty&&r.at===o.at),me=parse(mr?.evidence??null);
   const observation=me?.limit??(entry?.order_id===o.id?parse(entry.limit_observation):null);
   if(observation){
-   maker=observation.trigger?.kind==='candle'?'Candle-model fill; tick timing and queue unverified':observation.model==='tick-depth-v1'?'Tick/depth quantity model; exchange queue position unverified':'Trade-through model; queue position unverified';
+   maker=observation.trigger?.kind==='candle'?'Candle-model fill; tick timing and queue unverified':tickDepthMaker(observation.model)?'Tick/depth quantity model; exchange queue position unverified':'Trade-through model; queue position unverified';
    if(mr&&observation.trigger?.kind==='trade')maker+=` · ${mr.market_qty} executable contracts / ${observation.trigger.qty} printed at ${observation.trigger.price}`;
-   if(observation.model==='tick-depth-v1'){
+   if(tickDepthMaker(observation.model)){
     depth.receivedAt=observation.fillDepth?.receivedAt??null;depth.readyAt=observation.arrivalAt??null;
     depth.status=makerCheck(db,pos,o,mr,me,observation);
    }

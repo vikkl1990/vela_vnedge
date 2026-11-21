@@ -43,7 +43,7 @@ export interface PlanComparison { group: string; role: 'control' | 'candidate'; 
 export type ReadingOverride = {version:number} & Pick<Partial<ScannerConfig>,'reader'|'sources'|'labels'|'sides'|'labelStyles'|'invert'|'edge'>;
 export interface ExecutionPlan {
   /** Shadow-only quantity-bounded maker replay; never infer entries from candles. */
-  makerFill?: 'tick-depth-v1';
+  makerFill?: 'tick-depth-v1' | 'tick-depth-v2';
   profitFloor?: {afterR:number;keepR:number};
   failedTradeExit?: typeof TWO_BAR_EXIT;
   basket?: 'rsi-volume-ladder-v1';
@@ -169,7 +169,11 @@ export function validateExecutionPlans(plans: ExecutionPlan[] | undefined, tfs: 
   for(const p of plans){
     if(!p || !/^[a-z0-9][a-z0-9-]{0,79}$/.test(p.id??'') || ids.has(p.id))errors.push('executionPlans requires unique safe ids');
     if(!p)continue;ids.add(p.id);
-    if(p.makerFill!==undefined&&(p.makerFill!=='tick-depth-v1'||!(p.scannerId===SOL_MAKER_FILTER_SOURCE||solFilterPlan(p))||p.symbol!=='SOLUSD'||p.tf!=='15m'||p.variant!=='current'||p.basket||p.readingOverride||p.takeProfit||p.trailing||p.exitPolicy||p.comparison||p.failedTradeExit||p.profitFloor||p.maxHoldMinutes!==undefined))errors.push(`executionPlans.${p.id}: tick-depth maker requires the isolated SOL maker reference and unchanged exits`);
+    // V1 is a frozen SOL study. V2 can compare any configured resting maker
+    // setup, using the research depth feed; it never enables account copying.
+    const makerSource=p.makerFill==='tick-depth-v1'?(p.scannerId===SOL_MAKER_FILTER_SOURCE||solFilterPlan(p))&&p.symbol==='SOLUSD'&&p.tf==='15m'
+      :p.makerFill==='tick-depth-v2'&&!!cfg?.scanners[p.scannerId]&&!!entryPolicy(cfg,p.tf,'account',{scannerId:p.scannerId});
+    if(p.makerFill!==undefined&&(!makerSource||p.variant!=='current'||p.basket||p.readingOverride||p.takeProfit||p.trailing||p.exitPolicy||p.comparison||p.failedTradeExit||p.profitFloor||p.maxHoldMinutes!==undefined))errors.push(`executionPlans.${p.id}: tick-depth maker requires a configured resting maker setup and unchanged exits`);
     if(p.scannerId===SOL_MAKER_FILTER_OFF&&!solFilterPlan(p))errors.push(`executionPlans.${p.id}: filter-off scanner requires its versioned SOL study`);
     if(typeof p.id==='string'&&p.id.startsWith(SOL_FILTER_PLAN_PREFIX)&&(!solFilterPlan(p)||p.variant!=='current'||p.referenceEquity!==1000||p.basket||p.readingOverride||p.takeProfit||p.trailing||p.exitPolicy||p.comparison||p.failedTradeExit||p.profitFloor||p.maxHoldMinutes!==undefined||p.maxStopLossPct!==undefined||(p.id.endsWith('-tick')?p.makerFill!=='tick-depth-v1':p.makerFill!==undefined)))errors.push(`executionPlans.${p.id}: filter study must retain current entry, exits and risk`);
     // Validate effective basket prerequisites at save time, using the same policy
