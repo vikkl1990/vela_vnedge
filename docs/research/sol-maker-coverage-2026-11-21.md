@@ -22,3 +22,11 @@ Implementation:
 - Add one current-exit SOL maker reference, sharing the existing source event. Fresh crossing prints must fill its resting limit. Half-stop/base/stress observations are independent hypothetical records, never orders or promotion evidence.
 
 Validation and deployment receipts are retained under `work/sol-replay-coverage-20261121-data` in the task workspace. The study continues prospectively; paper adoption still requires positive net improvement, fewer SLs, acceptable winner damage and the existing evidence rules.
+
+## Live verification and follow-up
+
+Main `9fcbc4d` was deployed at 03:38 UTC. The reference received a fresh entry signal at 03:45:54 and a maker fill at 03:46:00 (position #24176). It closed by the current trail at 03:49:48 for **+$3.94249 net**, with $0.60381 in fees. The continuously observed half-stop cohort finished `unchanged`: no trigger and no winner cut. This research-policy result is separate from the earlier account-policy loss; it is not pooled promotion evidence.
+
+The 04:00 source scan expired in the background queue while the account scanner completed in 2.9 seconds. The 04:15 source scan subsequently completed at 04:16:14 with zero entries. The follow-up gives this exact reference an existing bounded timely-research turn; it does not occupy reserved account workers, run ahead of queued account/mirror work, or extend signal validity.
+
+Post-deploy capture included a 27.7-second observer interval at the 04:00 close. Bar-close copy qualification was another synchronous loop, separate from the full evidence review fixed above. It now yields between cells, preserves qualification rules and rechecks admission at entry. Stopping during qualification releases the scheduled work. This addresses a remaining stall source; historical gaps remain excluded, and complete runtime coverage is not assumed.

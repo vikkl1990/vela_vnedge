@@ -1,3 +1,4 @@
+import {SOL_MAKER_REFERENCE_ID,SOL_MAKER_SCANNER} from '../research/solMakerStudy.ts';
 import {sourceHash} from '../paper/fingerprint.ts';
 import {sameExitSource} from '../scanners/boundExits.ts';
 import {policyReading} from '../paper/tradePolicy.ts';
@@ -62,6 +63,7 @@ const RUN_ALLOWANCE_MS = 5_000;
 
 export class ShadowRunner {
   private pairs: PairRow[] = [];
+  private stopped=false;
   private timelyCells:ReadonlySet<string>=new Set();
   private forwardCells:ReadonlySet<string>=new Set();
   private readingCells:ReadonlySet<string>=new Set();
@@ -197,6 +199,7 @@ export class ShadowRunner {
   symbols(): string[] { return [...new Set([...this.pairs.map(r => r.symbol), ...this.deps.paper.openPositions().map(p => p.symbol)])]; }
 
   start() {
+    this.stopped=false;
     // each pair runs on its own timeframe: the daily screen is 15m, but a survey can admit 1h or 4h pairs
     this.deps.candles.on('closed', (e: { symbol: string; tf: string; bar: Bar; historical?: boolean }) => {
       if (!this.pairs.some(r => r.tf === e.tf))return;
@@ -209,7 +212,7 @@ export class ShadowRunner {
     this.timer.unref();
   }
 
-  stop() { this.dispatch.stop();if(this.dispatchTimer)clearInterval(this.dispatchTimer);this.dispatchTimer=null; if (this.timer) clearInterval(this.timer); this.timer = null; this.saveFunnel(); }
+  stop() { this.stopped=true;this.dispatch.stop();if(this.dispatchTimer)clearInterval(this.dispatchTimer);this.dispatchTimer=null; if (this.timer) clearInterval(this.timer); this.timer = null; this.saveFunnel(); }
 
   private planSources(): PairRow[] {
     const cfg=this.deps.cfgRef(), cells=new Map<string,{scannerId:string;symbol:string;tf:string}>();
@@ -239,7 +242,7 @@ export class ShadowRunner {
     this.timelyCells=this.deps.timelyResearch?.()??new Set();
     this.forwardCells=this.deps.store.forwardCollectionKeys?.()??new Set();
     this.readingCells=new Set([
-      ...(cfg.executionPlans??[]).filter(p=>p.enabled&&p.readingOverride).map(p=>`${p.scannerId}:${p.symbol}:${p.tf}`),
+      ...(cfg.executionPlans??[]).filter(p=>p.enabled&&(p.readingOverride||(p.id===SOL_MAKER_REFERENCE_ID&&p.revision===1&&p.scannerId===SOL_MAKER_SCANNER&&p.symbol==='SOLUSD'&&p.tf==='15m'))).map(p=>`${p.scannerId}:${p.symbol}:${p.tf}`),
       ...this.deps.paper.openPositions().filter(p=>p.executionPlan?.readingOverride).map(p=>`${p.executionPlan!.sourceScannerId}:${p.symbol}:${p.tf}`),
     ]);
     if (!cfg.incubator?.enabled) { this.pairs = [];this.dispatch.prune(new Set()); return; }
@@ -283,6 +286,13 @@ export class ShadowRunner {
       this.scheduledBars.set(`${r.scannerId}:${symbol}:${tf}`,barAt);
       this.deps.store.noteShadowScan?.(r,barAt-TF_SECONDS[tf]*1000,'scheduled');
     }
+    void this.launchClose(due,barAt,seenAt,symbol,tf).catch(e=>{
+      for(const r of due)this.releaseScheduled(r,barAt);
+      log.warn(`shadow close dispatch failed: ${String(e)}`);
+    });
+  }
+
+  private async launchClose(due:PairRow[],barAt:number,seenAt:number,symbol:string,tf:string){
     // decision 165: a pair the account may copy is scanned at once, in the pool's `mirror` tier (after the account's own
     // scans, before background work); the 20 s wait and the background queue had put the account's mirrored entries a
     // median 54 s after the bar's close
@@ -301,12 +311,18 @@ export class ShadowRunner {
     // Rank across symbols in the shared mirror queue, not just within this
     // symbol's callback. Research positions still precede ordinary research.
     const mirrorRanks = new Map<PairRow, number>();
-    const urgent=due.filter(r=>{
-      const held=holds(r), canCopy=mirror&&copyable(r);
-      if(!held&&!canCopy)return false;
-      mirrorRanks.set(r,this.deps.accountHolds?.(r.scannerId,r.symbol,r.tf) ? 3 : canCopy ? 2 : 1);
-      return true;
-    }).sort((a,b)=>rank(a)-rank(b));
+    const urgent:PairRow[]=[];
+    let deadline=performance.now()+10;
+    for(const r of due){
+      if(this.stopped){for(const cell of due)this.releaseScheduled(cell,barAt);return;}
+      const held=holds(r),canCopy=mirror&&copyable(r);
+      if(held||canCopy){mirrorRanks.set(r,this.deps.accountHolds?.(r.scannerId,r.symbol,r.tf)?3:canCopy?2:1);urgent.push(r);}
+      // Qualification still happens on the same rules, then again at entry.
+      // Only ranking is cooperative: never block quote/exit timers for the universe.
+      if(r!==due.at(-1)&&performance.now()>=deadline){await new Promise<void>(resolve=>setImmediate(resolve));deadline=performance.now()+10;}
+    }
+    if(this.stopped){for(const cell of due)this.releaseScheduled(cell,barAt);return;}
+    urgent.sort((a,b)=>rank(a)-rank(b));
     const later = due.filter(r => !urgent.includes(r));
     const launch = (rows: PairRow[], live: boolean) => {
       if (!rows.length) return;
