@@ -106,22 +106,21 @@ export class OpsService {
 
   /**
    * Graceful shutdown: stop timers, wait (up to `ops.shutdownTimeoutMs`) for busy workers and
-   * the queue to drain, then stop the pool and flush the log file. Never throws.
+   * the queue to drain, then stop the pool and flush the log file. Fatal shutdown skips draining.
    */
-  async shutdown(stopApp: () => Promise<void>): Promise<{ drained: boolean; waitedMs: number }> {
+  async shutdown(stopApp: () => Promise<void>, fatal: () => boolean = () => false): Promise<{ drained: boolean; waitedMs: number }> {
     this.shuttingDown = true;
     const t0 = Date.now();
     const timeout = this.d.cfg().ops.shutdownTimeoutMs;
     this.monitor.stop(); this.backups.stop(); this.d.candles.stopMaintenance(); this.metrics.stop();
     let drained = false;
-    while (Date.now() - t0 < timeout) {
+    while (!fatal() && Date.now() - t0 < timeout) {
       const s = this.d.pool.stats;
       if (s.busy === 0 && s.queued === 0) { drained = true; break; }
       await new Promise(r => setTimeout(r, 200));
     }
     if (!drained) log.warn(`shutdown: ${this.d.pool.stats.busy} busy / ${this.d.pool.stats.queued} queued script runs abandoned after ${timeout} ms`);
-    try { await stopApp(); } catch (e: any) { log.error(`shutdown: app stop failed: ${e?.message ?? e}`); }
-    logger.flush();
+    try { await stopApp(); } finally { logger.flush(); }
     return { drained, waitedMs: Date.now() - t0 };
   }
 

@@ -1,3 +1,4 @@
+import { RuntimeState } from './runtime.ts';
 import {candleReplayBlock} from './paper/basket.ts';
 import {scannerAttentionReadiness} from './scanners/attention.ts';
 import {classMap,classOf} from './markets/classes.ts';
@@ -136,6 +137,7 @@ export class App {
   readonly screenQueue: ScreenQueue;
   readonly pairAgents: PairAgents;
   readonly context: ContextCollector;
+  readonly runtime = new RuntimeState();
   lastError: string | null = null;
   private marketCache: { at: number; list: any[] } | null = null;
   /** Symbols actually scanned after resolving the universe (list / top N / all). */
@@ -337,8 +339,6 @@ export class App {
     this.paper.on('trade',()=>this.evidenceReview.noteEvidence());
     this.shadow.on('trade',()=>this.evidenceReview.noteEvidence());
     this.validation=createValidation(this);
-    process.on('unhandledRejection', (e: any) => { this.lastError = String(e?.message ?? e); log.error('unhandled rejection', this.lastError); });
-    process.on('uncaughtException', (e: any) => { this.lastError = String(e?.message ?? e); log.error('uncaught exception', e?.stack ?? e); });
   }
 
   /** Resolve the configured universe to concrete Delta symbols. */
@@ -404,7 +404,8 @@ export class App {
     this.screenQueue.start();
     this.pairAgents.start();
     // don't block the API on warm-up
-    this.scanners.start().catch(e => { this.lastError = String(e?.message ?? e); log.error('scanner start failed', e); });
+    // A failed scanner startup is fatal; the entry point's supervisor owns process failures.
+    void this.scanners.start();
     // the incubator's live rows follow the config from the first second (decision 83): a fleet edited on disk and restarted used to
     // keep its new cells in the shadow stage until the next hunt
     { const synced = incubatorSyncLive(this.incubatorStore, this.config.get()); if (synced.added || synced.removed) log.info(`incubator live rows synced to the config: +${synced.added} −${synced.removed}`); }
@@ -462,9 +463,12 @@ export class App {
 
   health() {
     const cfg = this.config.get();
+    const configFile = this.config.status();
     const all = this.registry.all();
     return {
-      status: 'ok', uptimeSec: Math.floor((Date.now() - this.startedAt) / 1000), mode: cfg.execution.mode, now: Date.now(),
+      status: this.runtime.state !== 'running' ? this.runtime.state : configFile.valid ? 'ok' : 'degraded',
+      runtime: { state: this.runtime.state, reason: this.runtime.reason }, configFile,
+      uptimeSec: Math.floor((Date.now() - this.startedAt) / 1000), mode: cfg.execution.mode, now: Date.now(),
       exchangeStatus: this.exchangeStatus.snapshot(),
       feed: { endpoint: this.feed.endpoint, connected: this.feed.connected, lastTickAt: this.feed.lastTickAt, subscriptions: this.feed.subscriptions },
       candles: this.candles.tracked(),

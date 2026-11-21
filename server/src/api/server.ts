@@ -34,6 +34,7 @@ import { ContractRegistry } from '../scanners/contracts.ts';
 import { deltaConnectionRoutes } from '../connections/routes.ts';
 import {telegramRoutes} from '../telegram/routes.ts';
 import { Journal, journalFilter } from '../analytics/journal.ts';
+import { configView, configPatch } from './configView.ts';
 
 const log = logger.scoped('api');
 
@@ -92,6 +93,8 @@ export class ApiServer {
 
   private async dispatch(req: http.IncomingMessage, res: http.ServerResponse) {
     const url = new URL(req.url ?? '/', 'http://localhost');
+    // The Prometheus alias goes through exactly the same session/role checks as the API.
+    if (/^\/metrics\/?$/.test(url.pathname)) url.pathname = '/api/metrics';
     // Session cookies travel on this API, so the origin cannot be a wildcard. Only a local
     // development origin is reflected, and only then are credentials allowed.
     const origin = String(req.headers.origin ?? '');
@@ -219,18 +222,29 @@ export class ApiServer {
 
   private defineRoutes() {
     const a = this.app;
-    this.add('GET', '/api/health', () => a.health());
+    this.add('GET', '/api/health', (req, res) => {
+      const health = a.health();
+      json(res, health.status === 'ok' ? 200 : 503, health, req);
+    });
+    for (const method of ['GET', 'HEAD']) this.add(method, '/api/metrics', (req, res, _p, url) => {
+      const asJson = url.searchParams.get('format') === 'json';
+      let text: string;
+      try { text = asJson ? JSON.stringify(a.ops.metrics.snapshot()) : a.ops.metrics.render(); }
+      catch { throw new HttpError(500, 'Metrics unavailable'); }
+      res.writeHead(200, { 'Content-Type': asJson ? 'application/json; charset=utf-8' : 'text/plain; version=0.0.4; charset=utf-8', 'Cache-Control': 'no-store', 'Content-Length': Buffer.byteLength(text) });
+      res.end(req.method === 'HEAD' ? undefined : text);
+    });
     this.add('GET', '/api/trade-monitor', () => a.tradeMonitor.view());
     this.add('GET', '/api/trade-monitor/positions/:id', (_r,_s,p) => {const id=Number(p.id);if(!Number.isSafeInteger(id)||id<1)throw new HttpError(400,'Invalid position');return a.tradeMonitor.monitor.detail(id);});
-    this.add('GET', '/api/config', () => ({ ...a.config.get(), resolvedSymbols: a.resolvedSymbols }));
+    this.add('GET', '/api/config', () => ({ ...configView(a.config.get()), resolvedSymbols: a.resolvedSymbols }));
     // decision 119: the measured defaults, so the Settings page can show every value as a diff against them
-    this.add('GET', '/api/config/defaults', () => DEFAULT_CONFIG);
+    this.add('GET', '/api/config/defaults', () => configView(DEFAULT_CONFIG));
     this.add('PUT', '/api/config', async (_r, _s, _p, _u, body) => {
       let next;
       try { a.assertExecutionUnchanged(body?.execution); } catch (e: any) { throw new HttpError(409, String(e?.message ?? e)); }
-      try { next = a.config.update(body ?? {}); } catch (e: any) { throw new HttpError(400, String(e?.message ?? e)); }
+      try { next = a.config.update(configPatch(body ?? {}, a.config.get())); } catch (e: any) { throw new HttpError(400, String(e?.message ?? e)); }
       await a.onConfigChanged();
-      return { ...next, resolvedSymbols: a.resolvedSymbols };
+      return { ...configView(next), resolvedSymbols: a.resolvedSymbols };
     });
 
     this.add('GET', '/api/markets', async () => a.markets());

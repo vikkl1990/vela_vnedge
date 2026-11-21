@@ -124,7 +124,7 @@ test('active-market rollout replaces only the unedited ETH arms, keeps eight pla
  assert.equal(enableReaderComparisons(file,false,true).changed,false);
  assert.throws(()=>enableReaderComparisons(file),/already relocated/);
  const edited=JSON.parse(before);edited.executionPlans[1].referenceEquity=2000;fs.writeFileSync(file,JSON.stringify(edited));
- assert.throws(()=>enableReaderComparisons(file,false,true),/differs; no overwrite/);
+ assert.throws(()=>enableReaderComparisons(file,false,true),/Saved configuration fails validation/);
  for(const p of ACTIVE_READER_COMPARISONS){const s=planSnapshot(x.cfg,p);assert.equal(s.paper.marginPerTrade,150);assert.equal(s.paper.maxStopLossPct,3);}
 });
 test('both Liquidity maker readings require a fresh post-placement trade-through and pay maker fees only at the fill',t=>{

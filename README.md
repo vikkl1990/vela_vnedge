@@ -266,17 +266,21 @@ timestamps (warning above `ops.driftWarnMs`), and tracked symbols are checked ag
   `POST /api/ops/logs/rotate`.
 * `GET /api/metrics` is Prometheus text (feed, tick age, queue depth, busy workers, respawns, bars
   closed, script runs/errors and per-minute rates, signals, positions, equity, pnl, backtests,
-  memory, CPU, event-loop lag, gaps, drift, alerts, backups). Scrape config:
-
-  ```yaml
-  scrape_configs:
-    - job_name: vnedge
-      metrics_path: /api/metrics
-      static_configs: [{ targets: ['127.0.0.1:8787'] }]
-  ```
+  memory, CPU, event-loop lag, gaps, drift, alerts, backups). `/metrics` is an alias;
+  `?format=json` selects JSON. All forms, including HEAD, require a valid session with read
+  permission, just like the dashboard. Anonymous scrapes (including loopback) return 401.
+  Scrapers must supply and renew an authenticated session; no bypass or public metrics listener
+  is installed. Keep session cookies private and out of logs and checked-in scraper configuration.
 
 * `GET /api/health` now carries `integrity`, `alerts` (last sent, active conditions) and `ops`
-  (last backup, log size, db size/errors, worker respawns, monitor state).
+  (last backup, log size, db size/errors, worker respawns, monitor state). It returns 503 for a
+  failed/stopping runtime or an invalid saved configuration. A bad disk edit leaves the last valid
+  running settings intact and refuses subsequent writes until the file is repaired. A corrupt or
+  invalid existing config prevents startup; only a missing first-run file can use defaults.
+* Fatal process errors stop new entries in memory, close the API and exit nonzero after bounded
+  cleanup. The service manager owns restart. They never persist a manual risk halt or change saved
+  trading rules. General config responses omit the legacy Telegram token; use the admin-only
+  Telegram connection controls to manage credentials and pairing.
 
 ### CI
 
