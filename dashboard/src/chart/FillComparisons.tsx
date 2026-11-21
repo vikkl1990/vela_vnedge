@@ -1,3 +1,4 @@
+import './verification.css'
 import { fmtDateTime, fmtPrice } from '../lib/format'
 import { useFillComparison } from './fillEvidence'
 const bps = (v: number | null) => (v === null ? '—' : `${v >= 0 ? '+' : ''}${v.toFixed(2)} bps`)
@@ -24,7 +25,7 @@ export function FillComparisons({ id }: { id: number }) {
         <p>No recorded fills for this trade.</p>
       ) : (
         <div className="table-scroll">
-          <table className="table">
+          <table className="table evidence-table">
             <thead>
               <tr>
                 <th>Fill</th>
@@ -36,7 +37,7 @@ export function FillComparisons({ id }: { id: number }) {
             <tbody>
               {q.data.fills.map((f) => (
                 <tr key={f.id}>
-                  <td>
+                  <td data-label="Fill">
                     {f.reason} · {f.side} · {f.qty}
                     <br />
                     {fmtDateTime(f.at)}
@@ -46,8 +47,8 @@ export function FillComparisons({ id }: { id: number }) {
                       {f.maker && ` · ${f.maker}`}
                     </span>
                   </td>
-                  <td>{fmtPrice(f.price)}</td>
-                  <td>
+                  <td data-label="Recorded">{fmtPrice(f.price)}</td>
+                  <td data-label="Saved depth">
                     {f.depth.price === null ? '—' : fmtPrice(f.depth.price)} · {bps(f.depth.deltaBps)}
                     <br />
                     {f.depth.status}
@@ -55,7 +56,7 @@ export function FillComparisons({ id }: { id: number }) {
                       <div className="small muted">Observed {fmtDateTime(f.depth.receivedAt)}</div>
                     )}
                   </td>
-                  <td>
+                  <td data-label="Public tape">
                     First {f.tape.first === null ? '—' : fmtPrice(f.tape.first)} · VWAP{' '}
                     {f.tape.vwap === null ? '—' : fmtPrice(f.tape.vwap)}
                     <br />

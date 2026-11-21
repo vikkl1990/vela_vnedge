@@ -1,3 +1,4 @@
+import './verification.css'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../api/client'
 import { compareChart, type ChartObservation } from '../../../shared/chartVerification'
@@ -18,16 +19,16 @@ function Check({ observation: o }: { observation: ChartObservation }) {
   const result = compareChart(o, q.data ?? null)
   return (
     <tr>
-      <td>
+      <td data-label="Scanner / closed bar">
         {o.scannerId} · {o.tf}
         <br />
         {fmtDateTime(o.barTime)}
       </td>
-      <td>
+      <td data-label="Comparison">
         {q.isError ? 'Server comparison unavailable' : q.isLoading ? 'Loading server bar…' : result.status}
         {!!result.differences.length && <div className="loss">{result.differences.join(', ')}</div>}
       </td>
-      <td>
+      <td data-label="Server signals">
         {q.data?.barTime === o.barTime
           ? q.data.signals.map((s) => `${s.kind} ${s.side ?? ''} · ${s.label}`).join('; ') ||
             'No entry or exit extracted on this bar'
@@ -53,7 +54,7 @@ export function SignalChecks({ observations }: { observations: ChartObservation[
         <p>Select a scanner and wait for a complete chart run. Forming-bar ticks are excluded.</p>
       ) : (
         <div className="table-scroll">
-          <table className="table">
+          <table className="table evidence-table">
             <thead>
               <tr>
                 <th>Scanner / closed bar</th>

@@ -59,3 +59,14 @@ test('a stop supersedes an outstanding target without inventing the unfilled por
  x.tick(T+4000,97);assert.equal(x.e.pendingExits()[0].reason,'sl');assert.equal(p.qtyOpen,p.qty);
  x.settle(T+6000,96.9,97);assert.equal(p.exitReason,'sl');assert.equal(p.fills.filter(f=>f.reason==='tp1').length,0);
 });
+
+test('a pending target cannot delay an acknowledged protective stop amendment',t=>{
+ const x=fixture(t,{tpSplit:[.5,.25,.25],trailAfterR:.5,trailGiveBackPct:20});x.enter();x.bar(T+2000);const p=x.e.openPositions()[0];
+ x.tick(T+3000,101.2);
+ const state=x.db.get<{desired_stop:number;ack_at:number}>('SELECT desired_stop,ack_at FROM paper_execution_positions WHERE position_id=?',p.id)!;
+ assert.ok(state.desired_stop>100);assert.equal(p.sl,98);
+ x.time(T+3100);x.e.commitDecision(()=>x.e.onScriptExit('audit','SOLUSD','15m','tp1',undefined,T+3100,'both'));
+ x.tick(state.ack_at+1,100);
+ assert.equal(p.sl,state.desired_stop);assert.notEqual(x.e.pendingExits()[0].reason,'tp1');assert.equal(p.qtyOpen,p.qty);
+ x.settle(state.ack_at+1600,99.9,100.1);assert.equal(p.status,'closed');
+});

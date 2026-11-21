@@ -480,13 +480,13 @@ export class PaperEngine extends EventEmitter {
     const existing=this.exitExecution.active(p.id);
     if(this.partial(p)&&existing&&/^tp[123]$/.test(existing.reason)&&!/^tp[123]$/.test(reason))this.partialExits.full(p,reason,at,reference);
     const i=this.exitExecution.request(p,reason,qty,reference,Math.max(at,p.entryAt),this.configFor(p).latencyMs);
-    if(!existing){this.recordPath(p,reference,at,'exit requested',`${reason}; awaiting executable depth`);this.emit('position',{type:'updated',position:p});}
+    if(!existing||i.id!==existing.id){this.recordPath(p,reference,at,'exit requested',`${reason}; awaiting executable depth`);this.emit('position',{type:'updated',position:p});}
     return i;
   }
   private causalPrice(p:Position,price:number,at:number,qty:number=0,tradeTime=at,tradeId?:string){
     if(at<p.entryAt)return;
     if(this.exitExecution.active(p.id)){
-      if(this.partial(p)){const run=()=>this.partialExits.protect(p,price,at,this.configFor(p).latencyMs);if(this.decisionActive)run();else this.commitDecision(run,p);}
+      if(this.partial(p)){const run=()=>{if(this.exitExecution.acknowledge(p,at))this.persist(p);this.partialExits.protect(p,price,at,this.configFor(p).latencyMs);};if(this.decisionActive)run();else this.commitDecision(run,p);}
       return;
     }
     const run=()=>{
