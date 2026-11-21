@@ -8312,3 +8312,27 @@ Only a missing first-run configuration may use defaults. A database or SQLite si
 The process entry point owns one fatal-error/signal supervisor, rather than installing swallowing handlers in each App. A fatal exception, unhandled rejection or startup failure synchronously stops entry admission in both books through a memory-only runtime latch, closes the API, skips worker draining and exits nonzero after bounded cleanup. Fatal errors during ordinary shutdown upgrade its status to failure; a hung cleanup also exits nonzero. No manual halt, portfolio reset, order flattening or evidence change is introduced. Health reports non-running or damaged-config state as HTTP 503. Raw rejection values are not serialized into logs or API health.
 
 Prometheus text, JSON and HEAD requests, including the /metrics alias, now use the same authenticated read-permission path as other API routes. The raw HTTP-listener bypass is removed. General configuration reads and write responses omit the legacy Telegram bot token. Empty/redacted round trips preserve it on the server; attempts to set a token or change its chat destination use the admin-only Telegram connection workflow instead. Existing legacy delivery remains supported. Stored risk, capital, execution, scanner and evidence configuration is unchanged.
+
+## 311. Record the market at every entry, for both books (21 November 2026)
+
+The long-side filter replay of 21 November (35 days, 8,718 shadow longs) could only be run because each entry's state was
+rebuilt from candles: shadow positions carried no entry features, `ml_samples` holds account trades only, and the retroactive
+enricher (decision 108) reaches only the bars still in memory and keeps 6,000 results while the shadow book closes about 480
+trades a day. Every later question of the form "did trades taken in this market state do worse?" would have repeated that work.
+
+When a position opens, in either book, `entry_state` now records, once and keyed by the position:
+- the trade's own features: the engine's, when the entry carried them (account), else the same `computeFeatures` arithmetic on
+  the bars closed at the entry (shadow); a position that cannot be measured is still recorded, with the reason, so coverage is
+  countable;
+- a market block: BTC and ETH bias on 4h and 1d, fleet funding skew and session from the hourly context collector (with the
+  collector's age at the entry), and BTC's own trend (distance from its EMA50 in ATRs on 1h and 4h, 24-hour move) where those
+  bars are already tracked, otherwise null. Unknown is recorded as null, never as zero.
+
+`GET /api/entry-state?book=0|2&from=&to=&symbol=&side=&limit=` returns the rows with the outcome joined once a trade has closed
+(net R, exit reason); `GET /api/entry-state/status` reports row counts, features source, rows without context and failures. The
+journal's features lookup reads the recorded row first. Rows older than 180 days are pruned. Positions already open at a restart
+are recorded five minutes after start from the bars at their entry.
+
+Observation only. It runs after the book's transaction has committed, never throws into the book, and changes no decision, size,
+fill, gate or threshold. It does not backfill closed history: the existing 35 days stay reconstructed from candles. It is not an
+experiment and promotes nothing; its purpose is to let the next side or regime question be answered from recorded state.

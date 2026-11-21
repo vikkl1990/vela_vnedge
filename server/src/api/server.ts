@@ -484,6 +484,22 @@ export class ApiServer {
       try { validatePerformanceFilter(filter); } catch (e) { throw new HttpError(400, (e as Error).message); }
       return performanceReport(a.db, filter);
     });
+    // decision 311: the market at each entry, with the outcome once the trade has closed (research read; observation only)
+    this.add('GET', '/api/entry-state', (_r, _s, _p, url) => {
+      const n = (k: string): number | undefined => {
+        const v = url.searchParams.get(k);
+        if (v === null || v === '') return undefined;
+        const x = Number(v);
+        if (!Number.isSafeInteger(x) || x < 0) throw new HttpError(400, `${k} must be a non-negative integer`);
+        return x;
+      };
+      const book = n('book') ?? 2;
+      if (book !== 0 && book !== 2) throw new HttpError(400, 'book must be 0 (account) or 2 (shadow)');
+      const side = url.searchParams.get('side') ?? undefined;
+      if (side && side !== 'long' && side !== 'short') throw new HttpError(400, 'side must be long or short');
+      return { at: Date.now(), rows: a.entryState.list({ book, from: n('from'), to: n('to'), symbol: url.searchParams.get('symbol') || undefined, side, limit: n('limit') }) };
+    });
+    this.add('GET', '/api/entry-state/status', () => a.entryState.status());
     this.add('GET', '/api/trackers', () => a.trackers());
     this.add('GET', '/api/incubator/agents', async () => {const {due,...view}=await a.pairAgents.view();return {...view,dueCells:due.length};});
     this.add('GET', '/api/reclaim-trials', () => reclaimStatus(a.db,a.config.get(),a.paper));

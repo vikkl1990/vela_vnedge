@@ -69,6 +69,7 @@ import { MarkStore } from './data/marks.ts';
 import { RiskManager } from './risk/manager.ts';
 import { MlService } from './ml/service.ts';
 import { FeatureEnricher } from './ml/enrich.ts';
+import { attachEntryState, EntryStateRecorder } from './ml/entryState.ts';
 import { theCall, yardstick, type YardTrade } from './ml/yardstick.ts';
 import { OpsService } from './ops/service.ts';
 import { WorkerTracker } from './ops/workers.ts';
@@ -106,6 +107,8 @@ export class App {
   readonly ml: MlService;
   /** Decision 108: entry-time features for trades opened without them, costed once from the candle store. */
   readonly enricher: FeatureEnricher;
+  /** Decision 311: the market as it was when each position opened, kept for both books. Observation only. */
+  readonly entryState: EntryStateRecorder;
   readonly scanners: ScannerEngine;
   readonly boundExits: BoundExits;
   readonly profiles: ProfileStore;
@@ -296,6 +299,8 @@ export class App {
     // flow intelligence from public data, once an hour (decision 101)
     this.context = new ContextCollector({ db: this.db, rest: this.rest, symbols: () => [...new Set([...this.resolvedSymbols, ...this.incubator.symbols()])] });
     this.context.start();
+    this.entryState = new EntryStateRecorder({ db: this.db, enricher: this.enricher, candles: this.candles, context: () => this.context.latest().global });
+    attachEntryState([this.paper, this.shadow], this.entryState);
     this.ops = new OpsService({ cfg, onConfigChange: l => this.config.onChange(l), db: this.db, dataDir: DATA_DIR, feed: this.feed, pool: this.pool, paper: this.paper, marks: this.marks, candles: this.candles, scanners: this.scanners, workers, transport: deps.alertTransport, peakEquity: () => this.risk.peakEquity(),
       telegramTarget:()=>this.telegram?this.telegram.deliveryTarget():telegramFromEnv(cfg().alerts.telegram) });
     this.telegram=new TelegramControl({db:this.db,dataDir:DATA_DIR,actions:telegramActions(this),alerts:()=>this.ops.alerts,manageDelivery:!deps.alertTransport,
@@ -387,6 +392,8 @@ export class App {
     void refreshMarkets();
     this.marketTimer = setInterval(refreshMarkets, Math.max(1, this.config.get().risk.marketGate?.refreshMinutes ?? 60) * 60_000);
     this.marketTimer.unref?.();
+    // positions already open at a restart have no record yet: take it from the bars closed at their entry, once the series are loaded
+    setTimeout(() => { for (const engine of [this.paper, this.shadow]) for (const p of engine.openPositions()) this.entryState.record(engine.book, p); }, 5 * 60_000).unref?.();
     // Closed trades and the clock drive evidence reviews independently of screening.
     // Reviews share one operation with manual and pair-agent calls; failed screens stay retryable.
     this.lastAdmissionAt=Date.now();
@@ -850,7 +857,7 @@ export class App {
 
   /** The trade's entry-time features: its own when it carries them, else computed from the bars closed at its entry (decision 108). */
   private featuresOf(book: number, t: any): Record<string, number> | null {
-    return this.enricher.featuresFor({ book, id: t.id, symbol: t.symbol, tf: t.tf, side: t.side, entryAt: t.entryAt, entryPrice: t.entryPrice, sl: t.sl ?? null, tp: t.tp ?? null, levelsSource: t.levelsSource ?? null, features: t.features ?? null });
+    return this.entryState.featuresOf(t.id) ?? this.enricher.featuresFor({ book, id: t.id, symbol: t.symbol, tf: t.tf, side: t.side, entryAt: t.entryAt, entryPrice: t.entryPrice, sl: t.sl ?? null, tp: t.tp ?? null, levelsSource: t.levelsSource ?? null, features: t.features ?? null });
   }
 
   /**
