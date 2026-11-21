@@ -1,7 +1,7 @@
 import path from 'node:path';
 import {ReplayArchive,type ReplayArchiveOptions} from './replayArchive.ts';
 
-export const EXIT_STUDY_SYMBOLS=['ARIAUSD','INITUSD','PARTIUSD','EVAAUSD'] as const;
+export const EXIT_STUDY_SYMBOLS=['ARIAUSD','INITUSD','PARTIUSD','EVAAUSD','SOLUSD'] as const;
 /** Separate bounded retention prevents the broad universe from evicting this study's tape.
  * Both writers are observational; failure in either is reported, never an execution gate. */
 export class FocusedReplay {

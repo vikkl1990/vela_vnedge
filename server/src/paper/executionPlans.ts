@@ -19,9 +19,9 @@ import { exitConfigFor } from './logic.ts';
 import { scannerExitPolicy, entryPolicy, ownExitsOverride } from './policy.ts';
 import { adaptPlan } from './planStudy.ts';
 
-// Bounded research capacity: 87 existing plans plus 18 upstream lifecycle comparison arms.
+// Bounded research capacity: 105 existing plans plus one SOL maker advisory reference.
 // This does not change account positions, allocation or risk limits.
-export const MAX_RESEARCH_PLANS = 105;
+export const MAX_RESEARCH_PLANS = 106;
 /** Explicit TP experiment; original stop and sizing stay fixed. Trail changes are opt-in and labeled. */
 export interface TakeProfitPlan {
   mode: 'native' | 'r';

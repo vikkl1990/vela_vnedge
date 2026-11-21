@@ -21,7 +21,7 @@ function setup(t:any){
   orderFlow:{observeSymbols:()=>{},summary:()=>({covered:false,imbalance:null,throughAt:null,availableAt:null,minutes:0})},config:{get:()=>cfg},scanners:{requiredSeries:()=>[]},candles:{get:()=>[]},feed:{subscribe:(ch:string,sy:string[])=>subscriptions.push([ch,sy])}} as unknown as App;
  const factory=()=>Object.assign(new EventEmitter(),{start(){},stop(){},subscribe(){},unsubscribe(){}}) as unknown as DeltaFeed;
  const runtime=new MonitorRuntime(app,factory);t.after(()=>runtime.stop());
- return {db,cfg,p,engine,runtime,rows,selected,subscriptions};
+ return {app,db,cfg,p,engine,runtime,rows,selected,subscriptions};
 }
 test('entry-time capture binds a new non-fixed study pair immediately and preserves account policy/orders',t=>{
  const x=setup(t),before=JSON.stringify(x.p),config=JSON.stringify(x.cfg),orders=x.db.all('SELECT * FROM orders');
@@ -43,4 +43,17 @@ test('recent reference capture survives restart and retains the post-close horiz
 test('capture failure cannot prevent a real position from remaining intact',t=>{
  const x=setup(t),before=JSON.stringify(x.p);x.db.db.exec('DROP TABLE decision_trace');
  assert.doesNotThrow(()=>x.runtime.captureEntry(x.p,0,T+200));assert.equal(JSON.stringify(x.p),before);assert.equal(x.p.status,'open');
+});
+
+
+test('REST advisory settlement archives original exchange and receipt times before offering depth',async t=>{
+ const x=setup(t);x.app.paper.pendingExits=()=>[];x.app.shadow.pendingExits=()=>[];
+ const raw={timestamp:(T-1500)*1000,buy:[{price:'99',size:'100'}],sell:[{price:'101',size:'100'}]};
+ Object.assign(x.app,{rest:{orderbook:async()=>raw}});
+ let offered:any;
+ x.runtime.monitor.due=()=>[{symbol:'BLESSUSD'}] as any;
+ x.runtime.monitor.settle=(_s,b,at)=>{offered={b,at};assert.ok(x.rows.some(r=>r.kind==='study_exit_book'));return undefined as any;};
+ x.runtime['settle']();await new Promise<void>(resolve=>setImmediate(resolve));
+ const event=x.rows.find(r=>r.kind==='study_exit_book');assert.ok(event);assert.equal(event.payload.book.exchangeAt,T-1500);
+ assert.equal(event.payload.book.receivedAt,T);assert.deepEqual(event.payload.book,offered.b);assert.equal(event.at,offered.at);
 });

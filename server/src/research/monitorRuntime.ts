@@ -7,7 +7,7 @@ import type {ExitBook} from '../paper/exitExecution.ts';
 import {logger} from '../log.ts';
 import {EXIT_STUDY_SYMBOLS} from './focusedReplay.ts';
 import {frozenSignalBar} from './shadowInvalidation.ts';
-import {earlyExitCell} from './scannerEarlyExit.ts';
+import {earlyExitPosition} from './scannerEarlyExit.ts';
 const log=logger.scoped('trade-monitor');
 
 export class MonitorRuntime {
@@ -15,6 +15,7 @@ export class MonitorRuntime {
  private app:App;private symbols:string[]=[];private markets=new Map<string,MarketObservation>();
  private timer:ReturnType<typeof setInterval>;private pump:ReturnType<typeof setInterval>;private stopped=false;
  private busy=new Set<string>();private lastFetch=new Map<string,number>();private nextFetch=0;private lastSample=0;
+ private focusedSymbols=new Set<string>();
  private capturedContexts=new Set<string>();
  private recentPaperSymbols:string[]=[];private recentAt=0;private lastTick=0;
  constructor(app:App,factory?:()=>DeltaFeed){
@@ -40,16 +41,17 @@ export class MonitorRuntime {
  }
  /** Called after an actual entry commits. Capture must never affect the fill or invent its past. */
  captureEntry(position:Position,book:number,now=Date.now()){
-  if(this.stopped||!(book===0||earlyExitCell(position.scannerId,position.symbol,position.tf)||EXIT_STUDY_SYMBOLS.some(s=>s===position.symbol)))return;
+  if(this.stopped||!(book===0||earlyExitPosition(position)||EXIT_STUDY_SYMBOLS.some(s=>s===position.symbol)))return;
   try{
    this.app.replayArchive?.includeStudy(position.symbol,now);
+   if(!this.focusedSymbols.has(position.symbol)){this.depth.recorder.requestCheckpoint(position.symbol);this.focusedSymbols.add(position.symbol);}
    const engine=book===0?this.app.paper:this.app.shadow;
    const scope=book===0?'paper':this.app.db.get<{evidence_scope:string}>('SELECT evidence_scope FROM positions WHERE id=?',position.id)?.evidence_scope??'legacy-shadow';
    this.recordContext({position,book,scope,...engine.advisoryObservation(position)},now);
   }catch(e){log.warn(`entry capture unavailable: ${String(e)}`);}
  }
  captureClosed(position:Position,book:number,now=Date.now()){
-  if(this.stopped||!(book===0||earlyExitCell(position.scannerId,position.symbol,position.tf)))return;
+  if(this.stopped||!(book===0||earlyExitPosition(position)))return;
   try{this.recentAt=0;this.app.replayArchive?.includeStudy(position.symbol,now);
    this.app.replayArchive?.record(position.symbol,'study_actual_close',{positionId:position.id,entryAt:position.entryAt,exitAt:position.exitAt,book,policyId:position.policy?.id??null},now,'trade-monitor');
   }catch(e){log.warn(`close capture unavailable: ${String(e)}`);}
@@ -76,7 +78,10 @@ export class MonitorRuntime {
     (bt=0 OR (bt=2 AND (scanner_id IN ('supertrend-cluster-zeiierman','ai-predictive-flow-zeiierman') OR (scanner_id='trend-impulse-channels-zeiierman-maker' AND symbol='SOLUSD' AND tf='15m'))))`,now-86400000).map(r=>r.symbol);this.recentAt=now;
    if(this.recentPaperSymbols.length)for(const channel of ['ob_l1','all_trades'])this.app.feed.subscribe(channel,this.recentPaperSymbols);
   }
-  this.app.replayArchive?.setStudySymbols([...this.recentPaperSymbols,...inputs.filter(x=>x.book===0||earlyExitCell(x.position.scannerId,x.position.symbol,x.position.tf)).map(x=>x.position.symbol),...this.app.paper.pendingEntries().map(p=>p.symbol)],now);
+  this.app.replayArchive?.setStudySymbols([...this.recentPaperSymbols,...inputs.filter(x=>x.book===0||earlyExitPosition(x.position)).map(x=>x.position.symbol),...this.app.paper.pendingEntries().map(p=>p.symbol)],now);
+  const selected=new Set([...EXIT_STUDY_SYMBOLS,...this.recentPaperSymbols,...inputs.filter(x=>x.book===0||earlyExitPosition(x.position)).map(x=>x.position.symbol),...this.app.paper.pendingEntries().map(p=>p.symbol)]);
+  for(const symbol of selected)if(!this.focusedSymbols.has(symbol))this.depth.recorder.requestCheckpoint(symbol);
+  this.focusedSymbols=selected;
   // Selected research capture reuses advisory sockets; execution book sources stay unchanged.
   const capture=[...new Set(['BTCUSD','ETHUSD','SOLUSD',...EXIT_STUDY_SYMBOLS,...this.recentPaperSymbols,
    ...this.app.scanners.requiredSeries().map(s=>s.symbol),...inputs.map(x=>x.position.symbol),
@@ -137,7 +142,11 @@ export class MonitorRuntime {
   void this.app.rest.orderbook(t.symbol,100,{retries:0,timeoutMs:1500}).then(raw=>{
    if(this.stopped)return;
    const book:ExitBook={receivedAt:Date.now(),exchangeAt:toMs(raw.timestamp??raw.last_updated_at,0),bids:raw.buy.map(x=>({price:Number(x.price),size:Number(x.size)})),asks:raw.sell.map(x=>({price:Number(x.price),size:Number(x.size)}))};
-   this.monitor.settle(t.symbol,book,Date.now(),this.current);
+   const observedAt=Date.now();
+   // Persist the exact public REST book offered to the hypothetical fill. Do not
+   // replace its exchange/receipt time with the observation clock.
+   this.app.replayArchive?.record(t.symbol,'study_exit_book',{book,observedAt},observedAt,'advisory-rest');
+   this.monitor.settle(t.symbol,book,observedAt,this.current);
   }).catch(e=>log.debug(`advisory depth unavailable: ${String(e)}`)).finally(()=>this.busy.delete(t.symbol));
  }
  async view(now=Date.now()){

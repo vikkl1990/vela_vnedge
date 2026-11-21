@@ -253,13 +253,29 @@ export interface EvaluateOptions {
 /** Decision 200: a failed re-screen retires a shadow pair only once its own record has this many trades and is not positive. */
 export const RESCREEN_RETIRE_MIN_TRADES = 3;
 
-export function evaluate(store: IncubatorStore, cfg: AppConfig, now = Date.now(), opts: EvaluateOptions = {}): CycleReport {
+/** Synchronous CLI/tests and cooperative runtime execute the same evidence rules. */
+export function evaluate(store: IncubatorStore, cfg: AppConfig, now=Date.now(), opts: EvaluateOptions={}):CycleReport {
+  const work=evaluateSteps(store,cfg,now,opts);let step=work.next();while(!step.done)step=work.next();return step.value;
+}
+/** Yield between cells so a full review cannot freeze quotes, exits and replay clocks.
+ * A config change aborts before the next step; promotion is still rechecked separately. */
+export async function evaluateCooperative(store: IncubatorStore,cfg:AppConfig,now=Date.now(),opts:EvaluateOptions={},isCurrent=()=>true):Promise<CycleReport> {
+  const work=evaluateSteps(store,cfg,now,opts);let deadline=performance.now()+10;
+  for(;;){
+    if(!isCurrent())throw Error('Evidence review configuration changed; retry with current policy');
+    const step=work.next();if(step.done)return step.value;
+    if(performance.now()>=deadline){await new Promise<void>(resolve=>setImmediate(resolve));deadline=performance.now()+10;}
+  }
+}
+
+function* evaluateSteps(store: IncubatorStore, cfg: AppConfig, now = Date.now(), opts: EvaluateOptions = {}): Generator<void,CycleReport> {
   const inc = cfg.incubator;
   const rep: CycleReport = { proposed: [], retired: [], brewing: 0, demoteProposed: [], admitted: [], free: 0 };
   // decision 195: a shadow, proposed or tracked pair whose scanner cannot run never trades; it held its slot while its
   // stage said otherwise. It is retired with the library's reason, and returns through the screen if the script does.
   {
     for (const r of store.list(['shadow', 'proposed', 'tracked'])) {
+      yield; if(store.get(r.id)?.stage!==r.stage)continue;
       const library = opts.unavailable?.(r.scannerId);
       const quarantine = store.quarantineReason(r.scannerId);
       const why0 = library ?? (quarantine ? `quarantined: ${quarantine}` : null);
@@ -270,22 +286,24 @@ export function evaluate(store: IncubatorStore, cfg: AppConfig, now = Date.now()
       store.move(r, 'retired', 'library', { reasons: [why] }, why, now); rep.retired.push(name(r));
     }
   }
-  store.startRestorations(now);
+  yield* store.startRestorationSteps(now);
   let active = store.list(['shadow', 'proposed']);
   // decision 104: a pair on a market the account's gate refuses today is never proposed; one already proposed goes back to brewing
   const markets = store.marketsToday(now);
   for (const r of active) {
+    yield; if(store.get(r.id)?.stage!==r.stage)continue;
     const why = marketRefusal(markets, r.symbol, inc.gate.minTurnoverUsd);
     if (why && r.stage === 'proposed') { store.move(r, 'shadow', 'gate', { reasons: [why] }, why, now, { keepSince: true }); rep.brewing++; }
   }
 
   active = store.list(['shadow', 'proposed']); // stage changes above must reach the judge
-  if (inc.gate.pool === 'cohort') judgeCohorts(store, cfg, active, rep, now);
-  else for (const r of active) judgePair(store, cfg, r, rep, now);
+  if (inc.gate.pool === 'cohort') yield* judgeCohorts(store, cfg, active, rep, now);
+  else for (const r of active) { yield; if(store.get(r.id)?.stage===r.stage)judgePair(store, cfg, r, rep, now); }
 
   // Pending proposals remain allocated and must be rejudged alongside live cells.
   const out = store.marketOut(), liveKeys = new Set<string>();
   for (const r of store.list(['live', 'demote_proposed'])) {
+    yield; if(store.get(r.id)?.stage!==r.stage)continue;
     liveKeys.add(`${r.scannerId}|${r.symbol}|${r.tf}`);
     const assessment = liveAssessment(store, cfg, r, now, out);
     store.setGate(r.id, assessment, now);
@@ -300,6 +318,7 @@ export function evaluate(store: IncubatorStore, cfg: AppConfig, now = Date.now()
   // decision 106: a shadow pair with no shadow trade for `gate.staleDays` proves nothing and gives its slot back
   // decision 108: the cap follows the timeframe — 21 days is three weeks of 15m bars and five 4h trades at best
   for (const r of store.list(['shadow'])) {
+    yield; if(store.get(r.id)?.stage!==r.stage)continue;
     if (store.rotationHolds(r)) continue;
     const staleDays = inc.gate.staleDaysByTf?.[r.tf] ?? inc.gate.staleDays ?? 0;
     if (!(staleDays > 0)) continue;
@@ -320,6 +339,7 @@ export function evaluate(store: IncubatorStore, cfg: AppConfig, now = Date.now()
   // looking best fails most of them by selection alone (519 of 617 on 25 October); 35 of those failures were up 83.8R in
   // the shadow book. A failing pair with too little record yet keeps collecting it; the stale cap retires the silent ones.
   for (const r of store.list(['shadow'])) {
+    yield; if(store.get(r.id)?.stage!==r.stage)continue;
     if (store.rotationHolds(r)) continue;
     const sc = r.screen as any;
     const {trades:fwd,since} = store.shadowEvaluation(r,now);
@@ -401,15 +421,18 @@ function judgePair(store: IncubatorStore, cfg: AppConfig, r: PairRow, rep: Cycle
  * its markets are proposed for the fleet — at most `promote.maxPerWeek`, since nothing more than that
  * can be approved in a week anyway — and the rest keep trading in the shadow book as evidence.
  */
-function judgeCohorts(store: IncubatorStore, cfg: AppConfig, active: PairRow[], rep: CycleReport, now: number): void {
+function* judgeCohorts(store: IncubatorStore, cfg: AppConfig, active: PairRow[], rep: CycleReport, now: number): Generator<void> {
   const inc = cfg.incubator;
   const groups = new Map<string, PairRow[]>();
   for (const r of active) {
+    yield; if(store.get(r.id)?.stage!==r.stage)continue;
     const restoration=store.restoration(r,now);
     if(restoration&&!restoration.passed){judgePair(store,cfg,r,rep,now);continue;}
     const k = `${r.scannerId}|${r.tf}`; const g = groups.get(k); g ? g.push(r) : groups.set(k, [r]); }
 
-  for (const rowsAll of groups.values()) {
+  for (const groupRows of groups.values()) {
+    yield;
+    const rowsAll=groupRows.filter(r=>store.get(r.id)?.stage===r.stage);
     // promise versus delivery per market first (decision 90): a member retired by its own record leaves the cohort
     const rows = rowsAll.filter(r => {
       if (r.stage !== 'shadow') return true;
