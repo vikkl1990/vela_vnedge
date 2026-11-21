@@ -24,7 +24,7 @@ export const FEATURE_LABELS: Record<FeatureName, string> = {
   adx14: 'ADX(14) trend strength (0–100)', day_range_used: "today's range so far over the average of the last UTC days' ranges",
 };
 
-function ema(bars: Bar[], i: number, len: number): number | undefined {
+export function ema(bars: Bar[], i: number, len: number): number | undefined {
   if (i + 1 < len) return undefined;
   const k = 2 / (len + 1);
   let e = bars[i - len + 1].close;
