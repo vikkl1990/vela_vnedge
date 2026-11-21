@@ -40,6 +40,30 @@ test('real entry point exits on corrupt config without opening a database or pri
   assert.equal(fs.existsSync(path.join(path.dirname(file), 'vnedge.db')), false);
 });
 
+test('missing config on a cold restart cannot use defaults over an existing journal', t => {
+  const file = fixture(t);
+  for (const name of ['vnedge.db', 'vnedge.db-wal', 'vnedge.db-shm']) {
+    const journal = path.join(path.dirname(file), name);
+    fs.writeFileSync(journal, 'existing-account-canary');
+    assert.throws(() => new ConfigStore(file), /missing for an existing account/);
+    assert.equal(fs.existsSync(file), false);
+    assert.equal(fs.readFileSync(journal, 'utf8'), 'existing-account-canary');
+    fs.unlinkSync(journal);
+  }
+  assert.equal(new ConfigStore(file).get().execution.mode, 'paper', 'truly new installation still has defaults');
+});
+
+test('real entry point refuses missing config before it touches existing journal state', t => {
+  const file = fixture(t); const journal = path.join(path.dirname(file), 'vnedge.db');
+  const before = Buffer.from('existing-journal-canary'); fs.writeFileSync(journal, before);
+  const child = spawnSync(process.execPath, ['--no-warnings', fileURLToPath(new URL('./index.ts', import.meta.url))], {
+    env: { ...process.env, VNEDGE_DATA_DIR: path.dirname(file), LOG_LEVEL: 'warn' }, encoding: 'utf8', timeout: 15_000,
+  });
+  assert.equal(child.status, 1); assert.match(child.stdout + child.stderr, /Fatal runtime failure \(startup\)/);
+  assert.ok(!(child.stdout + child.stderr).includes('existing-journal-canary'));
+  assert.deepEqual(fs.readFileSync(journal), before); assert.equal(fs.existsSync(file), false);
+});
+
 test('bad reload and deletion retain last good config and never overwrite damaged state', t => {
   const file = fixture(t); fs.writeFileSync(file, '{}');
   const store = new ConfigStore(file); const before = structuredClone(store.get());

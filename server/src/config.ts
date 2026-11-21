@@ -1083,6 +1083,13 @@ export class ConfigStore {
       // Only a genuinely absent first-run file may use defaults. Never include parser excerpts:
       // malformed JSON can contain credentials, and a corrupt saved file must fail closed.
       if (e?.code !== 'ENOENT' || this.seenRevision !== null) throw new Error('Saved configuration is missing, unreadable or invalid; restore a valid config file');
+      // A cold process has no in-memory revision. Existing journal state still proves that this
+      // is not a first installation: losing config must never reset a trading account to defaults.
+      for (const name of ['vnedge.db', 'vnedge.db-wal', 'vnedge.db-shm']) {
+        try { fs.lstatSync(path.join(path.dirname(this.file), name)); }
+        catch (state: any) { if (state?.code === 'ENOENT') continue; throw new Error('Saved configuration is missing; account state is unavailable'); }
+        throw new Error('Saved configuration is missing for an existing account; restore a valid config file');
+      }
       // A dangling link is a broken saved configuration, not a first installation.
       try { fs.lstatSync(this.file); throw new Error('Saved configuration is unavailable'); }
       catch (missing: any) { if (missing?.code !== 'ENOENT') throw new Error('Saved configuration is unavailable'); }
