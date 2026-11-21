@@ -18,6 +18,8 @@ The former date filter said **All history**, although it excluded account-reset 
 
 Four historical paper entries have zero-volume candle receipts. This is a prompt to audit tape coverage, not proof all four are fictitious: ZEC #21176 has fresh post-arrival crossing prints before its candle receipt. The other examples lack adequate retained tape evidence in the audited export. Their original values are preserved.
 
+Coverage verification found a concrete cause for missing MUSD research data: three validators required at least two characters before USD. MUSD is listed as MemeCore Perpetual, but its research depth and replay subscriptions were silently omitted. The validators now accept one-character bases, with regression tests for MUSD/SUSD and invalid symbols. Capture resumes prospectively; missing historical MUSD depth remains unknown.
+
 The maker-model study compares 12 existing cells across BTC, ETH, SOL, XRP, BNB, ZEC, UNI, LINK, DOGE and M. Each has a current-model control and tick/depth-v2 candidate, identical scanner reading, entry policy, exits, full research fees, sizing and risk ceiling. These are independent simulated purses. Review all signals, missed fills, unresolved trades and full-cohort net alongside matched closed outcomes; a favorable matched subset is not promotion evidence. Paper fill policy stays unchanged.
 
 Machine-readable snapshot: [paper-journal-audit-2026-11-21.json](paper-journal-audit-2026-11-21.json).

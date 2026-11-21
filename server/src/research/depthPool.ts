@@ -14,7 +14,7 @@ export class AdvisoryDepthPool {
  }
  setSymbols(input:string[]){
   if(this.stopped)return;
-  const symbols=[...new Set(input)].filter(s=>/^[A-Z0-9]{2,24}USD$/.test(s)).sort();
+  const symbols=[...new Set(input)].filter(s=>/^[A-Z0-9]{1,24}USD$/.test(s)).sort();
   this.recorder.setSymbols(symbols);
   // Preserve socket ownership for retained symbols. Re-sorting shard boundaries on
   // every addition used to invalidate otherwise healthy books across all sockets.
