@@ -1,0 +1,702 @@
+{
+  "at": 1795237013801,
+  "events": 472017,
+  "regressions": 0,
+  "eventsSha256": "2d21c60401fe9da1dc078a9521114ac0f160fb71a7872726603de72a6ca52973",
+  "exportSha256": "540d1e2f75c255731db11837ee3e460976fae4603cc9891eb713893f733e0ff5",
+  "mode": "historical diagnostic; advisory depth proxy; closed-order selection; NOT deployment proof",
+  "limitations": [
+    "No original execution-depth stream retained; recorded advisory book is an explicit proxy.",
+    "Queue position unknown. A crossing print is a quantity ceiling, not an exchange fill.",
+    "Only originally filled closed orders have frozen sizes; rejected/expired order opportunity cost not reconstructed.",
+    "Half-stop uses recorded observer opportunities; absent/late observations are excluded.",
+    "No new risk, margin, promotion or account config is written."
+  ],
+  "deployment": {
+    "candidateEnabled": false,
+    "deployed": false,
+    "reason": "No demonstrated profit increase or SL decrease; incomplete exact entry-depth/observer coverage",
+    "riskAndPaperSettingsUnchanged": true
+  },
+  "captureSources": [
+    {
+      "path": "exit-replay-20261120-data",
+      "segments": 3367,
+      "manifestSha256": "2a481b1228faf9dd07430731f60a76489a67e716bda9afe4f577c537388149c9"
+    },
+    {
+      "path": "sol-replay-coverage-20261121-data",
+      "segments": 111,
+      "manifestSha256": "24548d4f3aed6ec16ef6c1e524644fb3fce95898bf94c492f5579d3202b9faad"
+    },
+    {
+      "path": "sol-replay-coverage-20261121-data/new-reference",
+      "segments": 13,
+      "manifestSha256": "9e9ed15ed9c82856d9354f6aa1445ca388f50d538f6c9fccfa4457aa7bdfed87"
+    }
+  ],
+  "results": [
+    {
+      "id": 17914,
+      "book": 0,
+      "actualNet": -3.6329020879999887,
+      "actualReason": "sl",
+      "actualEntryAt": 1794666669052,
+      "entryDelayMs": null,
+      "targetQty": 5,
+      "entryReports": [],
+      "status": "unfilled",
+      "net": null,
+      "netDelta": null,
+      "events": 0,
+      "depthObservations": 0,
+      "arrivalAt": null,
+      "firstFreshBookAt": null,
+      "arrivalCoverageDelayMs": null,
+      "crossingWithoutBook": 0,
+      "cancelled": [],
+      "samples": 0,
+      "cohort": [],
+      "trials": [],
+      "issues": []
+    },
+    {
+      "id": 18771,
+      "book": 0,
+      "actualNet": 4.1919460160000055,
+      "actualReason": "trail",
+      "actualEntryAt": 1794723360271,
+      "entryDelayMs": null,
+      "targetQty": 10,
+      "entryReports": [],
+      "status": "unfilled",
+      "net": null,
+      "netDelta": null,
+      "events": 0,
+      "depthObservations": 0,
+      "arrivalAt": null,
+      "firstFreshBookAt": null,
+      "arrivalCoverageDelayMs": null,
+      "crossingWithoutBook": 0,
+      "cancelled": [],
+      "samples": 0,
+      "cohort": [],
+      "trials": [],
+      "issues": []
+    },
+    {
+      "id": 18928,
+      "book": 0,
+      "actualNet": 5.597503727999922,
+      "actualReason": "trail",
+      "actualEntryAt": 1794734334062,
+      "entryDelayMs": null,
+      "targetQty": 10,
+      "entryReports": [],
+      "status": "unfilled",
+      "net": null,
+      "netDelta": null,
+      "events": 0,
+      "depthObservations": 0,
+      "arrivalAt": null,
+      "firstFreshBookAt": null,
+      "arrivalCoverageDelayMs": null,
+      "crossingWithoutBook": 0,
+      "cancelled": [],
+      "samples": 0,
+      "cohort": [],
+      "trials": [],
+      "issues": []
+    },
+    {
+      "id": 20040,
+      "book": 0,
+      "actualNet": 4.743903472000055,
+      "actualReason": "trail",
+      "actualEntryAt": 1794842167112,
+      "modeledEntryAt": 1794842167053,
+      "entryDelayMs": -59,
+      "modeledQty": 10,
+      "targetQty": 10,
+      "entryReports": [
+        {
+          "at": 1794842167053,
+          "qty": 4,
+          "eventAt": 1794842166906,
+          "depthAt": 1794842166879
+        },
+        {
+          "at": 1794842167588,
+          "qty": 6,
+          "eventAt": 1794842167465,
+          "depthAt": 1794842167420
+        }
+      ],
+      "status": "closed",
+      "net": 4.843844471999964,
+      "reason": "trail",
+      "fees": 0.583155528,
+      "exitAt": 1794843936748,
+      "netDelta": 0.09994099999990969,
+      "events": 32916,
+      "depthObservations": 5428,
+      "arrivalAt": 1794842113027,
+      "firstFreshBookAt": 1794842113027,
+      "arrivalCoverageDelayMs": 1877,
+      "crossingWithoutBook": 0,
+      "cancelled": [],
+      "samples": 0,
+      "cohort": [],
+      "trials": [],
+      "issues": []
+    },
+    {
+      "id": 20202,
+      "book": 0,
+      "actualNet": 2.4711917679999313,
+      "actualReason": "trail",
+      "actualEntryAt": 1794860275061,
+      "modeledEntryAt": 1794860275050,
+      "entryDelayMs": -11,
+      "modeledQty": 10,
+      "targetQty": 10,
+      "entryReports": [
+        {
+          "at": 1794860275050,
+          "qty": 10,
+          "eventAt": 1794860274919,
+          "depthAt": 1794860274949
+        }
+      ],
+      "status": "closed",
+      "net": 2.4711917679999313,
+      "reason": "trail",
+      "fees": 0.591808232,
+      "exitAt": 1794864583796,
+      "netDelta": 0,
+      "events": 62053,
+      "depthObservations": 12468,
+      "arrivalAt": 1794860190203,
+      "firstFreshBookAt": 1794860190203,
+      "arrivalCoverageDelayMs": 85195,
+      "crossingWithoutBook": 0,
+      "cancelled": [],
+      "samples": 0,
+      "cohort": [],
+      "trials": [],
+      "issues": []
+    },
+    {
+      "id": 20875,
+      "book": 0,
+      "actualNet": 5.57225329200008,
+      "actualReason": "trail",
+      "actualEntryAt": 1794934016069,
+      "modeledEntryAt": 1794934016050,
+      "entryDelayMs": -19,
+      "modeledQty": 10,
+      "targetQty": 10,
+      "entryReports": [
+        {
+          "at": 1794934016050,
+          "qty": 10,
+          "eventAt": 1794934015971,
+          "depthAt": 1794934015968
+        }
+      ],
+      "status": "closed",
+      "net": 5.57225329200008,
+      "reason": "trail",
+      "fees": 0.170746708,
+      "exitAt": 1794934521162,
+      "netDelta": 0,
+      "events": 11187,
+      "depthObservations": 2219,
+      "arrivalAt": 1794933925126,
+      "firstFreshBookAt": 1794933925126,
+      "arrivalCoverageDelayMs": 19875,
+      "crossingWithoutBook": 0,
+      "cancelled": [],
+      "samples": 0,
+      "cohort": [],
+      "trials": [],
+      "issues": []
+    },
+    {
+      "id": 20935,
+      "book": 0,
+      "actualNet": -10.36395585999999,
+      "actualReason": "sl",
+      "actualEntryAt": 1794937608091,
+      "modeledEntryAt": 1794937608040,
+      "entryDelayMs": -51,
+      "modeledQty": 10,
+      "targetQty": 10,
+      "entryReports": [
+        {
+          "at": 1794937608040,
+          "qty": 1,
+          "eventAt": 1794937607861,
+          "depthAt": 1794937607884
+        },
+        {
+          "at": 1794937611331,
+          "qty": 9,
+          "eventAt": 1794937610915,
+          "depthAt": 1794937611119
+        }
+      ],
+      "status": "closed",
+      "net": -10.36395585999999,
+      "reason": "sl",
+      "fees": 0.60395586,
+      "exitAt": 1794949503562,
+      "netDelta": 0,
+      "events": 178760,
+      "depthObservations": 37270,
+      "arrivalAt": 1794937527644,
+      "firstFreshBookAt": 1794937527644,
+      "arrivalCoverageDelayMs": 22384,
+      "crossingWithoutBook": 2,
+      "cancelled": [],
+      "samples": 0,
+      "cohort": [],
+      "trials": [],
+      "issues": []
+    },
+    {
+      "id": 21694,
+      "book": 0,
+      "actualNet": -13.085874539999905,
+      "actualReason": "sl",
+      "actualEntryAt": 1795020360371,
+      "modeledEntryAt": 1795020330077,
+      "entryDelayMs": -30294,
+      "modeledQty": 10,
+      "targetQty": 10,
+      "entryReports": [
+        {
+          "at": 1795020330077,
+          "qty": 9,
+          "eventAt": 1795020329573,
+          "depthAt": 1795020329985
+        },
+        {
+          "at": 1795020330540,
+          "qty": 1,
+          "eventAt": 1795020330194,
+          "depthAt": 1795020330421
+        }
+      ],
+      "status": "closed",
+      "net": -13.085874539999905,
+      "reason": "sl",
+      "fees": 0.60587454,
+      "exitAt": 1795022623623,
+      "netDelta": 0,
+      "events": 40030,
+      "depthObservations": 7030,
+      "arrivalAt": 1795020305494,
+      "firstFreshBookAt": 1795020305494,
+      "arrivalCoverageDelayMs": 242,
+      "crossingWithoutBook": 0,
+      "cancelled": [],
+      "samples": 0,
+      "cohort": [],
+      "trials": [],
+      "issues": []
+    },
+    {
+      "id": 23509,
+      "book": 0,
+      "actualNet": -8.592555247999968,
+      "actualReason": "sl",
+      "actualEntryAt": 1795187762430,
+      "modeledEntryAt": 1795187731660,
+      "entryDelayMs": -30770,
+      "modeledQty": 10,
+      "targetQty": 10,
+      "entryReports": [
+        {
+          "at": 1795187731660,
+          "qty": 10,
+          "eventAt": 1795187731468,
+          "depthAt": 1795187731630
+        }
+      ],
+      "status": "closed",
+      "net": -8.292555247999957,
+      "reason": "sl",
+      "fees": 0.164555248,
+      "exitAt": 1795187896966,
+      "netDelta": 0.30000000000001137,
+      "events": 5604,
+      "depthObservations": 538,
+      "arrivalAt": 1795187717667,
+      "firstFreshBookAt": 1795187717667,
+      "arrivalCoverageDelayMs": 164,
+      "crossingWithoutBook": 0,
+      "cancelled": [],
+      "samples": 0,
+      "cohort": [],
+      "trials": [],
+      "issues": []
+    },
+    {
+      "id": 23828,
+      "book": 0,
+      "actualNet": -10.723257692000097,
+      "actualReason": "sl",
+      "actualEntryAt": 1795199460631,
+      "modeledEntryAt": 1795199457077,
+      "entryDelayMs": -3554,
+      "modeledQty": 10,
+      "targetQty": 10,
+      "entryReports": [
+        {
+          "at": 1795199457077,
+          "qty": 8,
+          "eventAt": 1795199456895,
+          "depthAt": 1795199456893
+        },
+        {
+          "at": 1795199457539,
+          "qty": 2,
+          "eventAt": 1795199457207,
+          "depthAt": 1795199457396
+        }
+      ],
+      "status": "closed",
+      "net": -10.723257692000097,
+      "reason": "sl",
+      "fees": 0.566257692,
+      "exitAt": 1795201964935,
+      "netDelta": 0,
+      "events": 51307,
+      "depthObservations": 8230,
+      "arrivalAt": 1795199405129,
+      "firstFreshBookAt": 1795199405129,
+      "arrivalCoverageDelayMs": 124,
+      "crossingWithoutBook": 0,
+      "cancelled": [],
+      "samples": 460,
+      "cohort": [
+        {
+          "status": "unverified",
+          "reason": "Recorded observer gap"
+        }
+      ],
+      "trials": [],
+      "issues": []
+    },
+    {
+      "id": 24161,
+      "book": 0,
+      "actualNet": 4.3745494187999165,
+      "actualReason": "trail",
+      "actualEntryAt": 1795232760284,
+      "entryDelayMs": null,
+      "targetQty": 11,
+      "entryReports": [],
+      "status": "unfilled",
+      "net": null,
+      "netDelta": null,
+      "events": 6273,
+      "depthObservations": 1172,
+      "arrivalAt": null,
+      "firstFreshBookAt": 1795232718970,
+      "arrivalCoverageDelayMs": 13464,
+      "crossingWithoutBook": 8,
+      "cancelled": [
+        {
+          "type": "cancelled",
+          "id": 24161,
+          "reason": "post-only maker would cross at observed arrival"
+        }
+      ],
+      "samples": 0,
+      "cohort": [],
+      "trials": [],
+      "issues": []
+    },
+    {
+      "id": 24176,
+      "book": 2,
+      "actualNet": 3.942490648799917,
+      "actualReason": "trail",
+      "actualEntryAt": 1795232760297,
+      "modeledEntryAt": 1795232760142,
+      "entryDelayMs": -155,
+      "modeledQty": 11,
+      "targetQty": 11,
+      "entryReports": [
+        {
+          "at": 1795232760142,
+          "qty": 1,
+          "eventAt": 1795232759546,
+          "depthAt": 1795232759952
+        },
+        {
+          "at": 1795232760548,
+          "qty": 10,
+          "eventAt": 1795232760390,
+          "depthAt": 1795232760474
+        }
+      ],
+      "status": "closed",
+      "net": 3.942490648799917,
+      "reason": "trail",
+      "fees": 0.6038093511999999,
+      "exitAt": 1795232988232,
+      "netDelta": 0,
+      "events": 5339,
+      "depthObservations": 1035,
+      "arrivalAt": 1795232755782,
+      "firstFreshBookAt": 1795232755782,
+      "arrivalCoverageDelayMs": 175,
+      "crossingWithoutBook": 0,
+      "cancelled": [],
+      "samples": 45,
+      "cohort": [
+        {
+          "status": "unchanged",
+          "reason": null
+        }
+      ],
+      "trials": [],
+      "issues": []
+    }
+  ],
+  "baseline": [
+    {
+      "id": 17914,
+      "book": 0,
+      "net": null,
+      "actualNet": -3.6329020879999887,
+      "reason": null,
+      "parityDeltaR": null,
+      "exitAt": null,
+      "actualExitAt": 1794669640092,
+      "globalGaps": 0,
+      "depthGaps": 0
+    },
+    {
+      "id": 18771,
+      "book": 0,
+      "net": null,
+      "actualNet": 4.1919460160000055,
+      "reason": null,
+      "parityDeltaR": null,
+      "exitAt": null,
+      "actualExitAt": 1794728720186,
+      "globalGaps": 0,
+      "depthGaps": 0
+    },
+    {
+      "id": 18928,
+      "book": 0,
+      "net": null,
+      "actualNet": 5.597503727999922,
+      "reason": null,
+      "parityDeltaR": null,
+      "exitAt": null,
+      "actualExitAt": 1794735355619,
+      "globalGaps": 0,
+      "depthGaps": 0
+    },
+    {
+      "id": 20040,
+      "book": 0,
+      "net": 4.843844471999964,
+      "actualNet": 4.743903472000055,
+      "reason": "trail",
+      "parityDeltaR": 0.009888417345816407,
+      "exitAt": 1794843936748,
+      "actualExitAt": 1794843936759,
+      "globalGaps": 2,
+      "depthGaps": 306
+    },
+    {
+      "id": 20202,
+      "book": 0,
+      "net": 2.4711917679999313,
+      "actualNet": 2.4711917679999313,
+      "reason": "trail",
+      "parityDeltaR": 0,
+      "exitAt": 1794864583650,
+      "actualExitAt": 1794864583650,
+      "globalGaps": 1,
+      "depthGaps": 440
+    },
+    {
+      "id": 20875,
+      "book": 0,
+      "net": 5.57225329200008,
+      "actualNet": 5.57225329200008,
+      "reason": "trail",
+      "parityDeltaR": 0,
+      "exitAt": 1794934521162,
+      "actualExitAt": 1794934521249,
+      "globalGaps": 0,
+      "depthGaps": 67
+    },
+    {
+      "id": 20935,
+      "book": 0,
+      "net": -10.36395585999999,
+      "actualNet": -10.36395585999999,
+      "reason": "sl",
+      "parityDeltaR": 0,
+      "exitAt": 1794949503562,
+      "actualExitAt": 1794949503634,
+      "globalGaps": 2,
+      "depthGaps": 2160
+    },
+    {
+      "id": 21694,
+      "book": 0,
+      "net": -13.085874539999905,
+      "actualNet": -13.085874539999905,
+      "reason": "sl",
+      "parityDeltaR": 0,
+      "exitAt": 1795022623623,
+      "actualExitAt": 1795022623633,
+      "globalGaps": 0,
+      "depthGaps": 401
+    },
+    {
+      "id": 23509,
+      "book": 0,
+      "net": -8.292555247999957,
+      "actualNet": -8.592555247999968,
+      "reason": "sl",
+      "parityDeltaR": 0.03480251802032152,
+      "exitAt": 1795187896966,
+      "actualExitAt": 1795187897323,
+      "globalGaps": 0,
+      "depthGaps": 47
+    },
+    {
+      "id": 23828,
+      "book": 0,
+      "net": -10.723257692000097,
+      "actualNet": -10.723257692000097,
+      "reason": "sl",
+      "parityDeltaR": 0,
+      "exitAt": 1795201964935,
+      "actualExitAt": 1795201965270,
+      "globalGaps": 0,
+      "depthGaps": 677
+    },
+    {
+      "id": 24161,
+      "book": 0,
+      "net": 4.3745494187999165,
+      "actualNet": 4.3745494187999165,
+      "reason": "trail",
+      "parityDeltaR": 0,
+      "exitAt": 1795232988232,
+      "actualExitAt": 1795232988280,
+      "globalGaps": 0,
+      "depthGaps": 0
+    },
+    {
+      "id": 24176,
+      "book": 2,
+      "net": 3.942490648799917,
+      "actualNet": 3.942490648799917,
+      "reason": "trail",
+      "parityDeltaR": 0,
+      "exitAt": 1795232988232,
+      "actualExitAt": 1795232988280,
+      "globalGaps": 0,
+      "depthGaps": 0
+    }
+  ],
+  "vmAudit": {
+    "at": 1795237298188,
+    "since": 1795235400000,
+    "mode": "paper",
+    "allowProduction": false,
+    "riskHash": "52aedb9b840fa3fe968c0c2b359e154e148386770aaa79f25fa64206dd24d49a",
+    "paperHash": "186aa1ac3572a39ab47ae457e42e6288bfb0ddca39b4cd7ed438ab2f98f21e4a",
+    "solCapture": {
+      "files": 57,
+      "missing": [],
+      "counts": {
+        "quote": 17772,
+        "update": 5957,
+        "study_market_sample": 377,
+        "study_position_sample": 2222,
+        "paper_bar": 2374,
+        "paper_closed_minute": 32,
+        "mark": 937,
+        "trade": 1608,
+        "funding": 32,
+        "checkpoint": 31,
+        "trade_rejected": 3,
+        "study_entry_context": 3,
+        "exit_depth": 3
+      },
+      "samples": 377,
+      "freshPriceSamples": 377,
+      "maxIntervalMs": 8842,
+      "lastSampleAt": 1795237292706
+    },
+    "observerGaps": [],
+    "sourceScans": [
+      {
+        "scanner_id": "trend-impulse-channels-zeiierman-maker",
+        "symbol": "SOLUSD",
+        "tf": "15m",
+        "at": 1795237201831,
+        "error": null
+      }
+    ],
+    "shadowActivity": [
+      {
+        "scanner_id": "trend-impulse-channels-zeiierman-maker",
+        "symbol": "SOLUSD",
+        "tf": "15m",
+        "bar_time": 1795236300000,
+        "at": 1795237274610,
+        "status": "scanned",
+        "reason": null,
+        "last_success_bar": 1795236300000,
+        "last_success_at": 1795237274610,
+        "entry_signals": 0
+      }
+    ],
+    "planEvents": [
+      {
+        "at": 1795232754107,
+        "action": "opened",
+        "reason": null,
+        "position_id": 24176,
+        "filled_at": 1795232760297
+      }
+    ],
+    "exchangeOrders": 0,
+    "earlyCohorts": [
+      {
+        "position_id": 24176,
+        "status": "unchanged",
+        "reason": null,
+        "last_at": 1795232985666,
+        "promotion_eligible": 0
+      }
+    ]
+  },
+  "validation": {
+    "serverTests": 1757,
+    "serverFailures": 0,
+    "serverTypecheck": "pass",
+    "replayTypecheck": "pass",
+    "dashboardBuild": "pass",
+    "dashboardLint": "pass"
+  },
+  "replayCodeHashes": {
+    "ops/replay-sol-maker-tick-depth.ts": "368787255e57d68dd5ac0a35871a6b6051282d216cb26679f0bf6d264dc9626a",
+    "ops/lib/sol-maker-baseline.ts": "1bd68ea1bacf8521c34afb3ad3d110664f5cd5f547ed3d00f74a3622a011ff9a"
+  }
+}
