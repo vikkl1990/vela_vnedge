@@ -19,13 +19,15 @@ Implementation:
 - Keep retained symbols on their current depth socket. New markets no longer invalidate unrelated healthy books.
 - Capture the next verified checkpoint when a symbol joins focused retention, and record advisory REST exit books and quote invalidations.
 - Yield between evidence-review cells/cohorts instead of blocking quote/exit/observer timers for a full review. Identical synchronous/cooperative verdicts and state transitions are regression tested; configuration changes abort the review.
-- Add one current-exit SOL maker reference, sharing the existing source event. Fresh crossing prints must fill its resting limit. Half-stop/base/stress observations are independent hypothetical records, never orders or promotion evidence.
+- Add one current-exit SOL maker reference, sharing the existing source event and current resting-limit model. Half-stop/base/stress observations are independent hypothetical records, never orders or promotion evidence. Entry execution labels remain explicit: a candle-model fill is not a verified exchange queue fill.
 
 Validation and deployment receipts are retained under `work/sol-replay-coverage-20261121-data` in the task workspace. The study continues prospectively; paper adoption still requires positive net improvement, fewer SLs, acceptable winner damage and the existing evidence rules.
 
 ## Live verification and follow-up
 
 Main `9fcbc4d` was deployed at 03:38 UTC. The reference received a fresh entry signal at 03:45:54 and a maker fill at 03:46:00 (position #24176). It closed by the current trail at 03:49:48 for **+$3.94249 net**, with $0.60381 in fees. The continuously observed half-stop cohort finished `unchanged`: no trigger and no winner cut. This research-policy result is separate from the earlier account-policy loss; it is not pooled promotion evidence.
+
+Replaying 6,345 recorded events from 13 checksum-verified focused segments reproduced the unchanged half-stop outcome at the actual observation timestamps, with no missing files or backward event times. The entry receipt is `limit-candle-model` and has no exact entry depth. The tape crossed the limit just before the modeled fill, but that print's quantity was only 1 against the reference's 11; a larger crossing print arrived 251 ms afterward. This confirms price movement, not queue priority or full-size fill parity. Keep this conditional exit comparison separate from execution-accuracy proof; no paper promotion follows from it.
 
 The 04:00 source scan expired in the background queue while the account scanner completed in 2.9 seconds. The 04:15 source scan subsequently completed at 04:16:14 with zero entries. The follow-up gives this exact reference an existing bounded timely-research turn; it does not occupy reserved account workers, run ahead of queued account/mirror work, or extend signal validity.
 
