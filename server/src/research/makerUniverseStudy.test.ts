@@ -11,8 +11,10 @@ import {planSnapshot,validateExecutionPlans} from '../paper/executionPlans.ts';
 import {eligibleEvidence} from '../evidence/trades.ts';
 import {MAKER_UNIVERSE_PLANS,MAKER_UNIVERSE_CELLS} from './makerUniverseStudy.ts';
 import {enableMakerUniverseStudy} from '../../../ops/enable-maker-universe-study.ts';
+import {ShadowRunner} from '../incubator/shadow.ts';
 
 function config(){
+
   const cfg=structuredClone(DEFAULT_CONFIG);
   cfg.execution.mode='paper';cfg.execution.allowProduction=false;cfg.incubator.enabled=true;
   cfg.paper.maxStopLossPct=3;
@@ -85,4 +87,65 @@ test('one source event records both arms once; only fresh depth and prints fill 
   assert.equal(result.kind,'maker-fill');assert.equal(result.matchedClosed,1);assert.equal(result.matchedDeltaNet,-13);
   assert.equal(result.matchedControlStops,0);assert.equal(result.matchedCandidateStops,1);assert.equal(result.matchedWinnersCut,1);
   assert.equal(result.promotionEligible,false);assert.equal(result.matchedEntryMismatch,0);
+});
+
+test('all maker arms record silent source scans without orders, new readings or duplicate source runs',async t=>{
+ const db=new Db(':memory:');t.after(()=>db.db.close());const cfg=config(),T=1800000000000;
+ cfg.executionPlans=structuredClone(MAKER_UNIVERSE_PLANS);
+ const e=new PaperEngine(db,()=>cfg,{book:2,now:()=>T}),svc=new PlanComparisons(db,()=>cfg,e,()=> 'source');
+ const before=JSON.stringify(cfg),identities=cfg.executionPlans.map(p=>planSnapshot(cfg,p,'source').signature);
+ const store={list:()=>[],liveMarks:()=>({}),setLiveMarks:()=>{},shadowFunnel:()=>({})};
+ let runs=0,depths=0;const scans:any[]=[];e.prepareEntryDepth=async()=>{depths++;};
+ const runner=new ShadowRunner({store,cfgRef:()=>cfg,paper:e,
+  registry:{get:(id:string)=>({id,name:id,status:'ok',patched:'indicator("source")'})},
+  pool:{size:2,reserved:1,stats:{},run:async()=>{runs++;return {ok:true,alerts:[],shapes:[],plots:[],labels:[],ms:1};}},
+  candles:{has:()=>true,get:(_symbol:string,tf:string)=>Array.from({length:60},(_,i)=>({time:T-(60-i)*TF_SECONDS[tf]*1000,open:100,close:100,high:101,low:99,volume:1000}))},
+  marketInfo:async()=>({contractValue:1,tickSize:.01}),
+  compareSourceScan:(scan:any)=>{scans.push(scan);svc.observeSourceScan(scan);},
+  compare:(input:any)=>svc.observe(input)} as any);
+ t.mock.method(Date,'now',()=>T);t.after(()=>runner.stop());await runner.sync();
+ assert.equal(runner.active.length,12,'two arms must reuse one source cell');
+ for(const row of runner.active){
+  assert.equal((runner as any).dispatch.opts.timely({r:row}),true,row.scannerId);
+  await (runner as any).run(row,T);
+ }
+ assert.equal(runs,12);assert.equal(scans.length,12);assert.equal(depths,0,'quiet diagnostics must not wait for pricing');
+ let cohorts=svc.view().cohorts;assert.equal(cohorts.length,24);assert.ok(cohorts.every(c=>c.scans===1&&c.signals===0&&c.filled===0));
+ for(const scan of scans)svc.observeSourceScan(scan);
+ assert.ok(svc.view().cohorts.every(c=>c.scans===1),'repeated same-bar receipt is idempotent');
+ assert.equal(db.get<any>('SELECT count(*) n FROM orders')!.n,0);assert.equal(db.get<any>('SELECT count(*) n FROM positions')!.n,0);
+ assert.equal(JSON.stringify(cfg),before);assert.deepEqual(cfg.executionPlans.map(p=>planSnapshot(cfg,p,'source').signature),identities);
+ // Diagnostics record a source entry but cannot bypass the actual admission path.
+ for(const scan of scans){
+  const barTime=scan.bars.at(-1).time,ev={kind:'entry',side:'long',price:100,sl:98,tp:[],barTime,barIndex:59,label:'source entry',source:'alert',message:''};
+  const next={...scan,at:T+TF_SECONDS[scan.tf]*1000,bars:scan.bars.map((b:any)=>({...b,time:b.time+TF_SECONDS[scan.tf]*1000})),events:[ev],drops:{'shape: not an entry by the scanner contract':1}};
+  svc.observeSourceScan(next);
+  assert.equal(e.pendingEntries().length,0);
+  svc.observe({...next,event:ev,refusal:'market: not allowed'});svc.observe({...next,event:ev,refusal:'market: not allowed'});
+ }
+ cohorts=svc.view().cohorts;assert.ok(cohorts.every(c=>c.scans===2&&c.signals===1&&c.filled===0&&c.reasons['market: not allowed']===1));
+ assert.equal(db.get<any>('SELECT count(*) n FROM orders')!.n,0);
+ cfg.executionPlans.forEach(p=>p.enabled=false);
+ for(const scan of scans)svc.observeSourceScan({...scan,at:T+999,bars:scan.bars.map((b:any)=>({...b,time:b.time+999}))});
+ assert.ok(svc.view().cohorts.every(c=>c.scans===2),'disabled arms cannot collect new receipts');
+});
+
+test('maker scan diagnostics cannot prevent source events reaching admission if receipt storage fails',async t=>{
+ const db=new Db(':memory:');t.after(()=>db.db.close());const cfg=config(),T=1800000000000,H=900000;
+ const id='trend-impulse-channels-zeiierman-maker';
+ cfg.executionPlans=structuredClone(MAKER_UNIVERSE_PLANS.filter(p=>p.scannerId===id));
+ cfg.paper.trendGate={enabled:false,emaLen:50,tf:'',mode:'follow'};cfg.risk.regime.enabled=false;
+ const e=new PaperEngine(db,()=>cfg,{book:2,now:()=>T}),svc=new PlanComparisons(db,()=>cfg,e,()=> 'source');
+ const bars=Array.from({length:60},(_,i)=>({time:T-(60-i)*H,open:100,close:100,high:101,low:99,volume:1000}));
+ const events:any[]=[];
+ const runner=new ShadowRunner({store:{list:()=>[],liveMarks:()=>({}),setLiveMarks:()=>{},shadowFunnel:()=>({})},
+ cfgRef:()=>cfg,paper:e,registry:{get:()=>({id,name:id,status:'ok',patched:'indicator("source")'})},
+ pool:{size:2,reserved:1,stats:{},run:async()=>({ok:true,alerts:[],plots:[],labels:[],shapes:[{title:'Upper Retest',style:'shape.triangleup',times:[T-H]}],ms:1})},
+ candles:{has:()=>true,get:()=>bars},marketInfo:async()=>({contractValue:1,tickSize:.01}),
+ compareSourceScan:()=>{throw Error('diagnostic store unavailable');},
+ compare:(input:any)=>{events.push(input);svc.observe({...input,refusal:'market: test refusal'});}} as any);
+ t.mock.method(Date,'now',()=>T);t.after(()=>runner.stop());await runner.sync();
+ await (runner as any).run(runner.active[0],T);
+ assert.equal(events.length,1);assert.equal(events[0].event.label,'Upper Retest');assert.equal(events[0].event.side,'long');
+ assert.ok(svc.view().cohorts.every(c=>c.signals===1&&c.reasons['market: test refusal']===1));
 });
