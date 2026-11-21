@@ -31,10 +31,11 @@ export function fillComparison(db:Db,id:number):FillComparison|null{
 
    if(d){
     depth.receivedAt=d.receivedAt;depth.readyAt=null;
-    const causal=levels(d.asks)&&levels(d.bids)&&d.side===pos.side&&entry.qty===o.qty&&entry.price===o.price&&Number.isFinite(d.consumedQty??0)&&(d.consumedQty??0)>=0&&Number.isFinite(d.requestedQty)&&d.requestedQty>0&&[d.receivedAt,d.exchangeAt,d.evaluatedAt].every(t=>Number.isFinite(t)&&t<=o.at&&t>0)&&d.receivedAt<=d.evaluatedAt&&d.exchangeAt<=d.evaluatedAt;
+    const causal=levels(d.asks)&&levels(d.bids)&&d.side===pos.side&&entry.qty===o.qty&&entry.price===o.price&&Number.isFinite(d.consumedQty??0)&&(d.consumedQty??0)>=0&&Number.isFinite(d.requestedQty)&&d.requestedQty>0&&[d.receivedAt,d.exchangeAt].every(t=>Number.isFinite(t)&&t<=o.at&&t>0)&&Number.isFinite(d.evaluatedAt)&&d.receivedAt<=d.evaluatedAt&&d.exchangeAt<=d.evaluatedAt;
     const result=causal?depthFill(o.side==='buy'?d.asks:d.bids,d.requestedQty,pos.side,d.consumedQty??0):null;
     depth.price=result?.coverage===1?result.vwap:null;
     depth.status=!causal?'Invalid depth evidence':depth.price===null?'Incomplete depth':'Recorded entry depth';
+    if(causal&&d.evaluatedAt>o.at)depth.status+=`; evaluation ${d.evaluatedAt-o.at} ms after recorded fill timestamp`;
    }
   }else{
    const matches=reports.filter(v=>v.at===o.at&&v.reason===o.reason&&v.qty===o.qty&&v.price===o.price);

@@ -63,3 +63,11 @@ test('maker report comparisons retain executable size and passive-depth limits w
  assert.match(f.maker!,/7 executable contracts \/ 20 printed at 99.9/);assert.match(f.maker!,/queue position unverified/);
  assert.equal(f.depth.price,null);assert.equal(f.depth.deltaBps,null);assert.equal(f.depth.receivedAt,T+2000);
 });
+test('entry comparison separates the saved book observation clock from later synchronous evaluation',t=>{
+ const x=fixture(t);x.enter();x.bar(T+2000);const p=x.e.openPositions()[0];
+ const d={receivedAt:p.entryAt-10,exchangeAt:p.entryAt-15,evaluatedAt:p.entryAt+18,side:'long',requestedQty:p.qty,bids:[{price:99.9,size:100}],asks:[{price:100.05,size:100}]};
+ x.db.run('UPDATE entry_fill_evidence SET depth=? WHERE position_id=?',JSON.stringify(d),p.id);
+ const f=fillComparison(x.db,p.id)!.fills[0];assert.equal(f.depth.price,100.05);assert.match(f.depth.status,/evaluation 18 ms after recorded fill timestamp/);assert.ok(f.depth.deltaBps!>0);
+ d.receivedAt=p.entryAt+1;x.db.run('UPDATE entry_fill_evidence SET depth=? WHERE position_id=?',JSON.stringify(d),p.id);
+ assert.equal(fillComparison(x.db,p.id)!.fills[0].depth.price,null,'a book observed after the recorded fill cannot prove it');
+});
