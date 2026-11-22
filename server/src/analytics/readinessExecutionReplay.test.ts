@@ -1,10 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {createHash} from 'node:crypto';
 import {Db} from '../db.ts';
 import {FundingJournal} from '../execution/fundingJournal.ts';
 import {DEFAULT_CONFIG} from '../config.ts';
 import {PaperEngine} from '../paper/engine.ts';
-import {saveTradePolicy,tradePolicyIdFor} from '../paper/tradePolicy.ts';
+import {saveTradePolicy,tradePolicyIdFor,stablePolicy} from '../paper/tradePolicy.ts';
+import {requireReadinessMaintenance,importReadinessReceipts} from './readinessReplayImport.ts';
 import {strategyIdFor} from '../paper/strategyIdentity.ts';
 import {currentPolicyEvidence} from './policyHealth.ts';
 import {executionReplayEvidence,executionPolicyCompatible,replayReadinessExecution,recordExecutionReplay,type ExecutionReplayEvent} from './readinessExecutionReplay.ts';
@@ -176,4 +178,26 @@ test('funding replay extension preserves existing no-funding version-2 receipts'
  new FundingJournal(x.db);
  x.db.run("INSERT INTO funding_settlements(symbol,at,status,source) VALUES(?,?,'unresolved','missed-feed')",x.p.symbol,T-100000);
  assert.equal(executionReplayEvidence(x.db,x.p.id,x.previous,x.current),'identical');
+});
+test('audit writes refuse every service state except verified inactive',()=>{
+ for(const state of ['active','activating','deactivating','reloading','failed','unknown',''])assert.throws(()=>requireReadinessMaintenance(()=>state),/Stop vnedge/);
+ assert.throws(()=>requireReadinessMaintenance(()=>{throw Error('unavailable');}),/Cannot verify/);
+ assert.doesNotThrow(()=>requireReadinessMaintenance(()=> 'inactive\n'));
+});
+test('receipt importer refuses active services and unreviewed reports before writing',t=>{
+ const x=fixture(t),results=[x.run()],catalog=new Map([[x.p.id,x.current]]),digest=createHash('sha256').update(stablePolicy(results)).digest('hex');
+ assert.throws(()=>importReadinessReceipts(x.db,results,catalog,digest,()=>requireReadinessMaintenance(()=> 'active')),/Stop vnedge/);
+ assert.throws(()=>importReadinessReceipts(x.db,results,catalog,'0'.repeat(64),()=>{}),/checksum mismatch/);
+ assert.equal(x.db.get<any>('SELECT count(*) n FROM readiness_execution_replays').n,0);
+});
+test('offline receipt import is atomic and idempotent and never overwrites trades',t=>{
+ const x=fixture(t),proof=x.run(),catalog=new Map([[x.p.id,x.current]]),digest=(r:unknown)=>createHash('sha256').update(stablePolicy(r)).digest('hex');
+ const before=JSON.stringify(x.db.all('SELECT * FROM positions'));
+ assert.throws(()=>importReadinessReceipts(x.db,[proof,proof],catalog,digest([proof,proof]),()=>{}),/duplicate replay subject/);
+ assert.equal(x.db.get<any>('SELECT count(*) n FROM readiness_execution_replays').n,0);
+ assert.deepEqual(importReadinessReceipts(x.db,[proof],catalog,digest([proof]),()=>{}),{recorded:1,retained:0,identical:1});
+ assert.deepEqual(importReadinessReceipts(x.db,[proof],catalog,digest([proof]),()=>{}),{recorded:0,retained:1,identical:1});
+ assert.equal(JSON.stringify(x.db.all('SELECT * FROM positions')),before);
+ x.db.run('UPDATE positions SET fees=fees+1 WHERE id=?',x.p.id);
+ assert.throws(()=>importReadinessReceipts(x.db,[proof],catalog,digest([proof]),()=>{}),/subject changed/);
 });

@@ -10,6 +10,7 @@ import {Db} from '../server/src/db.ts';
 import {DEFAULT_CONFIG} from '../server/src/config.ts';
 import {PaperEngine} from '../server/src/paper/engine.ts';
 import {FundingJournal} from '../server/src/execution/fundingJournal.ts';
+import {requireReadinessMaintenance} from '../server/src/analytics/readinessReplayImport.ts';
 import type {TradePolicy} from '../server/src/paper/tradePolicy.ts';
 import {executionPolicyCompatible,replayReadinessExecution,recordExecutionReplay,type ExecutionReplayEvent} from '../server/src/analytics/readinessExecutionReplay.ts';
 
@@ -50,6 +51,7 @@ if(args.includes('--record')){
  const file=arg('--record');if(!file||!fs.existsSync(file))throw Error('existing database required');
  const cfg=JSON.parse(fs.readFileSync(path.join(path.dirname(file),'config.json'),'utf8'));
  if(cfg.execution?.mode!=='paper'||cfg.execution?.allowProduction!==false)throw Error('recording requires paper mode and disabled production');
+ requireReadinessMaintenance();
  live=new Db(file);
 }
 const results=[];
@@ -63,7 +65,7 @@ try{
   const window=manifest.windows?.[r.symbol]?.find((w:any)=>Array.isArray(w)&&w.length===2&&Number.isFinite(w[0])&&Number.isFinite(w[1])&&w[0]<=r.entry_at-60000&&w[1]>=r.exit_at);
   const selected={...coverage,verified:!!window,selectionWindow:window?{symbol:r.symbol,from:window[0],to:window[1]}:undefined};
   const result=replayReadinessExecution(db,r.id,old,item.current,events,selected);
-  if(live)recordExecutionReplay(live,result);
+  if(live){requireReadinessMaintenance();recordExecutionReplay(live,result);}
   results.push(result);
   if(results.length%25===0)process.stderr.write(JSON.stringify({processed:results.length})+'\n');
  }

@@ -42,3 +42,11 @@ Remaining sizing differences were traced through the existing same-size proof. S
 Regression coverage includes long/short funding, late reconciliation, changed exits, invalid/stale/missing/unresolved settlements, quiet capture, wrong/truncated symbol windows and preservation of existing receipts. Full server tests and an independent ARM VM replay are required before deployment. Final live counts and runtime verification are saved in deployment artifacts; the table above stays frozen so rolling-window movement cannot obscure reconciliation.
 
 This recovery does not establish live readiness. Other readiness tests must pass using the larger sample.
+
+## Deployment outcome and import incident
+
+PR #103 deployed at 15:10 UTC. Local and ARM VM replay results matched across all 402 subjects, retaining 130 receipts and restoring 56. The live count reached **188** (186 replay-equivalent plus two current-policy trades). Configuration bytes and all 138 held policies were preserved; exchange orders remained zero. Server tests: 1,889; VM targeted tests: 102; Node 22/24 and dashboard/ops CI passed.
+
+The live receipt import was an operational mistake: repeated SQLite writer transactions coincided with lock warnings and one fatal restart at 15:16 UTC. Six in-flight scans were abandoned; the supervisor recovered. At the follow-up probe all 33 logged scans were successful and 23 shadow entries had filled, with the feed connected. These observations do not recover the abandoned scan work. No missing fill was invented. Decision 321 replaces online importing with a guarded, offline, atomic receipt import during the existing service-stop window; expensive replay remains online and read-only.
+
+With recovered losses included, readiness still fails expectancy (lower bound −0.079%) and 95th-percentile drawdown (34.1%, limit 10%), as well as the 200-trade count. Recovering evidence is not permission to arm live trading.
