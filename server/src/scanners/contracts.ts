@@ -1,4 +1,5 @@
 import {plotLifecycle,ML_RSI_NATIVE,TREND_CONTINUATION,STEALTH_NATIVE} from './plotLifecycle.ts';
+import {upstreamLifecycle,BAR_BALANCE_V1} from './upstreamLifecycle.ts';
 import {createHash} from 'node:crypto';
 import {authorReview, authorReviewCatalog, type AuthorReviewCatalog} from '../library/authorReview.ts';
 import type {ScannerConfig} from '../config.ts';
@@ -55,6 +56,13 @@ export function scannerContract(s:LoadedScanner, sc:Partial<ScannerConfig>, plan
       gaps.push('OHLC-only port: source adapter supplies no funding data; funding entry filter is inactive. Execution still charges funding.');
     }
     if(s.id===STEALTH_NATIVE)capabilities.push('Old-side flip closure and causal break-even stop amendment; TP1/TP2 are milestones');
+    if(upstreamLifecycle(s.id)){
+      capabilities.push('Versioned author entry/exit observations; old-side reversal and causal stop amendments');
+      if(plan?.exitPolicy==='account-ladder')capabilities.push('Comparison control uses account exits and ignores author close/amendment instructions');
+      gaps.push('Prospective exit comparison only; profitability and paper admission remain unproven.');
+      if(s.id===BAR_BALANCE_V1)gaps.push('Balance exit waits at least three bars. Hard risk stop remains active even though the author tests its stop at candle close.');
+      else gaps.push('Author TP-first candle statistics are not execution evidence; hard risk stops and causal fills take precedence.');
+    }
   }
   else if(nativeReader&&native?.role!=='Context'&&native?.role!=='Manual / restricted'){
     adapter='Native lifecycle reader';capabilities.push('Validated native entry geometry','Side-specific exits and stop amendments');

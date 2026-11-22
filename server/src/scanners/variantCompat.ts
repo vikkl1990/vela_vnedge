@@ -1,8 +1,13 @@
 import {createHash} from 'node:crypto';
+import {SOL_MAKER_FILTER_OFF,SOL_MAKER_FILTER_SOURCE_SHA} from './solMakerExperiment.ts';
 import {lifecycleSources} from './plotLifecycle.ts';
 
 /** Compatibility work must not rewrite the source that an existing scanner earned evidence on. */
 export function variantCompatibleSource(id: string, source: string): {source: string; patch?: string} {
+  if(id===SOL_MAKER_FILTER_OFF){
+    if(createHash('sha256').update(source).digest('hex')!==SOL_MAKER_FILTER_SOURCE_SHA)throw Error('SOL maker source changed: review the trend-filter experiment');
+    return {source};
+  }
   const lifecycle=lifecycleSources[id];
   if(lifecycle){
     if(createHash('sha256').update(source).digest('hex')!==lifecycle.hash)throw Error('Source changed: review native lifecycle exports');

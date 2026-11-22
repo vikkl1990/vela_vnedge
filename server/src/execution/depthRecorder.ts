@@ -11,6 +11,9 @@ export class DepthRecorder {
  private capture?:DepthCapture;private checkpointAt=new Map<string,number>();
  constructor(db:Db,symbols=['BTCUSD','ETHUSD','SOLUSD'],retry:(symbol:string)=>void=()=>{},raw=true){this.db=db;this.symbols=[...symbols];this.retry=retry;this.raw=raw;db.db.exec(`CREATE TABLE IF NOT EXISTS depth_tape(id INTEGER PRIMARY KEY AUTOINCREMENT,received_at INTEGER NOT NULL,symbol TEXT NOT NULL,kind TEXT NOT NULL,payload TEXT NOT NULL,bytes INTEGER NOT NULL);CREATE INDEX IF NOT EXISTS depth_tape_at ON depth_tape(received_at);`);}
  setCapture(capture:DepthCapture){this.capture=capture;this.checkpointAt.clear();}
+ /** Capture a newly selected stream from its next verified update, without refreshing
+  * an old book or forcing an execution-feed resubscription. */
+ requestCheckpoint(symbol:string){this.checkpointAt.delete(symbol);}
  private record(symbol:string,kind:string,value:unknown,now:number){
   // Research capture must never throw into the price/execution feed.
   try{this.capture?.(symbol,kind,value,now);}catch{this.failures++;}

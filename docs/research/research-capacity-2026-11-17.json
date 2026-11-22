@@ -1,0 +1,86 @@
+{
+  "asOf": "2026-11-17T12:28:31.294000+00:00",
+  "baselineCommit": "a65b7cca72d6d26d182b074e19c56f57b472ef27",
+  "liveBaseline": {
+    "samples": 300,
+    "backloggedSamples": 60,
+    "busyWorkersWhileBacklogged": {
+      "6": 53,
+      "5": 1,
+      "4": 1,
+      "2": 1,
+      "1": 1,
+      "0": 3
+    },
+    "first": {
+      "at": 1794919528792,
+      "metrics": {
+        "vnedge_worker_queue_depth": 0.0,
+        "vnedge_worker_busy": 6.0,
+        "vnedge_worker_pool_size": 8.0,
+        "vnedge_worker_respawns": 1904.0,
+        "vnedge_process_rss_bytes": 3559358464.0
+      },
+      "dispatch": {
+        "offered": 21710,
+        "replaced": 0,
+        "expired": 600,
+        "removed": 0,
+        "started": 20743,
+        "finished": 20737,
+        "failed": 0,
+        "maxPending": 1674,
+        "lastWaitMs": 22128,
+        "maxWaitMs": 292302,
+        "evidenceTurns": 14289,
+        "fairTurns": 5185,
+        "timelyTurns": 1269,
+        "pending": 367,
+        "inFlight": 6,
+        "at": 1794919525470
+      }
+    },
+    "last": {
+      "at": 1794919872941,
+      "metrics": {
+        "vnedge_worker_queue_depth": 0.0,
+        "vnedge_worker_busy": 0.0,
+        "vnedge_worker_pool_size": 8.0,
+        "vnedge_worker_respawns": 1934.0,
+        "vnedge_process_rss_bytes": 2128449536.0
+      },
+      "dispatch": {
+        "offered": 21710,
+        "replaced": 0,
+        "expired": 600,
+        "removed": 0,
+        "started": 21110,
+        "finished": 21110,
+        "failed": 0,
+        "maxPending": 1674,
+        "lastWaitMs": 108829,
+        "maxWaitMs": 292302,
+        "evidenceTurns": 14542,
+        "fairTurns": 5277,
+        "timelyTurns": 1291,
+        "pending": 0,
+        "inFlight": 0,
+        "at": 1794919868489
+      }
+    }
+  },
+  "stressTest": {
+    "description": "Synthetic 1600-job wave, 800 ms compute then 1000 ms depth/admission wait per job, six research workers plus two paper reservations. Not a forecast of VM throughput.",
+    "baselineFinished": 984,
+    "baselineExpired": 616,
+    "splitFinished": 1600,
+    "splitExpired": 0,
+    "paperLatencyMsBeforeAndAfter": 200,
+    "maxOutstanding": 18,
+    "bound": 24
+  },
+  "limitations": [
+    "The live sample was mostly worker-bound; pipelining is not proof all combined 4h waves will meet the unchanged deadline.",
+    "No freshness, allocation, source history, interpretation, evidence or entry/exit policy changed."
+  ]
+}

@@ -18,5 +18,5 @@ test('EVAA migration is scoped, validated, backed up and idempotent',t=>{
   const next=JSON.parse(fs.readFileSync(file,'utf8'));assert.deepEqual(next.paper.reclaimTrials,[other,EVAA_RECLAIM]);
   next.paper.reclaimTrials=[other];assert.deepEqual(next,cfg,'only the requested rule changes');
   assert.equal(enableEvaaReclaim(file).changed,false);
-  next.execution.mode='live';fs.writeFileSync(file,JSON.stringify(next));assert.throws(()=>enableEvaaReclaim(file),/paper execution/);
+  next.execution.mode='live';fs.writeFileSync(file,JSON.stringify(next));assert.throws(()=>enableEvaaReclaim(file),/paper execution|Saved configuration fails validation/);
 });

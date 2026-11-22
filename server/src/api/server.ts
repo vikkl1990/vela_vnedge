@@ -1,4 +1,7 @@
+import {fillComparison} from './fillComparison.ts';
+import {chartReceipt} from '../scanners/chartReceipts.ts';
 import {gatedSignalPage} from '../evidence/gatedSignals.ts';
+import {positionsHealthReader} from './positionsHealth.ts';
 import {isAssetGroup,isAssetSector} from '../../../shared/assetClass.ts';
 import { pineLibraries } from '../pine/libraries.ts';
 import { costAudit } from '../paper/costAudit.ts';
@@ -31,6 +34,7 @@ import { ContractRegistry } from '../scanners/contracts.ts';
 import { deltaConnectionRoutes } from '../connections/routes.ts';
 import {telegramRoutes} from '../telegram/routes.ts';
 import { Journal, journalFilter } from '../analytics/journal.ts';
+import { configView, configPatch } from './configView.ts';
 
 const log = logger.scoped('api');
 
@@ -44,6 +48,7 @@ class HttpError extends Error { status: number; constructor(status: number, msg:
 export class ApiServer {
   private routes: Route[] = [];
   private sse = new Set<http.ServerResponse>();
+  private background: Array<ReturnType<typeof setInterval>> = [];
   /** Users, passwords and sessions; shares the application database. */
   readonly auth: AuthStore;
   private authCtx: ReturnType<typeof createAuth>;
@@ -59,7 +64,6 @@ export class ApiServer {
     authRoutes((m, r, h) => this.add(m, r, h), this.authCtx, req => this.userFor(req));
     deltaConnectionRoutes((m, r, h) => this.add(m, r, h), app.deltaConnection);
     telegramRoutes((m,r,h)=>this.add(m,r,h),app.telegram,req=>this.userFor(req));
-    setInterval(() => { try { this.auth.sweep(); } catch { /* ignore */ } }, 3600_000).unref?.();
     this.defineRoutes();
     for (const ext of EXTENSIONS) ext((method, route, handler) => this.add(method, route, (_r, _s, params, url, body) => handler(params, url, body)), app);
     this.wireEvents();
@@ -68,11 +72,26 @@ export class ApiServer {
   listen(port: number, host = '127.0.0.1'): Promise<void> {
     return new Promise((resolve, reject) => {
       this.server.once('error', reject);
-      this.server.listen(port, host, () => { this.server.off('error', reject); log.info(`listening on http://${host}:${port}`); resolve(); });
+      this.server.listen(port, host, () => { this.server.off('error', reject); this.startBackground(); log.info(`listening on http://${host}:${port}`); resolve(); });
     });
   }
 
-  close() { for (const r of this.sse) r.end(); this.server.close(); }
+  close() {
+    for (const timer of this.background) clearInterval(timer);
+    this.background = [];
+    for (const r of this.sse) r.end();
+    this.server.close();
+  }
+
+  /** Broadcast and session sweep start only after the socket is bound. */
+  private startBackground() {
+    if (this.background.length) return;
+    const sweep = setInterval(() => { try { this.auth.sweep(); } catch { /* ignore */ } }, 3600_000);
+    const stats = setInterval(() => this.broadcast('stats', this.app.paper.stats()), 5_000);
+    const health = setInterval(() => this.broadcast('health', this.app.health()), 10_000);
+    for (const timer of [sweep, stats, health]) timer.unref?.();
+    this.background.push(sweep, stats, health);
+  }
 
   /** The signed-in user for a request, or null. Reads the session cookie only. */
   userFor(req: http.IncomingMessage): User | null {
@@ -88,7 +107,11 @@ export class ApiServer {
   }
 
   private async dispatch(req: http.IncomingMessage, res: http.ServerResponse) {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Content-Security-Policy', "frame-ancestors 'none'");
     const url = new URL(req.url ?? '/', 'http://localhost');
+    // The Prometheus alias goes through exactly the same session/role checks as the API.
+    if (/^\/metrics\/?$/.test(url.pathname)) url.pathname = '/api/metrics';
     // Session cookies travel on this API, so the origin cannot be a wildcard. Only a local
     // development origin is reflected, and only then are credentials allowed.
     const origin = String(req.headers.origin ?? '');
@@ -208,26 +231,35 @@ export class ApiServer {
     a.paper.on('accounting', (e: any) => this.broadcast('accounting', e));
     a.paper.on('stats', (s: any) => this.broadcast('stats', s));
     logger.on('entry', (e: any) => { if (e.level !== 'debug') this.broadcast('log', e); });
-    setInterval(() => this.broadcast('stats', a.paper.stats()), 5_000).unref();
-    setInterval(() => this.broadcast('health', a.health()), 10_000).unref();
   }
 
   // ---- routes ----
 
   private defineRoutes() {
     const a = this.app;
-    this.add('GET', '/api/health', () => a.health());
+    this.add('GET', '/api/health', (req, res) => {
+      const health = a.health();
+      json(res, health.status === 'ok' ? 200 : 503, health, req);
+    });
+    for (const method of ['GET', 'HEAD']) this.add(method, '/api/metrics', (req, res, _p, url) => {
+      const asJson = url.searchParams.get('format') === 'json';
+      let text: string;
+      try { text = asJson ? JSON.stringify(a.ops.metrics.snapshot()) : a.ops.metrics.render(); }
+      catch { throw new HttpError(500, 'Metrics unavailable'); }
+      res.writeHead(200, { 'Content-Type': asJson ? 'application/json; charset=utf-8' : 'text/plain; version=0.0.4; charset=utf-8', 'Cache-Control': 'no-store', 'Content-Length': Buffer.byteLength(text) });
+      res.end(req.method === 'HEAD' ? undefined : text);
+    });
     this.add('GET', '/api/trade-monitor', () => a.tradeMonitor.view());
     this.add('GET', '/api/trade-monitor/positions/:id', (_r,_s,p) => {const id=Number(p.id);if(!Number.isSafeInteger(id)||id<1)throw new HttpError(400,'Invalid position');return a.tradeMonitor.monitor.detail(id);});
-    this.add('GET', '/api/config', () => ({ ...a.config.get(), resolvedSymbols: a.resolvedSymbols }));
+    this.add('GET', '/api/config', () => ({ ...configView(a.config.get()), resolvedSymbols: a.resolvedSymbols }));
     // decision 119: the measured defaults, so the Settings page can show every value as a diff against them
-    this.add('GET', '/api/config/defaults', () => DEFAULT_CONFIG);
+    this.add('GET', '/api/config/defaults', () => configView(DEFAULT_CONFIG));
     this.add('PUT', '/api/config', async (_r, _s, _p, _u, body) => {
       let next;
       try { a.assertExecutionUnchanged(body?.execution); } catch (e: any) { throw new HttpError(409, String(e?.message ?? e)); }
-      try { next = a.config.update(body ?? {}); } catch (e: any) { throw new HttpError(400, String(e?.message ?? e)); }
+      try { next = a.config.update(configPatch(body ?? {}, a.config.get())); } catch (e: any) { throw new HttpError(400, String(e?.message ?? e)); }
       await a.onConfigChanged();
-      return { ...next, resolvedSymbols: a.resolvedSymbols };
+      return { ...configView(next), resolvedSymbols: a.resolvedSymbols };
     });
 
     this.add('GET', '/api/markets', async () => a.markets());
@@ -350,6 +382,14 @@ export class ApiServer {
       try { return pineLibraries().get(url.searchParams.get('path') ?? '', url.searchParams.get('hash') ?? ''); }
       catch (error) { throw new HttpError(409, (error as Error).message); }
     });
+    this.add('GET','/api/scanners/:id/chart-receipt',(_r,_s,p,url)=>{
+      if(!a.registry.get(p.id))throw new HttpError(404,'unknown scanner');
+      return chartReceipt(a.db,p.id,url.searchParams.get('symbol')??'',url.searchParams.get('tf')??'');
+    });
+    this.add('GET','/api/positions/:id/fill-comparison',(_r,_s,p)=>{
+      const id=Number(p.id);if(!Number.isSafeInteger(id)||id<1)throw new HttpError(400,'Invalid position');
+      const result=fillComparison(a.db,id);if(!result)throw new HttpError(404,'No such position');return result;
+    });
     this.add('GET', '/api/scanners/:id/source', (_r, _s, p) => { const s = a.registry.get(p.id); if (!s) throw new HttpError(404, 'unknown scanner'); const read = a.config.get().scanners[p.id]; return { id: s.id, name: s.name, source: s.source, patched: s.patched, patches: s.patches, sourceHash: sourceHash(s.patched), inputs: read?.inputs ?? {}, timezone: read?.timezone ?? 'UTC' }; });
     this.add('GET', '/api/scanners/:id/overlay', (_r, _s, p, url) => {
       const symbol = url.searchParams.get('symbol') ?? a.scanners.symbolsFor(p.id)[0];
@@ -382,6 +422,7 @@ export class ApiServer {
       });
     });
     this.add('GET', '/api/positions', () => a.paper.openPositions().map(p => a.paper.view(p, a.marks.mark(p.symbol) ?? null)));
+    this.add('GET', '/api/positions/health', positionsHealthReader(a));
     this.add('POST', '/api/positions/:id/close', (_r, _s, p) => { const pos = a.paper.closeManual(Number(p.id)); if (!pos) throw new HttpError(404, 'no open position'); return a.paper.view(pos); });
     // the path a trade took, for the forensic view: samples plus level events (decision 35)
     this.add('GET', '/api/positions/:id/path', (_r, _s, p) => {
@@ -493,7 +534,7 @@ export class ApiServer {
       lockCache.set(k, { at: Date.now(), v });
       return v;
     });
-    this.add('GET', '/api/execution-quality', () => ({ at: Date.now(), mode: a.config.get().execution.mode, fillSource: a.config.get().paper.fillSource, quotes: a.marks.quoteSummary(a.config.get().paper.quoteMaxAgeMs), funding: a.fundingJournal.summary(), depth: a.depthRecorder.summary(), replay: a.replayArchive.status(), account: a.accountAudit.summary(), observer: a.accountObserver.summary() }));
+    this.add('GET', '/api/execution-quality', () => ({ at: Date.now(), mode: a.config.get().execution.mode, fillSource: a.config.get().paper.fillSource, quotes: a.marks.quoteSummary(a.config.get().paper.quoteMaxAgeMs), funding: a.fundingJournal.summary(), depth: a.depthRecorder.summary(), replay: a.replayArchive.status(), timing:a.executionTiming?.view(), account: a.accountAudit.summary(), observer: a.accountObserver.summary() }));
     this.add('GET', '/api/tape-audit', (_r, _s, _p, url) => a.tapeAudit.summary(Date.now() - Math.min(90, Math.max(1, Number(url.searchParams.get('days') ?? 14))) * 86_400_000));
     for (const route of ['/api/order-flow', '/api/footprints']) this.add('GET', route, (_r, _s, _p, url) => {
       let q; try { q = flowQuery(url.searchParams); } catch (e: any) { throw new HttpError(400, e.message); }

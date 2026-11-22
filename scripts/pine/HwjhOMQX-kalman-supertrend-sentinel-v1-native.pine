@@ -1,0 +1,1476 @@
+//@version=6
+// ══════════════════════════════════════════════════════════
+// KALMAN SUPERTREND SENTINEL [WillyAlgoTrader]
+// ══════════════════════════════════════════════════════════
+// Author:  Willy | WillyAlgoTrader
+// Version: 5.3.2
+// ══════════════════════════════════════════════════════════
+indicator(
+     title            = "Kalman SuperTrend Sentinel [WillyAlgoTrader]",
+     shorttitle       = "KSTS",
+     overlay          = true,
+     max_lines_count  = 500,
+     max_labels_count = 500,
+     max_polylines_count = 100)
+
+// ══════════════════════════════════════════════════════════
+// 2. CONSTANTS
+// ══════════════════════════════════════════════════════════
+const string INDICATOR_VERSION = "v5.3.2"
+const string INDICATOR_SHORT   = "KSTS"
+
+const string GRP_MAIN   = "⚙️ Main Settings"
+const string GRP_VISUAL = "🎨 Visual Settings"
+const string GRP_FILTER = "🔍 Filters"
+const string GRP_RISK   = "🛡️ Risk Management"
+const string GRP_DASH   = "📊 Dashboard"
+const string GRP_ALERT  = "🔔 Alerts"
+const string GRP_COLORS = "🎨 Colors"
+const string GRP_ADV    = "🔧 Advanced"
+
+const string P_CUSTOM = "Custom"
+const string SL_ATR   = "ATR"
+const string SL_WICK  = "Wick-Anchored"
+const string ST_ALL   = "All-Time"
+const string ST_24H   = "24 Hours"
+
+const string SES_LONDON = "London"
+const string SES_NY     = "New York"
+const string SES_LNY    = "London + New York"
+const string SES_ASIA   = "Asia"
+const string TZ_EXCH    = "Exchange"
+
+const string FC_WHISKER = "Whisker"
+const string FC_LINES   = "Lines"
+
+const string SESS_LONDON = "0800-1700"
+const string SESS_NY     = "0800-1700"
+const string SESS_ASIA   = "0900-1800"
+const string TZ_LONDON   = "Europe/London"
+const string TZ_NY       = "America/New_York"
+const string TZ_ASIA     = "Asia/Tokyo"
+
+const int LINE_FORWARD_BARS = 20
+const int LINE_UPDATE_BARS  = 5
+const int LABEL_OFFSET_BARS = 1
+const int BE_DIM_TRANSP     = 70
+const int FORM_LEN          = 10
+const int MIN_WARMUP_BARS   = 50
+const int SEED_BARS         = 10
+const int GAUGE_WIDTH       = 8
+const int BASE_TRANSP       = 55
+const int BG_TRANSP         = 90
+const int SESSION_TRANSP    = 90
+const int CHOP_TRAIL_TRANSP = 60
+const int CHOP_BG_TRANSP    = 88
+const int CONE_LINE_TRANSP  = 60
+const int PB_LABEL_TRANSP   = 35
+const int FC_PATH_TRANSP    = 25
+const int FC_EDGE_TRANSP    = 55
+const int FC_CAP_BARS       = 1
+const int FC_LABEL_BARS     = 2
+const int MARKER_TRANSP     = 30
+const int MS_DAY            = 86400000
+const int STATS_PRUNE_DAYS  = 31
+const int STATS_30D_DAYS    = 30
+
+const float CHI2_MEDIAN       = 0.455
+const float SLOPE_RESET_SHARE = 0.25
+const float SHIFT_RETRACE     = 0.5
+const float VOL_HYST          = 0.5
+const float WICK_BUFFER_ATR   = 0.25
+const float WICK_MIN_ATR      = 0.5
+
+const float SCORE_EFF_MAX     = 40.0
+const float SCORE_VOL_MAX     = 30.0
+const float SCORE_VOL_NORMAL  = 20.0
+const float SCORE_VOL_EXP     = 5.0
+const float SCORE_THRUST_MAX  = 30.0
+const float ER_FULL           = 0.6
+const float THRUST_FULL       = 1.5
+const float TREND_VR_ENTER    = 1.2
+const float TREND_VR_EXIT     = 1.1
+const float CHOP_VR_EXIT_GAP  = 0.1
+const float CONE_CALIB        = 1.3
+const float PB_EXTENSION      = 1.0
+const int   SCORE_GOOD        = 55
+const int   SCORE_FAIR        = 35
+const float Z_STRONG          = 1.5
+
+// ══════════════════════════════════════════════════════════
+// 3. INPUTS
+// ══════════════════════════════════════════════════════════
+// ── Main ──
+sourceInput = input.source(close, "Source", group = GRP_MAIN,
+     tooltip = "Price series the Kalman filter tracks.\n" +
+               "• Close: standard, reacts to every close\n" +
+               "• HL2 / OHLC4: average the whole bar, so a close at a bar extreme counts less\n" +
+               "The SuperTrend flips when this source closes beyond the trail.")
+presetInput = input.string("Default", "Signal Preset", options = ["Conservative", "Default", "Aggressive", "Scalping", "Custom"], group = GRP_MAIN,
+     tooltip = "Sets Smoothing Length and Band Factor at once.\n" +
+               "Trail flips per 1000 bars on a pure random walk (classic SuperTrend 10 / 3×ATR: about 28):\n" +
+               "• Conservative: 30 / 4.0σ — about 21, latest flips\n" +
+               "• Default: 20 / 3.0σ — about 32, balanced\n" +
+               "• Aggressive: 14 / 2.5σ — about 41, earlier flips\n" +
+               "• Scalping: 10 / 2.0σ — about 56, for 1–5m charts\n" +
+               "• Custom: uses the two values below")
+smoothLenInput = input.int(21, "  ├ Smoothing Length (Custom)", minval = 2, maxval = 200, group = GRP_MAIN,
+     tooltip = "Used only when Signal Preset = Custom; any other preset overrides it. How smooth the Kalman baseline (trail center) is, read like an EMA period.\n" +
+               "• Higher = smoother baseline, fewer flips\n" +
+               "• Lower = baseline hugs price, more flips\n" +
+               "• Slope is part of the model, so the baseline does not lag on a steady trend like an EMA does\n" +
+               "• Recommended: 10–40")
+bandFactorInput = input.float(2.0, "  └ Band Factor ×σ (Custom)", minval = 0.5, maxval = 10.0, step = 0.1, group = GRP_MAIN,
+     tooltip = "Used only when Signal Preset = Custom; any other preset overrides it. Distance of the trail from the Kalman baseline, in robust one-bar σ.\n" +
+               "σ ignores spikes, so a single shock does not widen the trail the way ATR does.\n" +
+               "• Higher = wider trail, fewer and later flips\n" +
+               "• Lower = tighter trail, more flips\n" +
+               "• Recommended: 2.0–4.0")
+spikeProofInput = input.bool(true, "Spike-Proof Flips", group = GRP_MAIN,
+     tooltip = "A close beyond the trail on a spike bar (one-bar change above the Spike Threshold) does not flip the trend at once; the flip waits for the next close.\n" +
+               "• On: a lone spike that reverts never flips the trail\n" +
+               "• Off: classic behaviour, any close beyond the trail flips it")
+
+// ── Visual ──
+themeInput = input.string("Auto", "Theme", options = ["Auto", "Dark", "Light"], group = GRP_VISUAL,
+     tooltip = "Chart color theme.\n" +
+               "• Auto: detects from chart background\n" +
+               "• Dark: optimized for dark backgrounds\n" +
+               "• Light: optimized for light/white backgrounds")
+showTrailInput = input.bool(true, "Show SuperTrend Line", group = GRP_VISUAL,
+     tooltip = "The ratcheting trail (width 2): below price in Bull color during an uptrend, above price in Bear color during a downtrend.\n" +
+               "It only moves in the trend direction and breaks at each flip. Hidden during warmup.")
+showBaseInput = input.bool(true, "Show Kalman Baseline", group = GRP_VISUAL,
+     tooltip = "The Kalman filter line the trail is built around (thin gray, width 1). Turn off for a cleaner chart; the trend fill still uses it.")
+showFillInput = input.bool(true, "Show Trend Fill", group = GRP_VISUAL,
+     tooltip = "Soft trend-colored fill between the SuperTrend line and the Kalman baseline.\n" +
+               "Needs Show SuperTrend Line; the baseline is used even when hidden.")
+showSignalsInput = input.bool(true, "Show Buy/Sell Labels", group = GRP_VISUAL,
+     tooltip = "▲ BUY / ▼ SELL on the bar where a trade is opened.\n" +
+               "Hover a label for score breakdown, trend strength, volatility and SL | TP1.")
+showOutliersInput = input.bool(true, "Show Spike Markers", group = GRP_VISUAL,
+     tooltip = "Drawn on closed bars only:\n" +
+               "• Small dot: one-bar spike beyond the Spike Threshold, down-weighted by the filter\n" +
+               "• Diamond: the price held the jump for Level Shift Confirmation bars and the Kalman baseline caught up\n" +
+               "Dots above the bar = upside, below = downside.")
+showPullbackInput = input.bool(true, "Show Pullback Marks", group = GRP_VISUAL,
+     tooltip = "↻ re-entry candidates inside a trend, shown only when there is no open position in that direction:\n" +
+               "1) price first extends at least 1σ beyond the Kalman baseline\n" +
+               "2) then pulls back into the zone between the baseline and the SuperTrend line without flipping it\n" +
+               "3) then closes back beyond the baseline and beyond the previous bar's extreme\n" +
+               "Not shown in Chop. Informational: the trade engine does not trade them.")
+showEdgeMarksInput = input.bool(false, "Show Forecast Edge Marks on History", group = GRP_VISUAL,
+     tooltip = "Off by default: the live forecast already labels its edges. On: marks every past bar where price left the range forecast by the Kalman filter a few bars earlier (Edge Horizon in Advanced):\n" +
+               "• ⚠ Scenario break: close beyond the edge AGAINST the trend. The trend scenario is breaking before the SuperTrend flips: consider tightening the stop or skipping new entries in the trend direction. Test data: the SuperTrend flipped within 20 bars after ~83% of these marks (55% for a random bar), median 3 bars later\n" +
+               "• ◎ Exhaustion: close beyond the edge WITH the trend. The move runs faster than the model expects: consider partial profit. Test data: the next 10 bars moved ~0.26σ against the trend on average\n" +
+               "One mark per excursion: a new one needs price back inside first. Closed bars only.")
+showConeInput = input.bool(true, "Show Forecast", group = GRP_VISUAL, inline = "cone",
+     tooltip = "Kalman projection from the last bar: where the baseline goes if the current slope holds, with a ± Width × forecast σ range (level and slope uncertainty plus random-walk spread).\n" +
+               "Calibrated on test data: about 62–67% of prices land inside the 1σ range after the chosen number of bars, 91–95% inside 2σ (fewer on fat-tailed markets).\n" +
+               "• Bars: how far ahead (5–100)\n" +
+               "• Width: range in forecast σ, 1 or 2 recommended\n" +
+               "Drawn on the last bar only; it is a projection, not a target.")
+coneBarsInput = input.int(20, "Bars", minval = 5, maxval = 100, group = GRP_VISUAL, inline = "cone")
+coneSigmaInput = input.float(1.0, "Width σ", minval = 0.5, maxval = 3.0, step = 0.5, group = GRP_VISUAL, inline = "cone")
+forecastStyleInput = input.string("Whisker", "  ├ Forecast Style", options = ["Whisker", "Lines", "Cone"], group = GRP_VISUAL,
+     tooltip = "How the forecast is drawn:\n" +
+               "• Whisker: dashed projection path ending in a ±σ error bar with a price tag. Minimal\n" +
+               "• Lines: dashed path plus thin dotted edges of the range, no fill\n" +
+               "• Cone: dashed path plus a filled range")
+showEdgeLabelsInput = input.bool(true, "  └ Label Forecast Edges", group = GRP_VISUAL,
+     tooltip = "Tags on the forecast:\n" +
+               "• ⚠ Break: short orange tick at Edge Horizon bars ahead, Break Edge σ against the trend (Advanced; 5 bars, 0.75σ by default). A close beyond it means the trend scenario is breaking before the SuperTrend flips: tighten the stop or skip new entries in the trend direction. Test data: flip within 20 bars after ~83% of such closes. If the SuperTrend line is nearer, the tick sits on the line\n" +
+               "• ◎ Exhaustion: the end of the range WITH the trend. A close beyond it means the move runs faster than the model expects: consider partial profit. Test data at 20 bars / 1σ: next 10 bars ~0.23σ against the trend on average\n" +
+               "• The far end AGAINST the trend is shown as a plain price: by then the SuperTrend has usually flipped already\n" +
+               "With no trend (warmup) only prices are shown.")
+showChopBgInput = input.bool(false, "Show Chop Background", group = GRP_VISUAL,
+     tooltip = "Faint gray tint on bars where the market regime is Chop. The SuperTrend line is also drawn paler there.")
+showBgInput = input.bool(false, "Show Volatility Background", group = GRP_VISUAL,
+     tooltip = "Tints the chart background by volatility regime:\n" +
+               "• Amber: expansion (bar changes above the baseline)\n" +
+               "• Blue: compression (bar changes below the baseline)\n" +
+               "Thresholds are set in Filters.")
+showSessionBgInput = input.bool(false, "Show Session Background", group = GRP_VISUAL,
+     tooltip = "Faint tint on bars inside the selected session. Needs Session Filter; hidden on daily and higher timeframes.")
+showBarColorInput = input.bool(false, "Color Candles", group = GRP_VISUAL,
+     tooltip = "Tint candles by the current trend (Bull / Bear colors). Neutral bars keep their own color.\n" +
+               "Off by default: it can conflict with other indicators.")
+signalFontSizeInput = input.string("Small", "Signal Label Size", options = ["Tiny", "Small", "Normal", "Large", "Huge"], group = GRP_VISUAL,
+     tooltip = "Font size for ▲ BUY / ▼ SELL labels.")
+labelFontSizeInput = input.string("Small", "SL/TP & Level Label Size", options = ["Tiny", "Small", "Normal", "Large", "Huge"], group = GRP_VISUAL,
+     tooltip = "Font size for Entry / SL / TP labels.")
+showWatermarkInput = input.bool(true, "Show Watermark", group = GRP_VISUAL,
+     tooltip = "Display 'WillyAlgoTrader' watermark at the bottom center of the chart.")
+
+// ── Filters ──
+blockChopInput = input.bool(true, "Block Entries in Chop", group = GRP_FILTER,
+     tooltip = "Skip new entries from flat while the market regime is Chop (variance ratio below the Chop Threshold): price keeps reverting, the classic SuperTrend whipsaw zone.\n" +
+               "On a synthetic market alternating trend and chop it cut trades by ~48% and turned the total result from −148R to +82R (SL Mode SuperTrend) and from −266R to +5R (SL Mode ATR). Synthetic data, not a guarantee.\n" +
+               "Reversals of an open trade are never blocked.")
+chopVrInput = input.float(0.8, "  └ Chop Threshold (VR)", minval = 0.4, maxval = 1.0, step = 0.05, group = GRP_FILTER,
+     tooltip = "Variance ratio below which the regime becomes Chop; it ends 0.1 higher. Trend starts above 1.2 and ends below 1.1.\n" +
+               "VR = variance of moves over half the smoothing length / (that many × one-bar variance). Medians: mean-reverting chop 0.63, random walk 0.94, trend 1.41.\n" +
+               "• 0.8: flags ~74% of chop bars and ~10% of trend bars\n" +
+               "• 0.7: flags ~64% of chop and ~8% of trend\n" +
+               "• Recommended: 0.7–0.85")
+blockExpansionInput = input.bool(true, "Block Entries in Volatility Expansion", group = GRP_FILTER,
+     tooltip = "Skip new entries from flat while volatility is in expansion.\n" +
+               "• On: avoids entering right after a shock, when stops are often too tight\n" +
+               "• Off: every trend start can open a trade\n" +
+               "Reversals of an open trade are never blocked. Blocked flips can be sent as info alerts (Alert on Trend Flip).")
+volHighInput = input.float(1.3, "  ├ Expansion Threshold (×)", minval = 1.05, maxval = 5.0, step = 0.05, group = GRP_FILTER,
+     tooltip = "Volatility = typical one-bar change now / its baseline. Above this ratio the regime becomes Expansion.\n" +
+               "It ends halfway back to 1.0 (e.g. 1.15 for 1.3), so the regime does not flicker.\n" +
+               "• On a market with steady volatility the ratio stays within 0.81–1.18 about 90% of the time\n" +
+               "• Recommended: 1.25–1.6")
+volLowInput = input.float(0.8, "  └ Compression Threshold (×)", minval = 0.1, maxval = 0.95, step = 0.05, group = GRP_FILTER,
+     tooltip = "Below this ratio the regime becomes Compression (quiet market, often before a breakout).\n" +
+               "It ends halfway back to 1.0 (e.g. 0.9 for 0.8).\n" +
+               "• Recommended: 0.7–0.85")
+counterSlopeInput = input.float(0.0, "Counter-Slope Limit (z)", minval = 0.0, maxval = 5.0, step = 0.1, group = GRP_FILTER,
+     tooltip = "Skip new entries from flat when the Kalman slope still points strongly against the flip: z below −limit in the flip direction. 0 = off.\n" +
+               "At a flip the slope usually still lags the old direction (median z −0.3), so a flip is never required to have a positive slope.\n" +
+               "• 1.0: blocks about 11% of flips (strongest counter-slope)\n" +
+               "• 0.5: blocks about 39%\n" +
+               "• Reversals of an open trade are never blocked")
+minScoreInput = input.int(0, "Min Score", minval = 0, maxval = 100, group = GRP_FILTER,
+     tooltip = "Skip new entries from flat with a score below this value. 0 = off.\n" +
+               "Score = Efficiency (0–40) + Volatility (0–30) + Thrust (0–30), see the BUY / SELL tooltip.\n" +
+               "Share of flips blocked on a random walk: 30 → 14%, 40 → 46%, 50 → 73%, 60 → 90%.\n" +
+               "• Recommended: 30–40. Reversals of an open trade are never blocked.")
+sessionFilterInput = input.bool(false, "Session Filter", group = GRP_FILTER,
+     tooltip = "Open new trades from flat only inside the selected session. Open trades are still managed and closed outside it, and reversals always pass.\n" +
+               "Ignored on daily and higher timeframes.\n" +
+               "Blocked flips can be sent as info alerts (Alert on Trend Flip).")
+sessionPresetInput = input.string("London + New York", "  ├ Session", options = ["London + New York", "London", "New York", "Asia", "Custom"], group = GRP_FILTER,
+     tooltip = "Trading window; local exchange hours, so daylight saving is handled automatically:\n" +
+               "• London: 08:00–17:00 Europe/London\n" +
+               "• New York: 08:00–17:00 America/New_York\n" +
+               "• London + New York: either one is open (about 08:00 London to 17:00 New York)\n" +
+               "• Asia: 09:00–18:00 Asia/Tokyo\n" +
+               "• Custom: the window and time zone below")
+sessionCustomInput = input.session("0900-1700", "  ├ Custom Window", group = GRP_FILTER,
+     tooltip = "Used only when Session = Custom. Start–end in the Custom Time Zone; tick days to restrict weekdays.\n" +
+               "An overnight window such as 2200-0600 is supported.")
+sessionTzInput = input.string("Exchange", "  └ Custom Time Zone", options = ["Exchange", "UTC", "Europe/London", "Europe/Moscow", "America/New_York", "Asia/Tokyo"], group = GRP_FILTER,
+     tooltip = "Time zone of the Custom Window and of Skip Weekends.\n" +
+               "• Exchange: the symbol's own exchange time zone\n" +
+               "• Others: fixed IANA zones with daylight saving where it applies")
+skipWeekendInput = input.bool(false, "Skip Weekends", group = GRP_FILTER,
+     tooltip = "No new trades from flat on Saturday and Sunday (in the Custom Time Zone). Mainly for crypto, where weekend liquidity is thin.\n" +
+               "Open trades are still managed; reversals always pass. Works with or without the Session Filter.")
+
+// ── Risk management ──
+slModeInput = input.string("ATR", "SL Mode", options = ["SuperTrend", "Wick-Anchored", "ATR"], group = GRP_RISK,
+     tooltip = "How the stop-loss is placed at entry:\n" +
+               "• SuperTrend: at the SuperTrend line of the entry bar (min distance 0.5×ATR). Trades usually end by a reversal, the classic SuperTrend behaviour (random walk test: ~72% of exits are reversals, flat ~7% of the time)\n" +
+               "• Wick-Anchored: beyond the signal bar wick + 0.25×ATR buffer (min distance 0.5×ATR). Tight: exits come from SL / BE / TP long before the next flip (flat ~90% of the time)\n" +
+               "• ATR: fixed SL Multiplier × ATR distance from entry (Risk Preset sets the multiplier). Like Wick-Anchored, exits mostly come from SL / BE / TP before the next flip (random walk test: flat ~70% of the time)")
+riskPresetInput = input.string("Balanced", "Risk Preset", options = ["Conservative", "Balanced", "Aggressive", "Scalping", "Custom"], group = GRP_RISK,
+     tooltip = "TP multipliers (and the SL multiplier of the ATR mode):\n" +
+               "• Conservative: SL 2.5×ATR, TP 1R/2R/4R\n" +
+               "• Balanced: SL 1.5×ATR, TP 1R/2R/3R\n" +
+               "• Aggressive: SL 1.0×ATR, TP 1.5R/2.5R/4R\n" +
+               "• Scalping: SL 0.8×ATR, TP 0.8R/1.5R/2R\n" +
+               "• Custom: values below. SuperTrend and Wick-Anchored stops ignore the SL part.")
+atrLenRiskInput = input.int(13, "ATR Length", minval = 5, maxval = 50, group = GRP_RISK,
+     tooltip = "ATR period for stop-loss calculation.\n" +
+               "• 14 = standard, works on most timeframes\n" +
+               "• Lower = tighter stops, more stops hit\n" +
+               "• Higher = wider stops, fewer stops hit")
+slMultInput = input.float(1.5, "  ├ SL Multiplier ×ATR (Custom)", minval = 0.5, maxval = 5.0, step = 0.1, group = GRP_RISK,
+     tooltip = "Used only when Risk Preset = Custom and SL Mode = ATR. Stop distance as a multiple of ATR.\n" +
+               "• Scalping 0.8–1.2 | Swing 1.5–2.5")
+tp1MultInput = input.float(1.0, "  ├ TP1 ×Risk (Custom)", minval = 0.5, maxval = 5.0, step = 0.1, group = GRP_RISK,
+     tooltip = "Used only when Risk Preset = Custom. TP1 as a multiple of the actual SL distance.\n" +
+               "A trade is a win once TP1 is touched. Must be below TP2.")
+tp2MultInput = input.float(2.0, "  ├ TP2 ×Risk (Custom)", minval = 1.0, maxval = 10.0, step = 0.1, group = GRP_RISK,
+     tooltip = "Used only when Risk Preset = Custom. TP2 as a multiple of risk. Registered only, does not close the trade.\n" +
+               "Must be between TP1 and TP3.")
+tp3MultInput = input.float(3.0, "  └ TP3 ×Risk (Custom)", minval = 1.5, maxval = 15.0, step = 0.1, group = GRP_RISK,
+     tooltip = "Used only when Risk Preset = Custom. Final target as a multiple of risk; closes the trade as a win.\n" +
+               "Must be above TP2.")
+beInput = input.bool(true, "Break-Even After TP1", group = GRP_RISK,
+     tooltip = "Move the stop to the entry price once TP1 is reached.\n" +
+               "Positions stopped at break-even after TP1 count as wins.")
+trailStopInput = input.bool(false, "Trail Stop with SuperTrend", group = GRP_RISK,
+     tooltip = "After entry the stop follows the SuperTrend line on every closed bar. It only tightens, never loosens, and applies from the next bar.\n" +
+               "• Off: the stop stays where it was placed, moved only by Break-Even After TP1\n" +
+               "• On: each move sends a TRAIL STOP alert / 'trail' move_sl JSON (Alert on TP / Break-Even)\n" +
+               "The SL line on the chart keeps the original level; the SuperTrend line shows the live stop.")
+showSlTpInput = input.bool(true, "Show SL/TP Lines", group = GRP_RISK,
+     tooltip = "Entry / SL / TP1-3 lines of the active trade.\n" +
+               "Lines stay on the chart after the trade closes and are replaced at the next entry.")
+showSlTpLabelsInput = input.bool(true, "Show SL/TP Labels", group = GRP_RISK,
+     tooltip = "Filled price labels at the end of the SL/TP lines. Requires Show SL/TP Lines.")
+showPctOnLabelsInput = input.bool(true, "Show % Distance on Labels", group = GRP_RISK,
+     tooltip = "Append % distance from entry, e.g. 'SL 1.2300 (-0.36%)'.")
+entryLineStyleInput = input.string("Dotted", "Entry Line Style", options = ["Solid", "Dashed", "Dotted"], group = GRP_RISK,
+     tooltip = "Entry is a reference, not an action level — keep it subtle.\n" +
+               "• Solid / Dashed / Dotted: line style, width fixed at 1")
+slLineStyleInput = input.string("Solid", "SL Line Style", options = ["Solid", "Dashed", "Dotted"], group = GRP_RISK,
+     tooltip = "Style of the stop-loss line (width 2).\n" +
+               "• Solid / Dashed / Dotted: line style")
+tpLineStyleInput = input.string("Dashed", "TP Line Style", options = ["Solid", "Dashed", "Dotted"], group = GRP_RISK,
+     tooltip = "Style for TP1/TP2/TP3 (width 1). On hit, a TP line turns solid teal.\n" +
+               "• Solid / Dashed / Dotted: line style")
+
+// ── Dashboard ──
+showDashInput = input.bool(true, "Show Dashboard", group = GRP_DASH,
+     tooltip = "Sectioned information table: market, Kalman state, open trade, statistics.")
+dashPosInput = input.string("Top Right", "Dashboard Position", options = ["Top Left", "Top Right", "Bottom Left", "Bottom Right", "Middle Right"], group = GRP_DASH,
+     tooltip = "Corner of the chart for the dashboard.")
+dashFontSizeInput = input.string("Small", "Dashboard Font Size", options = ["Small", "Normal", "Large", "Huge"], group = GRP_DASH,
+     tooltip = "Font size for the dashboard table. Section dividers and the\n" +
+               "version footer render one step smaller to preserve hierarchy.")
+showMarketSecInput = input.bool(true, "  ├ Market section", group = GRP_DASH,
+     tooltip = "Trend, timeframe, position, last signal.")
+showKalmanSecInput = input.bool(true, "  ├ Kalman section", group = GRP_DASH,
+     tooltip = "Active preset, SuperTrend line, trend strength, score, volatility, market regime, forecast, last spike, last level shift.")
+showTradeSecInput = input.bool(true, "  ├ Trade section", group = GRP_DASH,
+     tooltip = "Entry / SL / TP1-3 / R:R / SL distance of the open trade.")
+showStatsSecInput = input.bool(true, "  └ Stats section", group = GRP_DASH,
+     tooltip = "Trades / wins / losses / win rate / form. All stats reset on chart reload.")
+statsPeriodInput = input.string("All-Time", "Win Rate Period", options = ["24 Hours", "30 Days", "All-Time"], group = GRP_DASH,
+     tooltip = "Time window for the Stats section (Trades / Wins / Losses / Win rate):\n" +
+               "• 24 Hours: trades closed in the last 24h (relative to the latest bar)\n" +
+               "• 30 Days: trades closed in the last 30 days\n" +
+               "• All-Time: all trades on the loaded chart history\n" +
+               "Form strip always shows the last trades regardless of period.\n" +
+               "⚠️ All stats reset on chart reload")
+
+// ── Alerts ──
+webhookInput = input.bool(false, "Webhook JSON Format", group = GRP_ALERT,
+     tooltip = "Send ALL alerts as JSON for webhook integrations (entries, TP hits, break-even, closures, reversals, info).\n" +
+               "Off: human-readable text.")
+alertTpInput = input.bool(true, "Alert on TP / Break-Even", group = GRP_ALERT,
+     tooltip = "TP1, TP2 hits, the break-even move and trailing-stop moves.")
+alertSlInput = input.bool(true, "Alert on SL Hit, TP3 & Reversal", group = GRP_ALERT,
+     tooltip = "Trade closures: SL / BE / trailing stop-out, TP3, reversal.")
+alertFlipInput = input.bool(false, "Alert on Trend Flip", group = GRP_ALERT,
+     tooltip = "Informational: the trail flipped without opening a trade (entry blocked by a filter: chop, volatility, session, score or slope).")
+alertShiftInput = input.bool(false, "Alert on Level Shift", group = GRP_ALERT,
+     tooltip = "Informational: a price jump held for Level Shift Confirmation bars and the Kalman baseline caught up.")
+alertPullbackInput = input.bool(false, "Alert on Pullback", group = GRP_ALERT,
+     tooltip = "Informational: a ↻ pullback re-entry candidate appeared (same rules as Show Pullback Marks; works even when the marks are hidden).")
+alertEdgeInput = input.bool(false, "Alert on Forecast Edge", group = GRP_ALERT,
+     tooltip = "Informational: ⚠ scenario break and ◎ exhaustion marks (same rules as Show Forecast Edge Marks).")
+alertVolInput = input.bool(false, "Alert on Volatility Regime", group = GRP_ALERT,
+     tooltip = "Informational: volatility entered Expansion or Compression.")
+
+// ── Colors ──
+bullColorInput = input.color(#00E676, "Bull", inline = "clr", group = GRP_COLORS,
+     tooltip = "Bull / Bear: SuperTrend line, trend fill, spike markers, candle tint and the background of BUY / SELL labels.")
+bearColorInput = input.color(#FF5252, "Bear", inline = "clr", group = GRP_COLORS)
+
+// ── Advanced ──
+volLenInput = input.int(20, "Volatility Window", minval = 5, maxval = 200, group = GRP_ADV,
+     tooltip = "Bars used to estimate the current typical one-bar change (σ) that sets the trail width.\n" +
+               "• Shorter = adapts faster to new volatility; doubled volatility shows as Expansion within about 10 bars at 20\n" +
+               "• Longer = steadier, slower to react\n" +
+               "• Recommended: 14–30")
+baseLenInput = input.int(100, "Baseline Volatility Window", minval = 20, maxval = 1000, group = GRP_ADV,
+     tooltip = "Bars for the long-run σ that the current σ is compared with to define the volatility regime.\n" +
+               "Must be longer than Volatility Window. Warmup lasts at least this many bars.\n" +
+               "• Recommended: 4–6 × Volatility Window")
+outlierSigmaInput = input.float(4.0, "Spike Threshold (σ)", minval = 2.5, maxval = 10.0, step = 0.1, group = GRP_ADV,
+     tooltip = "A bar whose one-bar change exceeds this many σ is a spike: its weight in the filter drops to threshold / size.\n" +
+               "• At 4.0: about 0.03% of bars on normally distributed changes, about 1.5% on fat-tailed markets; a 5σ spike is caught about 80% of the time, 7σ always\n" +
+               "• Lower = more bars damped\n" +
+               "• Recommended: 3.5–5.0")
+regimeLenInput = input.int(100, "Regime Window", minval = 30, maxval = 500, group = GRP_ADV,
+     tooltip = "Bars used to estimate the variance ratio behind the Trend / Chop regime.\n" +
+               "• Shorter = reacts faster to a change of regime, noisier\n" +
+               "• Longer = steadier, slower\n" +
+               "• Recommended: 80–150")
+edgeHorizonInput = input.int(5, "Edge Horizon (bars)", minval = 2, maxval = 20, group = GRP_ADV,
+     tooltip = "Forecast edge marks compare each close with the Kalman forecast made this many bars earlier.\n" +
+               "• Shorter = earlier, more frequent marks\n" +
+               "• Longer = fewer marks; at 10 bars scenario breaks almost never happen before the SuperTrend flips\n" +
+               "• Recommended: 3–5")
+breakEdgeInput = input.float(0.75, "  ├ Break Edge (σ)", minval = 0.25, maxval = 3.0, step = 0.25, group = GRP_ADV,
+     tooltip = "Distance AGAINST the trend from the forecast center, in forecast σ, that triggers ⚠.\n" +
+               "Horizon 5: 0.75 → ~29 marks per 1000 bars, flip within 20 bars after ~83%; 1.0 → ~11 marks, ~85%.\n" +
+               "• Recommended: 0.5–1.0")
+exhEdgeInput = input.float(1.5, "  └ Exhaustion Edge (σ)", minval = 0.5, maxval = 4.0, step = 0.25, group = GRP_ADV,
+     tooltip = "Distance WITH the trend from the forecast center, in forecast σ, that triggers ◎.\n" +
+               "Horizon 5: 1.5 → ~28 marks per 1000 bars, next 10 bars −0.26σ on average; 2.0 → ~14 marks, −0.15σ.\n" +
+               "• Recommended: 1.5–2.0")
+shiftRunInput = input.int(3, "Level Shift Confirmation (bars)", minval = 1, maxval = 10, group = GRP_ADV,
+     tooltip = "After a spike, if price holds at least half of the jump for this many bars, the jump is accepted as a real level shift and the Kalman baseline catches up at once.\n" +
+               "If price gives back more than half first, it was a spike and stays ignored.\n" +
+               "• Lower = faster catch-up after gaps (2 bars: ~2 bars to 90%, 4 bars: ~9)\n" +
+               "• Higher = stronger resistance to spikes\n" +
+               "• Recommended: 2–4")
+
+// ══════════════════════════════════════════════════════════
+// INPUT VALIDATION
+// ══════════════════════════════════════════════════════════
+[effSmoothLen, effBandFactor] = switch presetInput
+    "Conservative" => [30, 4.0]
+    "Aggressive"   => [14, 2.5]
+    "Scalping"     => [10, 2.0]
+    P_CUSTOM       => [smoothLenInput, bandFactorInput]
+    => [20, 3.0]
+
+[effSLMult, effTP1m, effTP2m, effTP3m] = switch riskPresetInput
+    "Conservative" => [2.5, 1.0, 2.0, 4.0]
+    "Aggressive"   => [1.0, 1.5, 2.5, 4.0]
+    "Scalping"     => [0.8, 0.8, 1.5, 2.0]
+    P_CUSTOM       => [slMultInput, tp1MultInput, tp2MultInput, tp3MultInput]
+    => [1.5, 1.0, 2.0, 3.0]
+
+if barstate.isfirst
+    if effTP1m >= effTP2m or effTP2m >= effTP3m
+        runtime.error("Invalid TP multipliers: required TP1 < TP2 < TP3")
+    if effSLMult <= 0
+        runtime.error("SL Multiplier must be greater than 0")
+    if baseLenInput <= volLenInput
+        runtime.error("Baseline Volatility Window must be longer than Volatility Window")
+
+// ══════════════════════════════════════════════════════════
+// 4. THEME DETECTION & COLORS
+// ══════════════════════════════════════════════════════════
+isDark = switch themeInput
+    "Dark"  => true
+    "Light" => false
+    =>         color.r(chart.bg_color) < 128
+
+TEXT_COLOR      = isDark ? #E0E0E0 : #1A1A1A
+TEXT_MUTED      = isDark ? color.new(#9E9E9E, 0) : color.new(#757575, 0)
+TEXT_BRIGHT     = isDark ? #FFFFFF : #000000
+BULL_TEXT       = isDark ? #00E676 : #00A152
+BEAR_TEXT       = isDark ? #FF5252 : #D32F2F
+NEUTRAL_TEXT    = isDark ? #FFEB3B : #F57F17
+BULL_LABEL_TEXT = #004D25
+BEAR_LABEL_TEXT = #FFFFFF
+TABLE_BG        = isDark ? color.new(#131722, 5) : color.new(#FFFFFF, 5)
+TABLE_BORDER    = isDark ? color.new(#2A2E39, 0) : color.new(#D0D0D0, 0)
+TABLE_ROW_ALT   = isDark ? color.new(#1C2030, 0) : color.new(#F0F4F8, 0)
+HEADER_BG       = isDark ? color.new(#0D47A1, 0) : color.new(#1565C0, 0)
+HEADER_BG_BULL  = color.new(#0F6E56, 0)
+HEADER_BG_BEAR  = color.new(#A32D2D, 0)
+HEADER_TEXT     = #FFFFFF
+LINE_SUBTLE     = isDark ? color.new(#666666, 0) : color.new(#999999, 0)
+LINE_GRID       = isDark ? color.new(#333333, 50) : color.new(#CCCCCC, 50)
+WM_COLOR        = isDark ? color.new(#FFFFFF, 80) : color.new(#000000, 80)
+VOL_HOT_COLOR   = NEUTRAL_TEXT
+VOL_COLD_COLOR  = isDark ? #64B5F6 : #1565C0
+
+int FILL_TRANSP = isDark ? 88 : 82
+
+// ── Risk palette (muted, theme-aware) ──
+SL_COLOR       = isDark ? color.new(#E57373, 0) : color.new(#B71C1C, 0)
+TP1_COLOR      = isDark ? color.new(#66BB6A, 30) : color.new(#388E3C, 30)
+TP2_COLOR      = isDark ? color.new(#66BB6A, 40) : color.new(#388E3C, 40)
+TP3_COLOR      = isDark ? color.new(#66BB6A, 0) : color.new(#388E3C, 0)
+ENTRY_COLOR    = isDark ? color.new(#5C8AAE, 0) : color.new(#34495E, 0)
+TP_LABEL_COLOR = isDark ? color.new(#66BB6A, 0) : color.new(#388E3C, 0)
+TP_HIT_COLOR   = isDark ? color.new(#4DB6AC, 0) : color.new(#00695C, 0)
+BE_COLOR       = isDark ? color.new(#FFA726, 0) : color.new(#E65100, 0)
+LABEL_TEXT     = isDark ? #1A1A1A : #FFFFFF
+
+// ══════════════════════════════════════════════════════════
+// 5. TYPES & FUNCTIONS
+// ══════════════════════════════════════════════════════════
+safeDiv(float num, float den, float fallback = 0.0) =>
+    den != 0 and not na(num) and not na(den) ? num / den : fallback
+
+fmtPrice(float v) =>
+    na(v) ? "—" : str.tostring(v, format.mintick)
+
+fmtBarsAgo(int barIdx) =>
+    int ago = bar_index - barIdx
+    na(barIdx) ? "—" : ago == 0 ? "this bar" : ago == 1 ? "1 bar ago" : str.tostring(ago) + " bars ago"
+
+fmtSigned(float v, string fmt) =>
+    (v >= 0 ? "+" : "") + str.tostring(v, fmt)
+
+formatPctFromEntry(float level, float entry) =>
+    string res = ""
+    if showPctOnLabelsInput and not na(level) and not na(entry) and entry != 0
+        float pct   = (level - entry) / entry * 100.0
+        string sign = pct >= 0 ? "+" : ""
+        res := " (" + sign + str.tostring(pct, "#.##") + "%)"
+    res
+
+sizeFromString(string s) =>
+    s == "Tiny" ? size.tiny : s == "Small" ? size.small : s == "Normal" ? size.normal : s == "Large" ? size.large : s == "Huge" ? size.huge : size.small
+
+sizeDownFromString(string s) =>
+    s == "Tiny" ? size.tiny : s == "Small" ? size.tiny : s == "Normal" ? size.small : s == "Large" ? size.normal : s == "Huge" ? size.large : size.tiny
+
+lineStyleFromString(string s) =>
+    s == "Dashed" ? line.style_dashed : s == "Dotted" ? line.style_dotted : line.style_solid
+
+jNum(float v) =>
+    na(v) ? "null" : str.tostring(v, format.mintick)
+
+jsonHead(string ev, string action, int side, int id) =>
+    '{"event":"' + ev + '","action":"' + action + '","side":"' + (side == 1 ? "long" : side == -1 ? "short" : "none") + '","id":' + (na(id) ? "null" : str.tostring(id)) + ',"ticker":"' + syminfo.tickerid + '","tf":"' + timeframe.period + '","time":' + str.tostring(time) + ',"price":' + jNum(close)
+
+buildGauge(float value, float maxVal, int width) =>
+    string result = ""
+    int filled = maxVal <= 0 ? 0 : math.round(math.min(width, math.max(0.0, value / maxVal * width)))
+    for i = 0 to width - 1
+        result += i < filled ? "▰" : "▱"
+    result
+
+periodStats(array<int> tms, array<bool> wns, int cutoff) =>
+    int w = 0
+    int l = 0
+    int n = array.size(tms)
+    if n > 0
+        for i = 0 to n - 1
+            if array.get(tms, i) >= cutoff
+                if array.get(wns, i)
+                    w += 1
+                else
+                    l += 1
+    [w, l]
+
+dashRow(table tb, int r, string k, string v, color vc, string tip, string fs) =>
+    color rb = r % 2 == 0 ? TABLE_BG : TABLE_ROW_ALT
+    table.cell(tb, 0, r, k, text_color = TEXT_MUTED, text_size = fs, bgcolor = rb, text_halign = text.align_left, tooltip = tip)
+    table.cell(tb, 1, r, v, text_color = vc, text_size = fs, bgcolor = rb, text_halign = text.align_right)
+    r + 1
+
+dashDivider(table tb, int r, string txt, string fs) =>
+    table.cell(tb, 0, r, txt, text_color = TEXT_MUTED, bgcolor = TABLE_ROW_ALT, text_size = fs, text_halign = text.align_center)
+    table.merge_cells(tb, 0, r, 1, r)
+    r + 1
+
+// ══════════════════════════════════════════════════════════
+// 6. CALCULATIONS
+// ══════════════════════════════════════════════════════════
+int  warmupBars = math.max(MIN_WARMUP_BARS, math.max(effSmoothLen, volLenInput) * 2, baseLenInput + SEED_BARS)
+bool isWarmedUp = bar_index >= warmupBars
+
+float riskAtr    = nz(ta.atr(atrLenRiskInput), 0.0)
+float slDistance = riskAtr * effSLMult
+
+float minVar       = math.pow(syminfo.mintick, 2)
+float smoothAlpha  = 2.0 / (effSmoothLen + 1)
+// Q/R ratio that puts the steady-state level gain at smoothAlpha (EMA-equivalent responsiveness)
+float processRatio = math.pow(smoothAlpha, 4) / 4.0
+float fastAlpha    = 2.0 / (volLenInput + 1)
+float baseAlpha    = 2.0 / (baseLenInput + 1)
+float clipSq       = outlierSigmaInput * outlierSigmaInput
+
+// ── Bar volatility: robust EMAs of one-bar changes, seeded by the median of the first changes ──
+var array<float> seedSq     = array.new<float>()
+var float        barVarFast = na
+var float        barVarBase = na
+
+float barChange = sourceInput - sourceInput[1]
+float barZ      = 0.0
+bool  isSpike   = false
+
+if not na(barChange)
+    if na(barVarFast)
+        seedSq.push(barChange * barChange)
+        if seedSq.size() >= SEED_BARS
+            // Median of squared normal changes = 0.455 × variance; the median ignores early gaps
+            float seedVar = math.max(seedSq.median() / CHI2_MEDIAN, minVar)
+            barVarFast := seedVar
+            barVarBase := seedVar
+    else
+        barZ    := barChange / math.sqrt(barVarFast)
+        isSpike := math.abs(barZ) > outlierSigmaInput
+        float clippedSq = math.min(barChange * barChange, clipSq * barVarFast)
+        barVarFast := math.max((1 - fastAlpha) * barVarFast + fastAlpha * clippedSq, minVar)
+        barVarBase := math.max((1 - baseAlpha) * barVarBase + baseAlpha * clippedSq, minVar)
+
+// ── Kalman filter: state = [level, slope], covariance P is symmetric 2×2, R = bar variance ──
+var float kLevel     = na
+var float kSlope     = 0.0
+var float kP00       = na
+var float kP01       = 0.0
+var float kP11       = na
+var int   shiftSide  = 0
+var float shiftRef   = na
+var float shiftJump  = na
+var int   shiftAge   = 0
+
+float innovation = na
+float obsWeight  = 1.0
+bool  isOutlier  = false
+bool  isShift    = false
+
+if na(kLevel) or na(barVarFast)
+    if not na(sourceInput)
+        kLevel := sourceInput
+else
+    float measVar = barVarFast
+    if na(kP00)
+        kP00 := measVar
+        kP11 := measVar
+    float procVar   = measVar * processRatio
+    float predLevel = kLevel + kSlope
+    float predP00   = kP00 + 2 * kP01 + kP11 + procVar / 3
+    float predP01   = kP01 + kP11 + procVar / 2
+    float predP11   = kP11 + procVar
+    if na(sourceInput)
+        kLevel := predLevel
+        kP00   := predP00
+        kP01   := predP01
+        kP11   := predP11
+    else
+        innovation := sourceInput - predLevel
+        int  barSide     = barChange > 0 ? 1 : -1
+        bool isReversion = isSpike and shiftSide != 0 and barSide != shiftSide and math.abs(sourceInput - shiftRef) < SHIFT_RETRACE * math.abs(shiftJump)
+        if isReversion
+            shiftSide := 0
+        else if isSpike
+            isOutlier := true
+            if shiftSide != barSide
+                shiftSide := barSide
+                shiftRef  := sourceInput - barChange
+            shiftJump := sourceInput - shiftRef
+            shiftAge  := 0
+            obsWeight := outlierSigmaInput / math.abs(barZ)
+        else if shiftSide != 0
+            shiftAge += 1
+            if safeDiv(sourceInput - shiftRef, shiftJump) < SHIFT_RETRACE
+                shiftSide := 0
+            else if shiftAge >= shiftRunInput
+                isShift   := true
+                predP00   += innovation * innovation
+                predP11   += SLOPE_RESET_SHARE * innovation * innovation
+                shiftSide := 0
+        float innovVar  = predP00 + measVar / obsWeight
+        float gainLevel = predP00 / innovVar
+        float gainSlope = predP01 / innovVar
+        kLevel := predLevel + gainLevel * innovation
+        kSlope := kSlope + gainSlope * innovation
+        kP11   := predP11 - gainSlope * predP01
+        kP01   := (1 - gainLevel) * predP01
+        kP00   := (1 - gainLevel) * predP00
+
+float barSigma   = math.sqrt(nz(barVarFast, minVar))
+float trendScore = safeDiv(kSlope * math.sqrt(effSmoothLen), barSigma)
+float volRatio   = math.sqrt(safeDiv(barVarFast, barVarBase, 1.0))
+
+// ── SuperTrend: ratcheting bands around the Kalman baseline, flip on a close beyond the active band ──
+var float stLower = na
+var float stUpper = na
+var int   stDir   = 0
+
+float rawLower   = kLevel - effBandFactor * barSigma
+float rawUpper   = kLevel + effBandFactor * barSigma
+bool  isFlipHeld = spikeProofInput and isSpike
+
+if isWarmedUp and not na(kLevel) and not na(barVarFast) and not na(sourceInput)
+    // The inactive band always tracks the raw band, so a flip held on a spike bar is not reset away
+    int prevDir = stDir
+    stLower := na(stLower) or prevDir != 1 or rawLower > stLower ? rawLower : stLower
+    stUpper := na(stUpper) or prevDir != -1 or rawUpper < stUpper ? rawUpper : stUpper
+    if stDir == 0
+        stDir := sourceInput >= kLevel ? 1 : -1
+    else if stDir == 1 and sourceInput < stLower and not isFlipHeld
+        stDir := -1
+    else if stDir == -1 and sourceInput > stUpper and not isFlipHeld
+        stDir := 1
+
+int   trendDir = stDir
+float stTrail  = trendDir == 1 ? stLower : trendDir == -1 ? stUpper : na
+
+// ── Volatility regime (hysteresis: exits halfway back to 1.0) ──
+float volHighExit = 1 + (volHighInput - 1) * VOL_HYST
+float volLowExit  = 1 - (1 - volLowInput) * VOL_HYST
+
+var int volRegime = 0
+if isWarmedUp
+    if volRatio > volHighInput
+        volRegime := 1
+    else if volRatio < volLowInput
+        volRegime := -1
+    else if volRegime == 1 and volRatio < volHighExit
+        volRegime := 0
+    else if volRegime == -1 and volRatio > volLowExit
+        volRegime := 0
+
+// ── Session and weekend filter ──
+string sessTz        = sessionTzInput == TZ_EXCH ? syminfo.timezone : sessionTzInput
+bool   inLondon      = not na(time(timeframe.period, SESS_LONDON, TZ_LONDON))
+bool   inNewYork     = not na(time(timeframe.period, SESS_NY, TZ_NY))
+bool   inAsia        = not na(time(timeframe.period, SESS_ASIA, TZ_ASIA))
+bool   inCustom      = not na(time(timeframe.period, sessionCustomInput, sessTz))
+bool   inSession     = switch sessionPresetInput
+    SES_LONDON => inLondon
+    SES_NY     => inNewYork
+    SES_LNY    => inLondon or inNewYork
+    SES_ASIA   => inAsia
+    => inCustom
+int    weekDay       = dayofweek(time, sessTz)
+bool   isWeekend     = weekDay == dayofweek.saturday or weekDay == dayofweek.sunday
+bool   isSessionUsed = sessionFilterInput and not timeframe.isdwm
+bool   isSessionOk   = (not isSessionUsed or inSession) and (not skipWeekendInput or not isWeekend)
+
+// ── Market regime: variance ratio of lag-bar vs one-bar moves (>1 trending, <1 mean-reverting) ──
+int   vrLag     = math.max(2, int(effSmoothLen / 2))
+float vrAlpha   = 2.0 / (regimeLenInput + 1)
+float lagChange = sourceInput - sourceInput[vrLag]
+
+var float vrOneBar = na
+var float vrLagBar = na
+if not na(barChange) and not na(lagChange)
+    float oneSq = barChange * barChange
+    float lagSq = lagChange * lagChange / vrLag
+    vrOneBar := na(vrOneBar) ? oneSq : (1 - vrAlpha) * vrOneBar + vrAlpha * oneSq
+    vrLagBar := na(vrLagBar) ? lagSq : (1 - vrAlpha) * vrLagBar + vrAlpha * lagSq
+
+float varRatio  = safeDiv(vrLagBar, vrOneBar, 1.0)
+float chopExit  = chopVrInput + CHOP_VR_EXIT_GAP
+
+var int marketRegime = 0
+if isWarmedUp
+    if varRatio > TREND_VR_ENTER
+        marketRegime := 1
+    else if varRatio < chopVrInput
+        marketRegime := -1
+    else if marketRegime == 1 and varRatio < TREND_VR_EXIT
+        marketRegime := 0
+    else if marketRegime == -1 and varRatio > chopExit
+        marketRegime := 0
+
+// ── Pullback: extension beyond the baseline, dip into the baseline zone, resumption ──
+int   prevTrendDir = nz(trendDir[1])
+float prevHigh     = nz(high[1], high)
+float prevLow      = nz(low[1], low)
+
+var int  pbArmed    = 0
+var bool pbExtended = false
+bool isPullbackUp   = false
+bool isPullbackDown = false
+if isWarmedUp and trendDir != 0 and barstate.isconfirmed
+    if trendDir != prevTrendDir
+        pbArmed    := 0
+        pbExtended := false
+    else
+        if trendDir * (sourceInput - kLevel) >= PB_EXTENSION * barSigma
+            pbExtended := true
+        bool isZoneTouch = trendDir == 1 ? low <= kLevel and sourceInput > stLower : high >= kLevel and sourceInput < stUpper
+        bool isResume    = trendDir == 1 ? sourceInput > kLevel and sourceInput > prevHigh : sourceInput < kLevel and sourceInput < prevLow
+        if pbExtended and isZoneTouch
+            pbArmed := trendDir
+        else if pbArmed == trendDir and isResume
+            isPullbackUp   := trendDir == 1 and marketRegime != -1
+            isPullbackDown := trendDir == -1 and marketRegime != -1
+            pbArmed        := 0
+            pbExtended     := false
+
+string regimeWord = marketRegime == 1 ? "Trend" : marketRegime == -1 ? "Chop" : "Mixed"
+
+// ── Forecast edge: close vs the Kalman forecast made edgeHorizonInput bars ago ──
+float pastLevel   = kLevel[edgeHorizonInput]
+float pastSlope   = kSlope[edgeHorizonInput]
+float pastP00     = kP00[edgeHorizonInput]
+float pastP01     = kP01[edgeHorizonInput]
+float pastP11     = kP11[edgeHorizonInput]
+float pastVar     = barVarFast[edgeHorizonInput]
+int   pastDir     = nz(trendDir[edgeHorizonInput])
+float edgeCenter  = pastLevel + edgeHorizonInput * pastSlope
+float edgeSigma   = CONE_CALIB * math.sqrt(math.max(nz(pastP00) + 2 * edgeHorizonInput * nz(pastP01) + edgeHorizonInput * edgeHorizonInput * nz(pastP11) + edgeHorizonInput * nz(pastVar, minVar), 0.0))
+bool  isEdgeValid = isWarmedUp and trendDir != 0 and trendDir == pastDir and not na(edgeCenter) and not na(pastP00) and edgeSigma > 0
+float edgeDev     = isEdgeValid ? trendDir * (sourceInput - edgeCenter) / edgeSigma : na
+
+var bool isInsideBreak = true
+var bool isInsideExh   = true
+bool evEdgeBreak  = false
+bool evExhaustion = false
+if barstate.isconfirmed
+    if not isEdgeValid
+        isInsideBreak := true
+        isInsideExh   := true
+    else
+        bool isOutBreak = edgeDev < -breakEdgeInput
+        bool isOutExh   = edgeDev > exhEdgeInput
+        evEdgeBreak   := isOutBreak and isInsideBreak
+        evExhaustion  := isOutExh and isInsideExh
+        isInsideBreak := not isOutBreak
+        isInsideExh   := not isOutExh
+
+// ── Score: efficiency + volatility + thrust ──
+float pathLen     = math.sum(math.abs(nz(sourceInput - sourceInput[1])), effSmoothLen)
+float efficiency  = safeDiv(math.abs(sourceInput - nz(sourceInput[effSmoothLen], sourceInput)), pathLen)
+int   scoreSide   = trendDir != 0 ? trendDir : trendScore >= 0 ? 1 : -1
+float crossBand   = trendDir == 1 ? stUpper : stLower
+float thrust      = safeDiv(scoreSide * (sourceInput - crossBand), barSigma)
+float effPts      = math.min(1.0, efficiency / ER_FULL) * SCORE_EFF_MAX
+float volPts      = volRegime == -1 ? SCORE_VOL_MAX : volRegime == 1 ? SCORE_VOL_EXP : SCORE_VOL_NORMAL
+float thrustPts   = math.min(1.0, math.max(0.0, thrust) / THRUST_FULL) * SCORE_THRUST_MAX
+int   signalScore = int(math.round(nz(effPts) + volPts + nz(thrustPts)))
+
+// ── Spike and level-shift events (closed bars only) ──
+bool evOutlierUp   = isWarmedUp and isOutlier and barChange > 0 and barstate.isconfirmed
+bool evOutlierDown = isWarmedUp and isOutlier and barChange < 0 and barstate.isconfirmed
+bool evShiftUp     = isWarmedUp and isShift and innovation > 0 and barstate.isconfirmed
+bool evShiftDown   = isWarmedUp and isShift and innovation < 0 and barstate.isconfirmed
+
+var int lastOutlierBar = na
+var int lastShiftBar   = na
+if evOutlierUp or evOutlierDown
+    lastOutlierBar := bar_index
+if evShiftUp or evShiftDown
+    lastShiftBar := bar_index
+
+string trendWord    = trendDir == 1 ? "Bullish" : trendDir == -1 ? "Bearish" : "Neutral"
+string volWord      = volRegime == 1 ? "Expansion" : volRegime == -1 ? "Compression" : "Normal"
+string strengthStr  = "z " + fmtSigned(trendScore, "0.00")
+string volStr       = volWord + " ×" + str.tostring(volRatio, "0.00")
+string scoreStr     = str.tostring(signalScore) + "/100"
+string breakdownStr = "Eff " + str.tostring(math.round(nz(effPts))) + " · Vol " + str.tostring(math.round(volPts)) + " · Thrust " + str.tostring(math.round(nz(thrustPts)))
+
+// ══════════════════════════════════════════════════════════
+// 7. TRADE ENGINE — STATE & MANAGEMENT
+// ══════════════════════════════════════════════════════════
+var float activeEntry = na
+var float activeSL    = na
+var float activeTP1   = na
+var float activeTP2   = na
+var float activeTP3   = na
+var int   activeDir   = 0
+var int   entryBarIdx = na
+var int   tradeId     = na
+var bool  tp1Reached  = false
+var bool  tp2Reached  = false
+var bool  tp3Reached  = false
+var bool  beActive    = false
+var bool  slTrailed   = false
+
+var int         winCount   = 0
+var int         lossCount  = 0
+var string      formStr    = ""
+var array<int>  tradeTimes = array.new<int>()
+var array<bool> tradeWins  = array.new<bool>()
+
+// ── Bar-start captures: BE moved in THIS bar does not stop out in this bar ──
+bool  beActiveAtBarStart = beActive
+float effectiveSL        = activeSL
+
+// ── Hit detection: entry-bar guard + confirmed only ──
+bool canCheckHit = activeDir != 0 and not na(entryBarIdx) and bar_index > entryBarIdx and barstate.isconfirmed
+bool slHitRaw    = canCheckHit and (activeDir == 1 ? low <= effectiveSL : high >= effectiveSL)
+bool tp1HitRaw   = canCheckHit and (activeDir == 1 ? high >= activeTP1 : low <= activeTP1)
+bool tp2HitRaw   = canCheckHit and (activeDir == 1 ? high >= activeTP2 : low <= activeTP2)
+bool tp3HitRaw   = canCheckHit and (activeDir == 1 ? high >= activeTP3 : low <= activeTP3)
+
+bool tp1FirstTouch = tp1HitRaw and not tp1Reached
+bool tp2FirstTouch = tp2HitRaw and not tp2Reached
+bool tp3FirstTouch = tp3HitRaw and not tp3Reached
+if tp1FirstTouch
+    tp1Reached := true
+if tp2FirstTouch
+    tp2Reached := true
+if tp3FirstTouch
+    tp3Reached := true
+
+// ── Break-even after TP1 ──
+bool beJustActivated = false
+if beInput and tp1FirstTouch and not beActive and activeDir != 0
+    activeSL        := activeDir == 1 ? math.max(activeSL, activeEntry) : math.min(activeSL, activeEntry)
+    beActive        := true
+    beJustActivated := true
+
+// ── Snapshots before reset ──
+var float hitSL    = na
+var float hitEntry = na
+if slHitRaw
+    hitSL    := effectiveSL
+    hitEntry := activeEntry
+
+float exitEntry         = activeEntry
+int   exitDir           = activeDir
+int   exitId            = tradeId
+float exitTP1           = activeTP1
+float exitTP2           = activeTP2
+float exitTP3           = activeTP3
+bool  exitBeActive      = beActiveAtBarStart
+bool  exitTrailed       = slTrailed
+bool  displayTp1Reached = tp1Reached
+bool  displayTp2Reached = tp2Reached
+bool  displayTp3Reached = tp3Reached
+
+// ── Closure: SL blocked by the first TP touch in this bar (TP priority) ──
+bool closeBySl = slHitRaw and not tp1FirstTouch and not tp3FirstTouch
+bool evSlHit   = closeBySl and activeDir != 0
+bool evTp3Hit  = tp3HitRaw and activeDir != 0
+bool evTp1Hit  = tp1FirstTouch and activeDir != 0
+bool evTp2Hit  = tp2FirstTouch and activeDir != 0
+
+if (tp3HitRaw or closeBySl) and activeDir != 0
+    bool tradeWin = tp1Reached
+    if tradeWin
+        winCount += 1
+    else
+        lossCount += 1
+    formStr := formStr + (tradeWin ? "▰" : "▱")
+    if str.length(formStr) > FORM_LEN
+        formStr := str.substring(formStr, str.length(formStr) - FORM_LEN)
+    array.push(tradeTimes, time)
+    array.push(tradeWins, tradeWin)
+    while array.size(tradeTimes) > 0 and array.get(tradeTimes, 0) < time - MS_DAY * STATS_PRUNE_DAYS
+        array.shift(tradeTimes)
+        array.shift(tradeWins)
+    activeDir   := 0
+    activeEntry := na
+    activeSL    := na
+    activeTP1   := na
+    activeTP2   := na
+    activeTP3   := na
+    entryBarIdx := na
+    tp1Reached  := false
+    tp2Reached  := false
+    tp3Reached  := false
+    beActive    := false
+    slTrailed   := false
+
+// ── Optional SuperTrend trailing stop: tightens only, effective from the next bar ──
+bool evTrailMove = false
+if trailStopInput and activeDir != 0 and activeDir == trendDir and barstate.isconfirmed and bar_index > entryBarIdx and not na(stTrail)
+    float trailSL = activeDir == 1 ? math.max(activeSL, stTrail) : math.min(activeSL, stTrail)
+    if trailSL != activeSL
+        activeSL    := trailSL
+        slTrailed   := true
+        evTrailMove := true
+
+// ══════════════════════════════════════════════════════════
+// 8. SIGNAL LOGIC
+// ══════════════════════════════════════════════════════════
+bool bullFlip       = trendDir == 1 and trendDir[1] == -1
+bool bearFlip       = trendDir == -1 and trendDir[1] == 1
+bool isEntryAllowed = (not blockExpansionInput or volRegime != 1) and (not blockChopInput or marketRegime != -1) and signalScore >= minScoreInput and isSessionOk
+bool isLongSlopeOk  = counterSlopeInput == 0 or trendScore >= -counterSlopeInput
+bool isShortSlopeOk = counterSlopeInput == 0 or trendScore <= counterSlopeInput
+bool isBarReady     = barstate.isconfirmed and isWarmedUp
+
+// Filters gate entries from flat only: a reversal of an open trade always passes
+bool confirmedLongSignal  = bullFlip and isBarReady and (activeDir == -1 or isEntryAllowed and isLongSlopeOk)
+bool confirmedShortSignal = bearFlip and isBarReady and (activeDir == 1 or isEntryAllowed and isShortSlopeOk)
+bool confirmedFlip        = (bullFlip or bearFlip) and isBarReady
+
+var int lastSigDir   = 0
+var int lastSigScore = na
+var int lastSigBar   = na
+if confirmedLongSignal or confirmedShortSignal
+    lastSigDir   := confirmedLongSignal ? 1 : -1
+    lastSigScore := signalScore
+    lastSigBar   := bar_index
+
+bool evVolExpansion   = volRegime == 1 and volRegime[1] != 1 and isBarReady
+bool evVolCompression = volRegime == -1 and volRegime[1] != -1 and isBarReady
+
+// ══════════════════════════════════════════════════════════
+// 9. TRADE ENGINE — REVERSAL & ENTRIES
+// ══════════════════════════════════════════════════════════
+int  sigDir         = confirmedLongSignal ? 1 : confirmedShortSignal ? -1 : 0
+bool reverseToShort = sigDir == -1 and activeDir == 1
+bool reverseToLong  = sigDir == 1 and activeDir == -1
+
+bool evReversal = false
+bool revWin     = false
+int  revDir     = 0
+if reverseToShort or reverseToLong
+    evReversal := true
+    revDir     := activeDir
+    bool tradeWin = tp1Reached
+    revWin := tradeWin
+    if tradeWin
+        winCount += 1
+    else
+        lossCount += 1
+    formStr := formStr + (tradeWin ? "▰" : "▱")
+    if str.length(formStr) > FORM_LEN
+        formStr := str.substring(formStr, str.length(formStr) - FORM_LEN)
+    array.push(tradeTimes, time)
+    array.push(tradeWins, tradeWin)
+    while array.size(tradeTimes) > 0 and array.get(tradeTimes, 0) < time - MS_DAY * STATS_PRUNE_DAYS
+        array.shift(tradeTimes)
+        array.shift(tradeWins)
+    activeDir   := 0
+    activeEntry := na
+    activeSL    := na
+    activeTP1   := na
+    activeTP2   := na
+    activeTP3   := na
+    entryBarIdx := na
+    tp1Reached  := false
+    tp2Reached  := false
+    tp3Reached  := false
+    beActive    := false
+    slTrailed   := false
+
+bool evLongEntry  = false
+bool evShortEntry = false
+
+if sigDir == 1 and activeDir == 0 and slDistance > 0
+    float slAtrLong   = close - slDistance
+    float slWickLong  = math.min(low - riskAtr * WICK_BUFFER_ATR, close - riskAtr * WICK_MIN_ATR)
+    float slTrendLong = math.min(stLower, close - riskAtr * WICK_MIN_ATR)
+    float slLong      = slModeInput == SL_ATR ? slAtrLong : slModeInput == SL_WICK ? slWickLong : slTrendLong
+    float riskLong    = close - slLong
+    if riskLong > 0
+        activeEntry := close
+        activeSL    := slLong
+        activeTP1   := close + riskLong * effTP1m
+        activeTP2   := close + riskLong * effTP2m
+        activeTP3   := close + riskLong * effTP3m
+        activeDir   := 1
+        entryBarIdx := bar_index
+        tradeId     := time
+        tp1Reached  := false
+        tp2Reached  := false
+        tp3Reached  := false
+        beActive    := false
+        slTrailed   := false
+        evLongEntry := true
+
+if sigDir == -1 and activeDir == 0 and slDistance > 0
+    float slAtrShort   = close + slDistance
+    float slWickShort  = math.max(high + riskAtr * WICK_BUFFER_ATR, close + riskAtr * WICK_MIN_ATR)
+    float slTrendShort = math.max(stUpper, close + riskAtr * WICK_MIN_ATR)
+    float slShort      = slModeInput == SL_ATR ? slAtrShort : slModeInput == SL_WICK ? slWickShort : slTrendShort
+    float riskShort    = slShort - close
+    if riskShort > 0
+        activeEntry  := close
+        activeSL     := slShort
+        activeTP1    := close - riskShort * effTP1m
+        activeTP2    := close - riskShort * effTP2m
+        activeTP3    := close - riskShort * effTP3m
+        activeDir    := -1
+        entryBarIdx  := bar_index
+        tradeId      := time
+        tp1Reached   := false
+        tp2Reached   := false
+        tp3Reached   := false
+        beActive     := false
+        slTrailed    := false
+        evShortEntry := true
+
+bool evAnyEntry = evLongEntry or evShortEntry
+
+bool evPullbackLong  = isPullbackUp and activeDir != 1
+bool evPullbackShort = isPullbackDown and activeDir != -1
+
+// ══════════════════════════════════════════════════════════
+// 10. PLOTS & VISUALS
+// ══════════════════════════════════════════════════════════
+color trailColor = trendDir == 1 ? bullColorInput : trendDir == -1 ? bearColorInput : LINE_SUBTLE
+color baseColor  = color.new(color.gray, BASE_TRANSP)
+
+bool isTrailVisible = showTrailInput and isWarmedUp
+pBase  = plot(isWarmedUp ? kLevel : na, "Kalman Baseline", color = showBaseInput ? baseColor : na, linewidth = 1, style = plot.style_linebr)
+color bullTrailColor = marketRegime == -1 ? color.new(bullColorInput, CHOP_TRAIL_TRANSP) : bullColorInput
+color bearTrailColor = marketRegime == -1 ? color.new(bearColorInput, CHOP_TRAIL_TRANSP) : bearColorInput
+pBull  = plot(isTrailVisible and trendDir == 1 ? stLower : na, "SuperTrend Up", color = bullTrailColor, linewidth = 2, style = plot.style_linebr)
+pBear  = plot(isTrailVisible and trendDir == -1 ? stUpper : na, "SuperTrend Down", color = bearTrailColor, linewidth = 2, style = plot.style_linebr)
+plot(isTrailVisible and (bullFlip or bearFlip) ? stTrail : na, "SuperTrend Flip", color = trendDir == 1 ? bullColorInput : bearColorInput, linewidth = 3, style = plot.style_circles)
+fill(pBull, pBase, color = showFillInput ? color.new(bullColorInput, FILL_TRANSP) : na, title = "Trend Fill Up")
+fill(pBear, pBase, color = showFillInput ? color.new(bearColorInput, FILL_TRANSP) : na, title = "Trend Fill Down")
+
+color volBgColor = volRegime == 1 ? color.new(VOL_HOT_COLOR, BG_TRANSP) : volRegime == -1 ? color.new(VOL_COLD_COLOR, BG_TRANSP) : na
+bgcolor(showBgInput and isWarmedUp ? volBgColor : na, title = "Volatility Background")
+bgcolor(showSessionBgInput and isSessionUsed and inSession ? color.new(ENTRY_COLOR, SESSION_TRANSP) : na, title = "Session Background")
+bgcolor(showChopBgInput and isWarmedUp and marketRegime == -1 ? color.new(LINE_SUBTLE, CHOP_BG_TRANSP) : na, title = "Chop Background")
+
+// ── Forecast (last bar only) ──
+var array<line>     fcLines  = array.new<line>()
+var array<polyline> fcPolys  = array.new<polyline>()
+var array<label>    fcLabels = array.new<label>()
+if barstate.islast
+    for ln in fcLines
+        line.delete(ln)
+    for pl in fcPolys
+        polyline.delete(pl)
+    for lb in fcLabels
+        label.delete(lb)
+    fcLines.clear()
+    fcPolys.clear()
+    fcLabels.clear()
+if showConeInput and barstate.islast and isWarmedUp and not na(kP00)
+    color  fcColor   = trendDir == 1 ? bullColorInput : trendDir == -1 ? bearColorInput : LINE_SUBTLE
+    color  fcText    = trendDir == 1 ? BULL_TEXT : trendDir == -1 ? BEAR_TEXT : TEXT_MUTED
+    int    xEnd      = bar_index + coneBarsInput
+    float  endCenter = kLevel + coneBarsInput * kSlope
+    float  endSigma  = coneSigmaInput * CONE_CALIB * math.sqrt(math.max(kP00 + 2 * coneBarsInput * kP01 + coneBarsInput * coneBarsInput * kP11 + coneBarsInput * nz(barVarFast, minVar), 0.0))
+    fcLines.push(line.new(bar_index, kLevel, xEnd, endCenter, color = color.new(fcColor, FC_PATH_TRANSP), style = line.style_dashed, width = 1))
+    if forecastStyleInput == FC_WHISKER
+        fcLines.push(line.new(xEnd, endCenter - endSigma, xEnd, endCenter + endSigma, color = fcColor, width = 2))
+        fcLines.push(line.new(xEnd - FC_CAP_BARS, endCenter + endSigma, xEnd + FC_CAP_BARS, endCenter + endSigma, color = fcColor, width = 2))
+        fcLines.push(line.new(xEnd - FC_CAP_BARS, endCenter - endSigma, xEnd + FC_CAP_BARS, endCenter - endSigma, color = fcColor, width = 2))
+    else
+        array<chart.point> upperPts = array.new<chart.point>()
+        array<chart.point> lowerPts = array.new<chart.point>()
+        for step = 0 to coneBarsInput
+            float center = kLevel + step * kSlope
+            float sigmaH = coneSigmaInput * CONE_CALIB * math.sqrt(math.max(kP00 + 2 * step * kP01 + step * step * kP11 + step * nz(barVarFast, minVar), 0.0))
+            upperPts.push(chart.point.from_index(bar_index + step, center + sigmaH))
+            lowerPts.push(chart.point.from_index(bar_index + step, center - sigmaH))
+        if forecastStyleInput == FC_LINES
+            fcPolys.push(polyline.new(upperPts, line_color = color.new(fcColor, FC_EDGE_TRANSP), line_style = line.style_dotted))
+            fcPolys.push(polyline.new(lowerPts, line_color = color.new(fcColor, FC_EDGE_TRANSP), line_style = line.style_dotted))
+        else
+            array<chart.point> conePts = upperPts.copy()
+            for i = lowerPts.size() - 1 to 0
+                conePts.push(lowerPts.get(i))
+            fcPolys.push(polyline.new(conePts, closed = true, line_color = color.new(fcColor, CONE_LINE_TRANSP), fill_color = color.new(fcColor, FILL_TRANSP)))
+    // ── Tags: center, exhaustion end, near-term break tick ──
+    int    xTag      = xEnd + FC_LABEL_BARS
+    string tagSize   = sizeFromString(labelFontSizeInput)
+    float  upperEdge = endCenter + endSigma
+    float  lowerEdge = endCenter - endSigma
+    string rangeTxt  = " (±" + str.tostring(coneSigmaInput, "0.0") + "σ, " + str.tostring(coneBarsInput) + " bars ahead)"
+    string centerTip = "Kalman forecast " + str.tostring(coneBarsInput) + " bars ahead\nCenter: " + fmtPrice(endCenter) + "\nRange: " + fmtPrice(lowerEdge) + " – " + fmtPrice(upperEdge) + "\nA projection, not a target."
+    fcLabels.push(label.new(xTag, endCenter, fmtPrice(endCenter), color = color(na), textcolor = fcText, style = label.style_label_left, size = tagSize, tooltip = centerTip))
+    if showEdgeLabelsInput and trendDir != 0
+        float  withEdge    = trendDir == 1 ? upperEdge : lowerEdge
+        float  againstEdge = trendDir == 1 ? lowerEdge : upperEdge
+        string exhTip      = "◎ Exhaustion edge" + rangeTxt + "\nA close beyond it means the move runs faster than the model expects.\nPossible exhaustion: consider partial profit."
+        string farTip      = "Far end of the range against the trend" + rangeTxt + "\nBy the time price gets here the SuperTrend has usually flipped; the ⚠ tick marks the early warning level."
+        fcLabels.push(label.new(xTag, withEdge, "◎ Exhaustion " + fmtPrice(withEdge), color = color(na), textcolor = TP_HIT_COLOR, style = label.style_label_left, size = tagSize, tooltip = exhTip))
+        fcLabels.push(label.new(xTag, againstEdge, fmtPrice(againstEdge), color = color(na), textcolor = TEXT_MUTED, style = label.style_label_left, size = tagSize, tooltip = farTip))
+        int    xBrk         = bar_index + edgeHorizonInput
+        float  brkCenter    = kLevel + edgeHorizonInput * kSlope
+        float  brkSigma     = CONE_CALIB * math.sqrt(math.max(kP00 + 2 * edgeHorizonInput * kP01 + edgeHorizonInput * edgeHorizonInput * kP11 + edgeHorizonInput * nz(barVarFast, minVar), 0.0))
+        float  brkModel     = brkCenter - trendDir * breakEdgeInput * brkSigma
+        float  brkLevel     = na(stTrail) ? brkModel : trendDir == 1 ? math.max(brkModel, stTrail) : math.min(brkModel, stTrail)
+        bool   isTrailFirst = not na(stTrail) and brkLevel == stTrail
+        string brkTip       = "⚠ Break level, " + str.tostring(edgeHorizonInput) + " bars ahead\n" + (isTrailFirst ? "The SuperTrend line is nearer than the model level (" + fmtPrice(brkModel) + "), so the line itself is the break." : "Forecast " + fmtPrice(brkCenter) + " − " + str.tostring(breakEdgeInput, "0.0#") + "σ against the trend.") + "\nA close beyond it means the " + (trendDir == 1 ? "uptrend" : "downtrend") + " scenario is breaking before the SuperTrend flips.\nTighten the stop or skip new " + (trendDir == 1 ? "longs." : "shorts.")
+        fcLines.push(line.new(xBrk - FC_CAP_BARS, brkLevel, xBrk + FC_CAP_BARS, brkLevel, color = BE_COLOR, width = 2))
+        fcLabels.push(label.new(xBrk + FC_CAP_BARS, brkLevel, "⚠ Break " + fmtPrice(brkLevel), color = color(na), textcolor = BE_COLOR, style = label.style_label_left, size = tagSize, tooltip = brkTip))
+    else if showEdgeLabelsInput
+        fcLabels.push(label.new(xTag, upperEdge, fmtPrice(upperEdge), color = color(na), textcolor = TEXT_MUTED, style = label.style_label_left, size = tagSize, tooltip = centerTip))
+        fcLabels.push(label.new(xTag, lowerEdge, fmtPrice(lowerEdge), color = color(na), textcolor = TEXT_MUTED, style = label.style_label_left, size = tagSize, tooltip = centerTip))
+
+barcolor(showBarColorInput and isWarmedUp and trendDir != 0 ? trailColor : na, title = "Trend Candles")
+
+// ══════════════════════════════════════════════════════════
+// 11. LABELS & SHAPES
+// ══════════════════════════════════════════════════════════
+string signalSize = sizeFromString(signalFontSizeInput)
+
+if showSignalsInput and evLongEntry
+    string buyTip = "Long entry (market)\nScore: " + scoreStr + " (" + breakdownStr + ")\nTrend strength: " + strengthStr + "\nVolatility: " + volStr + "\nTrail: " + fmtPrice(stTrail) + "\nSL: " + fmtPrice(activeSL) + " | TP1: " + fmtPrice(activeTP1)
+    label.new(bar_index, low, "▲ BUY", color = bullColorInput, textcolor = BULL_LABEL_TEXT, style = label.style_label_up, size = signalSize, tooltip = buyTip)
+
+if showSignalsInput and evShortEntry
+    string sellTip = "Short entry (market)\nScore: " + scoreStr + " (" + breakdownStr + ")\nTrend strength: " + strengthStr + "\nVolatility: " + volStr + "\nTrail: " + fmtPrice(stTrail) + "\nSL: " + fmtPrice(activeSL) + " | TP1: " + fmtPrice(activeTP1)
+    label.new(bar_index, high, "▼ SELL", color = bearColorInput, textcolor = BEAR_LABEL_TEXT, style = label.style_label_down, size = signalSize, tooltip = sellTip)
+
+if showPullbackInput and evPullbackLong
+    string pbTipL = "Pullback in an uptrend · re-entry candidate (not traded)\nRegime: " + regimeWord + "\nBaseline: " + fmtPrice(kLevel) + " | Trail: " + fmtPrice(stTrail) + "\nScore: " + scoreStr
+    label.new(bar_index, low, "↻", color = color.new(bullColorInput, PB_LABEL_TRANSP), textcolor = BULL_LABEL_TEXT, style = label.style_label_up, size = signalSize, tooltip = pbTipL)
+
+if showPullbackInput and evPullbackShort
+    string pbTipS = "Pullback in a downtrend · re-entry candidate (not traded)\nRegime: " + regimeWord + "\nBaseline: " + fmtPrice(kLevel) + " | Trail: " + fmtPrice(stTrail) + "\nScore: " + scoreStr
+    label.new(bar_index, high, "↻", color = color.new(bearColorInput, PB_LABEL_TRANSP), textcolor = BEAR_LABEL_TEXT, style = label.style_label_down, size = signalSize, tooltip = pbTipS)
+
+if showEdgeMarksInput and evEdgeBreak
+    string brkSide = trendDir == 1 ? "Uptrend" : "Downtrend"
+    string brkTip  = "⚠ " + brkSide + " scenario breaking\nClose " + fmtSigned(edgeDev, "0.0") + "σ from the forecast made " + str.tostring(edgeHorizonInput) + " bars ago (edge " + str.tostring(breakEdgeInput, "0.0#") + "σ)\nForecast: " + fmtPrice(edgeCenter) + " | Trail: " + fmtPrice(stTrail) + "\nTighten the stop or skip new " + (trendDir == 1 ? "longs" : "shorts") + "."
+    label.new(bar_index, trendDir == 1 ? low : high, "⚠", color = BE_COLOR, textcolor = LABEL_TEXT, style = trendDir == 1 ? label.style_label_up : label.style_label_down, size = sizeFromString(labelFontSizeInput), tooltip = brkTip)
+
+if showEdgeMarksInput and evExhaustion
+    string exhTip = "◎ Possible exhaustion\nClose " + fmtSigned(edgeDev, "0.0") + "σ beyond the forecast made " + str.tostring(edgeHorizonInput) + " bars ago (edge " + str.tostring(exhEdgeInput, "0.0#") + "σ)\nForecast: " + fmtPrice(edgeCenter) + "\nThe move runs faster than expected: consider partial profit."
+    label.new(bar_index, trendDir == 1 ? high : low, "◎", color = TP_HIT_COLOR, textcolor = LABEL_TEXT, style = trendDir == 1 ? label.style_label_down : label.style_label_up, size = sizeFromString(labelFontSizeInput), tooltip = exhTip)
+
+plotshape(showOutliersInput and evOutlierUp, "Spike Up (damped)", shape.circle, location.abovebar, color.new(bullColorInput, MARKER_TRANSP), size = size.tiny)
+plotshape(showOutliersInput and evOutlierDown, "Spike Down (damped)", shape.circle, location.belowbar, color.new(bearColorInput, MARKER_TRANSP), size = size.tiny)
+plotshape(showOutliersInput and evShiftUp, "Level Shift Up (accepted)", shape.diamond, location.abovebar, bullColorInput, size = size.tiny)
+plotshape(showOutliersInput and evShiftDown, "Level Shift Down (accepted)", shape.diamond, location.belowbar, bearColorInput, size = size.tiny)
+
+// ══════════════════════════════════════════════════════════
+// 12. SL/TP LINES & LABELS
+// ══════════════════════════════════════════════════════════
+var line  entryLine  = na
+var line  slLine     = na
+var line  tp1Line    = na
+var line  tp2Line    = na
+var line  tp3Line    = na
+var label entryLabel = na
+var label slLabel    = na
+var label tp1Label   = na
+var label tp2Label   = na
+var label tp3Label   = na
+
+string lblFont = sizeFromString(labelFontSizeInput)
+
+// ── TP hit: recolor from snapshots on the first-touch bar ──
+if showSlTpInput and not evAnyEntry
+    if displayTp1Reached and tp1FirstTouch and not na(tp1Line)
+        line.set_color(tp1Line, TP_HIT_COLOR)
+        line.set_style(tp1Line, line.style_solid)
+        if showSlTpLabelsInput and not na(tp1Label)
+            label.set_text(tp1Label, "TP1 ✓ " + fmtPrice(exitTP1) + formatPctFromEntry(exitTP1, exitEntry))
+            label.set_color(tp1Label, TP_HIT_COLOR)
+    if displayTp2Reached and tp2FirstTouch and not na(tp2Line)
+        line.set_color(tp2Line, TP_HIT_COLOR)
+        line.set_style(tp2Line, line.style_solid)
+        if showSlTpLabelsInput and not na(tp2Label)
+            label.set_text(tp2Label, "TP2 ✓ " + fmtPrice(exitTP2) + formatPctFromEntry(exitTP2, exitEntry))
+            label.set_color(tp2Label, TP_HIT_COLOR)
+    if displayTp3Reached and tp3FirstTouch and not na(tp3Line)
+        line.set_color(tp3Line, TP_HIT_COLOR)
+        line.set_style(tp3Line, line.style_solid)
+        if showSlTpLabelsInput and not na(tp3Label)
+            label.set_text(tp3Label, "TP3 ✓ " + fmtPrice(exitTP3) + formatPctFromEntry(exitTP3, exitEntry))
+            label.set_color(tp3Label, TP_HIT_COLOR)
+
+// ── New trade: previous lines persist until here ──
+if showSlTpInput and evAnyEntry
+    line.delete(entryLine)
+    line.delete(slLine)
+    line.delete(tp1Line)
+    line.delete(tp2Line)
+    line.delete(tp3Line)
+    label.delete(entryLabel)
+    label.delete(slLabel)
+    label.delete(tp1Label)
+    label.delete(tp2Label)
+    label.delete(tp3Label)
+    int xA = bar_index
+    int xB = bar_index + LINE_FORWARD_BARS
+    entryLine := line.new(xA, activeEntry, xB, activeEntry, color = ENTRY_COLOR, style = lineStyleFromString(entryLineStyleInput), width = 1)
+    slLine    := line.new(xA, activeSL, xB, activeSL, color = SL_COLOR, style = lineStyleFromString(slLineStyleInput), width = 2)
+    tp1Line   := line.new(xA, activeTP1, xB, activeTP1, color = TP1_COLOR, style = lineStyleFromString(tpLineStyleInput), width = 1)
+    tp2Line   := line.new(xA, activeTP2, xB, activeTP2, color = TP2_COLOR, style = lineStyleFromString(tpLineStyleInput), width = 1)
+    tp3Line   := line.new(xA, activeTP3, xB, activeTP3, color = TP3_COLOR, style = lineStyleFromString(tpLineStyleInput), width = 1)
+    if showSlTpLabelsInput
+        int xL = xB + LABEL_OFFSET_BARS
+        entryLabel := label.new(xL, activeEntry, "ENTRY " + fmtPrice(activeEntry), color = ENTRY_COLOR, textcolor = LABEL_TEXT, style = label.style_label_left, size = lblFont)
+        slLabel    := label.new(xL, activeSL, "SL " + fmtPrice(activeSL) + formatPctFromEntry(activeSL, activeEntry), color = SL_COLOR, textcolor = LABEL_TEXT, style = label.style_label_left, size = lblFont)
+        tp1Label   := label.new(xL, activeTP1, "TP1 " + fmtPrice(activeTP1) + formatPctFromEntry(activeTP1, activeEntry), color = TP_LABEL_COLOR, textcolor = LABEL_TEXT, style = label.style_label_left, size = lblFont)
+        tp2Label   := label.new(xL, activeTP2, "TP2 " + fmtPrice(activeTP2) + formatPctFromEntry(activeTP2, activeEntry), color = TP_LABEL_COLOR, textcolor = LABEL_TEXT, style = label.style_label_left, size = lblFont)
+        tp3Label   := label.new(xL, activeTP3, "TP3 " + fmtPrice(activeTP3) + formatPctFromEntry(activeTP3, activeEntry), color = TP_LABEL_COLOR, textcolor = LABEL_TEXT, style = label.style_label_left, size = lblFont)
+
+// ── Break-even: SL line/label stay at the original level, dimmed ──
+if showSlTpInput and beJustActivated and activeDir != 0
+    if not na(slLine)
+        line.set_color(slLine, color.new(SL_COLOR, BE_DIM_TRANSP))
+    if showSlTpLabelsInput
+        if not na(slLabel)
+            label.set_color(slLabel, color.new(SL_COLOR, BE_DIM_TRANSP))
+        if not na(entryLabel)
+            label.set_text(entryLabel, "ENTRY " + fmtPrice(activeEntry) + "  → SL (BE)")
+            label.set_color(entryLabel, BE_COLOR)
+
+// ── Extend active lines ──
+if showSlTpInput and activeDir != 0 and not na(slLine)
+    int xU = bar_index + LINE_UPDATE_BARS
+    line.set_x2(entryLine, xU)
+    line.set_x2(slLine, xU)
+    line.set_x2(tp1Line, xU)
+    line.set_x2(tp2Line, xU)
+    line.set_x2(tp3Line, xU)
+    if showSlTpLabelsInput and not na(slLabel)
+        label.set_x(entryLabel, xU + LABEL_OFFSET_BARS)
+        label.set_x(slLabel, xU + LABEL_OFFSET_BARS)
+        label.set_x(tp1Label, xU + LABEL_OFFSET_BARS)
+        label.set_x(tp2Label, xU + LABEL_OFFSET_BARS)
+        label.set_x(tp3Label, xU + LABEL_OFFSET_BARS)
+
+// ══════════════════════════════════════════════════════════
+// 13. DASHBOARD
+// ══════════════════════════════════════════════════════════
+dashPos = switch dashPosInput
+    "Top Left"     => position.top_left
+    "Top Right"    => position.top_right
+    "Bottom Left"  => position.bottom_left
+    "Bottom Right" => position.bottom_right
+    "Middle Right" => position.middle_right
+    => position.top_right
+
+var table dashTable = na
+
+if showDashInput and barstate.islast
+    string dashFontSize    = sizeFromString(dashFontSizeInput)
+    string dashFontSizeSub = sizeDownFromString(dashFontSizeInput)
+    int marketRows = showMarketSecInput ? 6 : 0
+    int kalmanRows = showKalmanSecInput ? 10 : 0
+    int tradeRows  = showTradeSecInput ? (activeDir != 0 ? 8 : 2) : 0
+    int statsRows  = showStatsSecInput ? 6 : 0
+    int totalRows  = 2 + marketRows + kalmanRows + tradeRows + statsRows
+    if not na(dashTable)
+        table.delete(dashTable)
+    dashTable := table.new(dashPos, 2, totalRows, bgcolor = TABLE_BG, border_color = TABLE_BORDER, border_width = 1, frame_color = TABLE_BORDER, frame_width = 1)
+
+    // ── Header ──
+    color trendCol = trendDir == 1 ? BULL_TEXT : trendDir == -1 ? BEAR_TEXT : TEXT_MUTED
+    color headerBg = trendDir == 1 ? HEADER_BG_BULL : trendDir == -1 ? HEADER_BG_BEAR : HEADER_BG
+    int r = 0
+    table.cell(dashTable, 0, r, "◆ " + INDICATOR_SHORT + " · " + trendWord, text_color = HEADER_TEXT, bgcolor = headerBg, text_size = dashFontSize, text_halign = text.align_center)
+    table.merge_cells(dashTable, 0, r, 1, r)
+    r += 1
+
+    // ── Market ──
+    if showMarketSecInput
+        string posStr  = activeDir == 1 ? "Long" : activeDir == -1 ? "Short" : "Flat"
+        color  posCol  = activeDir == 1 ? BULL_TEXT : activeDir == -1 ? BEAR_TEXT : TEXT_MUTED
+        string lastStr = lastSigDir == 0 ? "—" : (lastSigDir == 1 ? "Long" : "Short") + " · " + str.tostring(nz(lastSigScore)) + " (" + str.tostring(bar_index - nz(lastSigBar, bar_index)) + ")"
+        color  lastCol = lastSigDir == 1 ? BULL_TEXT : lastSigDir == -1 ? BEAR_TEXT : TEXT_MUTED
+        r := dashDivider(dashTable, r, "— Market —", dashFontSizeSub)
+        r := dashRow(dashTable, r, "Trend", isWarmedUp ? trendWord : "Warming up", isWarmedUp ? trendCol : TEXT_MUTED, "SuperTrend direction: flips when a bar closes beyond the active trail.", dashFontSize)
+        r := dashRow(dashTable, r, "Timeframe", timeframe.period, TEXT_COLOR, "Chart timeframe.", dashFontSize)
+        r := dashRow(dashTable, r, "Signal", posStr, posCol, "Trade engine state: open position or flat.", dashFontSize)
+        r := dashRow(dashTable, r, "Last Signal", lastStr, lastCol, "Last confirmed signal · score (bars ago).", dashFontSize)
+        bool   isSesFiltered = isSessionUsed or skipWeekendInput
+        string sesName       = isSessionUsed ? sessionPresetInput : "weekdays only"
+        string sesStr        = not isSesFiltered ? "Off" : isSessionOk ? "Open · " + sesName : skipWeekendInput and isWeekend ? "Closed · weekend" : "Closed · " + sesName
+        color  sesCol        = not isSesFiltered ? TEXT_MUTED : isSessionOk ? BULL_TEXT : NEUTRAL_TEXT
+        r := dashRow(dashTable, r, "Session", sesStr, sesCol, "Session and weekend filter for new entries from flat. Open trades are managed regardless; reversals always pass.", dashFontSize)
+
+    // ── Kalman ──
+    if showKalmanSecInput
+        color  strengthCol = not isWarmedUp ? TEXT_MUTED : math.abs(trendScore) >= Z_STRONG ? (trendScore > 0 ? BULL_TEXT : BEAR_TEXT) : TEXT_COLOR
+        float  trailPct    = safeDiv(sourceInput - stTrail, sourceInput) * 100
+        string trailStr    = na(stTrail) or not isWarmedUp ? "—" : fmtPrice(stTrail) + " (" + fmtSigned(trailPct, "0.00") + "%)"
+        color  trailCol    = na(stTrail) or not isWarmedUp ? TEXT_MUTED : trendDir == 1 ? BULL_TEXT : BEAR_TEXT
+        color scoreCol    = not isWarmedUp ? TEXT_MUTED : signalScore >= SCORE_GOOD ? BULL_TEXT : signalScore >= SCORE_FAIR ? NEUTRAL_TEXT : BEAR_TEXT
+        color volCol      = not isWarmedUp ? TEXT_MUTED : volRegime == 1 ? VOL_HOT_COLOR : volRegime == -1 ? VOL_COLD_COLOR : TEXT_COLOR
+        string setStr = presetInput + " · " + str.tostring(effSmoothLen) + " / " + str.tostring(effBandFactor, "0.0#") + "σ"
+        r := dashDivider(dashTable, r, "— Kalman —", dashFontSizeSub)
+        r := dashRow(dashTable, r, "Preset", setStr, TEXT_COLOR, "Active Signal Preset · Smoothing Length / Band Factor actually in use. The (Custom) fields apply only with the Custom preset.", dashFontSize)
+        r := dashRow(dashTable, r, "SuperTrend", trailStr, trailCol, "Current trail level and the distance from price to it in % of price. A close beyond it flips the trend.", dashFontSize)
+        r := dashRow(dashTable, r, "Trend Strength", isWarmedUp ? strengthStr : "—", strengthCol, "Kalman slope × √length / typical one-bar change. Colored beyond ±" + str.tostring(Z_STRONG, "0.0") + "; a random walk stays within ±1.4 about 95% of the time.", dashFontSize)
+        r := dashRow(dashTable, r, "Score", isWarmedUp ? scoreStr : "—", scoreCol, "Current score: " + breakdownStr + ". Efficiency = net move / path over the smoothing length; Volatility = regime; Thrust = how far the close is beyond the far-side band; on a flip bar, the margin beyond the band it broke (full at 1.5σ).", dashFontSize)
+        r := dashRow(dashTable, r, "Volatility", isWarmedUp ? volStr : "—", volCol, "Typical one-bar change now / its baseline. Expansion above ×" + str.tostring(volHighInput, "0.0#") + ", compression below ×" + str.tostring(volLowInput, "0.0#") + ".", dashFontSize)
+        float  fcCenter = kLevel + coneBarsInput * kSlope
+        float  fcSigma  = coneSigmaInput * CONE_CALIB * math.sqrt(math.max(nz(kP00) + 2 * coneBarsInput * nz(kP01) + coneBarsInput * coneBarsInput * nz(kP11) + coneBarsInput * nz(barVarFast, minVar), 0.0))
+        string fcStr    = not isWarmedUp or na(kP00) ? "—" : fmtPrice(fcCenter) + " ± " + fmtPrice(fcSigma)
+        string regStr   = isWarmedUp ? regimeWord + " · VR " + str.tostring(varRatio, "0.00") : "—"
+        color  regCol   = not isWarmedUp ? TEXT_MUTED : marketRegime == 1 ? BULL_TEXT : marketRegime == -1 ? NEUTRAL_TEXT : TEXT_COLOR
+        r := dashRow(dashTable, r, "Regime", regStr, regCol, "Variance ratio regime: Trend above 1.2, Chop below " + str.tostring(chopVrInput, "0.0#") + ". New entries from flat are blocked in Chop when Block Entries in Chop is on.", dashFontSize)
+        r := dashRow(dashTable, r, "Forecast +" + str.tostring(coneBarsInput), fcStr, trendDir == 1 ? BULL_TEXT : trendDir == -1 ? BEAR_TEXT : TEXT_COLOR, "Kalman projection " + str.tostring(coneBarsInput) + " bars ahead ± " + str.tostring(coneSigmaInput, "0.0") + " forecast σ (at 1σ about 2 in 3 prices land inside on test data). A projection, not a target.", dashFontSize)
+        r := dashRow(dashTable, r, "Last Spike", fmtBarsAgo(lastOutlierBar), na(lastOutlierBar) ? TEXT_MUTED : TEXT_COLOR, "Last one-bar change beyond the Spike Threshold, down-weighted by the filter.", dashFontSize)
+        r := dashRow(dashTable, r, "Last Level Shift", fmtBarsAgo(lastShiftBar), na(lastShiftBar) ? TEXT_MUTED : TEXT_COLOR, "Last jump that held for the confirmation bars and was accepted by the Kalman baseline.", dashFontSize)
+
+    // ── Trade ──
+    if showTradeSecInput
+        r := dashDivider(dashTable, r, "— Trade —", dashFontSizeSub)
+        if activeDir != 0
+            float riskPct      = not na(activeEntry) and activeEntry != 0 and not na(activeSL) ? math.abs(activeEntry - activeSL) / activeEntry * 100 : 0.0
+            color rrColor      = effTP1m >= 1.5 ? BULL_TEXT : effTP1m >= 1.0 ? NEUTRAL_TEXT : BEAR_TEXT
+            color riskPctColor = riskPct > 3.0 ? BEAR_TEXT : riskPct > 1.0 ? NEUTRAL_TEXT : BULL_TEXT
+            string slStr  = slTrailed ? "Trail @ " + fmtPrice(activeSL) : beActive ? "BE @ " + fmtPrice(activeSL) : fmtPrice(activeSL)
+            string tp1Str = (tp1Reached ? "✓ " : "") + fmtPrice(activeTP1)
+            string tp2Str = (tp2Reached ? "✓ " : "") + fmtPrice(activeTP2)
+            string tp3Str = (tp3Reached ? "✓ " : "") + fmtPrice(activeTP3)
+            r := dashRow(dashTable, r, "Entry", (activeDir == 1 ? "Long @ " : "Short @ ") + fmtPrice(activeEntry), activeDir == 1 ? BULL_TEXT : BEAR_TEXT, "Entry price of the open trade.", dashFontSize)
+            r := dashRow(dashTable, r, "SL", slStr, slTrailed ? ENTRY_COLOR : beActive ? BE_COLOR : SL_COLOR, "Current stop-loss. 'BE @' once moved to break-even after TP1; 'Trail @' once tightened by the SuperTrend trailing stop.", dashFontSize)
+            r := dashRow(dashTable, r, "TP1", tp1Str, tp1Reached ? TP_HIT_COLOR : TP_LABEL_COLOR, "First target. Touching it makes the trade a win.", dashFontSize)
+            r := dashRow(dashTable, r, "TP2", tp2Str, tp2Reached ? TP_HIT_COLOR : TP_LABEL_COLOR, "Second target (does not close the trade).", dashFontSize)
+            r := dashRow(dashTable, r, "TP3", tp3Str, tp3Reached ? TP_HIT_COLOR : TP_LABEL_COLOR, "Final target; closes the trade.", dashFontSize)
+            r := dashRow(dashTable, r, "R:R", str.tostring(effTP1m, "#.#") + "R", rrColor, "Risk:Reward at TP1 (from the actual SL distance).", dashFontSize)
+            r := dashRow(dashTable, r, "SL Dist", str.tostring(riskPct, "#.##") + "%", riskPctColor, "Distance from entry to the current stop in % of entry price (0 after break-even).", dashFontSize)
+        else
+            table.cell(dashTable, 0, r, "Flat · waiting for signal", text_color = TEXT_MUTED, bgcolor = TABLE_BG, text_size = dashFontSize, text_halign = text.align_center)
+            table.merge_cells(dashTable, 0, r, 1, r)
+            r += 1
+
+    // ── Stats ──
+    if showStatsSecInput
+        string periodTag = statsPeriodInput == ST_24H ? "24H" : statsPeriodInput == ST_ALL ? "All-Time" : "30D"
+        int    cutoff    = statsPeriodInput == ST_24H ? time - MS_DAY : time - MS_DAY * STATS_30D_DAYS
+        [pw, pl] = periodStats(tradeTimes, tradeWins, cutoff)
+        int    pWins   = statsPeriodInput == ST_ALL ? winCount : pw
+        int    pLosses = statsPeriodInput == ST_ALL ? lossCount : pl
+        int    pTotal  = pWins + pLosses
+        float  winRate = pTotal > 0 ? pWins / float(pTotal) * 100.0 : 0.0
+        string dashWR  = pTotal > 0 ? str.tostring(winRate, "#.#") + "%  " + buildGauge(winRate, 100, GAUGE_WIDTH) : "—"
+        color  wrCol   = pTotal == 0 ? TEXT_MUTED : winRate >= 55.0 ? BULL_TEXT : winRate >= 45.0 ? NEUTRAL_TEXT : BEAR_TEXT
+        r := dashDivider(dashTable, r, "— Stats · " + periodTag + " —", dashFontSizeSub)
+        r := dashRow(dashTable, r, "Trades", pTotal > 0 ? str.tostring(pTotal) : "—", pTotal > 0 ? TEXT_COLOR : TEXT_MUTED, "Closed trades in the period (resets on chart reload).", dashFontSize)
+        r := dashRow(dashTable, r, "Wins", pTotal > 0 ? str.tostring(pWins) : "—", pTotal > 0 ? BULL_TEXT : TEXT_MUTED, "TP3, break-even stop after TP1, or reversal after TP1.", dashFontSize)
+        r := dashRow(dashTable, r, "Losses", pTotal > 0 ? str.tostring(pLosses) : "—", pTotal > 0 ? BEAR_TEXT : TEXT_MUTED, "SL hit or reversal before TP1.", dashFontSize)
+        r := dashRow(dashTable, r, "Win Rate", dashWR, wrCol, "A trade is a WIN once TP1 is touched. Intrabar TP/SL conflicts are resolved in favor of TP.", dashFontSize)
+        r := dashRow(dashTable, r, "Form", formStr == "" ? "—" : formStr, formStr == "" ? TEXT_MUTED : TEXT_COLOR, "▰ = win · ▱ = loss (newest right). Not filtered by period.", dashFontSize)
+
+    // ── Footer ──
+    table.cell(dashTable, 0, r, INDICATOR_SHORT + " · " + INDICATOR_VERSION, text_color = TEXT_MUTED, bgcolor = TABLE_BG, text_size = dashFontSizeSub, text_halign = text.align_center)
+    table.merge_cells(dashTable, 0, r, 1, r)
+
+// ══════════════════════════════════════════════════════════
+// 14. WATERMARK
+// ══════════════════════════════════════════════════════════
+var table wmTable = table.new(position.bottom_center, 1, 1, bgcolor = color.new(color.black, 100), border_color = color.new(color.black, 100), border_width = 0, frame_color = color.new(color.black, 100), frame_width = 0)
+if barstate.islast and showWatermarkInput
+    table.cell(wmTable, 0, 0, "WillyAlgoTrader", text_color = WM_COLOR, text_size = size.normal, text_halign = text.align_center, bgcolor = color.new(color.black, 100))
+
+// ══════════════════════════════════════════════════════════
+// 15. ALERTS
+// ══════════════════════════════════════════════════════════
+string tick    = syminfo.tickerid
+string tfAlert = timeframe.period
+string aPrice  = str.tostring(close, format.mintick)
+string aTime   = str.format_time(time, "yyyy-MM-dd HH:mm", syminfo.timezone)
+
+// ── 1. Trade management ──
+if beJustActivated and alertTpInput
+    string jsonMsg = jsonHead("be", "move_sl", exitDir, exitId) + ',"sl":' + jNum(exitEntry) + '}'
+    string textMsg = "🛡️ BREAK-EVEN | " + tick + " | SL moved to entry: " + fmtPrice(exitEntry)
+    alert(webhookInput ? jsonMsg : textMsg, alert.freq_once_per_bar_close)
+if evTrailMove and alertTpInput
+    string jsonMsg = jsonHead("trail", "move_sl", activeDir, tradeId) + ',"sl":' + jNum(activeSL) + '}'
+    string textMsg = "🔒 TRAIL STOP | " + tick + " | " + (activeDir == 1 ? "Long" : "Short") + " | SL moved to: " + fmtPrice(activeSL)
+    alert(webhookInput ? jsonMsg : textMsg, alert.freq_once_per_bar_close)
+if evTp1Hit and alertTpInput
+    string jsonMsg = jsonHead("tp1", "tp", exitDir, exitId) + ',"level":' + jNum(exitTP1) + ',"entry":' + jNum(exitEntry) + '}'
+    string textMsg = "🎯 TP1 HIT | " + tick + " | TF: " + tfAlert + " | TP1: " + fmtPrice(exitTP1) + " | Entry: " + fmtPrice(exitEntry)
+    alert(webhookInput ? jsonMsg : textMsg, alert.freq_once_per_bar_close)
+if evTp2Hit and alertTpInput
+    string jsonMsg = jsonHead("tp2", "tp", exitDir, exitId) + ',"level":' + jNum(exitTP2) + ',"entry":' + jNum(exitEntry) + '}'
+    string textMsg = "🎯🎯 TP2 HIT | " + tick + " | TF: " + tfAlert + " | TP2: " + fmtPrice(exitTP2) + " | Entry: " + fmtPrice(exitEntry)
+    alert(webhookInput ? jsonMsg : textMsg, alert.freq_once_per_bar_close)
+
+// ── 2. Closures ──
+if evTp3Hit and alertSlInput
+    string jsonMsg = jsonHead("tp3", "close", exitDir, exitId) + ',"level":' + jNum(exitTP3) + ',"entry":' + jNum(exitEntry) + ',"result":"win"}'
+    string textMsg = "🏆 TP3 HIT | " + tick + " | " + (exitDir == 1 ? "Long" : "Short") + " | Entry: " + fmtPrice(exitEntry) + " | TP3: " + fmtPrice(exitTP3)
+    alert(webhookInput ? jsonMsg : textMsg, alert.freq_once_per_bar_close)
+if evSlHit and alertSlInput
+    string stopName = exitBeActive and not exitTrailed ? "be_stop" : "sl"
+    string stopText = exitTrailed ? "🔒 TRAIL STOP-OUT | " : exitBeActive ? "🛡️ BE STOP-OUT | " : "🛑 SL HIT | "
+    string jsonMsg  = jsonHead(stopName, "close", exitDir, exitId) + ',"level":' + jNum(hitSL) + ',"entry":' + jNum(hitEntry) + ',"result":"' + (displayTp1Reached ? "win" : "loss") + '"}'
+    string textMsg  = stopText + tick + " | " + (exitDir == 1 ? "Long" : "Short") + " | Entry: " + fmtPrice(hitEntry) + " | SL: " + fmtPrice(hitSL) + " | " + (displayTp1Reached ? "Win" : "Loss")
+    alert(webhookInput ? jsonMsg : textMsg, alert.freq_once_per_bar_close)
+
+// ── 3. Reversal ──
+if evReversal and alertSlInput
+    string jsonMsg = jsonHead("reversal", "close", revDir, exitId) + ',"to":"' + (revDir == 1 ? "short" : "long") + '","result":"' + (revWin ? "win" : "loss") + '"}'
+    string textMsg = "🔄 REVERSAL → " + (revDir == 1 ? "SHORT" : "LONG") + " | " + tick + " | TF: " + tfAlert + " | " + (revWin ? "Closed after TP1 (win)" : "Closed before TP1 (loss)")
+    alert(webhookInput ? jsonMsg : textMsg, alert.freq_once_per_bar_close)
+
+// ── 4. New entries ──
+if evAnyEntry
+    string sRR     = str.tostring(effTP1m, "#.#")
+    string sScr    = str.tostring(signalScore)
+    string jsonMsg = jsonHead("entry", evLongEntry ? "buy" : "sell", activeDir, tradeId) + ',"type":"market","entry":' + jNum(activeEntry) + ',"sl":' + jNum(activeSL) + ',"tp1":' + jNum(activeTP1) + ',"tp2":' + jNum(activeTP2) + ',"tp3":' + jNum(activeTP3) + ',"rr":' + sRR + ',"score":' + sScr + ',"strength":' + str.tostring(trendScore, "0.00") + ',"vol_ratio":' + str.tostring(volRatio, "0.00") + ',"trail":' + jNum(stTrail) + '}'
+    string textMsg = (evLongEntry ? "🟢 LONG" : "🔴 SHORT") + " | " + tick + " | TF: " + tfAlert + " | Price: " + aPrice + " | SL: " + fmtPrice(activeSL) + " | TP1: " + fmtPrice(activeTP1) + " | TP2: " + fmtPrice(activeTP2) + " | TP3: " + fmtPrice(activeTP3) + " | R:R: " + sRR + " | Score: " + sScr + " | Time: " + aTime
+    alert(webhookInput ? jsonMsg : textMsg, alert.freq_once_per_bar_close)
+
+// ── 5. Info ──
+if confirmedFlip and not evAnyEntry and not evReversal and alertFlipInput
+    string flipName = bullFlip ? "bull_flip" : "bear_flip"
+    string flipText = bullFlip ? "▲ BULL FLIP" : "▼ BEAR FLIP"
+    string jsonMsg  = jsonHead("info", "none", 0, na) + ',"name":"' + flipName + '","trail":' + jNum(stTrail) + ',"strength":' + str.tostring(trendScore, "0.00") + ',"score":' + str.tostring(signalScore) + '}'
+    string textMsg  = flipText + " | " + tick + " | TF: " + tfAlert + " | Price: " + aPrice + " | Trail: " + fmtPrice(stTrail) + " | Strength: " + strengthStr + " | Score: " + scoreStr
+    alert(webhookInput ? jsonMsg : textMsg, alert.freq_once_per_bar_close)
+if (evShiftUp or evShiftDown) and alertShiftInput
+    string jsonMsg = jsonHead("info", "none", 0, na) + ',"name":"' + (evShiftUp ? "shift_up" : "shift_down") + '","level":' + jNum(kLevel) + '}'
+    string textMsg = (evShiftUp ? "◆ LEVEL SHIFT UP" : "◆ LEVEL SHIFT DOWN") + " | " + tick + " | TF: " + tfAlert + " | Price: " + aPrice + " | Trail: " + fmtPrice(kLevel)
+    alert(webhookInput ? jsonMsg : textMsg, alert.freq_once_per_bar_close)
+if (evPullbackLong or evPullbackShort) and alertPullbackInput
+    string jsonMsg = jsonHead("info", "none", 0, na) + ',"name":"' + (evPullbackLong ? "pullback_long" : "pullback_short") + '","baseline":' + jNum(kLevel) + ',"trail":' + jNum(stTrail) + ',"score":' + str.tostring(signalScore) + '}'
+    string textMsg = (evPullbackLong ? "↻ PULLBACK LONG" : "↻ PULLBACK SHORT") + " | " + tick + " | TF: " + tfAlert + " | Price: " + aPrice + " | Baseline: " + fmtPrice(kLevel) + " | Trail: " + fmtPrice(stTrail) + " | Regime: " + regimeWord
+    alert(webhookInput ? jsonMsg : textMsg, alert.freq_once_per_bar_close)
+if (evEdgeBreak or evExhaustion) and alertEdgeInput
+    string edgeName = evEdgeBreak ? "scenario_break" : "exhaustion"
+    string edgeText = evEdgeBreak ? "⚠ SCENARIO BREAK" : "◎ EXHAUSTION"
+    string jsonMsg  = jsonHead("info", "none", trendDir, na) + ',"name":"' + edgeName + '","dev_sigma":' + str.tostring(edgeDev, "0.00") + ',"forecast":' + jNum(edgeCenter) + ',"trail":' + jNum(stTrail) + '}'
+    string textMsg  = edgeText + " | " + tick + " | TF: " + tfAlert + " | " + (trendDir == 1 ? "Uptrend" : "Downtrend") + " | Price: " + aPrice + " | " + fmtSigned(edgeDev, "0.0") + "σ vs forecast " + fmtPrice(edgeCenter)
+    alert(webhookInput ? jsonMsg : textMsg, alert.freq_once_per_bar_close)
+if (evVolExpansion or evVolCompression) and alertVolInput
+    string jsonMsg = jsonHead("info", "none", 0, na) + ',"name":"' + (evVolExpansion ? "vol_expansion" : "vol_compression") + '","vol_ratio":' + str.tostring(volRatio, "0.00") + '}'
+    string textMsg = (evVolExpansion ? "⚡ VOL EXPANSION" : "💤 VOL COMPRESSION") + " | " + tick + " | TF: " + tfAlert + " | Price: " + aPrice + " | Volatility: ×" + str.tostring(volRatio, "0.00")
+    alert(webhookInput ? jsonMsg : textMsg, alert.freq_once_per_bar_close)

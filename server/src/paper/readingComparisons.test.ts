@@ -27,7 +27,7 @@ function setup(t:any,family='impulse'){
 test('raw output reaches both reading versions with opposite native directions; one run and no account qualification',t=>{
  const x=setup(t);x.input.result.shapes=[x.shape('Upper Retest')];x.svc.observeScan(x.input);x.svc.observeScan(x.input);x.fill();
  const ps=x.e.openPositions();assert.equal(ps.length,2);assert.deepEqual(new Set(ps.map(p=>p.side)),new Set(['long','short']));
- for(const p of ps){assert.equal(p.executionPlan!.executionVersion,211);assert.equal(p.executionPlan!.paper.marginPerTrade,150);assert.ok(p.riskAmount<=30);assert.equal(x.e.exitExecution.state(p.id)!.market_qty,p.qty);}
+ for(const p of ps){assert.equal(p.executionPlan!.executionVersion,212);assert.equal(p.executionPlan!.paper.marginPerTrade,150);assert.ok(p.riskAmount<=30);assert.equal(x.e.exitExecution.state(p.id)!.market_qty,p.qty);}
  assert.equal(x.db.get<any>('SELECT count(*) n FROM execution_plan_scans')!.n,2);
  assert.equal(x.svc.view().comparisons[0].sharedSignals,1,'opposite readings of one marker are a paired observation');
  assert.equal(x.db.get<any>(`SELECT count(*) n FROM positions p LEFT JOIN trade_policies t ON t.id=p.policy_id WHERE ${eligibleEvidence}`)!.n,0);
@@ -124,7 +124,7 @@ test('active-market rollout replaces only the unedited ETH arms, keeps eight pla
  assert.equal(enableReaderComparisons(file,false,true).changed,false);
  assert.throws(()=>enableReaderComparisons(file),/already relocated/);
  const edited=JSON.parse(before);edited.executionPlans[1].referenceEquity=2000;fs.writeFileSync(file,JSON.stringify(edited));
- assert.throws(()=>enableReaderComparisons(file,false,true),/differs; no overwrite/);
+ assert.throws(()=>enableReaderComparisons(file,false,true),/Saved configuration fails validation/);
  for(const p of ACTIVE_READER_COMPARISONS){const s=planSnapshot(x.cfg,p);assert.equal(s.paper.marginPerTrade,150);assert.equal(s.paper.maxStopLossPct,3);}
 });
 test('both Liquidity maker readings require a fresh post-placement trade-through and pay maker fees only at the fill',t=>{

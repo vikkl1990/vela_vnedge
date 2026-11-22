@@ -1,3 +1,4 @@
+import type { ChartObservation } from '../../../shared/chartVerification'
 import type { ScriptRun, TimelineMark } from '@luxalgo/vela'
 import { useState, type ReactNode } from 'react'
 import { ChipSelect } from '../components/kit'
@@ -5,6 +6,7 @@ import { DELTA_TIMEFRAMES } from '../lib/timeframes'
 import { useFrameSync } from './useFrameSync'
 import type { AuthorLedger } from './tradeComparison'
 import { VelaChart, type ChartScript } from './VelaChart'
+import type { PositionOverlay } from './positionOverlay'
 
 /**
  * One market on several timeframes at once, every frame drawing the same scripts, so a scanner's
@@ -15,12 +17,14 @@ export function ChartFrames({
   symbol,
   tfs,
   scripts,
+  positionOverlay,
   tickSize,
   onScriptError,
   onScriptReady,
   onScriptRun,
   captureLedger,
   onAuthorLedger,
+  onSignalCheck,
   marksByFrame,
   height = '100%',
   marks,
@@ -29,11 +33,13 @@ export function ChartFrames({
   symbol: string
   tfs: string[]
   scripts: ChartScript[]
+  positionOverlay?: PositionOverlay | null
   tickSize?: number
   height?: number | string
   marks?: TimelineMark[]
   marksByFrame?: Record<string, TimelineMark[]>
   captureLedger?: boolean
+  onSignalCheck?: (observation: ChartObservation) => void
   onAuthorLedger?: (ledger: AuthorLedger) => void
   positionBadge?: ReactNode
   onScriptError?: (id: string, err: Error) => void
@@ -56,6 +62,7 @@ export function ChartFrames({
               {symbol} · {tf}
             </span>
             <VelaChart
+              onSignalCheck={onSignalCheck}
               marks={marksByFrame?.[tf] ?? marks}
               captureLedger={captureLedger}
               onAuthorLedger={onAuthorLedger}
@@ -63,6 +70,7 @@ export function ChartFrames({
               tf={tf}
               height="100%"
               scripts={scripts}
+              positionOverlay={positionOverlay}
               tickSize={tickSize}
               onScriptError={onScriptError}
               onScriptReady={onScriptReady}

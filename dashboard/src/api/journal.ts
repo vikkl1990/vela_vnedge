@@ -104,6 +104,7 @@ export interface JournalDetail {
   features: Record<string, number> | null
   entryExecution: Record<string, unknown> | null
   entryFillEvidence: Record<string, unknown> | null
+  makerFillReports: Record<string, unknown>[]
   basketEntries?: {
     sequence: number
     at: number

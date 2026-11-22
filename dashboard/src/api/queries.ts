@@ -18,6 +18,7 @@ export const qk = {
     ['scanners', 'overlay', id, symbol, tf] as const,
   signals: (q: SignalQuery = {}) => ['signals', q] as const,
   positions: ['positions'] as const,
+  positionsHealth: ['positionsHealth'] as const,
   positionPath: (id: number) => ['positionPath', id] as const,
   trades: (q: TradeQuery = {}) => ['trades', q] as const,
   orders: ['orders'] as const,
@@ -34,6 +35,23 @@ export const qk = {
 }
 
 type Opts<T> = Omit<UseQueryOptions<T, ApiError>, 'queryKey' | 'queryFn'>
+
+export function usePositionsHealth(enabled: boolean) {
+  return useQuery({
+    queryKey: qk.positionsHealth,
+    queryFn: async () => {
+      const start = performance.now()
+      const response = await api.positionsHealth()
+      const receivedAt = performance.now()
+      return { response, receivedAt, requestMs: receivedAt - start }
+    },
+    enabled,
+    refetchInterval: REFRESH.positionQuote,
+    refetchIntervalInBackground: false,
+    staleTime: 0,
+    retry: false,
+  })
+}
 
 /** Portfolio risk state: halts, loss limits, drawdown scaling. */
 export function useRisk() {

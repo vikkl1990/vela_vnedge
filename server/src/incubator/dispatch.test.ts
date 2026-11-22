@@ -2,6 +2,42 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {ShadowDispatch} from './dispatch.ts';
 const flush=()=>new Promise<void>(r=>setImmediate(r));
+test('slow admission releases compute capacity but retains bounded results and cell ownership',async()=>{
+ const compute=new Map<string,()=>void>(),finish=new Map<string,()=>void>(),seen:string[]=[];
+ const d=new ShadowDispatch<string>({limit:()=>2,maxInFlight:()=>4,ready:()=>true,now:()=>0,
+  run:async(v,release)=>{seen.push(v);compute.set(v,release);await new Promise<void>(r=>finish.set(v,r));}});
+ for(let i=0;i<6;i++)d.enqueue('cell'+i,'run'+i,100);
+ d.drain();await flush();assert.equal(d.stats.computing,2);
+ compute.get('run0')!();compute.get('run1')!();await flush();
+ assert.deepEqual(seen,['run0','run1','run2','run3']);
+ compute.get('run2')!();compute.get('run3')!();await flush();
+ assert.equal(d.stats.inFlight,4);assert.equal(d.stats.settling,4);assert.equal(d.stats.pending,2);
+ d.enqueue('cell0','next0',100);d.drain();await flush();assert.equal(seen.length,4);
+ finish.get('run0')!();await flush();assert.equal(d.stats.computing,1);assert.equal(d.stats.inFlight,4);
+ compute.get('run0')!();assert.equal(d.stats.computing,1,'duplicate releases cannot free a newer permit');
+ d.stop();for(const r of finish.values())r();await flush();
+ assert.equal(d.stats.inFlight,0);assert.equal(d.stats.computing,0);
+});
+
+test('late release from a completed run cannot release the next run of the same cell',async()=>{
+ const release:Array<()=>void>=[],finish:Array<()=>void>=[];
+ const d=new ShadowDispatch<number>({limit:()=>1,maxInFlight:()=>4,ready:()=>true,now:()=>0,
+  run:async(_v,r)=>{release.push(r);await new Promise<void>(f=>finish.push(f));}});
+ d.enqueue('a',1,100);d.drain();await flush();d.enqueue('a',2,100);
+ finish[0]();await flush();assert.equal(release.length,2);assert.equal(d.stats.computing,1);
+ release[0]();assert.equal(d.stats.computing,1);
+ finish[1]();await flush();assert.equal(d.stats.inFlight,0);
+});
+
+test('split stages preserve paper readiness, freshness and failure cleanup',async()=>{
+ let ready=true,now=0,release!:()=>void;const rejects:Array<(e:Error)=>void>=[],seen:string[]=[],dropped:string[]=[];
+ const d=new ShadowDispatch<string>({limit:()=>1,maxInFlight:()=>4,ready:()=>ready,now:()=>now,
+  dropped:v=>dropped.push(v),run:async(v,r)=>{seen.push(v);release=r;await new Promise<void>((_f,j)=>{rejects.push(j);});}});
+ d.enqueue('a','a',100);d.enqueue('stale','stale',10);d.enqueue('fresh','fresh',100);d.drain();await flush();
+ ready=false;release();await flush();assert.deepEqual(seen,['a']);assert.equal(d.stats.settling,1);
+ now=10;ready=true;d.drain();await flush();assert.deepEqual(dropped,['stale']);assert.deepEqual(seen,['a','fresh']);
+ d.stop();rejects.forEach(r=>r(new Error('failed admission')));await flush();assert.equal(d.stats.failed,2);assert.equal(d.stats.computing,0);assert.equal(d.stats.inFlight,0);
+});
 test('1,000-cell burst stays bounded and every cell gets dispatched',async()=>{
  const releases:Array<()=>void>=[];let active=0,maxActive=0;const seen:number[]=[];
  const d=new ShadowDispatch<number>({limit:()=>6,ready:()=>true,now:()=>0,run:async v=>{active++;maxActive=Math.max(active,maxActive);seen.push(v);await new Promise<void>(r=>releases.push(r));active--;}});

@@ -82,7 +82,7 @@ test('the observation boundary survives a restart without changing the resting o
  const x=fixture(t);await x.engine.prepareEntryDepth!('BTCUSD');x.engine.onEntry(x.ev,x.ctx);
  x.advance(11000);x.tick();const waiting=structuredClone(x.engine.pendingEntries()[0]);
  const restored=new PaperEngine(x.db,()=>x.cfg,{now:x.now});
- assert.deepEqual(restored.pendingEntries()[0],JSON.parse(JSON.stringify(waiting)));
+ assert.deepEqual(restored.pendingEntries()[0],{...JSON.parse(JSON.stringify(waiting)),makerObservedFrom:x.now()});
  restored.entryDepthGate=()=>({});
  restored.onTrade('BTCUSD',98,100,x.now(),x.now());assert.equal(restored.openPositions().length,0);
  x.advance(1);restored.onTrade('BTCUSD',98,100,x.now(),x.now());

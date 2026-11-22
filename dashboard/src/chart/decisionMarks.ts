@@ -11,7 +11,7 @@ export function decisionMarks(signals: Signal[]): TimelineMark[] {
       const opened = s.action === 'opened' || s.action === 'reversed'
       return {
         id: `signal-${s.id}`,
-        time: s.at,
+        time: s.barTime,
         group: 'bot-decisions',
         title: `${s.scannerName} · ${s.tf}`,
         glyph: {

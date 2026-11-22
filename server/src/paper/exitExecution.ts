@@ -1,11 +1,13 @@
-import {createHash} from 'node:crypto';
+import {depthBookKey} from './depthLiquidity.ts';
 import type {Db} from '../db.ts';
 import type {Position} from './logic.ts';
 
 export const CAUSAL_EXIT_VERSION = 211;
+/** New trades only. Keep 211 bound positions on their original causal model. */
+export const CAUSAL_CANDLE_VERSION = 212;
 export interface ExitBook {receivedAt:number;exchangeAt:number;bids:Array<{price:number;size:number}>;asks:Array<{price:number;size:number}>}
 export interface ExitIntent {id:number;position_id:number;book:number;symbol:string;side:string;reason:string;trigger_at:number;ready_at:number;reference:number;qty:number;filled_qty:number;market_qty:number;market_filled:number;status:string;last_error:string|null}
-export interface ExitState {position_id:number;market_qty:number;desired_stop:number|null;ack_at:number|null}
+export interface ExitState {position_id:number;version:number;market_qty:number;desired_stop:number|null;ack_at:number|null;queued_stop:number|null;queued_ack_at:number|null;stop_active_at:number|null}
 
 /** Pure executable-price model. Incomplete books produce partial reports, never invented size. */
 export function priceExit(book:ExitBook|null,side:'long'|'short',qty:number,at:number,maxAgeMs:number,consumed=0) {
@@ -32,12 +34,20 @@ export class PaperExitExecution {
    CREATE UNIQUE INDEX IF NOT EXISTS paper_exit_active ON paper_exit_intents(position_id) WHERE status IN ('waiting','partial');
    CREATE INDEX IF NOT EXISTS paper_exit_due ON paper_exit_intents(book,status,ready_at);
    CREATE TABLE IF NOT EXISTS paper_exit_reports(id INTEGER PRIMARY KEY,intent_id INTEGER NOT NULL,at INTEGER NOT NULL,qty REAL NOT NULL,market_qty INTEGER NOT NULL,price REAL NOT NULL,book_key TEXT NOT NULL,depth TEXT NOT NULL);
-   CREATE TABLE IF NOT EXISTS paper_exit_liquidity(scope TEXT NOT NULL,symbol TEXT NOT NULL,side TEXT NOT NULL,book_key TEXT NOT NULL,consumed INTEGER NOT NULL,at INTEGER NOT NULL,PRIMARY KEY(scope,symbol,side,book_key));`);
+   CREATE TABLE IF NOT EXISTS paper_exit_liquidity(scope TEXT NOT NULL,symbol TEXT NOT NULL,side TEXT NOT NULL,book_key TEXT NOT NULL,consumed INTEGER NOT NULL,at INTEGER NOT NULL,PRIMARY KEY(scope,symbol,side,book_key));
+   CREATE TABLE IF NOT EXISTS paper_stop_amendments(position_id INTEGER NOT NULL,active_at INTEGER NOT NULL,stop REAL NOT NULL,PRIMARY KEY(position_id,active_at));`);
+  const columns=new Set(db.all<{name:string}>('PRAGMA table_info(paper_execution_positions)').map(c=>c.name));
+  for(const [name,type] of [['queued_stop','REAL'],['queued_ack_at','INTEGER'],['stop_active_at','INTEGER']]){
+   if(!columns.has(name))db.db.exec(`ALTER TABLE paper_execution_positions ADD COLUMN ${name} ${type}`);
+  }
  }
  register(p:Position,marketQty:number){
   if(!Number.isSafeInteger(marketQty)||marketQty<=0)throw Error('invalid paper executable quantity');
-  this.db.run('INSERT OR IGNORE INTO paper_execution_positions(position_id,book,version,market_qty) VALUES(?,?,?,?)',p.id,this.book,CAUSAL_EXIT_VERSION,marketQty);
+  this.db.run('INSERT OR IGNORE INTO paper_execution_positions(position_id,book,version,market_qty,stop_active_at) VALUES(?,?,?,?,?)',p.id,this.book,p.executionPlan?.executionVersion??p.policy?.sim??CAUSAL_EXIT_VERSION,marketQty,p.entryAt);
+  if(p.sl!==null)this.db.run('INSERT OR IGNORE INTO paper_stop_amendments VALUES(?,?,?)',p.id,p.entryAt,p.sl);
  }
+ /** The stop known to be active for an entire candle, not a later intrabar amendment. */
+ stopAt(id:number,at:number){return this.db.get<{stop:number}>('SELECT stop FROM paper_stop_amendments WHERE position_id=? AND active_at<=? ORDER BY active_at DESC LIMIT 1',id,at)?.stop??null;}
  state(id:number){return this.db.get<ExitState>('SELECT * FROM paper_execution_positions WHERE position_id=? AND book=?',id,this.book);}
  active(id:number){return this.db.get<ExitIntent>("SELECT * FROM paper_exit_intents WHERE position_id=? AND book=? AND status IN ('waiting','partial')",id,this.book);}
  pending(){return this.db.all<ExitIntent>("SELECT * FROM paper_exit_intents WHERE book=? AND status IN ('waiting','partial') ORDER BY ready_at,id",this.book);}
@@ -49,14 +59,29 @@ export class PaperExitExecution {
   const row=this.db.run("INSERT INTO paper_exit_intents(position_id,book,symbol,side,reason,trigger_at,ready_at,reference,qty,market_qty,status,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,'waiting',?)",p.id,this.book,p.symbol,p.side,reason,at,at+Math.max(0,latency),reference,qty,marketQty,at);
   return this.db.get<ExitIntent>('SELECT * FROM paper_exit_intents WHERE id=?',Number(row.lastInsertRowid))!;
  }
- acknowledge(p:Position,at:number){const s=this.state(p.id);if(s?.ack_at!=null&&s.ack_at<=at){p.sl=s.desired_stop;this.db.run('UPDATE paper_execution_positions SET desired_stop=NULL,ack_at=NULL WHERE position_id=?',p.id);return true;}return false;}
+ acknowledge(p:Position,at:number){
+  const s=this.state(p.id);if(s?.ack_at==null||s.ack_at>at)return false;
+  // Each price has its own arrival time. A later request cannot inherit the first deadline.
+  const queuedDue=s.queued_ack_at!=null&&s.queued_ack_at<=at;
+  if(s.desired_stop!=null)this.db.run('INSERT OR REPLACE INTO paper_stop_amendments VALUES(?,?,?)',p.id,s.ack_at,s.desired_stop);
+  if(queuedDue&&s.queued_stop!=null)this.db.run('INSERT OR REPLACE INTO paper_stop_amendments VALUES(?,?,?)',p.id,s.queued_ack_at,s.queued_stop);
+  p.sl=queuedDue?s.queued_stop:s.desired_stop;
+  this.db.run('UPDATE paper_execution_positions SET desired_stop=?,ack_at=?,queued_stop=NULL,queued_ack_at=NULL,stop_active_at=? WHERE position_id=?',
+   queuedDue?null:s.queued_stop,queuedDue?null:s.queued_ack_at,queuedDue?s.queued_ack_at:s.ack_at,p.id);
+  return true;
+ }
  amend(p:Position,desired:number|null,at:number,latency:number){
   if(desired===null||desired===p.sl)return;
   const s=this.state(p.id);if(!s)return;
   const tighter=(a:number,b:number|null)=>b===null||(p.side==='long'?a>b:a<b);
-  if(s.ack_at!==null||!tighter(desired,p.sl))return;
-  // An already-sent amendment retains its value/deadline. The next observation
-  // can request a newer level after acknowledgement, never activate it early.
+  if(s.ack_at!==null){
+    // Version 211 left an in-flight request alone. Preserve that held-position contract.
+    // The new model retains a tighter successor, durably, with its own latency.
+    if(s.version>=CAUSAL_CANDLE_VERSION&&tighter(desired,s.queued_stop??s.desired_stop))
+     this.db.run('UPDATE paper_execution_positions SET queued_stop=?,queued_ack_at=? WHERE position_id=?',desired,Math.max(s.ack_at,at+Math.max(0,latency)),p.id);
+    return;
+  }
+  if(!tighter(desired,p.sl))return;
   this.db.run('UPDATE paper_execution_positions SET desired_stop=?,ack_at=? WHERE position_id=?',desired,at+Math.max(0,latency),p.id);
  }
  /** Resolve a single report, including shared account liquidity consumption, atomically with its fill. */
@@ -64,7 +89,7 @@ export class PaperExitExecution {
   const i=this.active(p.id);if(!i||at<i.ready_at)return false;
   // A restarted engine may only use observations obtained after the intent became executable.
   if(book&&book.receivedAt<i.ready_at){this.error(i,'depth predates exit arrival',at);return false;}
-  const key=book?createHash('sha256').update(JSON.stringify([book.exchangeAt,book.bids,book.asks])).digest('hex'):'';
+  const key=book?depthBookKey(book):'';
   // Shadow cells are independent trials. Account positions compete for the same observed liquidity.
   const scope=this.book===2?`2:${p.id}`:String(this.book);
   const used=this.db.get<{consumed:number}>('SELECT consumed FROM paper_exit_liquidity WHERE scope=? AND symbol=? AND side=? AND book_key=?',scope,p.symbol,p.side,key)?.consumed??0;
@@ -76,11 +101,11 @@ export class PaperExitExecution {
   apply(qty,r.price,i.reason);
   const status=complete||p.qtyOpen===0?'filled':'partial';
   this.db.run('UPDATE paper_exit_intents SET filled_qty=filled_qty+?,market_filled=market_filled+?,status=?,last_error=NULL,updated_at=? WHERE id=?',qty,r.qty,status,at,i.id);
-  this.db.run('INSERT INTO paper_exit_reports(intent_id,at,qty,market_qty,price,book_key,depth) VALUES(?,?,?,?,?,?,?)',i.id,at,qty,r.qty,r.price,key,JSON.stringify(book));
+  this.db.run('INSERT INTO paper_exit_reports(intent_id,at,qty,market_qty,price,book_key,depth) VALUES(?,?,?,?,?,?,?)',i.id,at,qty,r.qty,r.price,key,JSON.stringify({...book,consumedQty:used}));
   this.db.run('INSERT INTO paper_exit_liquidity(scope,symbol,side,book_key,consumed,at) VALUES(?,?,?,?,?,?) ON CONFLICT(scope,symbol,side,book_key) DO UPDATE SET consumed=consumed+excluded.consumed,at=excluded.at',scope,p.symbol,p.side,key,r.qty,at);
   this.db.run('DELETE FROM paper_exit_liquidity WHERE at<?',at-86400000);
   return true;
  }
  private error(i:ExitIntent,error:string,at:number){if(i.last_error!==error)this.db.run('UPDATE paper_exit_intents SET last_error=?,updated_at=? WHERE id=?',error,at,i.id);}
- view(id:number){const state=this.state(id);if(!state)return undefined;return {version:CAUSAL_EXIT_VERSION,marketQty:state.market_qty,desiredStop:state.desired_stop,ackAt:state.ack_at,pending:this.active(id)??null};}
+ view(id:number){const state=this.state(id);if(!state)return undefined;return {version:state.version,marketQty:state.market_qty,desiredStop:state.desired_stop,ackAt:state.ack_at,queuedStop:state.queued_stop,queuedAckAt:state.queued_ack_at,pending:this.active(id)??null};}
 }

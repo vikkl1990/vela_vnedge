@@ -4,7 +4,7 @@ import { isAssetGroup, isAssetSector } from '../../../shared/assetClass.ts'
 const DAY = 86_400_000
 export const JOURNAL_PAGE_SIZE = 50
 export const JOURNAL_PERIODS = [
-  ['all', 'All history'],
+  ['all', 'All dates'],
   ['today', 'Today (UTC)'],
   ['yesterday', 'Yesterday (UTC)'],
   ['7d', '7 UTC days'],

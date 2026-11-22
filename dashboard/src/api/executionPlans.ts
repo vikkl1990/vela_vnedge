@@ -76,8 +76,17 @@ export interface ExecutionPlansView {
     candidateOnly: number
     unresolvedSignals: number
     differentAdmissions: number
+    matchedEntryMismatch: number
     matchedClosed: number
     matchedDeltaNet: number | null
+    promotionEligible: false
+    matchedControlNet: number | null
+    matchedCandidateNet: number | null
+    matchedControlStops: number
+    matchedCandidateStops: number
+    matchedControlLosses: number
+    matchedCandidateLosses: number
+    matchedWinnersCut: number
   }>
   costs: {
     offer: string
