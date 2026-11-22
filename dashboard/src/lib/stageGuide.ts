@@ -12,7 +12,7 @@ export interface StageEntry {
 const n = (v: number | undefined, fallback = '–') =>
   typeof v === 'number' && Number.isFinite(v) ? String(v) : fallback
 
-/** The gate in a line, from the live settings (decision 324). Per-timeframe minimums are named, not listed. */
+/** The gate in a line, from the live settings (decision 329). Per-timeframe minimums are named, not listed. */
 export function gateLine(g: IncubatorView['config']['gate']): string {
   const byTf = g.minTradesByTf || g.minDaysByTf ? ' Some timeframes have their own minimums.' : ''
   return `At least ${n(g.minTrades)} trades over ${n(g.minDays)} days, profit factor ${n(g.minPfR)} or better, average R of ${n(g.minAvgR)} or more, and ${n(g.minPositiveWeeksPct)}% of weeks positive; no more than ${n(g.maxOverlapPct)}% of entries may duplicate a live pair.${byTf}`

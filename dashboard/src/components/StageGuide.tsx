@@ -1,7 +1,7 @@
 import type { IncubatorView } from '../api/types'
 import { stageGuide } from '../lib/stageGuide'
 
-/** What each incubator stage means and how a pair moves through them, from the live settings (decision 324). */
+/** What each incubator stage means and how a pair moves through them, from the live settings (decision 329). */
 export function StageGuide({ config }: { config: IncubatorView['config'] }) {
   return (
     <details className="stage-guide">

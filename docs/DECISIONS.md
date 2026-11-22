@@ -8387,7 +8387,120 @@ The optional multiple-testing guard remains disabled by default. Disabled evalua
 
 Regression coverage includes an occupied API port with normal and stalled cleanup, the real app's execution timer lifecycle, pair/cohort evaluation with the optional guard on and off, a stable denominator through retirements, and shared signal-screen holdout/density boundaries. Saved paper mode, risk limits, evidence settings and held-position policies are preserved.
 
-## 324. Explain the incubator stages from the live settings (22 November 2026)
+## 319. Verify old execution history before retaining it for readiness (22 November 2026)
+
+The 211 → 212 change in decision 317 excluded old executions from readiness by version alone. It did not delete trades. A narrowly scoped offline replay can now retain an older account trade when the real paper engine reproduces its recorded execution under 211 and gives the identical execution under 212. Trigger and arrival times, reason, quantity, depth price, fees and net outcome must agree. Losers are checked by the same rule as winners. No historical P&L, policy, signal or fill is rewritten.
+
+Only otherwise-compatible policies qualify, including the existing capacity, unrelated-cell and proven same-size exceptions. Unknown/adopted policies, 210 executions, changed sources/readers/fees/risk, quarantined outcomes, research books, partial/basket/funding lifecycles and native stop-amendment readers are excluded from this first replayer. Actual received tick, mark and candle callbacks are used in archive order; final candles are not substituted. Checksums, consecutive archive segments, pre-entry tape ordering, process/capture gaps and baseline reproduction are mandatory. The saved depth report is reusable only after both models reproduce the original trigger and arrival.
+
+Replay results live in a separate audit table. A receipt is invalid if its original ledger, target policy or replay algorithm changes. The optional ops write records receipts only and refuses a production-enabled configuration. Readiness exposes identical executions separately from changed or unverifiable outcomes. Copying, promotion, leverage evidence, the 200-trade requirement, risk limits and the live execution lock are unchanged. The verified subset is conditional historical evidence, not proof of the complete new policy's profitability or of higher-concurrency capacity; forward evaluation remains necessary.
+
+Before deployment, replay algorithm 2 also tests every possible entry-commit boundary among inputs received in the entry millisecond. A trade counts only if all boundaries reproduce both executions; otherwise it is explicitly unverified. Pre-entry tape and mark events seed market state without acting on the position. Receipts from the earlier algorithm cannot count. This closes an ambiguity for candle-model entries without changing trading or admission.
+
+## 320. Replay verified funding and quiet capture without resetting readiness receipts (22 November 2026)
+
+The first 211-to-212 replay supported only full-entry/full-depth-stop trades without funding and required a recent pre-entry tick. Extend the same equivalence test to independently recorded funding and continuously captured quiet tape. Funding must match the observed settlement rate, mark, quantity, cash flow and order, with no unresolved settlement in the holding interval. These price-only SL/trail lifecycles do not depend on funding P&L; verified settlements can be reconciled after price replay without inventing callback times. Partial exits, reversals and context-dependent exits remain unsupported.
+
+A missing seed print can be replaced only by a verified complete symbol window with a prior mark and a quiet interval longer than both tape fallback and accepted trade clocks. Process, archive and selection gaps still refuse proof. The ops tool binds every trade to its exported symbol window, not just the global archive range. No synthetic tick, candle, position or fill is created.
+
+Existing no-funding version-2 receipt identities remain stable. Funding receipts additionally bind settlement provenance. Every candidate must reproduce the original ledger under 211 and exactly the same trigger, arrival, quantity, depth fill, fee and net outcome under 212, including all possible entry-millisecond boundaries. Copying/promotion and the 200-trade requirement remain unchanged.
+
+At the frozen audit snapshot all 130 prior matches survive and 56 additional trades match, taking readiness from 131 to 187. The additional 36 winners and 20 losers net −$92.26. This restores evidence, not profit. Twenty replayed trades have genuinely changed exits and remain excluded. Unknown/adopted policies, old 210 execution, different sizing/reading and incomplete capture remain excluded. See docs/research/readiness-history-review-2026-11-22.md.
+
+## 321. Import readiness receipts only while the service is stopped (22 November 2026)
+
+A one-off receipt importer ran beside the service after decision 320. Its repeated immediate transactions coincided with database-lock warnings, a fatal shutdown and six abandoned in-flight scans. Systemd recovered the service. The 186 matched receipts and original ledger were verified; the audit must not compete with the trading writer again.
+
+Both the legacy replay --record option and the new precomputed-report importer now require a verified inactive vnedge service before opening a writable database. Unknown, failed, activating and active service states refuse the operation. The expensive replay runs without --record while paper remains active; the reviewed report is imported inside the existing deployment stop window. The importer pins the result checksum, rechecks ledger/policy identity, preserves existing valid receipts and applies the batch atomically. It creates no trades and changes no risk, mode or evidence rules. Regression tests cover service refusal, checksum mismatch, full rollback, idempotency and immutable trade rows.
+
+## 322. A "Moving now" strip on Home shows 5-minute, 15-minute and 1-hour moves (16 November 2026)
+
+Delta's tickers carry only a 24-hour change, so a pump ten minutes old looked like any other busy market. The spike study
+(`docs/research/spike-catcher-2026-11-16/`) found about 93 moves of 5 sigma and 1.2% a day across 81 markets, and the bot held
+a position in 9% of the biggest ones: the first step toward seeing them is seeing them. The server keeps a ring of mark prices
+per market (filled once a minute by the existing market-list fetch, 65 minutes deep) and `GET /api/markets/movers` reads the
+change over each window from it. A figure is reported only when the ring reaches back that far, and a market that stopped
+updating shows none. The strip lists the biggest movers in the chosen window with their asset class, the side the account holds
+there (if any) and a link to the chart, and falls back to the 24-hour tape until the server has history.
+
+Display only. Nothing here opens, sizes or skips a trade, and the study's conclusion stands: no chase or fade catcher is
+supported by the backtests. The "hot" thresholds (1.5% in 5 minutes, 3% in 15, 5% in an hour) only decide which chips are
+highlighted. Direction is shown by an arrow and a sign as well as by colour.
+
+PR #64 review correction: discard out-of-order samples before coalescing, retain their real observation times in fixed buckets, and ignore older refresh completions. Return the complete small market universe so a 5m mover cannot disappear behind an unrelated 1h ranking. Hedged positions show both sides. Regression tests cover stale arrivals, dense sampling, refresh races and the API's window candidates. Display only; no trading settings changed.
+
+## 323. Every average R on Performance carries its sample and a verdict (16 November 2026)
+
+The research of 10 to 16 November kept finding that an average R looked like an edge until the sample was examined: +0.134R on
+a handful of events, +0.29R per event that was timing, +100 bps that was a fill artefact. The Performance page showed the
+number alone. It now shows the number with a badge: `edge`, `losing`, `not proven` or `too few`, the trade count, and in the
+tooltip the 95% interval, the number of closing days and the sentence that explains the verdict.
+
+The interval is built from a standard error clustered by closing day, computed on the server (`seR`, `rDays` on every
+`PerformanceStats`): trades closed on the same day move together, so counting them as independent would claim more certainty
+than the data holds. The t value follows the number of days. A verdict needs 30 trades on at least 5 days; below that the badge
+says `too few` whatever the average looks like. `edge` means only that the interval is above zero in this window: it does not
+adjust for the number of groups compared on the page, for market drift, or for selection, and it is not a promotion rule.
+
+No gate, threshold, sizing or promotion rule reads this. It is a reading aid. Not built: a drift-neutral toggle, which needs
+per-side series the report does not carry.
+
+PR #65 correction: daily-cluster uncertainty uses the finite-cluster correction, and large-df intervals no longer jump to the normal critical value at 31 days. A five-day/30-trade positive-mean fixture remains unproven; repeating the same daily observations does not manufacture confidence. Bad numeric inputs remain unmeasured. These are reporting intervals only, not copy, promotion or readiness gates.
+
+## 324. Record the market at every entry, for both books (21 November 2026)
+
+The long-side filter replay of 21 November (35 days, 8,718 shadow longs) could only be run because each entry's state was
+rebuilt from candles: shadow positions carried no entry features, `ml_samples` holds account trades only, and the retroactive
+enricher (decision 108) reaches only the bars still in memory and keeps 6,000 results while the shadow book closes about 480
+trades a day. Every later question of the form "did trades taken in this market state do worse?" would have repeated that work.
+
+When a position opens, in either book, `entry_state` now records, once and keyed by the position:
+- the trade's own features: the engine's, when the entry carried them (account), else the same `computeFeatures` arithmetic on
+  the bars closed at the entry (shadow); a position that cannot be measured is still recorded, with the reason, so coverage is
+  countable;
+- a market block: BTC and ETH bias on 4h and 1d, fleet funding skew and session from the hourly context collector (with the
+  collector's age at the entry), and BTC's own trend (distance from its EMA50 in ATRs on 1h and 4h, 24-hour move) where those
+  bars are already tracked, otherwise null. Unknown is recorded as null, never as zero.
+
+`GET /api/entry-state?book=0|2&from=&to=&symbol=&side=&limit=` returns the rows with the outcome joined once a trade has closed
+(net R, exit reason); `GET /api/entry-state/status` reports row counts, features source, rows without context and failures. The
+journal's features lookup reads the recorded row first. Rows older than 180 days are pruned. Positions already open at a restart
+are recorded five minutes after start from the bars at their entry.
+
+Observation only. It runs after the book's transaction has committed, never throws into the book, and changes no decision, size,
+fill, gate or threshold. It does not backfill closed history: the existing 35 days stay reconstructed from candles. It is not an
+experiment and promotes nothing; its purpose is to let the next side or regime question be answered from recorded state.
+
+Review correction (22 Nov): entry context must have a valid timestamp at or before the entry, including restart recovery and cached records. Later context stays missing; historical closed-bar features remain available. This observes trades without changing admission, fills, risk or evidence rules.
+
+## 325. Operator tools: a parallel scanner list in paper, and starting to judge a tracked cell (21 November 2026)
+
+The re-rank of the fleet (walk-forward on 19,507 shadow trades) found that a cell's drift-adjusted excess persists only about 13% into the
+next week, so the expected gain from putting a better-looking list in the account is small (about +0.02R per trade). It is still the cheapest
+way to find out, provided the list is fixed beforehand and scored against the rest of the account. Two things were also missing from the product:
+a tracked cell could never be judged (the gate never sees it) and there was no way to allocate a set of cells at once and undo it.
+
+`ops/enable-fleet-b.ts` allocates the cells in `docs/research/fleet-b-2026-11-21/cells.json` (12 shadow cells chosen by fixed rules and
+shrunk toward zero) as explicit operator allocations, the same change the Scanners page and promotion make; `--release` undoes exactly that.
+`ops/start-judging-tracked.ts` moves chosen `tracked` cells to `shadow` (default: Nexus Fusion Engine ML on BTCUSD 15m), so their trades count
+as evidence from the move on; the incubator's event log records it with the actor `operator`. `ops/score-fleet-b.ts` compares the list with
+the rest of the account on excess R with a day-clustered interval and gives no verdict before 14 days and 60 fleet trades.
+
+Run by hand with the service stopped, dry-run by default, paper mode only, a config backup before any write, any refused cell stops the whole
+run before a byte is written. No gate, threshold, risk limit or sizing rule changes. The 12 cells are already traded as one-third copies; allocated,
+they trade at normal size. The incubator gate is not bypassed or relaxed: a cell allocated this way is judged as any live cell is.
+
+Review correction (22 Nov): fleet changes require paper mode and an offline service. Quarantine state must be available. Allocation commits once atomically, retains full reversible scanner snapshots and refuses config drift. Tracked transitions recheck stage, quarantine and existing capacity inside the writer transaction. Scoring excludes watch-only, experimental, quarantined and future outcomes, uses corrected day-cluster uncertainty and refuses a verdict without a matched shadow baseline. No fleet is enabled by deployment.
+
+## 326. Preserve the origin of each paper entry (22 November 2026)
+
+Current own-list allocations and historical entry origins are different facts. The fleet endpoint reports today's allocated cells and a 14-day split of filled paper entries by recorded origin. Pending/cancelled requests do not inflate entries. New admission receipts record whether the cell was allocated or copied at that admission and the requested size scale. These are audit metadata, not new ML features or policy identities.
+
+The journal and open-position API read these receipts. A retained legacy `copy_pilot=1` positively identifies a copy; missing provenance is `unknown`, never inferred from today's allocation. Copy scale is read from the admission record when available, never from today's pilot settings. A copied position promoted later stays a copy. An own-list position whose scanner is removed stays own-list. Plans and shadow trades have no paper-origin label.
+
+The journal filters `list=own|copy|unknown` before paging, totals and export. The dashboard shows recorded source/scale in positions, journal and detail; unknown origins are visible. The fleet panel separates current allocation and copy settings from historical entry counts. No trade, size, gate, risk setting or evidence rule changes, and historical rows are not rewritten.
+
+## 329. Explain the incubator stages from the live settings (22 November 2026)
 
 The Incubator page already shows a four-step funnel, but not what a stage means or how a pair moves between them, and its third step, "Waiting for you", reads as if proposals always need a click. On the VM auto-promotion is on with no count caps (`promote.auto: true`), so a pair that passes the gate moves to the account at the next review and proposals wait only when a check holds them.
 
