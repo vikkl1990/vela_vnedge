@@ -5,6 +5,7 @@ import {replayReadinessExecution} from '../analytics/readinessExecutionReplay.ts
 import {tradePolicyIdFor} from '../paper/tradePolicy.ts';
 import {strategyIdFor} from '../paper/strategyIdentity.ts';
 import {readEvidence,qualifiedEvidence,evidenceCoverage} from './trades.ts';
+import {IncubatorStore} from '../incubator/store.ts';
 import {importShadowCohorts,shadowReplayDigest,replayShadowExecution,shadowExecutionCompatible,shadowExecutionEvidence,validateShadowCohort,type ShadowExecutionCohort} from './shadowExecution.ts';
 
 function shadow(t:any,kind:'winner'|'loss'|'changed'|'candle'='loss',side:'long'|'short'='long') {
@@ -86,4 +87,20 @@ test('import is offline, checksummed, atomic, duplicate-safe and cannot shrink a
 test('per-trade backwards receipt time remains unverified even with increasing archive order',t=>{
  const x=shadow(t);x.events[1].receivedAt=T+4000;
  assert.equal(x.run().reason,'input-order');assert.equal(x.run().outcome,'unverified');
+});
+
+test('copy display counts restored trades without treating one restored cell as a qualifying sample',t=>{
+ const x=shadow(t,'winner');x.install();
+ const store=new IncubatorStore(x.db);store.policyFor=()=>x.current;
+ const before=JSON.stringify(x.db.all('SELECT * FROM positions'));
+ const mirror={enabled:true,minTrades:5,minNetR:0};
+ const view=store.copyReadiness(x.cell,mirror,1e8,T+200000).evidence;
+ assert.equal(view.stats.trades,1);assert.equal(view.replayed,1);assert.equal(view.exact,0);
+ assert.equal(view.availableReplayed,1);assert.equal(view.minTrades,5);
+ assert.equal(view.stats.netR,qualifiedEvidence(x.db,x.cell,x.current,{at:T+200000})[0].r);
+ assert.match(store.copyRefusal(x.cell,mirror,1e8,T+200000,{readOnly:true})!,/1\/5 shadow closes/);
+ assert.equal(JSON.stringify(x.db.all('SELECT * FROM positions')),before);
+ x.db.run("INSERT INTO evidence_flags VALUES(?,?,'quarantined','test','test',?)",x.p.id,x.p.entryAt,T);
+ const quarantined=store.copyReadiness(x.cell,mirror,1e8,T+200000).evidence;
+ assert.equal(quarantined.stats.trades,0);assert.equal(quarantined.replayed,0);
 });

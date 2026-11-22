@@ -1048,13 +1048,13 @@ export class App {
       const key = `${r.scannerId}|${r.symbol}|${r.tf}`;
       const trades = judged ? this.incubatorStore.trades(r.scannerId, r.symbol, r.tf, book) : [];
       const restoration=this.incubatorStore.restoration(r,now);
-      const copyReason = r.stage === 'shadow' || r.stage === 'proposed'
-        ? this.incubatorStore.copyRefusal(r,cfg.incubator.mirror,markets.get(r.symbol)?.turnoverUsd??null,now,{readOnly:true}) : undefined;
+      const paperCopy = r.stage === 'shadow' || r.stage === 'proposed'
+        ? this.incubatorStore.copyReadiness(r,cfg.incubator.mirror,markets.get(r.symbol)?.turnoverUsd??null,now) : null;
       return {
         ...r, rotationUntil: r.stage === 'candidate' ? rotation.paused[r.id]?.until ?? null : null, proposedAt: proposedAt.get(r.id) ?? null, scannerName: names.get(r.scannerId) ?? r.scannerId,
         restoration,
-        paperCopy: copyReason === undefined ? null : {eligible:copyReason===null,reason:copyReason},
-        collection: restoration?.startedAt ? this.incubator.collectionOf(r,restoration.startedAt,now) : null,
+        paperCopy,
+        collection: book===2&&judged ? this.incubator.collectionOf(r,restoration?.startedAt??since14,now) : null,
         admissionEvidence: r.screen ? admissionEvidence(r,cfg.incubator) : null,
         stats: judged ? pairStats(trades, r.since, now) : null,
         openShadow: openShadow.get(key) ?? 0,
