@@ -11,11 +11,11 @@ import {validReadinessPolicy,capacityExpansionCompatible,additionalReadinessComp
 import {proveSameReadinessSize} from './readinessSizing.ts';
 import {isExecutableTrade} from '../execution/tradeFreshness.ts';
 
-export const EXECUTION_REPLAY_VERSION=1;
+export const EXECUTION_REPLAY_VERSION=2;
 export interface ExecutionReplayEvent {version:1;receivedAt:number;archiveSequence:number;symbol:string;kind:string;source:string;payload:any}
 export interface ExecutionReplayCoverage {from:number;to:number;sha256:string;segments:number;verified:boolean;gaps?:Array<{from:number;to:number}>}
 export interface ExecutionReplayResult {
- version:1;positionId:number;entryAt:number;previousId:string;currentId:string;ledgerHash:string;
+ version:2;positionId:number;entryAt:number;previousId:string;currentId:string;ledgerHash:string;
  outcome:'identical'|'changed'|'unverified';reason:string;inputHash:string;events:number;
  baseline?:unknown;candidate?:unknown;
 }
@@ -57,7 +57,7 @@ function subjectHash(subject:ReturnType<typeof executionReplaySubject>){
 }
 export const executionReplayLedgerHash=(db:Db,id:number)=>subjectHash(executionReplaySubject(db,id));
 
-function run(subject:ReturnType<typeof executionReplaySubject>,policy:TradePolicy,events:ExecutionReplayEvent[]){
+function run(subject:ReturnType<typeof executionReplaySubject>,policy:TradePolicy,events:ExecutionReplayEvent[],entryBoundary=Infinity){
  const {position:r,reports,state}=subject,meta=JSON.parse(r.fills),entry=meta.fills[0];
  const db=new Db(':memory:');let now=r.entry_at;
  try{
@@ -74,12 +74,16 @@ function run(subject:ReturnType<typeof executionReplaySubject>,policy:TradePolic
    // Pre-roll only seeds tape ordering/liveness. It cannot act on this position.
    if(e.kind==='trade'&&e.source==='execution-feed'&&isExecutableTrade(e.payload,now)){
     // The print that created a maker position did not also evaluate its exit.
-    if(now===r.entry_at)held.entryAt=r.entry_at+1;
+    if(now<r.entry_at||now===r.entry_at&&e.archiveSequence<entryBoundary)held.entryAt=Infinity;
     engine.onTrade(r.symbol,e.payload.price,e.payload.qty,e.payload.timeMs,now,e.payload.id);
     held.entryAt=r.entry_at;
    }
-   if(now<=r.entry_at)continue;
-   if(e.kind==='mark'&&e.source==='execution-feed')engine.onMarkPrice(r.symbol,e.payload.markPrice,e.payload.timeMs);
+   // Seed marks before entry too; applyMark itself rejects pre-entry liquidation.
+   if(e.kind==='mark'&&e.source==='execution-feed'){
+    if(now<r.entry_at||now===r.entry_at&&e.archiveSequence<entryBoundary)held.entryAt=Infinity;
+    engine.onMarkPrice(r.symbol,e.payload.markPrice,e.payload.timeMs);held.entryAt=r.entry_at;
+   }
+   if(now<r.entry_at||now===r.entry_at&&e.archiveSequence<entryBoundary)continue;
    if(e.kind==='paper_bar'&&e.source==='paper-input'&&e.payload.book===0)engine.onBar(r.symbol,e.payload.bar,now,{historical:e.payload.historical});
   }
   for(const report of reports){
@@ -98,7 +102,7 @@ function run(subject:ReturnType<typeof executionReplaySubject>,policy:TradePolic
  * baskets, restart gaps and external context-dependent exits need dedicated replayers. */
 export function replayReadinessExecution(db:Db,id:number,previous:TradePolicy,current:TradePolicy,events:ExecutionReplayEvent[],coverage:ExecutionReplayCoverage):ExecutionReplayResult {
  const subject=executionReplaySubject(db,id),r=subject.position;
- const result:ExecutionReplayResult={version:1,positionId:id,entryAt:r?.entry_at??0,previousId:previous.id,currentId:current.id,ledgerHash:subjectHash(subject),
+ const result:ExecutionReplayResult={version:2,positionId:id,entryAt:r?.entry_at??0,previousId:previous.id,currentId:current.id,ledgerHash:subjectHash(subject),
   outcome:'unverified',reason:'unsupported-lifecycle',inputHash:hash({coverage,events}),events:events.length};
  const refuse=(reason:string)=>({...result,reason});
  try{
@@ -139,6 +143,16 @@ export function replayReadinessExecution(db:Db,id:number,previous:TradePolicy,cu
    trade:[{exitAt:r.exit_at,exitPrice:r.exit_price,exitReason:r.exit_reason,net:r.realized_pnl-r.fees,fees:r.fees,qty:r.qty}],open:[]};
   result.baseline=baseline;result.candidate=candidate;
   if(!near(baseline,observed))return {...result,reason:'baseline-mismatch'};
+  if(near(candidate,observed)){
+   // Receipt clocks do not identify where entry committed inside the same ms.
+   // Test every possible boundary in archive order, including the entry candle's
+   // post-fill callback. Credit only if every boundary reproduces the ledger.
+   const boundaries=input.filter(e=>e.receivedAt===r.entry_at&&['trade','mark','paper_bar'].includes(e.kind)).map(e=>e.archiveSequence);
+   for(const boundary of boundaries){
+    if(!near(run(subject,previous,input,boundary),observed)||!near(run(subject,current,input,boundary),observed))
+     return {...result,reason:'entry-boundary-sensitive'};
+   }
+  }
   return {...result,outcome:near(candidate,observed)?'identical':'changed',reason:near(candidate,observed)?'same-execution':fallbackObserved?'candle-or-amendment-changed':'amendment-changed'};
  }catch{return refuse('invalid-replay-input');}
 }

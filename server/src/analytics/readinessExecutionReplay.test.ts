@@ -113,3 +113,20 @@ test('quarantined or research trades never count, even with an earlier valid rec
  x.db.run('DELETE FROM evidence_flags');x.db.run("UPDATE positions SET evidence_scope='experiment' WHERE id=?",x.p.id);
  assert.equal(x.run().outcome,'unverified');assert.equal(currentPolicyEvidence(x.db,x.engine).ids.size,0);
 });
+
+test('same-millisecond entry candle must be insensitive to its commit boundary',t=>{
+ const x=fixture(t,'winner');
+ // Last pre-roll is beyond fallback age. The possible post-fill candle close
+ // can trigger a stop even though skipping it reproduces the ledger.
+ x.events[0].receivedAt=T-10000;x.events[0].payload.timeMs=T-10000;
+ x.events.splice(1,0,{version:1,receivedAt:T,archiveSequence:2,symbol:'BTCUSD',kind:'paper_bar',source:'paper-input',payload:{book:0,historical:false,bar:{time:T,close:97,low:97,high:100,volume:100}}});
+ x.events.forEach((e,i)=>e.archiveSequence=i+1);
+ assert.equal(x.run().reason,'entry-boundary-sensitive');assert.equal(x.run().outcome,'unverified');
+});
+test('harmless entry candle retains credit and prior algorithm receipts expire',t=>{
+ const x=fixture(t);x.events.splice(1,0,{version:1,receivedAt:T,archiveSequence:2,symbol:'BTCUSD',kind:'paper_bar',source:'paper-input',payload:{book:0,historical:false,bar:{time:T,close:100,low:100,high:100,volume:100}}});
+ x.events.forEach((e,i)=>e.archiveSequence=i+1);
+ const proof=x.run();assert.equal(proof.outcome,'identical');recordExecutionReplay(x.db,proof);
+ x.db.run("UPDATE readiness_execution_replays SET result=json_set(result,'$.version',1)");
+ assert.equal(executionReplayEvidence(x.db,x.p.id,x.previous,x.current),null);
+});
