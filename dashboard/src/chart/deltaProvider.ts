@@ -120,14 +120,52 @@ export const deltaProvider: DataProvider = {
 
   subscribe(ticker, timeframe, onBar) {
     const tf = velaToDeltaTf(timeframe)
-    const stream = new CandleStream(tfMs(tf), onBar)
+    const interval = tfMs(tf)
+    const stream = new CandleStream(interval, onBar)
+    let lastTime = -Infinity
+    let stopped = false
+    let filling = false
+    const take = (bar: Candle, closed: boolean) => {
+      if (stopped || !Number.isFinite(bar.time)) return
+      if (lastTime >= 0 && bar.time > lastTime + interval && !filling) {
+        const from = lastTime
+        const to = bar.time
+        filling = true
+        void api
+          .candles({ symbol: ticker, tf, from, to, limit: 500 })
+          .then((rows) => {
+            if (stopped || !Array.isArray(rows)) return
+            for (const row of rows) if (row.time > from && row.time < to) stream.candle(row, true)
+          })
+          .catch(() => {
+            /* the next event still arrives */
+          })
+          .finally(() => {
+            filling = false
+          })
+      }
+      stream.candle(bar, closed)
+      if (bar.time > lastTime) lastTime = bar.time
+    }
+    void api
+      .candles({ symbol: ticker, tf, limit: 2 })
+      .then((rows) => {
+        if (stopped || !Array.isArray(rows) || !rows.length) return
+        const latest = rows[rows.length - 1]
+        const bucket = interval > 0 ? Math.floor(Date.now() / interval) * interval : latest.time
+        take(latest, latest.time < bucket)
+      })
+      .catch(() => {
+        /* live events still start the stream */
+      })
     const offCandle = sseBus.on('candle', (e) => {
-      if (e.symbol === ticker && e.tf === tf && e.bar) stream.candle(e.bar, e.closed)
+      if (e.symbol === ticker && e.tf === tf && e.bar) take(e.bar, e.closed)
     })
     const offTick = sseBus.on('tick', (t) => {
       if (t.symbol === ticker) stream.tick(t.price, t.time)
     })
     return () => {
+      stopped = true
       offCandle()
       offTick()
     }
