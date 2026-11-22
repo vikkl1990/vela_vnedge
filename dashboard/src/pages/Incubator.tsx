@@ -32,6 +32,7 @@ import { useResearchFilters } from '../lib/useResearchFilters'
 import { Clocks, Evidence, Funnel, Need } from '../components/incubatorBits'
 import { OverlapPanel } from '../components/OverlapPanel'
 import { ScreenQueuePanel } from '../components/ScreenQueuePanel'
+import { StageGuide } from '../components/StageGuide'
 import { fmtNum, fmtR, timeAgo } from '../lib/format'
 import { clockRank, gateFor, gateMinimums, pf, r } from '../lib/incubatorLogic'
 import '../styles/pages/incubator.css'
@@ -320,7 +321,11 @@ export default function Incubator() {
                     label="Waiting for you"
                     value={decisions.length}
                     tone={decisions.length ? 'warn' : undefined}
-                    sub="proposals to approve or reject"
+                    sub={
+                      d.config.promote.auto === true
+                        ? 'held proposals (auto-promotion is on)'
+                        : 'proposals to approve or reject'
+                    }
                     on={false}
                     to="/decisions"
                   />
@@ -344,6 +349,7 @@ export default function Incubator() {
                   />
                 </li>
               </ol>
+              <StageGuide config={d.config} />
               <p className={`inc-lastscreen small ${died || stale ? 'loss' : 'muted'}`}>
                 {(died || stale) && <b>The daily screen is not running. </b>}
                 {died &&

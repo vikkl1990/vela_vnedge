@@ -8386,3 +8386,11 @@ Nightly and conjunction screens use one timestamped-signal entry point. Training
 The optional multiple-testing guard remains disabled by default. Disabled evaluations perform no trial-count query. When explicitly enabled, one lightweight stage-count snapshot is shared by all pair/cohort judgments in that evaluation; retiring an earlier cell cannot relax the denominator for later cells. Approval performs its own fresh count. No repeated full-catalogue loads or JSON decoding are needed to count trials.
 
 Regression coverage includes an occupied API port with normal and stalled cleanup, the real app's execution timer lifecycle, pair/cohort evaluation with the optional guard on and off, a stable denominator through retirements, and shared signal-screen holdout/density boundaries. Saved paper mode, risk limits, evidence settings and held-position policies are preserved.
+
+## 324. Explain the incubator stages from the live settings (22 November 2026)
+
+The Incubator page already shows a four-step funnel, but not what a stage means or how a pair moves between them, and its third step, "Waiting for you", reads as if proposals always need a click. On the VM auto-promotion is on with no count caps (`promote.auto: true`), so a pair that passes the gate moves to the account at the next review and proposals wait only when a check holds them.
+
+The page gains a "What these stages mean" disclosure under the funnel: candidate, shadow, proposed, live, demotion proposed, retired and tracked, each with what it is and how a pair gets in and out. The numbers come from the live settings (screen, gate, per-timeframe minimums, demotion window, retirement days, review interval), so they cannot drift from the rules. The proposed-stage text says a pair moves by itself only when auto-promotion is on. The funnel's third step now says "held proposals (auto-promotion is on)" in that case. The demotion triggers listed are the ones the cycle applies: a poor record over the recent window, silence, a market leaving the exchange, and repeated cost refusals.
+
+Dashboard only. It changes no gate, setting, stage or pair, and reads the incubator view the page already loads.
