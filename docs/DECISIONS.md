@@ -8386,3 +8386,11 @@ Nightly and conjunction screens use one timestamped-signal entry point. Training
 The optional multiple-testing guard remains disabled by default. Disabled evaluations perform no trial-count query. When explicitly enabled, one lightweight stage-count snapshot is shared by all pair/cohort judgments in that evaluation; retiring an earlier cell cannot relax the denominator for later cells. Approval performs its own fresh count. No repeated full-catalogue loads or JSON decoding are needed to count trials.
 
 Regression coverage includes an occupied API port with normal and stalled cleanup, the real app's execution timer lifecycle, pair/cohort evaluation with the optional guard on and off, a stable denominator through retirements, and shared signal-screen holdout/density boundaries. Saved paper mode, risk limits, evidence settings and held-position policies are preserved.
+
+## 319. Move the chart library to Vela 0.10.14 (22 November 2026)
+
+The dashboard chart moves from `@luxalgo/vela` 0.10.13 to 0.10.14, the release of 20 November. Only the chart package changes. `@luxalgo/vela-pinets` stays at 0.3.4, whose peer range already admits 0.10.x, and `pinets` stays at 0.13.1 on both the server and the dashboard, so the chart still runs scripts on the same engine as the scanners. The lockfile changes in four lines: the version, the tarball address and its hash.
+
+The upstream release notes were not read before this change. What was checked: the type check, lint, format check, the 104 dashboard unit tests and the production build pass, and the package imports with all 132 exports, including `registerNativeIndicator`, which the position-levels overlay uses. The browser chart-comparison and performance specs run in CI only, because Playwright is not installed on the machine that prepared this. They are the check that matters for a chart upgrade, so this should not merge until they pass.
+
+This does not change a scanner, a setting, a paper trade or the VM. Roll back by restoring 0.10.13 in `dashboard/package.json` and the lockfile.
