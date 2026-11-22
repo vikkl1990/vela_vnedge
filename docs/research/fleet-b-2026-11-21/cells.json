@@ -1,0 +1,310 @@
+{
+  "id": "fleet-b",
+  "createdAt": "2026-11-21",
+  "note": "A parallel scanner list for the paper account, chosen from 28 days of shadow results by excess R after shrinking toward zero. See README.md.",
+  "persistenceSlope": 0.13,
+  "cells": [
+    {
+      "scannerId": "re-accumulation",
+      "symbol": "AKEUSD",
+      "tf": "15m",
+      "name": "Re-accumulation",
+      "shadow28d": {
+        "trades": 45,
+        "rawR": 0.198,
+        "excessR": 0.252,
+        "expectedNextExcessR": 0.033,
+        "longShare": 1
+      },
+      "copy14d": {
+        "signals": 48,
+        "opened": 10
+      }
+    },
+    {
+      "scannerId": "aroon",
+      "symbol": "BLESSUSD",
+      "tf": "15m",
+      "name": "Aroon",
+      "shadow28d": {
+        "trades": 28,
+        "rawR": 0.218,
+        "excessR": 0.253,
+        "expectedNextExcessR": 0.033,
+        "longShare": 0.64
+      },
+      "copy14d": {
+        "signals": 26,
+        "opened": 9
+      }
+    },
+    {
+      "scannerId": "machine-learning-rsi-ai-classification-ranking-zeiierman",
+      "symbol": "ARIAUSD",
+      "tf": "15m",
+      "name": "Machine Learning RSI | AI Classification & Ranking (Zeiierman)",
+      "shadow28d": {
+        "trades": 39,
+        "rawR": 0.225,
+        "excessR": 0.246,
+        "expectedNextExcessR": 0.032,
+        "longShare": 0.38
+      },
+      "copy14d": {
+        "signals": 29,
+        "opened": 13
+      }
+    },
+    {
+      "scannerId": "bb-short-dca-strategy",
+      "symbol": "AINUSD",
+      "tf": "15m",
+      "name": "BB Short DCA Strategy",
+      "shadow28d": {
+        "trades": 62,
+        "rawR": 0.228,
+        "excessR": 0.229,
+        "expectedNextExcessR": 0.03,
+        "longShare": 0
+      },
+      "copy14d": {
+        "signals": 10,
+        "opened": 6
+      }
+    },
+    {
+      "scannerId": "half-trend-channel",
+      "symbol": "BNBUSD",
+      "tf": "4h",
+      "name": "Half-Trend Channel",
+      "shadow28d": {
+        "trades": 39,
+        "rawR": 0.276,
+        "excessR": 0.215,
+        "expectedNextExcessR": 0.028,
+        "longShare": 0.08
+      },
+      "copy14d": {
+        "signals": 56,
+        "opened": 11
+      }
+    },
+    {
+      "scannerId": "smart-money-engine",
+      "symbol": "MUSD",
+      "tf": "1h",
+      "name": "Smart Money Engine",
+      "shadow28d": {
+        "trades": 31,
+        "rawR": 0.171,
+        "excessR": 0.217,
+        "expectedNextExcessR": 0.028,
+        "longShare": 0.55
+      },
+      "copy14d": {
+        "signals": 4,
+        "opened": 2
+      }
+    },
+    {
+      "scannerId": "supertrended-rsi",
+      "symbol": "GTCUSD",
+      "tf": "15m",
+      "name": "Supertrended RSI",
+      "shadow28d": {
+        "trades": 43,
+        "rawR": 0.16,
+        "excessR": 0.188,
+        "expectedNextExcessR": 0.024,
+        "longShare": 0.51
+      },
+      "copy14d": {
+        "signals": 0,
+        "opened": null
+      }
+    },
+    {
+      "scannerId": "scalping-ichimoku",
+      "symbol": "INITUSD",
+      "tf": "15m",
+      "name": "Scalping Ichimoku",
+      "shadow28d": {
+        "trades": 34,
+        "rawR": 0.144,
+        "excessR": 0.175,
+        "expectedNextExcessR": 0.023,
+        "longShare": 0.56
+      },
+      "copy14d": {
+        "signals": 0,
+        "opened": null
+      }
+    },
+    {
+      "scannerId": "session-levels-pro",
+      "symbol": "GTCUSD",
+      "tf": "15m",
+      "name": "Session Levels Pro",
+      "shadow28d": {
+        "trades": 45,
+        "rawR": 0.158,
+        "excessR": 0.175,
+        "expectedNextExcessR": 0.023,
+        "longShare": 0.31
+      },
+      "copy14d": {
+        "signals": 0,
+        "opened": null
+      }
+    },
+    {
+      "scannerId": "standard-error-bands",
+      "symbol": "INITUSD",
+      "tf": "15m",
+      "name": "Standard Error Bands",
+      "shadow28d": {
+        "trades": 134,
+        "rawR": 0.134,
+        "excessR": 0.16,
+        "expectedNextExcessR": 0.021,
+        "longShare": 0.47
+      },
+      "copy14d": {
+        "signals": 74,
+        "opened": 24
+      }
+    },
+    {
+      "scannerId": "macd",
+      "symbol": "LABUSD",
+      "tf": "1h",
+      "name": "MACD",
+      "shadow28d": {
+        "trades": 31,
+        "rawR": 0.1,
+        "excessR": 0.146,
+        "expectedNextExcessR": 0.019,
+        "longShare": 0.55
+      },
+      "copy14d": {
+        "signals": 0,
+        "opened": null
+      }
+    },
+    {
+      "scannerId": "rsi-signals-entries",
+      "symbol": "ARIAUSD",
+      "tf": "15m",
+      "name": "RSI Signals Entries",
+      "shadow28d": {
+        "trades": 38,
+        "rawR": 0.113,
+        "excessR": 0.129,
+        "expectedNextExcessR": 0.017,
+        "longShare": 0.26
+      },
+      "copy14d": {
+        "signals": 12,
+        "opened": 10
+      }
+    }
+  ],
+  "excluded": [
+    {
+      "scannerId": "nexus-fusion-engine-ml",
+      "symbol": "BTCUSD",
+      "tf": "15m",
+      "reasons": [
+        "stage is tracked, not shadow"
+      ]
+    },
+    {
+      "scannerId": "universal-signal-backtester",
+      "symbol": "ZROUSD",
+      "tf": "15m",
+      "reasons": [
+        "73% of its account copy signals die at the fee gate (stop too tight)"
+      ]
+    },
+    {
+      "scannerId": "cb-lod-reversal",
+      "symbol": "ZROUSD",
+      "tf": "15m",
+      "reasons": [
+        "50% of its account copy signals die at the fee gate (stop too tight)"
+      ]
+    },
+    {
+      "scannerId": "role-reversal",
+      "symbol": "AKEUSD",
+      "tf": "15m",
+      "reasons": [
+        "not in the script manifest"
+      ]
+    },
+    {
+      "scannerId": "liquidity-sweep-follow-through-guard",
+      "symbol": "BTWUSD",
+      "tf": "15m",
+      "reasons": [
+        "42% of its account copy signals die at the market gate"
+      ]
+    },
+    {
+      "scannerId": "v-top-v-bottom",
+      "symbol": "ZROUSD",
+      "tf": "15m",
+      "reasons": [
+        "42% of its account copy signals die at the fee gate (stop too tight)"
+      ]
+    },
+    {
+      "scannerId": "chebyshev-filter-divergences",
+      "symbol": "BTWUSD",
+      "tf": "15m",
+      "reasons": [
+        "the list is full"
+      ]
+    },
+    {
+      "scannerId": "kaufman-moving-average-adaptive-strategy-by-mkb",
+      "symbol": "INITUSD",
+      "tf": "15m",
+      "reasons": [
+        "the list is full"
+      ]
+    },
+    {
+      "scannerId": "alphamojo-supertrend-strategy-ha-with-buffer",
+      "symbol": "AVAXUSD",
+      "tf": "15m",
+      "reasons": [
+        "stage is tracked, not shadow"
+      ]
+    },
+    {
+      "scannerId": "structure-trend-dashboard",
+      "symbol": "AIOTUSD",
+      "tf": "15m",
+      "reasons": [
+        "32% of its account copy signals die at the fee gate (stop too tight)"
+      ]
+    },
+    {
+      "scannerId": "smart-swing-vwap-zeiierman",
+      "symbol": "AKEUSD",
+      "tf": "15m",
+      "reasons": [
+        "stage is retired, not shadow"
+      ]
+    },
+    {
+      "scannerId": "amit-eth-strategy-tv-strategies",
+      "symbol": "AIOTUSD",
+      "tf": "15m",
+      "reasons": [
+        "the list is full"
+      ]
+    }
+  ]
+}

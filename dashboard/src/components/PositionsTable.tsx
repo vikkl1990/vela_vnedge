@@ -12,6 +12,7 @@ import { AssetChip } from './AssetChip'
 import { DataTable, type Column } from './DataTable'
 import { ConfirmDialog, Pnl, SidePill, StatusDot, Time } from './kit'
 import { TradePath } from './TradePath'
+import { SourceTag } from './SourceTag'
 import { ActiveStop, CloseNow } from './PositionHealth'
 import { healthMatches, quoteFresh } from '../lib/positionHealth'
 
@@ -191,7 +192,8 @@ export function PositionsTable({ positions, compact = false }: { positions: Posi
               <div className="muted small">
                 <Link to={`/scanners/${p.scannerId}`} className="link">
                   {p.scannerName}
-                </Link>
+                </Link>{' '}
+                <SourceTag source={p.fleetSource} scale={p.entrySizeScale} />
                 {compact && (
                   <div>
                     {fmtInt(p.qtyOpen)}/{fmtInt(p.qty)} contracts ·{' '}
@@ -433,7 +435,8 @@ export function PositionsTable({ positions, compact = false }: { positions: Posi
               </div>
               <Link className="link" to={`/scanners/${p.scannerId}`}>
                 {p.scannerName}
-              </Link>
+              </Link>{' '}
+              <SourceTag source={p.fleetSource} scale={p.entrySizeScale} />
               <ExecutionState p={p} />
               <dl className="position-metrics">
                 <div>

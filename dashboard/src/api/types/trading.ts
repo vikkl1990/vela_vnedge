@@ -58,6 +58,8 @@ export interface PaperExecution {
   } | null
 }
 export interface Position {
+  fleetSource?: import('../paperFleet.ts').FleetSource | null
+  entrySizeScale?: number | null
   execution?: PaperExecution
   protection?: Protection | null
   funding?: number

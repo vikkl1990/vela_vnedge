@@ -1,9 +1,10 @@
 import type { Db } from '../db.ts';
 import { fundingOf, validatePerformanceFilter, type PerformanceFilter } from './performance.ts';
 import { classClause, classOf, matchesClass } from '../markets/classes.ts';
+import { entryOrigin, entryOriginSql, type TradeSource } from './paperFleet.ts';
 
 export type JournalBook = 'paper' | 'shadow';
-export type JournalFilter = PerformanceFilter & { book: JournalBook; status: string; scope: string; history: string; dateBy: 'entry' | 'exit'; offset: number; limit: number; sort: string };
+export type JournalFilter = PerformanceFilter & { list: 'all' | TradeSource; book: JournalBook; status: string; scope: string; history: string; dateBy: 'entry' | 'exit'; offset: number; limit: number; sort: string };
 type Raw = Record<string, any>;
 class JournalError extends Error { status = 400; }
 const parsed = (s: unknown): any => { try { return typeof s === 'string' ? JSON.parse(s) : null; } catch { return null; } };
@@ -14,13 +15,16 @@ export function journalFilter(p: URLSearchParams): JournalFilter {
   const book = p.get('book') ?? 'paper', status = p.get('status') ?? 'closed', scope = p.get('scope') ?? 'all', dateBy = p.get('dateBy') ?? 'exit';
   const sort = p.get('sort') ?? 'newest';
   const history = p.get('history') ?? 'current';
+  const list = p.get('list') ?? 'all';
+  if (!['all', 'own', 'copy', 'unknown'].includes(list)) throw new JournalError('Choose all, own, copy or unknown.');
+  if (list !== 'all' && book !== 'paper') throw new JournalError('Own list and copy apply to the paper account only.');
   if (!['current','archived','all'].includes(history)) throw new JournalError('Invalid journal history.');
   if (!['paper', 'shadow'].includes(book)) throw new JournalError('Choose paper or shadow.');
   if (!['all', 'open', 'pending', 'closed', 'voided', 'cancelled'].includes(status)) throw new JournalError('Invalid journal status.');
   if (!['all', 'evidence', 'watch', 'plans'].includes(scope)) throw new JournalError('Invalid evidence scope.');
   if (!['entry', 'exit'].includes(dateBy) || !['newest', 'oldest', 'worst', 'best'].includes(sort)) throw new JournalError('Invalid journal ordering or date basis.');
   const num = (k: string, fallback?: number) => p.has(k) ? Number(p.get(k)) : fallback;
-  const f = { book, status, scope, history, dateBy, sort, offset: num('offset', 0)!, limit: num('limit', 50)!, from: num('from'), to: num('to'),
+  const f = { book, list, status, scope, history, dateBy, sort, offset: num('offset', 0)!, limit: num('limit', 50)!, from: num('from'), to: num('to'),
     ...Object.fromEntries(['scanner', 'symbol', 'tf', 'side', 'reason', 'group', 'sector'].map(k => [k, p.get(k) || undefined])) } as JournalFilter;
   try { validatePerformanceFilter(f); } catch (e) { throw new JournalError((e as Error).message); }
   if (!Number.isSafeInteger(f.offset) || f.offset < 0 || !Number.isSafeInteger(f.limit) || f.limit < 1 || f.limit > 200) throw new JournalError('Invalid journal page.');
@@ -53,6 +57,9 @@ export function journalRow(r: Raw) {
     accountingPending: !!r.accounting_pending, source: r.fill_source ?? null,
     pending: pending ? { price: finite(pending.limit?.price), expiresAt: finite(pending.limit?.expiresAt), dueAt: finite(pending.dueAt) } : null,
     missingPosition: !!r.missing_position,
+    /** Decision 323: whether the account's own list or a shadow copy produced the trade. Set by the journal; null for shadow and plans. */
+    fleetSource: [0,-1].includes(r.bt) && !r.scanner_id.startsWith('plan:') && !r.missing_position ? entryOrigin(r.fills,r.origin_receipt).fleetSource : null as TradeSource | null,
+    entrySizeScale: [0,-1].includes(r.bt) && !r.scanner_id.startsWith('plan:') ? entryOrigin(r.fills,r.origin_receipt).entrySizeScale : null,
   };
 }
 export type JournalRow = ReturnType<typeof journalRow>;
@@ -77,7 +84,7 @@ export class Journal {
     if (f.scope === 'plans') where.push("p.scanner_id LIKE 'plan:%'");
     if (f.scope === 'evidence') where.push("p.scanner_id NOT LIKE 'plan:%' AND (p.bt IN (0,-1) OR p.evidence_scope IN ('shadow','legacy-shadow'))");
     if (f.scope === 'watch') where.push("p.scanner_id NOT LIKE 'plan:%' AND p.bt IN (2,-3) AND p.evidence_scope IN ('tracker','legacy-tracker')");
-    const rows = this.db.all<Raw>(`SELECT p.*,
+    const rows = this.db.all<Raw>(`SELECT p.*, ${entryOriginSql} origin_receipt,
       (SELECT t.source_hash FROM trade_policies t WHERE t.id=p.policy_id) policy_source_hash,
       EXISTS(SELECT 1 FROM execution_accounting a WHERE a.position_id=p.id AND a.state!='complete') accounting_pending,
       (SELECT o.price_source FROM orders o WHERE o.position_id=p.id AND o.bt=p.bt AND o.reason='entry' ORDER BY o.at,o.id LIMIT 1) fill_source
@@ -100,6 +107,7 @@ export class Journal {
           symbol: d.symbol, tf: d.tf, side: null, exit_at: d.at, exit_reason: d.reason, signal_id: d.signal_id, missing_position: true }));
       }
     }
+    if (f.list !== 'all') { const keep = rows.filter(r => r.fleetSource === f.list); rows.length = 0; rows.push(...keep); }
     const timeOf = (r: JournalRow) => f.dateBy === 'entry' ? r.entryAt : r.eventAt;
     return rows.sort((a, b) => {
       const av = ['worst', 'best'].includes(f.sort) ? a.net : timeOf(a), bv = ['worst', 'best'].includes(f.sort) ? b.net : timeOf(b);

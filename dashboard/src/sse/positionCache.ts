@@ -13,6 +13,14 @@ export function mergePositionEvent(
   }
   if (index < 0) return [event.position, ...previous]
   const next = previous.slice()
-  next[index] = event.position
+  // Origin is immutable admission metadata. Older stream payloads omit it;
+  // an omission must not erase the last verified HTTP receipt.
+  const prior = previous[index]
+  const updated = { ...event.position }
+  if (updated.fleetSource === undefined && prior.fleetSource !== undefined)
+    updated.fleetSource = prior.fleetSource
+  if (updated.entrySizeScale === undefined && prior.entrySizeScale !== undefined)
+    updated.entrySizeScale = prior.entrySizeScale
+  next[index] = updated
   return next
 }
