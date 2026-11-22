@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * A second scanner list, running in the paper account beside the current one (decision 322).
+ * A second scanner list, running in the paper account beside the current one (decision 325).
  *
  * Each cell in the list becomes an explicit operator allocation, exactly what the Scanners page does and what promotion does
  * for a proposal: the scanner is enabled and un-hidden, and the cell is added to its pairs (a legacy symbol list is converted
@@ -19,7 +19,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
-import { ConfigStore, TF_SECONDS } from '../server/src/config.ts';
+import { ConfigStore, TF_SECONDS, type ScannerConfig } from '../server/src/config.ts';
+import { requireFleetMaintenance, commitFleetConfig, assertPaper } from './fleet-maintenance.ts';
 import { scannerPairs } from '../server/src/scanners/allocation.ts';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -34,7 +35,10 @@ export interface FleetMarker {
   /** The cells this run added (not those that were already allocated). */
   added: FleetCell[];
   /** Each touched scanner's stored entry before the run, or null when it had none, so a release can restore it. */
-  before: Record<string, { enabled?: boolean; hidden?: boolean } | null>;
+  before: Record<string, Partial<ScannerConfig> | null>;
+  /** Exact written scanner snapshots; a release refuses subsequent operator edits. */
+  after: Record<string, Partial<ScannerConfig>>;
+  version: 2;
 }
 export interface FleetOptions {
   configFile: string;
@@ -76,10 +80,10 @@ function manifestIds(file: string): Set<string> {
   return new Set(list.filter((s) => !s.removed).map((s) => s.id));
 }
 function quarantinedIds(dbFile: string | null | undefined): Set<string> {
-  if (!dbFile || !fs.existsSync(dbFile)) return new Set();
+  if (!dbFile || !fs.existsSync(dbFile)) throw new Error('quarantine state unavailable: an existing database is required');
   const db = new DatabaseSync(dbFile, { readOnly: true });
   try { return new Set((db.prepare('SELECT scanner_id FROM script_health WHERE quarantined=1').all() as Array<{ scanner_id: string }>).map((r) => r.scanner_id)); }
-  catch { return new Set(); }
+  catch { throw new Error('quarantine state unavailable: cannot read script_health'); }
   finally { db.close(); }
 }
 
@@ -105,9 +109,9 @@ export function enableFleet(o: FleetOptions) {
   const now = o.now ?? Date.now();
   const def = readFleet(o.cellsFile ?? DEFAULT_CELLS);
   const before = fs.readFileSync(o.configFile, 'utf8');
-  const raw = JSON.parse(before) as { scanners?: Record<string, { enabled?: boolean; hidden?: boolean }> };
+  const raw = JSON.parse(before) as { scanners?: Record<string, Partial<ScannerConfig>> };
   const real = new ConfigStore(o.configFile);
-  if (real.get().execution.mode !== 'paper') throw new Error('paper mode only: execution.mode is not "paper"');
+  assertPaper(real.get());
   const marker = markerPath(o.configFile, def.id);
   if (fs.existsSync(marker)) throw new Error(`${def.id} is already applied (${path.basename(marker)} exists); release it first`);
 
@@ -125,10 +129,16 @@ export function enableFleet(o: FleetOptions) {
   // the whole change is first made on a copy: any validation or fleet-cap error stops here, before the real file is touched
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-b-'));
   let planned;
+  let after: string;
   try {
     const copy = path.join(dir, 'config.json');
     fs.writeFileSync(copy, before, { mode: 0o600 });
     planned = allocate(new ConfigStore(copy), byScanner);
+    const staged = JSON.parse(fs.readFileSync(copy, 'utf8'));
+    // Persist only this operation's scanner edits, not defaults or unrelated specs.
+    const scanners = { ...raw.scanners };
+    for (const p of planned) scanners[p.scannerId] = staged.scanners[p.scannerId];
+    after = JSON.stringify({ ...raw, scanners }, null, 2) + '\n';
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 
   const summary = planned.map((p) => ({
@@ -140,57 +150,50 @@ export function enableFleet(o: FleetOptions) {
   const result = { fleet: def.id, dryRun: !o.apply, cells: def.cells.length, willAdd: planned.reduce((n, p) => n + p.added.length, 0), alreadyAllocated, scanners: summary };
   if (!o.apply || !planned.length) return result;
 
-  if (fs.readFileSync(o.configFile, 'utf8') !== before) throw new Error('configuration changed during the run; nothing written');
-  const backup = `${o.configFile}.before-${def.id}-${now}`;
-  fs.writeFileSync(backup, before, { mode: 0o600, flag: 'wx' });
-  allocate(real, byScanner);
+  const afterRaw = JSON.parse(after);
   const mark: FleetMarker = {
-    id: def.id, appliedAt: now, added: planned.flatMap((p) => p.added),
-    before: Object.fromEntries(planned.map((p) => [p.scannerId, raw.scanners?.[p.scannerId] ? { enabled: raw.scanners[p.scannerId].enabled, hidden: raw.scanners[p.scannerId].hidden } : null])),
+    version: 2, id: def.id, appliedAt: now, added: planned.flatMap((p) => p.added),
+    before: Object.fromEntries(planned.map((p) => [p.scannerId, raw.scanners?.[p.scannerId] ?? null])),
+    after: Object.fromEntries(planned.map((p) => [p.scannerId, afterRaw.scanners[p.scannerId]])),
   };
-  fs.writeFileSync(marker, JSON.stringify(mark, null, 2) + '\n', { mode: 0o600, flag: 'wx' });
+  const backup = commitFleetConfig(o.configFile, before, after, `${def.id}-${now}`, () => {
+    // Durable intent precedes the single atomic config replace. If replacement fails,
+    // release can recognize the unchanged prior snapshot and retire this marker.
+    fs.writeFileSync(marker, JSON.stringify(mark, null, 2) + '\n', { mode: 0o600, flag: 'wx' });
+    const fd = fs.openSync(marker, 'r'); try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+  });
   return { ...result, dryRun: false, backup, marker };
 }
 
-/** Undo: remove exactly the cells this fleet added; restore a scanner's enabled and hidden state only when nothing else is left on it. */
+/** Release only unchanged fleet-owned scanner entries. Preserve every unrelated setting. */
 export function releaseFleet(o: { configFile: string; fleetId?: string; apply?: boolean; now?: number }) {
   const now = o.now ?? Date.now();
   const id = o.fleetId ?? readFleet(DEFAULT_CELLS).id;
+  if (!/^[a-z0-9-]{2,40}$/.test(id)) throw new Error('invalid fleet id');
+  const before = fs.readFileSync(o.configFile, 'utf8');
+  assertPaper(new ConfigStore(o.configFile).get());
   const file = markerPath(o.configFile, id);
   if (!fs.existsSync(file)) throw new Error(`${id} is not applied (no ${path.basename(file)})`);
   const mark = JSON.parse(fs.readFileSync(file, 'utf8')) as FleetMarker;
-  const store = new ConfigStore(o.configFile);
-  const before = fs.readFileSync(o.configFile, 'utf8');
-  const touched: Array<{ scannerId: string; removed: number; left: number; restored: boolean }> = [];
-  const plan = new Map<string, Set<string>>();
-  for (const c of mark.added) (plan.get(c.scannerId) ?? plan.set(c.scannerId, new Set()).get(c.scannerId)!).add(key(c));
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-b-release-'));
-  try {
-    const run = (s: ConfigStore, write: boolean) => {
-      for (const [scannerId, drop] of plan) {
-        const cfg = s.get();
-        const rest = scannerPairs(cfg.scanners[scannerId], cfg.timeframes).filter((p) => !drop.has(key(p)));
-        const removed = scannerPairs(cfg.scanners[scannerId], cfg.timeframes).length - rest.length;
-        const prior = mark.before[scannerId];
-        s.setScanner(scannerId, rest.length ? { pairs: rest } : { pairs: [], enabled: prior?.enabled ?? false, hidden: prior?.hidden ?? false });
-        if (write) touched.push({ scannerId, removed, left: rest.length, restored: !rest.length });
-      }
-    };
-    const copy = path.join(dir, 'config.json');
-    fs.writeFileSync(copy, before, { mode: 0o600 });
-    run(new ConfigStore(copy), false);
-  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
-  if (!o.apply) return { fleet: id, dryRun: true, cells: mark.added.length, scanners: plan.size };
-  const backup = `${o.configFile}.before-release-${id}-${now}`;
-  fs.writeFileSync(backup, before, { mode: 0o600, flag: 'wx' });
-  for (const [scannerId, drop] of plan) {
-    const cfg = store.get();
-    const all = scannerPairs(cfg.scanners[scannerId], cfg.timeframes);
-    const rest = all.filter((p) => !drop.has(key(p)));
+  if (mark.version !== 2 || mark.id !== id || !mark.before || !mark.after) throw new Error('fleet marker lacks reversible snapshots; manual review required');
+  const raw = JSON.parse(before);
+  const scanners = { ...raw.scanners };
+  const touched = Object.keys(mark.after);
+  for (const scannerId of touched) {
+    const cur = scanners[scannerId] ?? null;
     const prior = mark.before[scannerId];
-    store.setScanner(scannerId, rest.length ? { pairs: rest } : { pairs: [], enabled: prior?.enabled ?? false, hidden: prior?.hidden ?? false });
-    touched.push({ scannerId, removed: all.length - rest.length, left: rest.length, restored: !rest.length });
+    if (prior === undefined) throw new Error('incomplete fleet marker');
+    // Also handles a crash after the intent/backup was written but before config commit,
+    // or after config restoration and before marker retirement.
+    const equal = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+    if (!equal(cur, mark.after[scannerId]) && !equal(cur, prior))
+      throw new Error(`scanner ${scannerId} changed since fleet allocation; nothing written`);
+    if (prior === null) delete scanners[scannerId];
+    else scanners[scannerId] = prior;
   }
+  if (!o.apply) return { fleet: id, dryRun: true, cells: mark.added.length, scanners: touched.length };
+  const after = JSON.stringify({ ...raw, scanners }, null, 2) + '\n';
+  const backup = commitFleetConfig(o.configFile, before, after, `release-${id}-${now}`);
   fs.renameSync(file, `${file}.released-${now}`);
   return { fleet: id, dryRun: false, backup, scanners: touched };
 }
@@ -199,6 +202,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   const configFile = process.env.VNEDGE_CONFIG ?? path.join(ROOT, 'data', 'config.json');
   const dbFile = process.env.VNEDGE_DB ?? path.join(path.dirname(configFile), 'vnedge.db');
   const apply = process.argv.includes('--apply');
+  if (apply) requireFleetMaintenance();
   const out = process.argv.includes('--release')
     ? releaseFleet({ configFile, apply, fleetId: readFleet(process.env.FLEET_CELLS ?? DEFAULT_CELLS).id })
     : enableFleet({ configFile, dbFile, apply, cellsFile: process.env.FLEET_CELLS ?? DEFAULT_CELLS });

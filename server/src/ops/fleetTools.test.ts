@@ -9,7 +9,8 @@ import { IncubatorStore } from '../incubator/store.ts';
 import { scannerPairs } from '../scanners/allocation.ts';
 import { enableFleet, readFleet, releaseFleet } from '../../../ops/enable-fleet-b.ts';
 import { parseCell, startJudging } from '../../../ops/start-judging-tracked.ts';
-import { clusteredSe, scoreTrades, type ScoredTrade } from '../../../ops/score-fleet-b.ts';
+import { commitFleetConfig, requireFleetMaintenance } from '../../../ops/fleet-maintenance.ts';
+import { clusteredSe, scoreTrades, scoreFleet, type ScoredTrade } from '../../../ops/score-fleet-b.ts';
 
 const DAY = 86_400_000;
 const T0 = Date.UTC(2026, 10, 21);
@@ -31,7 +32,9 @@ function setup(t: { after(fn: () => void): void }, scanners: Record<string, unkn
   const configFile = write(dir, 'config.json', { execution: { mode }, timeframes: ['15m'], scanners });
   const manifestFile = write(dir, 'manifest.json', [{ id: 'alpha' }, { id: 'beta' }, { id: 'gamma' }, { id: 'gone', removed: true }]);
   const cellsFile = write(dir, 'cells.json', { id: 'fleet-test', cells });
-  return { dir, configFile, manifestFile, cellsFile, opts: { configFile, manifestFile, cellsFile, now: T0 } };
+  const dbFile = path.join(dir, 'vnedge.db');
+  const db = new Db(dbFile); db.db.exec('CREATE TABLE IF NOT EXISTS script_health (scanner_id TEXT PRIMARY KEY, fails INTEGER, last_at INTEGER, last_error TEXT, reason TEXT, quarantined INTEGER)'); db.db.close();
+  return { dir, configFile, manifestFile, cellsFile, dbFile, opts: { configFile, manifestFile, cellsFile, dbFile, now: T0 } };
 }
 const pairsOf = (configFile: string, id: string) => { const s = new ConfigStore(configFile); return scannerPairs(s.get().scanners[id], s.get().timeframes).map((p) => `${p.symbol} ${p.tf}`).sort(); };
 
@@ -43,7 +46,7 @@ test('a dry run validates everything and writes nothing', (t) => {
   assert.equal(r.willAdd, 4);
   assert.equal(r.scanners.length, 3);
   assert.equal(fs.readFileSync(x.configFile, 'utf8'), before, 'the config file is byte for byte the same');
-  assert.deepEqual(fs.readdirSync(x.dir).sort(), ['cells.json', 'config.json', 'manifest.json'], 'no backup, no marker, no stray temp files');
+  assert.deepEqual(fs.readdirSync(x.dir).filter(f => !['vnedge.db-shm','vnedge.db-wal'].includes(f)).sort(), ['cells.json', 'config.json', 'manifest.json', 'vnedge.db'], 'no backup, no marker, no stray temp files');
   assert.equal(r.scanners.find((s) => s.scannerId === 'alpha')!.unhides, true);
 });
 
@@ -65,7 +68,7 @@ test('apply allocates the cells like the dashboard does: enabled, un-hidden, exi
   const marker = JSON.parse(fs.readFileSync((r as any).marker, 'utf8'));
   assert.equal(marker.added.length, 4);
   assert.equal(marker.appliedAt, T0);
-  assert.deepEqual(marker.before.alpha, { enabled: false, hidden: true });
+  assert.deepEqual(marker.before.alpha, JSON.parse(before).scanners.alpha);
   assert.equal(marker.before.gamma, null);
   assert.throws(() => enableFleet({ ...x.opts, apply: true }), /already applied/);
 });
@@ -92,7 +95,7 @@ test('any refused cell stops the whole run before a byte is written', (t) => {
     const before = fs.readFileSync(x.configFile, 'utf8');
     assert.throws(() => enableFleet({ ...x.opts, apply: true }), pattern);
     assert.equal(fs.readFileSync(x.configFile, 'utf8'), before);
-    assert.deepEqual(fs.readdirSync(x.dir).sort(), ['cells.json', 'config.json', 'manifest.json']);
+    assert.deepEqual(fs.readdirSync(x.dir).filter(f => !['vnedge.db-shm','vnedge.db-wal'].includes(f)).sort(), ['cells.json', 'config.json', 'manifest.json', 'vnedge.db']);
   }
 });
 
@@ -125,7 +128,7 @@ test('release removes exactly what was added and puts back what the run enabled 
   assert.deepEqual(pairsOf(x.configFile, 'alpha'), []);
   assert.equal(cfg.alpha.enabled, false);
   assert.equal(cfg.alpha.hidden, true, 'hidden again, as it was');
-  assert.equal(cfg.gamma.enabled, false, 'a scanner that had no entry is switched off');
+  assert.equal(cfg.gamma, undefined, 'a scanner that had no entry is removed');
   assert.equal(fs.readdirSync(x.dir).some((f) => f === 'fleet-test.json'), false, 'the marker is retired');
   assert.equal(fs.readdirSync(x.dir).some((f) => f.startsWith('fleet-test.json.released-')), true);
   assert.throws(() => releaseFleet({ configFile: x.configFile, fleetId: 'fleet-test' }), /not applied/);
@@ -141,7 +144,9 @@ test('the frozen list in the repo is well formed and respects its own caps', () 
 
 function seedIncubator(dir: string) {
   const file = path.join(dir, 'vnedge.db');
+  write(dir, 'config.json', { execution: { mode: 'paper', allowProduction: false } });
   const db = new Db(file);
+  db.db.exec('CREATE TABLE IF NOT EXISTS script_health (scanner_id TEXT PRIMARY KEY, quarantined INTEGER)');
   const store = new IncubatorStore(db);
   store.move({ scannerId: 'nexus', symbol: 'BTCUSD', tf: '15m' }, 'tracked', 'tracker', {}, 'tracker:willy', T0 - DAY);
   store.move({ scannerId: 'nexus', symbol: 'ETHUSD', tf: '15m' }, 'tracked', 'tracker', {}, 'tracker:willy', T0 - DAY);
@@ -211,5 +216,91 @@ test('the clustered error needs at least two closing days and grows when trades 
   const mixed = clusteredSe([{ x: 1, exitAt: T0 }, { x: -1, exitAt: T0 }, { x: 1, exitAt: T0 + DAY }, { x: -1, exitAt: T0 + DAY }]);
   const agree = clusteredSe([{ x: 1, exitAt: T0 }, { x: 1, exitAt: T0 }, { x: -1, exitAt: T0 + DAY }, { x: -1, exitAt: T0 + DAY }]);
   assert.equal(mixed, 0);
-  assert.ok(Math.abs(agree! - Math.SQRT1_2) < 1e-12, 'day sums of +2 and -2: sqrt(8)/4, where four independent trades of the same size would give 0.5');
+  assert.ok(Math.abs(agree! - 1) < 1e-12, 'CR1 correction with two independent closing days: sqrt(8 * 2)/4');
+});
+
+
+test('missing or unreadable quarantine state cannot silently allocate scanners', t => {
+  const x = setup(t); const before = fs.readFileSync(x.configFile, 'utf8');
+  assert.throws(() => enableFleet({ ...x.opts, dbFile: null, apply: true }), /quarantine state unavailable/);
+  const db = new Db(x.dbFile); db.db.exec('DROP TABLE script_health'); db.db.close();
+  assert.throws(() => enableFleet({ ...x.opts, apply: true }), /quarantine state unavailable/);
+  assert.equal(fs.readFileSync(x.configFile, 'utf8'), before);
+});
+
+test('release restores disabled scanner pairs exactly and refuses live mode or edited allocations', t => {
+  const prior = { enabled: false, hidden: true, symbols: ['SOLUSD'], timeframes: ['4h'], exitMode: 'script', pairs: [{symbol:'BTCUSD',tf:'1h'}] };
+  const x = setup(t, { alpha: prior });
+  enableFleet({ ...x.opts, apply: true });
+  const cfg = JSON.parse(fs.readFileSync(x.configFile, 'utf8'));
+  write(x.dir, 'config.json', { ...cfg, execution: { mode: 'live', allowProduction: true } });
+  assert.throws(() => releaseFleet({configFile:x.configFile,fleetId:'fleet-test',apply:true}), /paper mode only|validation/);
+  write(x.dir, 'config.json', cfg);
+  const edited = structuredClone(cfg); edited.scanners.alpha.pairs.push({symbol:'SOLUSD',tf:'1h'});
+  write(x.dir, 'config.json', edited);
+  assert.throws(() => releaseFleet({configFile:x.configFile,fleetId:'fleet-test',apply:true}), /changed since fleet allocation/);
+  assert.deepEqual(JSON.parse(fs.readFileSync(x.configFile, 'utf8')), edited);
+  write(x.dir, 'config.json', cfg);
+  releaseFleet({configFile:x.configFile,fleetId:'fleet-test',apply:true,now:T0+5});
+  assert.deepEqual(JSON.parse(fs.readFileSync(x.configFile, 'utf8')).scanners.alpha, prior);
+});
+
+test('failed atomic replacement leaves every scanner unchanged and a recoverable intent', t => {
+  const x = setup(t); const before = fs.readFileSync(x.configFile,'utf8');
+  const rename = fs.renameSync;
+  t.mock.method(fs, 'renameSync', (a: fs.PathLike, b: fs.PathLike) => {
+    if (String(b) === x.configFile) throw new Error('injected replacement failure');
+    return rename(a,b);
+  });
+  assert.throws(() => enableFleet({...x.opts,apply:true}), /injected replacement failure/);
+  assert.equal(fs.readFileSync(x.configFile,'utf8'),before);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(x.dir,'fleet-test.json'),'utf8')).version,2);
+  t.mock.restoreAll();
+  releaseFleet({configFile:x.configFile,fleetId:'fleet-test',apply:true,now:T0+1});
+  assert.deepEqual(JSON.parse(fs.readFileSync(x.configFile,'utf8')),JSON.parse(before));
+  assert.equal(fs.statSync(x.configFile).mode & 0o777,0o600);
+});
+
+test('stale config and running service are refused before fleet mutation', t => {
+  const x = setup(t), before=fs.readFileSync(x.configFile,'utf8');
+  assert.throws(() => commitFleetConfig(x.configFile,before+' ',before,'test'), /configuration changed/);
+  for (const state of ['active','activating','failed','']) assert.throws(() => requireFleetMaintenance(() => state), /Stop vnedge/);
+  assert.throws(() => requireFleetMaintenance(() => {throw Error('unavailable');}), /Cannot verify/);
+  assert.doesNotThrow(() => requireFleetMaintenance(() => 'inactive\n'));
+  assert.equal(fs.readFileSync(x.configFile,'utf8'),before);
+});
+
+test('start judging respects capacity, paper mode, duplicate input, and transaction-time stage changes', t => {
+  const dir=workdir(t), dbFile=seedIncubator(dir), cell=parseCell('nexus:BTCUSD:15m');
+  const cfg=path.join(dir,'config.json');
+  write(dir,'config.json',{execution:{mode:'paper',allowProduction:false},incubator:{maxShadow:0,admit:{reserve:[]}}});
+  assert.throws(() => startJudging({dbFile,cells:[cell],apply:true}), /capacity/);
+  write(dir,'config.json',{execution:{mode:'testnet'}});
+  assert.throws(() => startJudging({dbFile,cells:[cell],apply:true}), /paper mode only/);
+  write(dir,'config.json',{execution:{mode:'paper',allowProduction:false}});
+  assert.throws(() => startJudging({dbFile,cells:[cell,cell],apply:true}), /duplicate/);
+  const original=Db.prototype.transaction;
+  t.mock.method(Db.prototype,'transaction',function<T>(this:Db,fn:()=>T):T {
+    this.run("UPDATE incubator_pairs SET stage='live' WHERE scanner_id='nexus' AND symbol='BTCUSD'");
+    return original.call(this,fn) as T;
+  });
+  assert.throws(() => startJudging({dbFile,configFile:cfg,cells:[cell],apply:true}), /must still be tracked/);
+  t.mock.restoreAll();
+  assert.equal(stageOf(dbFile,'nexus:BTCUSD:15m'),'live');
+});
+
+test('fleet scores exclude watch-only, experimental, quarantined and future outcomes', t => {
+  const x=setup(t);const db=new Db(x.dbFile);
+  db.run("INSERT INTO trade_policies VALUES('p','s','source','{}')");
+  const add=(scope:string,flag=false,exit=T0+1000,sc='alpha',bt=2)=>{
+    const id=Number(db.run("INSERT INTO positions(status,scanner_id,scanner_name,symbol,tf,side,qty,qty_open,contract_value,entry_price,entry_at,exit_at,realized_pnl,fees,risk_amount,bt,fills,evidence_scope,policy_id) VALUES('closed',?,'A','AKEUSD','15m','long',1,0,1,100,?,?,11,1,10,?,'[]',?,'p')",sc,T0,exit,bt,scope).lastInsertRowid);
+    if(flag)db.run("INSERT INTO evidence_flags VALUES(?,?,'quarantined','test','test',?)",id,T0,T0);
+  };
+  add('account',false,T0+1000,'alpha',0);add('shadow');add('tracked');add('experimental');add('shadow',true);add('shadow',false,T0+3*DAY);add('shadow',false,T0+1000,'plan:test');
+  db.db.close();
+  const markerFile=write(x.dir,'score.json',{id:'test',appliedAt:T0,added:[cells[0]]});
+  const score=scoreFleet({dbFile:x.dbFile,markerFile,now:T0+DAY});
+  assert.equal(score.shadowBaselineTrades,1);assert.equal(score.fleet.trades,1);assert.equal(score.fleet.excessR,0);assert.equal(score.missingBaseline,0);
+  const noBase=scoreTrades([tr({r:10})],[],[cells[0]],T0,T0+30*DAY);
+  assert.match(noBase.verdict,/lack.*baseline/);assert.equal(noBase.fleet.trades,0);
 });

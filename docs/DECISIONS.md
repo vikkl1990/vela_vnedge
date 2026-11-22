@@ -8489,3 +8489,5 @@ the rest of the account on excess R with a day-clustered interval and gives no v
 Run by hand with the service stopped, dry-run by default, paper mode only, a config backup before any write, any refused cell stops the whole
 run before a byte is written. No gate, threshold, risk limit or sizing rule changes. The 12 cells are already traded as one-third copies; allocated,
 they trade at normal size. The incubator gate is not bypassed or relaxed: a cell allocated this way is judged as any live cell is.
+
+Review correction (22 Nov): fleet changes require paper mode and an offline service. Quarantine state must be available. Allocation commits once atomically, retains full reversible scanner snapshots and refuses config drift. Tracked transitions recheck stage, quarantine and existing capacity inside the writer transaction. Scoring excludes watch-only, experimental, quarantined and future outcomes, uses corrected day-cluster uncertainty and refuses a verdict without a matched shadow baseline. No fleet is enabled by deployment.

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Start judging a tracked cell (decision 322).
+ * Start judging a tracked cell (decision 325).
  *
  * A tracked cell is shadow-traded for the operator to watch, outside the incubator's judgement: the gate never promotes, retires
  * or ages it, its trades are watch-only evidence, and the account never copies it. This moves chosen cells from `tracked` to
@@ -17,6 +17,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
+import { ConfigStore } from '../server/src/config.ts';
+import { selectAdmissions } from '../server/src/incubator/capacity.ts';
+import type { PairRow } from '../server/src/incubator/store.ts';
+import { assertPaper, requireFleetMaintenance } from './fleet-maintenance.ts';
 import { Db } from '../server/src/db.ts';
 import { IncubatorStore } from '../server/src/incubator/store.ts';
 
@@ -30,23 +34,40 @@ export function parseCell(text: string): JudgeCell {
   return { scannerId, symbol, tf };
 }
 
-export function startJudging(o: { dbFile: string; cells: JudgeCell[]; apply?: boolean; now?: number }) {
+export function startJudging(o: { dbFile: string; configFile?: string; cells: JudgeCell[]; apply?: boolean; now?: number }) {
   if (!o.cells.length || o.cells.length > 20) throw new Error('give 1 to 20 cells');
+  if (new Set(o.cells.map(c => `${c.scannerId}:${c.symbol}:${c.tf}`)).size !== o.cells.length) throw new Error('duplicate cells');
   const now = o.now ?? Date.now();
-  // the stage of every cell is read first, read-only: nothing is written unless every cell is a tracked one
+  const configFile = o.configFile ?? path.join(path.dirname(o.dbFile), 'config.json');
+  const configBytes = fs.readFileSync(configFile, 'utf8');
+  const cfg = new ConfigStore(configFile).get();
+  assertPaper(cfg);
+  const check = (db: DatabaseSync) => {
+    if (fs.readFileSync(configFile, 'utf8') !== configBytes) throw new Error('configuration changed; nothing written');
+    const active = db.prepare("SELECT id,scanner_id scannerId,symbol,tf,stage,since,updated,note FROM incubator_pairs WHERE stage IN ('shadow','proposed') ORDER BY id").all() as unknown as PairRow[];
+    const rows = o.cells.map(c => db.prepare('SELECT id,scanner_id scannerId,symbol,tf,stage,since,updated,note FROM incubator_pairs WHERE scanner_id=? AND symbol=? AND tf=?').get(c.scannerId, c.symbol, c.tf) as unknown as PairRow | undefined);
+    if (rows.some(r => r?.stage !== 'tracked')) throw new Error('refused, nothing written: every cell must still be tracked');
+    // Neutral ranking only: this operator move has no backtest ranking to invent.
+    const candidates = (rows as PairRow[]).map(r => ({ ...r, screen: { trades: 0, profitFactor: 1, windowsUp: 0 } }));
+    // The same reservation and per-scanner capacity rules as normal admission.
+    const admission = selectAdmissions(active, candidates, cfg.incubator);
+    if (admission.selected.length !== candidates.length) throw new Error('shadow capacity or scanner allocation limit reached; nothing written');
+    const quarantined = db.prepare('SELECT scanner_id FROM script_health WHERE quarantined=1').all() as Array<{ scanner_id: string }>;
+    if (quarantined.some(q => candidates.some(c => c.scannerId === q.scanner_id))) throw new Error('quarantined scanner; nothing written');
+    return { rows: candidates, shadowNow: active.length };
+  };
   const ro = new DatabaseSync(o.dbFile, { readOnly: true });
-  const rows = o.cells.map((c) => ({ c, row: ro.prepare('SELECT stage, note FROM incubator_pairs WHERE scanner_id=? AND symbol=? AND tf=?').get(c.scannerId, c.symbol, c.tf) as { stage: string; note: string | null } | undefined }));
-  const shadowNow = (ro.prepare("SELECT COUNT(*) n FROM incubator_pairs WHERE stage='shadow'").get() as { n: number }).n;
-  ro.close();
-  const refused = rows.filter((r) => r.row?.stage !== 'tracked').map((r) => ({ ...r.c, reason: r.row ? `is ${r.row.stage}, not tracked` : 'no such pair' }));
-  if (refused.length) throw new Error(`refused, nothing written: ${refused.map((r) => `${r.scannerId} ${r.symbol} ${r.tf} ${r.reason}`).join('; ')}`);
-  const result = { dryRun: !o.apply, cells: rows.map((r) => ({ ...r.c, from: 'tracked', to: 'shadow', trackedBy: r.row!.note })), shadowPairsBefore: shadowNow };
+  let checked;
+  try { checked = check(ro); } finally { ro.close(); }
+  const result = { dryRun: !o.apply, cells: checked.rows.map(r => ({ scannerId: r.scannerId, symbol: r.symbol, tf: r.tf, from: 'tracked', to: 'shadow', trackedBy: r.note })), shadowPairsBefore: checked.shadowNow };
   if (!o.apply) return result;
   const db = new Db(o.dbFile);
   try {
     const store = new IncubatorStore(db);
     db.transaction(() => {
-      for (const { c, row } of rows) store.move(c, 'shadow', 'operator', { from: 'tracker', tracker: row!.note }, 'started judging: moved from tracker', now);
+      // Re-read after acquiring BEGIN IMMEDIATE: never demote a concurrently promoted cell.
+      const current = check(db.db);
+      for (const row of current.rows) store.move(row, 'shadow', 'operator', { from: 'tracker', tracker: row.note }, 'started judging: moved from tracker', now);
     });
     return { ...result, dryRun: false, shadowPairsAfter: store.list(['shadow']).length };
   } finally { db.db.close(); }
@@ -56,7 +77,8 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   const dbFile = process.env.VNEDGE_DB ?? path.join(ROOT, 'data', 'vnedge.db');
   const args = process.argv.slice(2).filter((a) => !a.startsWith('--'));
   if (!fs.existsSync(dbFile)) throw new Error(`no database at ${dbFile}`);
-  const out = startJudging({ dbFile, cells: (args.length ? args : DEFAULT_CELLS).map(parseCell), apply: process.argv.includes('--apply') });
+  if (process.argv.includes('--apply')) requireFleetMaintenance();
+  const out = startJudging({ dbFile, configFile: process.env.VNEDGE_CONFIG, cells: (args.length ? args : DEFAULT_CELLS).map(parseCell), apply: process.argv.includes('--apply') });
   console.log(JSON.stringify(out, null, 2));
   if (out.dryRun) console.log('\ndry run: nothing was written. Add --apply (service stopped) to move them.');
 }
