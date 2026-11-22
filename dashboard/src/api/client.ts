@@ -175,6 +175,7 @@ export const api = {
       shadowFilled: number
     }>('/signals/activity'),
   executionQuality: () => get<import('./types').ExecutionQuality>('/execution-quality'),
+  paperFleet: () => get<import('./paperFleet').PaperFleet>('/paper/fleet'),
   // health / config
   health: () => get<Health>('/health'),
   config: () => get<Config>('/config'),

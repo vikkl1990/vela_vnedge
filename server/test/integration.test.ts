@@ -461,6 +461,20 @@ test('gated signal journal is authenticated, bounded and explicitly ineligible f
   assert.equal(page.body.rows[0].snapshot.outcome,'not-executed');assert.equal(page.body.rows[0].promotion_eligible,0);
 });
 
+test('the paper fleet route needs a session and reports the own list and the entry split (decision 323)', async () => {
+  assert.equal((await fetch(base + '/api/paper/fleet')).status, 401);
+  const r = await getJson('/api/paper/fleet');
+  assert.equal(r.status, 200);
+  assert.equal(typeof r.body.own.pairs, 'number');
+  assert.equal(r.body.window.days, 14);
+  assert.equal(r.body.window.entries.total, r.body.window.entries.own + r.body.window.entries.copy + r.body.window.entries.unknown);
+  assert.ok(Array.isArray(r.body.ownCells) && Array.isArray(r.body.idle));
+  assert.equal(typeof r.body.copy.enabled, 'boolean');
+  const journal = await getJson('/api/journal?list=own');
+  assert.equal(journal.status, 200);
+  assert.equal((await getJson('/api/journal?list=mine')).status, 400);
+});
+
 test('authorisation is enforced by the server, not just hidden in the UI', async () => {
   // an unauthenticated caller gets nothing, not even read access
   for (const [method, path] of [['GET', '/api/stats'], ['GET', '/api/scanners'], ['POST', '/api/paper/reset'], ['GET', '/api/users']] as const) {

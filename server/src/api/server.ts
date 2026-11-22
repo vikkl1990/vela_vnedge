@@ -34,6 +34,7 @@ import { ContractRegistry } from '../scanners/contracts.ts';
 import { deltaConnectionRoutes } from '../connections/routes.ts';
 import {telegramRoutes} from '../telegram/routes.ts';
 import { Journal, journalFilter } from '../analytics/journal.ts';
+import { entryOrigin, entryOriginSql, paperFleet } from '../analytics/paperFleet.ts';
 import { configView, configPatch } from './configView.ts';
 
 const log = logger.scoped('api');
@@ -421,7 +422,10 @@ export class ApiServer {
         return { ...r, price: r.price ?? p.entryPrice, sl: r.sl ?? p.slOriginal ?? p.sl, tp: r.tp?.length ? r.tp : p.tp, levelsSource: r.levelsSource ?? p.levelsSource, derived: true };
       });
     });
-    this.add('GET', '/api/positions', () => a.paper.openPositions().map(p => a.paper.view(p, a.marks.mark(p.symbol) ?? null)));
+    this.add('GET', '/api/positions', () => {
+      const origins = new Map(a.db.all<{id:number;fills:string;receipt:string|null}>(`SELECT p.id,p.fills,${entryOriginSql} receipt FROM positions p WHERE p.bt=0 AND p.status='open'`).map(p => [p.id,entryOrigin(p.fills,p.receipt)]));
+      return a.paper.openPositions().map(p => ({...a.paper.view(p,a.marks.mark(p.symbol)??null),...origins.get(p.id)}));
+    });
     this.add('GET', '/api/positions/health', positionsHealthReader(a));
     this.add('POST', '/api/positions/:id/close', (_r, _s, p) => { const pos = a.paper.closeManual(Number(p.id)); if (!pos) throw new HttpError(404, 'no open position'); return a.paper.view(pos); });
     // the path a trade took, for the forensic view: samples plus level events (decision 35)
@@ -460,6 +464,13 @@ export class ApiServer {
     this.add('GET', '/api/trades', (_r, _s, _p, url) => a.paper.trades({ limit: Number(url.searchParams.get('limit') ?? 200), ...tradeFilter(url) }));
     this.add('GET', '/api/trades/page', (_r, _s, _p, url) => a.paper.tradesPage({ limit: Number(url.searchParams.get('limit') ?? 300), offset: Number(url.searchParams.get('offset') ?? 0), ...tradeFilter(url) }));
     const journal = new Journal(a.db);
+    this.add('GET', '/api/paper/fleet', () => {
+      const now = Date.now(), days = 14;
+      const entries = a.db.all<{ scannerId: string; symbol: string; tf: string; fills:string; origin_receipt:string|null }>(`SELECT p.scanner_id scannerId, p.symbol, p.tf, p.fills, ${entryOriginSql} origin_receipt
+        FROM positions p WHERE p.bt=0 AND p.status IN ('open','closed') AND p.qty>0 AND p.scanner_id NOT LIKE 'plan:%' AND p.entry_at>=? AND p.entry_at<=?`, now - days * 86_400_000, now)
+        .map(p => ({...p,...entryOrigin(p.fills,p.origin_receipt)}));
+      return paperFleet(a.config.get(), entries, now, days);
+    });
     this.add('GET', '/api/evidence/gated-signals', (_r, _s, _p, url) => gatedSignalPage(a.db,url.searchParams));
     this.add('GET', '/api/journal', (_r, _s, _p, url) => journal.page(journalFilter(url.searchParams)));
     this.add('GET', '/api/journal/export', (_r, res, _p, url) => {

@@ -557,6 +557,8 @@ export const useScannerPipeline = () =>
 
 export const useSignalActivity = () =>
   useQuery({ queryKey: ['signal-activity'], queryFn: api.signalActivity, refetchInterval: REFRESH.normal })
+export const usePaperFleet = () =>
+  useQuery({ queryKey: ['paper-fleet'], queryFn: api.paperFleet, refetchInterval: REFRESH.normal, retry: 1 })
 export const useExecutionQuality = () =>
   useQuery({
     queryKey: ['execution-quality'],

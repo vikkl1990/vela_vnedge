@@ -8491,3 +8491,11 @@ run before a byte is written. No gate, threshold, risk limit or sizing rule chan
 they trade at normal size. The incubator gate is not bypassed or relaxed: a cell allocated this way is judged as any live cell is.
 
 Review correction (22 Nov): fleet changes require paper mode and an offline service. Quarantine state must be available. Allocation commits once atomically, retains full reversible scanner snapshots and refuses config drift. Tracked transitions recheck stage, quarantine and existing capacity inside the writer transaction. Scoring excludes watch-only, experimental, quarantined and future outcomes, uses corrected day-cluster uncertainty and refuses a verdict without a matched shadow baseline. No fleet is enabled by deployment.
+
+## 326. Preserve the origin of each paper entry (22 November 2026)
+
+Current own-list allocations and historical entry origins are different facts. The fleet endpoint reports today's allocated cells and a 14-day split of filled paper entries by recorded origin. Pending/cancelled requests do not inflate entries. New admission receipts record whether the cell was allocated or copied at that admission and the requested size scale. These are audit metadata, not new ML features or policy identities.
+
+The journal and open-position API read these receipts. A retained legacy `copy_pilot=1` positively identifies a copy; missing provenance is `unknown`, never inferred from today's allocation. Copy scale is read from the admission record when available, never from today's pilot settings. A copied position promoted later stays a copy. An own-list position whose scanner is removed stays own-list. Plans and shadow trades have no paper-origin label.
+
+The journal filters `list=own|copy|unknown` before paging, totals and export. The dashboard shows recorded source/scale in positions, journal and detail; unknown origins are visible. The fleet panel separates current allocation and copy settings from historical entry counts. No trade, size, gate, risk setting or evidence rule changes, and historical rows are not rewritten.
