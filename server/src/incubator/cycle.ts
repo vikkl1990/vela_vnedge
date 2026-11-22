@@ -7,6 +7,7 @@ import { admissionCostPct, type EntryExecution } from '../paper/costs.ts';
  * One incubator cycle, and the owner's approve/reject actions. Shared by the daily job and the API.
  */
 import type { AppConfig, IncubatorConfig, ScannerConfig } from '../config.ts';
+import type { ScanEvent } from '../scanners/extractor.ts';
 import { IncubatorStore, type PairRow, type Stage } from './store.ts';
 import { cohortStats, cohortVerdict, deliveryVerdict, demoteVerdict, gateVerdict, overlapPct, pairStats, screenScore, thinMarketRefusal, type CohortStats } from './gate.ts';
 
@@ -18,7 +19,7 @@ export interface ScreenResult {
   avgR1?: number; avgR2?: number;
   /** The holdout (decision 88): the last share of the history, judged only after the pass was decided on the rest. */
   holdoutTrades?: number; holdoutAvgR?: number; holdoutPf?: number; holdoutPass?: boolean;
-  /** Entry signals per bar over the history (decision 88): a script that fires on more than a tenth of all bars is a state read as entries, not a signal. */
+  /** Entry signals per training bar (decision 88); holdout entries and bars are excluded. */
   entryDensity?: number;
   /** Decision 114: the same history under exit mode `script` — the strategy's own exits — beside the fleet's exits above. */
   scriptExit?: { trades: number; avgR: number; avgR1: number; avgR2: number; sumR: number };
@@ -67,13 +68,18 @@ export const MAX_ENTRY_DENSITY = 0.10;
 
 export interface ScreenTrade { entryAt: number; pnl: number; rMultiple?: number }
 
+/** Shared signal-screen entry point: retain times so holdout entries cannot affect training density. */
+export function screenSignals(trades: ScreenTrade[], stressed: ScreenTrade[], bars: Array<{ time: number }>, inc: IncubatorConfig, events: readonly Pick<ScanEvent, 'kind' | 'barTime'>[], now = Date.now()): ScreenResult {
+  return screenVerdict(trades, stressed, bars, inc, now, events.filter(e => e.kind === 'entry').map(e => e.barTime));
+}
+
 /**
  * The screen's verdict on one cell (decision 88). The pass thresholds — trades, profit factor, windows up,
  * net at stress, both halves — are judged on the TRAINING part of the history (the first 1 − holdoutShare).
  * The holdout, never consulted for that judgement, must then be positive on its own: that is the only part
  * of the number that was not used to pick the cell.
  */
-export function screenVerdict(trades: ScreenTrade[], stressed: ScreenTrade[], bars: Array<{ time: number }>, inc: IncubatorConfig, now = Date.now(), entries?: number): ScreenResult {
+export function screenVerdict(trades: ScreenTrade[], stressed: ScreenTrade[], bars: Array<{ time: number }>, inc: IncubatorConfig, now = Date.now(), entries?: number | readonly number[]): ScreenResult {
   const t0 = bars[0].time, t1 = bars[bars.length - 1].time;
   const share = inc.screen.requireHoldout === false ? 0 : (inc.screen.holdoutShare ?? 0.3);
   const cut = share > 0 ? bars[Math.max(1, Math.floor(bars.length * (1 - share)))].time : t1 + 1;
@@ -97,7 +103,12 @@ export function screenVerdict(trades: ScreenTrade[], stressed: ScreenTrade[], ba
   };
   const halvesOk = inc.screen.requireBothHalves === false || (h1.length > 0 && h2.length > 0 && r.avgR1! > 0 && r.avgR2! > 0);
   r.pass = r.trades >= inc.screen.minTrades && r.profitFactor >= inc.screen.minProfitFactor && r.windowsUp >= inc.screen.minWindowsUp && r.netAtStress > 0 && halvesOk;
-  if (entries !== undefined && bars.length) { r.entryDensity = entries / bars.length; if (r.entryDensity > MAX_ENTRY_DENSITY) r.pass = false; }
+  if (entries !== undefined && bars.length) {
+    const trainBars = share > 0 ? Math.max(1, bars.filter(b => b.time < cut).length) : bars.length;
+    const entryCount = typeof entries === 'number' ? entries : entries.filter(t => t < cut).length;
+    r.entryDensity = entryCount / trainBars;
+    if (r.entryDensity > MAX_ENTRY_DENSITY) r.pass = false;
+  }
   if (share > 0) {
     const ho = stats(hold);
     r.holdoutTrades = hold.length; r.holdoutAvgR = ho.avgR; r.holdoutPf = ho.pf;
@@ -253,13 +264,30 @@ export interface EvaluateOptions {
 /** Decision 200: a failed re-screen retires a shadow pair only once its own record has this many trades and is not positive. */
 export const RESCREEN_RETIRE_MIN_TRADES = 3;
 
-export function evaluate(store: IncubatorStore, cfg: AppConfig, now = Date.now(), opts: EvaluateOptions = {}): CycleReport {
+/** Synchronous CLI/tests and cooperative runtime execute the same evidence rules. */
+export function evaluate(store: IncubatorStore, cfg: AppConfig, now=Date.now(), opts: EvaluateOptions={}):CycleReport {
+  const work=evaluateSteps(store,cfg,now,opts);let step=work.next();while(!step.done)step=work.next();return step.value;
+}
+/** Yield between cells so a full review cannot freeze quotes, exits and replay clocks.
+ * A config change aborts before the next step; promotion is still rechecked separately. */
+export async function evaluateCooperative(store: IncubatorStore,cfg:AppConfig,now=Date.now(),opts:EvaluateOptions={},isCurrent=()=>true):Promise<CycleReport> {
+  const work=evaluateSteps(store,cfg,now,opts);let deadline=performance.now()+10;
+  for(;;){
+    if(!isCurrent())throw Error('Evidence review configuration changed; retry with current policy');
+    const step=work.next();if(step.done)return step.value;
+    if(performance.now()>=deadline){await new Promise<void>(resolve=>setImmediate(resolve));deadline=performance.now()+10;}
+  }
+}
+
+function* evaluateSteps(store: IncubatorStore, cfg: AppConfig, now = Date.now(), opts: EvaluateOptions = {}): Generator<void,CycleReport> {
   const inc = cfg.incubator;
+  const trials = promotionTrials(store, inc);
   const rep: CycleReport = { proposed: [], retired: [], brewing: 0, demoteProposed: [], admitted: [], free: 0 };
   // decision 195: a shadow, proposed or tracked pair whose scanner cannot run never trades; it held its slot while its
   // stage said otherwise. It is retired with the library's reason, and returns through the screen if the script does.
   {
     for (const r of store.list(['shadow', 'proposed', 'tracked'])) {
+      yield; if(store.get(r.id)?.stage!==r.stage)continue;
       const library = opts.unavailable?.(r.scannerId);
       const quarantine = store.quarantineReason(r.scannerId);
       const why0 = library ?? (quarantine ? `quarantined: ${quarantine}` : null);
@@ -270,22 +298,24 @@ export function evaluate(store: IncubatorStore, cfg: AppConfig, now = Date.now()
       store.move(r, 'retired', 'library', { reasons: [why] }, why, now); rep.retired.push(name(r));
     }
   }
-  store.startRestorations(now);
+  yield* store.startRestorationSteps(now);
   let active = store.list(['shadow', 'proposed']);
   // decision 104: a pair on a market the account's gate refuses today is never proposed; one already proposed goes back to brewing
   const markets = store.marketsToday(now);
   for (const r of active) {
+    yield; if(store.get(r.id)?.stage!==r.stage)continue;
     const why = marketRefusal(markets, r.symbol, inc.gate.minTurnoverUsd);
     if (why && r.stage === 'proposed') { store.move(r, 'shadow', 'gate', { reasons: [why] }, why, now, { keepSince: true }); rep.brewing++; }
   }
 
   active = store.list(['shadow', 'proposed']); // stage changes above must reach the judge
-  if (inc.gate.pool === 'cohort') judgeCohorts(store, cfg, active, rep, now);
-  else for (const r of active) judgePair(store, cfg, r, rep, now);
+  if (inc.gate.pool === 'cohort') yield* judgeCohorts(store, cfg, active, rep, now, trials);
+  else for (const r of active) { yield; if(store.get(r.id)?.stage===r.stage)judgePair(store, cfg, r, rep, now, trials); }
 
   // Pending proposals remain allocated and must be rejudged alongside live cells.
   const out = store.marketOut(), liveKeys = new Set<string>();
   for (const r of store.list(['live', 'demote_proposed'])) {
+    yield; if(store.get(r.id)?.stage!==r.stage)continue;
     liveKeys.add(`${r.scannerId}|${r.symbol}|${r.tf}`);
     const assessment = liveAssessment(store, cfg, r, now, out);
     store.setGate(r.id, assessment, now);
@@ -300,6 +330,7 @@ export function evaluate(store: IncubatorStore, cfg: AppConfig, now = Date.now()
   // decision 106: a shadow pair with no shadow trade for `gate.staleDays` proves nothing and gives its slot back
   // decision 108: the cap follows the timeframe — 21 days is three weeks of 15m bars and five 4h trades at best
   for (const r of store.list(['shadow'])) {
+    yield; if(store.get(r.id)?.stage!==r.stage)continue;
     if (store.rotationHolds(r)) continue;
     const staleDays = inc.gate.staleDaysByTf?.[r.tf] ?? inc.gate.staleDays ?? 0;
     if (!(staleDays > 0)) continue;
@@ -320,6 +351,7 @@ export function evaluate(store: IncubatorStore, cfg: AppConfig, now = Date.now()
   // looking best fails most of them by selection alone (519 of 617 on 25 October); 35 of those failures were up 83.8R in
   // the shadow book. A failing pair with too little record yet keeps collecting it; the stale cap retires the silent ones.
   for (const r of store.list(['shadow'])) {
+    yield; if(store.get(r.id)?.stage!==r.stage)continue;
     if (store.rotationHolds(r)) continue;
     const sc = r.screen as any;
     const {trades:fwd,since} = store.shadowEvaluation(r,now);
@@ -373,7 +405,7 @@ function returningGate(store: IncubatorStore, g: ReturnType<typeof gateFor>, row
 }
 
 /** One market judged on its own: the original gate, kept for `gate.pool: 'pair'`. */
-function judgePair(store: IncubatorStore, cfg: AppConfig, r: PairRow, rep: CycleReport, now: number): void {
+function judgePair(store: IncubatorStore, cfg: AppConfig, r: PairRow, rep: CycleReport, now: number, trials: number): void {
   const forward = store.shadowEvaluation(r,now), restoration=forward.restoration;
   const trades = store.qualifiedTrades(r.scannerId, r.symbol, r.tf, 2, now);
   const stats = restoration&&!restoration.passed && restoration.stats
@@ -381,7 +413,7 @@ function judgePair(store: IncubatorStore, cfg: AppConfig, r: PairRow, rep: Cycle
   const dv = deliveryVerdict(r.screen, pairStats(forward.trades,forward.since,now));
   if (dv.retire && r.stage === 'shadow' && !store.rotationHolds(r)) { store.move(r, 'retired', 'gate', { stats, reasons: [dv.reason] }, dv.reason!, now); rep.retired.push(name(r)); return; }
   const overlap = overlapPct(trades.filter(t => t.entryAt >= forward.since), store.liveTradesOn(r.symbol, r.scannerId));
-  let v = gateVerdict(stats, returningGate(store, gateFor(cfg.incubator, r.tf), [r]), overlap);
+  let v = gateVerdict(stats, returningGate(store, gateFor(cfg.incubator, r.tf), [r]), overlap, trials);
   if (restoration&&!restoration.passed) v={decision:restoration.gateDecision==='retire'?'retire':'brewing',reasons:restoration.reasons};
   if (!restoration && v.decision === 'retire' && store.policyFor && stats.trades<store.trades(r.scannerId,r.symbol,r.tf,2).filter(t=>t.entryAt>=r.since).length) v={...v,decision:'brewing',reasons:['collecting compatible policy evidence']};
   if (v.decision === 'retire' && store.rotationHolds(r)) v = {...v, decision:'brewing', reasons:['retirement deferred: account or shadow position or order still active', ...v.reasons]};
@@ -401,15 +433,18 @@ function judgePair(store: IncubatorStore, cfg: AppConfig, r: PairRow, rep: Cycle
  * its markets are proposed for the fleet — at most `promote.maxPerWeek`, since nothing more than that
  * can be approved in a week anyway — and the rest keep trading in the shadow book as evidence.
  */
-function judgeCohorts(store: IncubatorStore, cfg: AppConfig, active: PairRow[], rep: CycleReport, now: number): void {
+function* judgeCohorts(store: IncubatorStore, cfg: AppConfig, active: PairRow[], rep: CycleReport, now: number, trials: number): Generator<void> {
   const inc = cfg.incubator;
   const groups = new Map<string, PairRow[]>();
   for (const r of active) {
+    yield; if(store.get(r.id)?.stage!==r.stage)continue;
     const restoration=store.restoration(r,now);
-    if(restoration&&!restoration.passed){judgePair(store,cfg,r,rep,now);continue;}
+    if(restoration&&!restoration.passed){judgePair(store,cfg,r,rep,now,trials);continue;}
     const k = `${r.scannerId}|${r.tf}`; const g = groups.get(k); g ? g.push(r) : groups.set(k, [r]); }
 
-  for (const rowsAll of groups.values()) {
+  for (const groupRows of groups.values()) {
+    yield;
+    const rowsAll=groupRows.filter(r=>store.get(r.id)?.stage===r.stage);
     // promise versus delivery per market first (decision 90): a member retired by its own record leaves the cohort
     const rows = rowsAll.filter(r => {
       if (r.stage !== 'shadow') return true;
@@ -427,7 +462,7 @@ function judgeCohorts(store: IncubatorStore, cfg: AppConfig, active: PairRow[], 
       n += t.length; hit += overlapPct(t, store.liveTradesOn(m.symbol, m.row.scannerId)) / 100 * t.length;
     }
     const overlap = n ? hit / n * 100 : 0;
-    let v = cohortVerdict(stats, returningGate(store, gateFor(inc, rows[0].tf), rows), overlap);
+    let v = cohortVerdict(stats, returningGate(store, gateFor(inc, rows[0].tf), rows), overlap, trials);
     if(v.decision==='retire'&&store.policyFor&&members.some(m=>m.trades.length<store.trades(m.row.scannerId,m.symbol,m.row.tf,2).length))v={...v,decision:'brewing',reasons:['collecting compatible policy evidence']};
     const cohort = `${rows[0].scannerId} ${rows[0].tf} across ${rows.length} market${rows.length === 1 ? '' : 's'}`;
     // decision 114: a strategy cohort carries the verdict on its own exits, advisory, beside the gate's
@@ -533,6 +568,13 @@ export function candidateBlockers(store: IncubatorStore, cfg: AppConfig, now = D
 
 export class IncubatorError extends Error { status = 409; }
 
+/** One stable, lightweight count per decision; disabled checks do not query the catalogue. */
+function promotionTrials(store: IncubatorStore, inc: IncubatorConfig): number {
+  if (!inc.gate.multipleTesting?.enabled) return 1;
+  const counts = store.counts();
+  return Math.max(1, (counts.candidate ?? 0) + (counts.shadow ?? 0) + (counts.proposed ?? 0));
+}
+
 /** Recheck a proposal using today's eligible evidence, not the gate snapshot saved days ago. */
 function promotionRefusal(store: IncubatorStore, cfg: AppConfig, r: PairRow, now: number): string | null {
   const quarantine = store.quarantineReason(r.scannerId);
@@ -546,11 +588,13 @@ function promotionRefusal(store: IncubatorStore, cfg: AppConfig, r: PairRow, now
   if(restoration)return restoration;
   const cooling = demotionAnswered(store, cfg, r, now);
   if (cooling) return cooling;
+  // Approval is a new decision, so recheck against the current candidate count.
+  const trials = promotionTrials(store, inc);
   if (inc.gate.pool !== 'cohort') {
     const trades = store.qualifiedTrades(r.scannerId, r.symbol, r.tf, 2);
     const stats = pairStats(trades, r.since, now);
     const overlap = overlapPct(trades.filter(t => t.entryAt >= r.since), store.liveTradesOn(r.symbol, r.scannerId));
-    const v = gateVerdict(stats, returningGate(store, gateFor(inc, r.tf), [r]), overlap);
+    const v = gateVerdict(stats, returningGate(store, gateFor(inc, r.tf), [r]), overlap, trials);
     return v.decision === 'propose' ? null : v.reasons.join('; ');
   }
   // Match cohort evaluation: failed-delivery shadow members no longer support the group.
@@ -563,7 +607,7 @@ function promotionRefusal(store: IncubatorStore, cfg: AppConfig, r: PairRow, now
     const t = m.trades.filter(x => x.entryAt >= m.since);
     n += t.length; hit += overlapPct(t, store.liveTradesOn(m.symbol, r.scannerId)) / 100 * t.length;
   }
-  const v = cohortVerdict(stats, returningGate(store, gateFor(inc, r.tf), rows), n ? hit / n * 100 : 0);
+  const v = cohortVerdict(stats, returningGate(store, gateFor(inc, r.tf), rows), n ? hit / n * 100 : 0, trials);
   if (v.decision !== 'propose') return v.reasons.join('; ');
   const own = stats.perMarket.find(p => p.symbol === r.symbol);
   return own && own.trades >= inc.gate.minMarketTrades && own.avgR > 0 ? null : 'this market no longer has the required positive trade sample';

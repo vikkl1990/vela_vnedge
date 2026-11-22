@@ -39,7 +39,6 @@ const { ApiServer } = await import('../src/api/server.ts');
 const { DeltaRest } = await import('../src/delta/rest.ts');
 const { DeltaFeed } = await import('../src/delta/ws.ts');
 const { ScannerRegistry } = await import('../src/scanners/registry.ts');
-const { attachRawMetrics } = await import('../src/ops/routes.ts');
 
 const PINE = `//@version=6
 indicator("Tiny test scanner", overlay=true)
@@ -105,7 +104,6 @@ const rest = new FakeRest();
 const feed = new FakeFeed();
 const app = new App({ rest, feed, registry: new FakeRegistry(), advisoryFeedFactory:()=>new FakeFeed(),alertTransport: async text => { sentAlerts.push(text); } });
 const api = new ApiServer(app);
-assert.equal(attachRawMetrics((api as any).server, app), true);
 const port = 20_000 + Math.floor(Math.random() * 10_000);
 const base = `http://127.0.0.1:${port}`;
 
@@ -146,6 +144,64 @@ test('boot: API listens, history backfills and warm-up runs the scanner once', a
   assert.equal(h.body.integrity.gapsFound, 0);
 });
 
+test('all metrics forms require authentication and legacy config secrets never leave the API', async () => {
+  const paths = ['/metrics', '/metrics/', '/api/metrics', '/api/metrics/', '/api/metrics?format=json', '/metrics?format=%6ason', '/api/metrics?unrelated=format=json'];
+  for (const p of paths) for (const method of ['GET', 'HEAD']) {
+    assert.equal((await fetch(base + p, { method })).status, 401, `${method} ${p}`);
+    assert.equal((await fetch(base + p, { method, headers: { cookie: 'vnedge_session=invalid' } })).status, 401);
+  }
+  const original = structuredClone(app.config.get().alerts.telegram);
+  app.config.update({ alerts: { ...app.config.get().alerts, telegram: { botToken: 'legacy-token-canary', chatId: 'fixture-chat' } } });
+  try {
+    for (const role of ['admin', 'trader', 'viewer', 'guest'] as const) {
+      const user = api.auth.createUser({ username: `safety-${role}`, password: 'strong-fixture-password', role });
+      const session = api.auth.startSession(user.id);
+      const headers = { cookie: `vnedge_session=${session.token}` };
+      for (const p of paths) {
+        const res = await fetch(base + p, { headers });
+        assert.equal(res.status, 200, `${role}: ${p}`);
+        assert.notEqual(res.headers.get('Access-Control-Allow-Origin'), '*');
+        assert.ok(!((await res.text()).includes('legacy-token-canary')));
+      }
+      const head = await fetch(base + '/metrics', { method: 'HEAD', headers });
+      assert.equal(head.status, 200); assert.equal(await head.text(), '');
+      const jsonMetrics = await fetch(base + '/metrics?format=json', { headers });
+      assert.match(jsonMetrics.headers.get('content-type')!, /application\/json/); await jsonMetrics.json();
+      for (const p of ['/api/config', '/api/config/defaults']) {
+        const view = await (await fetch(base + p, { headers })).json() as any;
+        assert.equal('botToken' in view.alerts.telegram, false);
+        assert.equal(JSON.stringify(view).includes('legacy-token-canary'), false);
+      }
+      api.auth.revoke(session.token);
+      assert.equal((await fetch(base + '/metrics', { headers })).status, 401);
+      const expired = api.auth.startSession(user.id, NOW - 1000, NOW - 1);
+      assert.equal((await fetch(base + '/api/metrics?format=json', { headers: { cookie: `vnedge_session=${expired.token}` } })).status, 401);
+    }
+    const save = (telegram: any) => getJson('/api/config', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ alerts: { telegram } }) });
+    for (const telegram of [{ botToken: 'new-secret-canary' }, { chatId: 'other-chat' }]) {
+      const rejected = await save(telegram);
+      assert.equal(rejected.status, 400); assert.ok(!JSON.stringify(rejected.body).includes('new-secret-canary'));
+    }
+    const saved = await save({ botToken: '', chatId: 'fixture-chat' });
+    assert.equal(saved.status, 200); assert.equal('botToken' in saved.body.alerts.telegram, false);
+    assert.equal(app.config.get().alerts.telegram.botToken, 'legacy-token-canary');
+    assert.equal(app.config.get().alerts.telegram.chatId, 'fixture-chat');
+  } finally { app.config.update({ alerts: { ...app.config.get().alerts, telegram: original } }); }
+});
+
+test('health reports damaged saved config without changing running settings', async () => {
+  const file = path.join(dataDir, 'config.json'); const original = fs.readFileSync(file, 'utf8');
+  const running = structuredClone(app.config.get());
+  try {
+    fs.writeFileSync(file, '{"token":"private-config-canary"');
+    const health = await getJson('/api/health');
+    assert.equal(health.status, 503); assert.equal(health.body.status, 'degraded');
+    assert.equal(JSON.stringify(health.body).includes('private-config-canary'), false);
+    assert.deepEqual(app.config.get(), running);
+  } finally { fs.writeFileSync(file, original); }
+  assert.equal((await getJson('/api/health')).status, 200);
+});
+
 test('trade monitor is authenticated, read-only and lists exchange pairs without changing configuration',async()=>{
  const before=JSON.stringify(app.config.get());
  assert.equal((await fetch(base+'/api/trade-monitor')).status,401);
@@ -184,6 +240,22 @@ test('bar close → scanner run → signal → paper position (exactly one close
   const open = app.paper.openPositions();
   assert.equal(open.length, 1);
   assert.equal(open[0].side, 'long'); assert.equal(open[0].sl, 50_420); assert.deepEqual(open[0].tp, [50_570, 50_620, 50_670]);
+  // decision 321: the open was recorded with the market as it was, readable over an authenticated, validated route
+  assert.equal((await fetch(base + '/api/entry-state?book=0')).status, 401);
+  const es = await getJson('/api/entry-state?book=0');
+  assert.equal(es.status, 200);
+  assert.equal(es.body.rows.length, 1);
+  assert.equal(es.body.rows[0].positionId, open[0].id);
+  assert.equal(es.body.rows[0].side, 'long');
+  assert.equal(es.body.rows[0].status, 'open');
+  assert.equal(es.body.rows[0].r, null, 'no R for a trade that has not closed');
+  assert.ok(es.body.rows[0].market && 'btcBiasH4' in es.body.rows[0].market, 'the market block is there, known or not');
+  assert.equal((await getJson('/api/entry-state?book=2')).body.rows.length, 0, 'the shadow book opened nothing');
+  const esStatus = await getJson('/api/entry-state/status');
+  assert.equal(esStatus.status, 200);
+  assert.equal(esStatus.body.rows, 1);
+  assert.equal(esStatus.body.failed, 0);
+  for (const bad of ['book=1', 'side=up', 'limit=-1', 'from=abc']) assert.equal((await getJson(`/api/entry-state?${bad}`)).status, 400, bad);
   // a second update of the same new bar must not close anything again
   feed.push('5m', bar(T0 + TF, 50_520, 50_530));
   assert.equal(closedCounts.get(`5m:${T0}`), 1);
@@ -389,6 +461,20 @@ test('gated signal journal is authenticated, bounded and explicitly ineligible f
   assert.equal(page.body.rows[0].snapshot.outcome,'not-executed');assert.equal(page.body.rows[0].promotion_eligible,0);
 });
 
+test('the paper fleet route needs a session and reports the own list and the entry split (decision 323)', async () => {
+  assert.equal((await fetch(base + '/api/paper/fleet')).status, 401);
+  const r = await getJson('/api/paper/fleet');
+  assert.equal(r.status, 200);
+  assert.equal(typeof r.body.own.pairs, 'number');
+  assert.equal(r.body.window.days, 14);
+  assert.equal(r.body.window.entries.total, r.body.window.entries.own + r.body.window.entries.copy + r.body.window.entries.unknown);
+  assert.ok(Array.isArray(r.body.ownCells) && Array.isArray(r.body.idle));
+  assert.equal(typeof r.body.copy.enabled, 'boolean');
+  const journal = await getJson('/api/journal?list=own');
+  assert.equal(journal.status, 200);
+  assert.equal((await getJson('/api/journal?list=mine')).status, 400);
+});
+
 test('authorisation is enforced by the server, not just hidden in the UI', async () => {
   // an unauthenticated caller gets nothing, not even read access
   for (const [method, path] of [['GET', '/api/stats'], ['GET', '/api/scanners'], ['POST', '/api/paper/reset'], ['GET', '/api/users']] as const) {
@@ -467,7 +553,19 @@ test('failed authentication reports 401 and 400, not 500', async () => {
   const weak = await getJson('/api/users', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'weakling', password: 'short', role: 'viewer' }) });
   assert.equal(weak.status, 400);
   assert.match(weak.body.error, /at least 10/);
-})
+});
+
+test('fatal runtime state blocks both books immediately and reports unhealthy without changing saved rules', async () => {
+  const before = fs.readFileSync(path.join(dataDir, 'config.json'), 'utf8');
+  const haltCount = app.db.get<{ n: number }>('SELECT count(*) n FROM risk_halts')!.n;
+  app.runtime.stop(true, 'Fatal runtime failure (uncaughtException)');
+  assert.match(app.paper.entryBlock!('BTCUSD', NOW)!, /Runtime failed/);
+  assert.match(app.shadow.entryBlock!('BTCUSD', NOW)!, /Runtime failed/);
+  const health = await getJson('/api/health');
+  assert.equal(health.status, 503); assert.equal(health.body.status, 'failed');
+  assert.equal(fs.readFileSync(path.join(dataDir, 'config.json'), 'utf8'), before);
+  assert.equal(app.db.get<{ n: number }>('SELECT count(*) n FROM risk_halts')!.n, haltCount);
+});
 
 test('every fill records the book it was priced against, and the report audits the assumption', async () => {
   const before = await getJson('/api/fills/quality');

@@ -13,6 +13,18 @@ export function admissionCostPct(cfg: FeeConfig, crossingPct = 0, entry: EntryEx
 export function crossingSlippageBps(cfg: PaperConfig, crossingPct: number): number {
   return Math.max(0, crossingPct) * 50 + (cfg.quotedSlippageBps ?? 0);
 }
+/**
+ * Screen stress sits on top of the account's own slippage. Replacing the account
+ * slippage with a flat stress number made a wider live assumption look cheaper in the screen.
+ * Fees and the minimum-stop ratio stay on the policy the caller already passed in.
+ */
+export function stressedSlippage(cfg: Pick<PaperConfig, 'slippageBps' | 'quotedSlippageBps'>, stressBps: number): { slippageBps: number; quotedSlippageBps: number } {
+  const extra = Math.max(0, stressBps);
+  return {
+    slippageBps: Math.max(0, cfg.slippageBps) + extra,
+    quotedSlippageBps: Math.max(0, cfg.quotedSlippageBps ?? 0) + extra,
+  };
+}
 /** A verified-current flag establishes future eligibility, never the original enrollment date. */
 export function offerEffectiveFrom(cfg: PaperConfig): number | undefined {
   const o=cfg.scalperOffer;

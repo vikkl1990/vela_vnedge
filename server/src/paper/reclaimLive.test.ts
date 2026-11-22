@@ -30,9 +30,9 @@ test('live reclaim cannot enter on tape/partial bars; after closed confirmation 
   let placements=0;a.e.on('pending',(x:any)=>{if(x.type==='placed')placements++;});a.confirm();
   const order=a.e.pendingEntries()[0];assert.ok(order.limit);assert.equal(order.limit.price,100.1);assert.equal(placements,1);
   a.e.onTrade('SOLUSD',100,1,order.at-1,order.at);assert.equal(a.e.openPositions().length,0);
-  a.e.onTrade('SOLUSD',100,1,order.at+1000,order.at+1000);assert.equal(a.e.openPositions().length,1);
+  a.e.onTrade('SOLUSD',100,1,order.dueAt+1,order.dueAt+1);assert.equal(a.e.openPositions().length,1);
   assert.equal(a.e.openPositions()[0].features?.reclaim_trial,1);
-  full.e.onEntry(full.ev,full.ctx);full.confirm();const fo=full.e.pendingEntries()[0];full.e.onTrade('SOLUSD',100,1,fo.at+1000,fo.at+1000);
+  full.e.onEntry(full.ev,full.ctx);full.confirm();const fo=full.e.pendingEntries()[0];full.e.onTrade('SOLUSD',100,1,fo.dueAt+1,fo.dueAt+1);
   assert.equal(a.e.openPositions()[0].qty,Math.floor(full.e.openPositions()[0].qty/3));
   assert.equal(a.e.onEntry(a.ev,{...a.ctx,at:order.at+1001}).action,'ignored');
 });
@@ -50,7 +50,7 @@ test('reclaim mode, allocation and config checks apply again at fill',t=>{
     if(change==='executor')a.e.limitEntryAllowed=()=>false;
     if(change==='mode')a.cfg.execution.mode='dry-run';
     if(change==='allocation')a.cfg.scanners[ID].pairs=[];
-    a.e.onTrade('SOLUSD',100,1,order.at+1000,order.at+1000);
+    a.e.onTrade('SOLUSD',100,1,order.dueAt+1,order.dueAt+1);
     assert.equal(a.e.openPositions().length,0,change);assert.equal(a.e.pendingEntries().length,0,change);
     assert.equal(a.e.onEntry(a.ev,a.ctx).action,'rejected',change);
   }
@@ -75,7 +75,7 @@ test('reclaim audit persists the funnel and reports only filled trial outcomes f
   assert.equal(status().state,'Waiting for pullback');
   a.confirm();assert.equal(status().state,'Maker order resting');
   assert.equal(status().counts.pullback,1);assert.equal(status().counts.confirmed,1);assert.equal(status().counts.ordered,1);
-  const order=a.e.pendingEntries()[0];a.e.onTrade('SOLUSD',100,1,order.at+1000,order.at+1000);
+  const order=a.e.pendingEntries()[0];a.e.onTrade('SOLUSD',100,1,order.dueAt+1,order.dueAt+1);
   assert.equal(status().counts.filled,1);assert.equal(status().open,1);
   a.e.onScriptExit(ID,'SOLUSD','15m','close',101,order.at+2000,'both','long');
   const row=a.db.get<{realized_pnl:number;fees:number;risk_amount:number}>('SELECT realized_pnl,fees,risk_amount FROM positions WHERE id=?',order.id)!;
@@ -109,7 +109,7 @@ test('level-only exits preserve reclaim setups, resting orders and positions; sc
     }
   }
   const a=setup(t);a.e.onEntry(a.ev,{...a.ctx,exitMode:'levels'});a.confirm();const order=a.e.pendingEntries()[0];
-  a.e.onTrade('SOLUSD',100,1,order.at+1000,order.at+1000);
+  a.e.onTrade('SOLUSD',100,1,order.dueAt+1,order.dueAt+1);
   assert.equal(a.e.onScriptExit(ID,'SOLUSD','15m','close',100,order.at+2000,'levels','long'),undefined);
   assert.equal(a.e.openPositions().length,1);
 });
@@ -135,7 +135,7 @@ test('selective reclaim uses the completed source candle without ML; exact thres
 test('selective maker risk is recomputed from current equity at fill, including after confirmation',t=>{
   const a=selective(t);a.e.onEntry(a.ev,a.ctx);a.confirm();const pe=a.e.pendingEntries()[0];assert.ok(pe.limit);
   a.db.kvSet('paper.initialEquity',600);
-  a.e.onTrade('SOLUSD',100,1,pe.at+1000,pe.at+1000);
+  a.e.onTrade('SOLUSD',100,1,pe.dueAt+1,pe.dueAt+1);
   const p=a.e.openPositions()[0];assert.ok(p);assert.ok(p.riskAmount<=9);assert.ok(p.riskAmount>8);
 });
 test('selective reclaim refuses absent, mismatched or unclosed signal candles',t=>{
@@ -193,6 +193,6 @@ test('zero account count ceiling keeps reclaim setup, confirmation and maker fil
  const a=setup(t);a.cfg.paper.maxOpenPositions=0;
  assert.equal(a.e.onEntry(a.ev,a.ctx).action,'pending');a.confirm();
  const order=a.e.pendingEntries()[0];assert.ok(order.limit);
- a.e.onTrade('SOLUSD',100,1,order.at+1000,order.at+1000);
+ a.e.onTrade('SOLUSD',100,1,order.dueAt+1,order.dueAt+1);
  assert.equal(a.e.openPositions().length,1);
 });

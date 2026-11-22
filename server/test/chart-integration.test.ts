@@ -35,7 +35,8 @@ test('signal filtering applies timeframe and position before LIMIT, preserving o
 });
 test('decision marks retain actual journal action and use escaped text content', () => {
   const marks = decisionMarks([{id:7,kind:'entry',at:t+900100,barTime:t,scannerName:'S',symbol:'XUSD',tf:'15m',side:'long',action:'rejected:cost',message:'<script>bad</script>',tp:[]} as any]);
-  assert.equal(marks[0].time,t+900100); assert.equal(marks[0].glyph.letter,'×');
+  assert.equal(marks[0].time,t); assert.equal(marks[0].glyph.letter,'×');
+  assert.match((marks[0].content as {text:string}).text, new RegExp(new Date(t+900100).toISOString()));
   const c = marks[0].content as {text:string}; assert.match(c.text,/rejected:cost/); assert.match(c.text,/<script>/); assert.equal('html' in c,false);
 });
 

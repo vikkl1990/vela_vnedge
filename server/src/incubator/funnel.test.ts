@@ -123,6 +123,32 @@ test('shadow waves wait fairly instead of dropping whole symbols behind a resear
  assert.equal(seen.size,500);runner.stop();
 });
 
+test('research scans continue while completed results await depth without duplicating cells',async t=>{
+ t.mock.timers.enable({apis:['Date'],now:1_800_000});
+ const cfg=structuredClone(DEFAULT_CONFIG);cfg.incubator.enabled=true;cfg.incubator.mirror={enabled:false};cfg.paper.trendGate={...cfg.paper.trendGate!,enabled:false};
+ const rows=['a','b','c','d','e'].map((scannerId,id)=>({id:id+1,scannerId,symbol:'ETHUSD',tf:'15m',stage:'shadow'}));
+ const bars=Array.from({length:80},(_,i)=>({time:900_000-(79-i)*900_000,open:100,high:101,low:99,close:100,volume:1}));
+ const scanned:string[]=[],entered:string[]=[],depth:Array<()=>void>=[];
+ const paper:any=new EventEmitter();paper.openPositions=()=>[];paper.mark=()=>100;paper.recordGatedEntry=()=>{};
+ paper.prepareEntryDepth=()=>new Promise<void>(r=>depth.push(r));
+ paper.onEntry=(_ev:any,c:any)=>{entered.push(c.scannerId);return{action:'refused',reason:'test gate'};};
+ const runner=new ShadowRunner({cfgRef:()=>cfg,paper,candles:{get:()=>bars},
+  store:{shadowFunnel:()=>({}),liveMarks:()=>undefined,setLiveMarks:()=>{},setShadowFunnel:()=>{},get:(id:number)=>rows.find(r=>r.id===id)},
+  registry:{get:(id:string)=>({id,name:id,status:'ok',patched:'alert("LONG")'})},
+  marketInfo:async()=>({tickSize:.01,contractValue:1}),
+  pool:{size:3,reserved:2,stats:{queuedLive:0,queuedMirror:0},rssReader:()=>0,memoryGuardBytes:1,run:async(job:any)=>{
+   scanned.push(job.scannerId);return{ok:true,alerts:[{type:'alert',time:900_000,barIndex:79,message:'LONG | Price: 100'}],shapes:[],labels:[],plots:[],ms:1};}},
+ }as any)as any;
+ t.after(()=>runner.stop());runner.pairs=rows;runner.onBarClosed('ETHUSD','15m',Date.now());
+ await new Promise<void>(r=>setImmediate(r));
+ assert.equal(scanned.length,4,'one compute worker can serve four bounded depth waits');assert.equal(depth.length,4);assert.equal(entered.length,0);
+ assert.equal(runner.dispatchStats.settling,4);assert.equal(runner.dispatchStats.pending,1);
+ runner.onBarClosed('ETHUSD','15m',Date.now());assert.equal(runner.dispatchStats.offered,5,'the same bar is never duplicated');
+ depth.shift()!();await new Promise<void>(r=>setImmediate(r));assert.equal(scanned.length,5);assert.equal(entered.length,1);
+ depth.splice(0).forEach(r=>r());await new Promise<void>(r=>setImmediate(r));
+ assert.equal(entered.length,5);assert.equal(runner.dispatchStats.inFlight,0);
+});
+
 test('held positions stay urgent; unqualified mirror cells use bounded shadow scheduling',async t=>{
  t.mock.timers.enable({apis:['Date','setTimeout'],now:1_000_000});const cfg=structuredClone(DEFAULT_CONFIG);cfg.incubator.enabled=true;cfg.incubator.mirror={enabled:true,minTrades:5,minNetR:0,minTurnoverUsd:0};
  const runner=new ShadowRunner({store:{shadowFunnel:()=>({}),liveMarks:()=>undefined,setLiveMarks:()=>{},setShadowFunnel:()=>{},copyRefusal:()=>'mirror held: 0/5 shadow closes',marketsToday:()=>new Map()},cfgRef:()=>cfg,paper:{openPositions:()=>[{scannerId:'held',symbol:'BTCUSD',tf:'15m'}]},mirror:()=>{},pool:{size:8,reserved:2,stats:{queued:0,queuedLive:0},rssReader:()=>0,memoryGuardBytes:1}}as any)as any;
@@ -141,6 +167,28 @@ test('enrolled forward cells get timely research service while copy holds and wo
  assert.deepEqual(got,[['forward',false]]);assert.equal(runner.dispatchStats.inFlight,1);assert.equal(runner.dispatchStats.pending,1);
  releases.shift()!();await new Promise<void>(r=>setImmediate(r));assert.deepEqual(got,[['forward',false],['ordinary',false]]);
  releases.shift()!();await new Promise<void>(r=>setImmediate(r));runner.stop();
+});
+
+test('shadow dispatch ranks account exits and qualified copies globally without upgrading unqualified cells', async t => {
+  t.mock.timers.enable({apis:['Date','setTimeout'],now:1_000_000});
+  const cfg=structuredClone(DEFAULT_CONFIG); cfg.incubator.enabled=true;
+  cfg.incubator.mirror={enabled:true,minTrades:5};
+  const runner=new ShadowRunner({
+    store:{shadowFunnel:()=>({}),liveMarks:()=>undefined,setLiveMarks:()=>{},setShadowFunnel:()=>{},
+      copyRefusal:(r:any)=>r.scannerId==='copy'?null:'mirror held: insufficient evidence',marketsToday:()=>new Map()},
+    cfgRef:()=>cfg, paper:{openPositions:()=>[{scannerId:'held',symbol:'AAAUSD',tf:'15m'}]},
+    mirror:()=>{}, accountHolds:(id:string)=>id==='account',
+    pool:{size:8,reserved:2,stats:{queuedLive:1},rssReader:()=>0,memoryGuardBytes:1},
+  } as any) as any;
+  t.after(()=>runner.stop());
+  runner.pairs=['held','unqualified','copy','account'].map((scannerId,id)=>({
+    id,scannerId,symbol:scannerId==='held'||scannerId==='unqualified'?'AAAUSD':'BBBUSD',tf:'15m',stage:'shadow'}));
+  const got:Array<[string,boolean,number|undefined]>=[];
+  runner.run=async(r:any,_bar:number,live:boolean,_seen:number,rank?:number)=>{got.push([r.scannerId,live,rank]);};
+  runner.onBarClosed('AAAUSD','15m',Date.now());
+  runner.onBarClosed('BBBUSD','15m',Date.now());
+  assert.deepEqual(got,[['held',true,1],['copy',true,2],['account',true,3]]);
+  assert.equal(runner.dispatchStats.pending,1,'unqualified research is still bounded behind account work');
 });
 
 test('capped shadow diagnostics are labelled without changing counts or evidence', () => {

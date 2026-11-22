@@ -79,7 +79,8 @@ export interface Position {
   peakAt?: number;
   worstR?: number;
   worstAt?: number;
-  /** When the position was actually filled; entryAt uses this same chronology. */
+  /** First fill's exchange event time when known; entryAt is the observed accounting time.
+   * Later partial entries must never reset this fee/funding clock. */
   openedAt?: number;
   /** Fingerprint of the settings that produced this trade (decision 90). */
   configFp?: string;
@@ -544,7 +545,7 @@ export function modelTrail(pos: Position, bar: { close: number }, m: TrailModel)
 }
 
 /** A stop-market cannot fill at its trigger when the first known price is already worse. */
-function stopMarketReference(side: Side, stop: number, open?: number): number {
+export function stopMarketReference(side: Side, stop: number, open?: number): number {
   if (open === undefined || !Number.isFinite(open) || open <= 0) return stop;
   return side === 'long' ? Math.min(stop, open) : Math.max(stop, open);
 }

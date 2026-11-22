@@ -3,7 +3,7 @@ import { TF_SECONDS, pineTfToDelta } from '../config.ts';
 /** Fixed-duration, bounded requests shared by the diagnostics and Pine endpoints. */
 export function flowQuery(params: URLSearchParams, now = Date.now()) {
   const symbol = (params.get('symbol') ?? 'BTCUSD').replace(/^delta:/i, '').toUpperCase();
-  if (!/^[A-Z0-9]{2,24}USD$/.test(symbol)) throw new Error('Use a Delta USD perpetual symbol');
+  if (!/^[A-Z0-9]{1,24}USD$/.test(symbol)) throw new Error('Use a Delta USD perpetual symbol');
   const rawTf = params.get('tf') ?? '1m';
   const tf = TF_SECONDS[rawTf] ? rawTf : pineTfToDelta(rawTf) ?? rawTf;
   const duration = (TF_SECONDS[tf] ?? 0) * 1000;

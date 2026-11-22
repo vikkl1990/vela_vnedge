@@ -118,7 +118,7 @@ export class SourceReview {
   }
 }
 
-export const AUTHORS = ['WillyAlgoTrader', 'Zeiierman', 'AlgoAlpha', 'BigBeluga', 'LuxAlgo', 'ChartPrime'];
+export const AUTHORS = ['WillyAlgoTrader', 'Zeiierman', 'AlgoAlpha', 'BigBeluga', 'LuxAlgo', 'ChartPrime', 'MarkitTick'];
 const SITEMAP = 'https://www.luxalgo.com/server-sitemap.xml';
 export interface SyncOptions {
   review: SourceReview;

@@ -12,7 +12,7 @@ dashboard.
 
 ## Requirements
 
-* Node.js ≥ 22.18 (tested on 25.x; TypeScript runs natively, no compile step)
+* Node.js ≥ 22.18. Production hosts use the version in `.node-version` (24.22.3). TypeScript runs natively, no compile step.
 * Internet access to Delta Exchange India and (for the first dashboard build) npm
 
 ## Quick start
@@ -266,17 +266,21 @@ timestamps (warning above `ops.driftWarnMs`), and tracked symbols are checked ag
   `POST /api/ops/logs/rotate`.
 * `GET /api/metrics` is Prometheus text (feed, tick age, queue depth, busy workers, respawns, bars
   closed, script runs/errors and per-minute rates, signals, positions, equity, pnl, backtests,
-  memory, CPU, event-loop lag, gaps, drift, alerts, backups). Scrape config:
-
-  ```yaml
-  scrape_configs:
-    - job_name: vnedge
-      metrics_path: /api/metrics
-      static_configs: [{ targets: ['127.0.0.1:8787'] }]
-  ```
+  memory, CPU, event-loop lag, gaps, drift, alerts, backups). `/metrics` is an alias;
+  `?format=json` selects JSON. All forms, including HEAD, require a valid session with read
+  permission, just like the dashboard. Anonymous scrapes (including loopback) return 401.
+  Scrapers must supply and renew an authenticated session; no bypass or public metrics listener
+  is installed. Keep session cookies private and out of logs and checked-in scraper configuration.
 
 * `GET /api/health` now carries `integrity`, `alerts` (last sent, active conditions) and `ops`
-  (last backup, log size, db size/errors, worker respawns, monitor state).
+  (last backup, log size, db size/errors, worker respawns, monitor state). It returns 503 for a
+  failed/stopping runtime or an invalid saved configuration. A bad disk edit leaves the last valid
+  running settings intact and refuses subsequent writes until the file is repaired. A corrupt or
+  invalid existing config prevents startup; only a missing first-run file can use defaults.
+* Fatal process errors stop new entries in memory, close the API and exit nonzero after bounded
+  cleanup. The service manager owns restart. They never persist a manual risk halt or change saved
+  trading rules. General config responses omit the legacy Telegram token; use the admin-only
+  Telegram connection controls to manage credentials and pairing.
 
 ### CI
 
@@ -294,6 +298,16 @@ docs/        PROCESS.md (the scanner process, for the operator), API.md (contrac
 ops/         launchd plist + install scripts, pm2 config
 data/        runtime: vnedge.db, config.json, logs/, backups/   (ignored by version control)
 ```
+
+## Licenses
+
+There is no single license for this repository. That choice belongs to the owner.
+
+* The bot and dashboard sources are the project's own code. A copy of an MIT grant sits at `scripts/licenses/vnedge-MIT.txt` and does not by itself license the Pine library.
+* `scripts/pine/` holds third-party TradingView scripts. Many headers are CC BY-NC-SA, some are MPL, and some publish no license. Those files stay under the terms in their own headers.
+* `scripts/libraries/` holds imported Pine libraries under the licenses those libraries publish, commonly MPL.
+
+Do not treat a missing header as permission to reuse a script.
 
 ## Notes & limitations
 

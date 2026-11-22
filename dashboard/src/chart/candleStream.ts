@@ -17,17 +17,18 @@ export class CandleStream {
       bar.low <= 0 ||
       bar.high < bar.low
     )
-      return
-    if (this.forming && bar.time < this.forming.time) return
+      return false
+    if (this.forming && bar.time < this.forming.time) return false
     if (this.forming?.time !== bar.time) {
       this.lastTick = -Infinity
       this.closed = false
     }
     // A delayed forming event must not reopen a bar already confirmed closed.
-    if (this.closed && !closed) return
+    if (this.closed && !closed) return false
     this.forming = { ...bar }
     this.closed = closed
     this.emit({ ...bar })
+    return true
   }
   tick(price: number, time: number) {
     const b = this.forming

@@ -42,7 +42,7 @@ export function levelProvenance(levelsSource:unknown,paper:unknown):{stop:Proven
  return {stop,targets,exit:{owner:'unknown',basis:'Exit reason alone does not identify the source of an amended stop, TP, or reversal'}};
 }
 function sumKnown(xs:Record<string,any>[],field:string){return xs.every(x=>finite(x[field]))?xs.reduce((n,x)=>n+x[field],0):null;}
-const tablesWithReceipts:Record<string,string>={entry_fill_evidence:'position_id',entry_execution:'position_id',paper_execution_positions:'position_id'};
+const tablesWithReceipts:Record<string,string>={entry_fill_evidence:'position_id',entry_execution:'position_id',paper_execution_positions:'position_id',paper_stop_amendments:'position_id'};
 
 /** Caller supplies an already-open SQLite handle. No Db constructor/migrations, writes or config reads. */
 export function exportExecutionEvidence(db:DatabaseSync,window:ResearchWindow):ExecutionEvidence {
@@ -95,7 +95,7 @@ export function exportExecutionEvidence(db:DatabaseSync,window:ResearchWindow):E
    const savedOrders=(orders.get(row.id)??[]).filter(o=>o.bt===row.bt&&o.at>=row.entry_at&&o.at<=row.exit_at);
    if((orders.get(row.id)?.length??0)!==savedOrders.length)quality.push('orders-outside-book-or-lifetime');
    const savedReceipts:Record<string,Record<string,any>[]>={};
-   for(const [t,map] of Object.entries(receipts))savedReceipts[t]=(map.get(row.id)??[]).filter(x=>x.book===row.bt&&(t!=='entry_execution'||x.entry_at===row.entry_at));
+   for(const [t,map] of Object.entries(receipts))savedReceipts[t]=(map.get(row.id)??[]).filter(x=>t==='paper_stop_amendments' ? x.active_at>=row.entry_at&&x.active_at<=row.exit_at : x.book===row.bt&&(t!=='entry_execution'||x.entry_at===row.entry_at));
    savedReceipts.paper_exit_reports=(exitReports.get(row.id)??[]).filter(x=>x.book===row.bt&&x.at>=row.entry_at&&x.at<=row.exit_at);
    const rawScope=typeof row.evidence_scope==='string'?row.evidence_scope:'unknown';
    const scope=row.quarantined?'quarantined':plan||row.scanner_id.startsWith('plan:')?'experiment':rawScope;

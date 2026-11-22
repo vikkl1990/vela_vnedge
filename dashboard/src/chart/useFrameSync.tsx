@@ -1,5 +1,5 @@
 import type { Vela } from '@luxalgo/vela'
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { fmtDateTime } from '../lib/format'
 import { tfMs } from '../lib/timeframes'
 import { replayOpenAt } from './venues'
@@ -10,10 +10,14 @@ export function useFrameSync(tfs: string[]) {
   const [end, setEnd] = useState(0)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const cursorRef = useRef(cursor)
+  useEffect(() => {
+    cursorRef.current = cursor
+  }, [cursor])
   const register = useCallback((tf: string, chart: Vela | null) => {
     charts.current.get(tf)?.off()
     charts.current.delete(tf)
-    if (chart)
+    if (chart) {
       charts.current.set(tf, {
         chart,
         off: chart.renderer.onCrosshairMove((e) => {
@@ -21,6 +25,14 @@ export function useFrameSync(tfs: string[]) {
             if (other !== tf) v.chart.renderer.setExternalCrosshair(e.time, e.price ?? undefined)
         }),
       })
+      // Adding a frame keeps existing chart instances and their replay clock.
+      // Join the same closed-bar cursor instead of silently showing live data.
+      if (cursorRef.current !== null) {
+        void chart.replay.start({ from: replayOpenAt(cursorRef.current, tfMs(tf)) }).catch((e: unknown) => {
+          setError(e instanceof Error ? e.message : String(e))
+        })
+      }
+    }
   }, [])
   const seek = async (at: number) => {
     setBusy(true)

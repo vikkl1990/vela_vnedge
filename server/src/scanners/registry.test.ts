@@ -67,3 +67,12 @@ test('research drawing compatibility is source-pinned and leaves the legacy scan
   assert.throws(()=>variantCompatibleSource(variant.id,base.source+'\n'),/source changed/);
   assert.deepEqual(variantCompatibleSource(base.id,base.source),{source:base.source});
 });
+
+
+test('advisory lookahead warnings do not globally quarantine cells, while confirmed holds survive compilation',async()=>{
+ const {ScannerRegistry,reviewedStatus}=await import('./registry.ts');
+ const registry=new ScannerRegistry();
+ const session=registry.all().find(s=>s.file==='q20SWzgQ-Session-Levels-Pro-PineLogic.pine');
+ assert.ok(session);assert.equal(session.status,'ok',session.reason??'');
+ assert.deepEqual(reviewedStatus({status:'ok',quarantine:'confirmed future leak'},{ok:true}),{status:'incompatible',reason:'confirmed future leak'});
+});

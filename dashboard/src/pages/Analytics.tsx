@@ -18,6 +18,7 @@ import { api } from '../api/client'
 import { useMarkets, useScannerIndex } from '../api/queries'
 import { REFRESH } from '../api/refreshPolicy'
 import type { PerformanceGroup, PerformanceStats } from '../api/types'
+import { EvidenceBadge } from '../components/EvidenceBadge'
 import {
   ASSET_GROUPS,
   ASSET_SECTORS,
@@ -102,7 +103,10 @@ function BookCard({
       </div>
       <div className="performance-edge">
         <span className="muted small">NET R / TRADE</span>
-        <strong className={`mono ${tone(s.avgR)}`}>{avgR(s.avgR)}</strong>
+        <strong className={`mono ${tone(s.avgR)}`}>
+          {avgR(s.avgR)}
+          <EvidenceBadge stats={s} />
+        </strong>
         <span className="muted small">
           {s.trades === 0
             ? 'No closes in this selection'
@@ -220,7 +224,12 @@ function ComparisonRows({
           header: `${title} R / trade`,
           numeric: true,
           value: (r: PerformanceGroup) => r[book].avgR,
-          render: (r: PerformanceGroup) => <span className={tone(r[book].avgR)}>{avgR(r[book].avgR)}</span>,
+          render: (r: PerformanceGroup) => (
+            <span className={tone(r[book].avgR)}>
+              {avgR(r[book].avgR)}
+              <EvidenceBadge stats={r[book]} />
+            </span>
+          ),
         },
         {
           key: `${book}-net`,
@@ -275,6 +284,7 @@ function ComparisonRows({
                   <b className="small">{book === 'paper' ? 'Paper' : 'Shadow'}</b>
                   <strong className={`mono ${tone(r[book].avgR)}`}>
                     {avgR(r[book].avgR)} <small>/ trade</small>
+                    <EvidenceBadge stats={r[book]} />
                   </strong>
                   <span>
                     {fmtInt(r[book].trades)} trades · {fmtPct(r[book].stopRate)} SL

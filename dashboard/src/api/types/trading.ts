@@ -58,6 +58,8 @@ export interface PaperExecution {
   } | null
 }
 export interface Position {
+  fleetSource?: import('../paperFleet.ts').FleetSource | null
+  entrySizeScale?: number | null
   execution?: PaperExecution
   protection?: Protection | null
   funding?: number
@@ -151,6 +153,7 @@ export interface Order {
     | 'tape-limit-model'
     | 'limit-candle-model'
     | 'limit-tape-model'
+    | 'limit-tick-depth-model'
     | null
   liquidity?: 'maker' | 'taker' | null
   id: number

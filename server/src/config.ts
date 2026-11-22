@@ -436,6 +436,12 @@ export interface IncubatorConfig {
     minWeeks?: number;
     /** Decision 177: the mean R must stand this many standard errors above zero (0 turns it off). At n = 30 the mean alone cannot be told from noise. */
     minT?: number;
+    /**
+     * Off unless set. When enabled, a proposal also needs a one-sided normal p-value at most
+     * `alpha / trials`, where trials is the number of incubator cells judged in that decision
+     * (candidates, shadow, and proposals). This is Bonferroni, not a claim about the whole catalogue.
+     */
+    multipleTesting?: { enabled: boolean; alpha?: number };
     /** Decision 177: no proposal for the fleet on a market under this 24h turnover (0 turns it off); a slot is not spent where the fills will not exist. */
     minTurnoverUsd?: number;
   };
@@ -573,6 +579,7 @@ export interface RiskConfig {
   closeAllOnKill: boolean;
   /** Total open + pending count ceiling; 0 disables only this ceiling. */
   maxPositionsTotal: number;
+  /** Per-market open + pending count ceiling; 0 disables only this ceiling. */
   maxPositionsPerSymbol: number;
   /** Cap |Σ side × notional × corr(symbol, BTCUSD)| as % of equity (0 = off). Correlation over the last `corrBars` closed bars of the entry timeframe. */
   maxBetaExposurePct: number;
@@ -643,7 +650,7 @@ export const DEFAULT_CONFIG: AppConfig = {
     gate: {
       minTrades: 30, minDays: 14, minPfR: 1.2, minPositiveWeeksPct: 60, minAvgR: 0.1, maxOverlapPct: 50, maxDays: 45, failPfR: 1.0, minT: 2, minTurnoverUsd: 5_000_000,
       pool: 'cohort', minPositiveMarketsPct: 50, minMarketTrades: 3, maxDaysByTf: { '1h': 60, '4h': 90 }, minTradesByTf: {}, minDaysByTf: {},
-      staleDays: 21, staleDaysByTf: { '1h': 30, '4h': 45 }, minWeeks: 3,
+      staleDays: 21, staleDaysByTf: { '1h': 30, '4h': 45 }, minWeeks: 3, multipleTesting: { enabled: false, alpha: 0.05 },
     },
     admit: { rotation: { enabled: false, maxPerDay: 12, idleDaysByTf: { '15m': 7, '1h': 14, '4h': 28 }, cooldownDays: 3 }, cohortMarkets: { default: 5, '1h': 8, '4h': 12 }, minCohortMarkets: 3,
       reserve: [{ tfs: ['4h'], markets: ['BTCUSD', 'ETHUSD', 'SOLUSD', 'XRPUSD'], slots: 80 }, { tfs: ['4h'], slots: 200 }] },
@@ -653,7 +660,7 @@ export const DEFAULT_CONFIG: AppConfig = {
     mirror: { enabled: false, minTrades: 5, minNetR: 0, minTurnoverUsd: 2_000_000 },
     maxContractRiskShare: 0.5,
   },
-  autoTune: { enabled: true, minTrades: 3, minProfitFactor: 1, intervalHours: 6, oos: { enabled: false, minTrades: 10, minProfitFactor: 1.1, minPositiveWeeks: 2 }, tuneTimeframes: false },
+  autoTune: { enabled: false, minTrades: 30, minProfitFactor: 1.2, intervalHours: 6, oos: { enabled: false, minTrades: 10, minProfitFactor: 1.1, minPositiveWeeks: 2 }, tuneTimeframes: false },
   timeframes: ['15m'],
   historyBars: 1000,
   paper: {
@@ -976,6 +983,10 @@ export function validateConfig(c: AppConfig): string[] {
     if (inc.demote?.costStarvedDays !== undefined && !(inc.demote.costStarvedDays >= 1 && inc.demote.costStarvedDays <= 60)) errs.push('incubator.demote.costStarvedDays must be 1..60');
     if (inc.demote?.marketOutDays !== undefined && !(inc.demote.marketOutDays >= 1 && inc.demote.marketOutDays <= 60)) errs.push('incubator.demote.marketOutDays must be 1..60');
     if (inc.gate?.minWeeks !== undefined && !(Number.isInteger(inc.gate.minWeeks) && inc.gate.minWeeks >= 0 && inc.gate.minWeeks <= 12)) errs.push('incubator.gate.minWeeks must be 0..12');
+    if (inc.gate?.multipleTesting !== undefined) {
+      const m = inc.gate.multipleTesting;
+      if (!m || typeof m.enabled !== 'boolean' || (m.alpha !== undefined && !(m.alpha > 0 && m.alpha < 1))) errs.push('incubator.gate.multipleTesting needs enabled boolean and alpha in (0, 1)');
+    }
     const rotation = inc.admit?.rotation;
     if (rotation && (typeof rotation.enabled !== 'boolean' || !Number.isInteger(rotation.maxPerDay) || rotation.maxPerDay < 0 || rotation.maxPerDay > 50
       || !Number.isFinite(rotation.cooldownDays) || rotation.cooldownDays < 1 || rotation.cooldownDays > 30
@@ -1011,7 +1022,7 @@ export function validateRealismAndRisk(c: AppConfig): string[] {
   pct(r.maxDailyLossPct, 'maxDailyLossPct'); pct(r.maxWeeklyLossPct, 'maxWeeklyLossPct'); pct(r.perScannerDailyLossPct, 'perScannerDailyLossPct');
   pct(r.maxBetaExposurePct, 'maxBetaExposurePct', 100_000);
   if (!Number.isInteger(r.maxPositionsTotal) || r.maxPositionsTotal < 0) errs.push('risk.maxPositionsTotal must be a non-negative integer (0 disables the cap)');
-  if (!(r.maxPositionsPerSymbol >= 1)) errs.push('risk.maxPositionsPerSymbol must be ≥ 1');
+  if (!Number.isSafeInteger(r.maxPositionsPerSymbol) || r.maxPositionsPerSymbol < 0) errs.push('risk.maxPositionsPerSymbol must be an integer ≥ 0 (0 = no count limit)');
   if (!(r.perScannerMaxPositions >= 1)) errs.push('risk.perScannerMaxPositions must be ≥ 1');
   if (!(r.corrBars >= 5 && r.corrBars <= 500)) errs.push('risk.corrBars must be 5..500');
   if (!(r.cooldownAfterLosses >= 0 && r.cooldownMinutes >= 0)) errs.push('risk.cooldownAfterLosses and cooldownMinutes must be ≥ 0');
@@ -1059,8 +1070,9 @@ export class ConfigStore {
   private cfg: AppConfig;
   private listeners: Array<(next: AppConfig, prev: AppConfig) => void> = [];
   private readonly file: string;
-  /** Modification time of the file when it was last read or written by this store. */
-  private seenMtimeMs = 0;
+  private seenRevision: string | null = null;
+  private checkedRevision: string | null = null;
+  private fileError: string | null = null;
 
   constructor(file = CONFIG_FILE) {
     this.file = file;
@@ -1070,31 +1082,77 @@ export class ConfigStore {
 
   private read(): AppConfig {
     let stored: Partial<AppConfig> = {};
-    if (fs.existsSync(this.file)) {
-      try { stored = JSON.parse(fs.readFileSync(this.file, 'utf8')); } catch { stored = {}; }
-      this.seenMtimeMs = fs.statSync(this.file).mtimeMs;
-    }
-    const cfg = deepMerge(structuredClone(DEFAULT_CONFIG), stored);
-    // per-script specs (scripts/specs.json, tracked): how each script is read — its entry channel,
-    // timezone, rule, inputs. They are defaults: anything set in config.json for the scanner wins.
-    if (process.env.SPECS !== '0') {
-      for (const [id, spec] of Object.entries(loadSpecs())) {
-        const cur = cfg.scanners[id];
-        cfg.scanners[id] = { enabled: false, symbols: null, timeframes: null, exitMode: 'both', ...spec, ...((cur ?? {}) as Partial<ScannerConfig>) } as ScannerConfig;
+    let revision: string | null = null;
+    let fd: number | undefined;
+    try {
+      fd = fs.openSync(this.file, 'r');
+      revision = this.revision(fs.fstatSync(fd));
+      stored = JSON.parse(fs.readFileSync(fd, 'utf8'));
+      if (!stored || typeof stored !== 'object' || Array.isArray(stored)) throw new Error();
+    } catch (e: any) {
+      // Only a genuinely absent first-run file may use defaults. Never include parser excerpts:
+      // malformed JSON can contain credentials, and a corrupt saved file must fail closed.
+      if (e?.code !== 'ENOENT' || this.seenRevision !== null) throw new Error('Saved configuration is missing, unreadable or invalid; restore a valid config file');
+      // A cold process has no in-memory revision. Existing journal state still proves that this
+      // is not a first installation: losing config must never reset a trading account to defaults.
+      for (const name of ['vnedge.db', 'vnedge.db-wal', 'vnedge.db-shm']) {
+        try { fs.lstatSync(path.join(path.dirname(this.file), name)); }
+        catch (state: any) { if (state?.code === 'ENOENT') continue; throw new Error('Saved configuration is missing; account state is unavailable'); }
+        throw new Error('Saved configuration is missing for an existing account; restore a valid config file');
       }
-    }
-    if (process.env.VNEDGE_SYMBOLS) cfg.symbols = process.env.VNEDGE_SYMBOLS.split(',').map(s => s.trim()).filter(Boolean);
-    if (process.env.VNEDGE_TIMEFRAMES) cfg.timeframes = process.env.VNEDGE_TIMEFRAMES.split(',').map(s => s.trim()).filter(Boolean);
-    return cfg;
+      // A dangling link is a broken saved configuration, not a first installation.
+      try { fs.lstatSync(this.file); throw new Error('Saved configuration is unavailable'); }
+      catch (missing: any) { if (missing?.code !== 'ENOENT') throw new Error('Saved configuration is unavailable'); }
+    } finally { if (fd !== undefined) fs.closeSync(fd); }
+    try {
+      const cfg = deepMerge(structuredClone(DEFAULT_CONFIG), stored);
+      // per-script specs (scripts/specs.json, tracked): how each script is read — its entry channel,
+      // timezone, rule, inputs. They are defaults: anything set in config.json for the scanner wins.
+      if (process.env.SPECS !== '0') {
+        for (const [id, spec] of Object.entries(loadSpecs())) {
+          const cur = cfg.scanners[id];
+          cfg.scanners[id] = { enabled: false, symbols: null, timeframes: null, exitMode: 'both', ...spec, ...((cur ?? {}) as Partial<ScannerConfig>) } as ScannerConfig;
+        }
+      }
+      if (process.env.VNEDGE_SYMBOLS) cfg.symbols = process.env.VNEDGE_SYMBOLS.split(',').map(s => s.trim()).filter(Boolean);
+      if (process.env.VNEDGE_TIMEFRAMES) cfg.timeframes = process.env.VNEDGE_TIMEFRAMES.split(',').map(s => s.trim()).filter(Boolean);
+      if (validateConfig(cfg).length) throw new Error();
+      this.seenRevision = revision;
+      this.checkedRevision = revision;
+      this.fileError = null;
+      return cfg;
+    } catch { throw new Error('Saved configuration fails validation; restore a valid config file'); }
+  }
+
+  private revision(s: fs.Stats): string { return `${s.dev}:${s.ino}:${s.size}:${s.mtimeMs}:${s.ctimeMs}`; }
+  private diskRevision(): string | null {
+    try { return this.revision(fs.statSync(this.file)); }
+    catch (e: any) { if (e?.code === 'ENOENT' && this.seenRevision === null) return null; throw new Error('Saved configuration is missing or unreadable'); }
+  }
+
+  /** Health check only: a disk edit never silently changes the running execution settings. */
+  status(): { valid: boolean; error: string | null } {
+    try {
+      const revision = this.diskRevision();
+      if (revision !== this.checkedRevision) {
+        const saved = this.seenRevision;
+        try { this.read(); } finally { this.seenRevision = saved; }
+      }
+      this.fileError = null;
+    } catch { this.fileError = 'Saved configuration is invalid or unavailable; running with the last valid settings and refusing writes'; }
+    return { valid: this.fileError === null, error: this.fileError };
   }
 
   /** Re-read the file if something else wrote it since we last did, so a change lands on top of it. */
   private refreshIfChangedOnDisk(): void {
-    if (!fs.existsSync(this.file)) return;
-    const mtime = fs.statSync(this.file).mtimeMs;
-    if (mtime === this.seenMtimeMs) return;
-    console.warn(`[config] ${this.file} was changed outside this process; reloading it before applying the change`);
-    this.cfg = this.read();
+    try {
+      if (this.diskRevision() === this.seenRevision) return;
+      const next = this.read();
+      this.cfg = next;
+    } catch {
+      this.fileError = 'Saved configuration is invalid or unavailable; running with the last valid settings and refusing writes';
+      throw new Error(this.fileError);
+    }
   }
 
   get(): AppConfig { return this.cfg; }
@@ -1105,8 +1163,8 @@ export class ConfigStore {
     const errs = validateConfig(next);
     if (errs.length) throw new Error('Invalid config: ' + errs.join('; '));
     const prev = this.cfg;
+    this.save(next);
     this.cfg = next;
-    this.save();
     for (const l of this.listeners) l(next, prev);
     return next;
   }
@@ -1125,21 +1183,24 @@ export class ConfigStore {
     const cells = Object.entries({ ...this.cfg.scanners, [id]: next }).filter(([, v]) => v.enabled && !v.hidden).reduce((n, [, v]) => n + cellsOf(v), 0);
     const cap = this.cfg.incubator?.promote?.maxFleet ?? 20;
     if (this.cfg.incubator?.promote?.countLimitsEnabled !== false && cells > cap) throw Object.assign(new Error(`refused: the live fleet would have ${cells} cells, above incubator.promote.maxFleet (${cap}); raise the limit deliberately or add fewer pairs`), { status: 400 });
-    this.cfg = { ...this.cfg, scanners: { ...this.cfg.scanners, [id]: next } };
-    this.save();
+    const cfg = { ...this.cfg, scanners: { ...this.cfg.scanners, [id]: next } };
+    this.save(cfg);
+    this.cfg = cfg;
     return next;
   }
 
   onChange(l: (next: AppConfig, prev: AppConfig) => void) { this.listeners.push(l); return () => { this.listeners=this.listeners.filter(x=>x!==l); }; }
 
   /** Write atomically (temp file + rename), so another process never reads a half-written file. */
-  private save() {
+  private save(cfg: AppConfig) {
     const tmp = `${this.file}.${randomUUID()}.tmp`;
     try {
-      fs.writeFileSync(tmp, JSON.stringify(this.cfg, null, 2), {mode:0o600,flag:'wx'});
+      fs.writeFileSync(tmp, JSON.stringify(cfg, null, 2), {mode:0o600,flag:'wx'});
       fs.renameSync(tmp, this.file);
     } finally { try { fs.unlinkSync(tmp); } catch { /* already renamed */ } }
-    this.seenMtimeMs = fs.statSync(this.file).mtimeMs;
+    this.seenRevision = this.diskRevision();
+    this.checkedRevision = this.seenRevision;
+    this.fileError = null;
   }
 }
 

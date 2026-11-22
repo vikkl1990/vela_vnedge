@@ -1,3 +1,4 @@
+import {lifecycleIdentity} from './lifecycleIdentity.ts';
 import {stablePolicy,strategyIdFor} from './strategyIdentity.ts';
 export {stablePolicy} from './strategyIdentity.ts';
 /** Immutable strategy settings. Runtime account halts remain outside this snapshot. */
@@ -19,6 +20,7 @@ export function policyReading(sc:Partial<ScannerConfig>|undefined) {
   return structuredClone(reading);
 }
 export interface TradePolicy {
+  causalLifecycleVersion?:1;
   version:1; id:string; strategyId:string; sim:number;
   scannerId:string; symbol:string; tf:string; sourceHash:string|null;
   reading:ReturnType<typeof policyReading>; exitMode:ExitMode;
@@ -51,7 +53,7 @@ export function makeTradePolicy(cfg:AppConfig,cell:{scannerId:string;symbol:stri
   resolved.reclaimTrials=resolved.reclaimTrials?.filter(r=>r.scannerId===cell.scannerId&&r.symbol===cell.symbol&&r.tf===cell.tf);
   if(!resolved.reclaimTrials?.length)delete resolved.reclaimTrials;
   if(!resolved.entryAlignments?.length)delete resolved.entryAlignments;
-  const body={version:POLICY_VERSION as 1,sim:SIM_VERSION,scannerId:cell.scannerId,symbol:cell.symbol,tf:cell.tf,exitMode:cell.exitMode,
+  const body={...lifecycleIdentity(resolved),version:POLICY_VERSION as 1,sim:SIM_VERSION,scannerId:cell.scannerId,symbol:cell.symbol,tf:cell.tf,exitMode:cell.exitMode,
     sourceHash,reading:policyReading(cfg.scanners[cell.scannerId]),
     paper:resolved,sizing:structuredClone(sizing),risk:structuredClone(cfg.risk),ml:structuredClone(cfg.ml)};
   // Cross-book strategy evidence is separate from capital feasibility. Preserve execution,

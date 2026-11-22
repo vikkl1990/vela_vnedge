@@ -3,11 +3,12 @@
  */
 import {feeFor,slip,impactOnly,roundTick,leverageForStop,type Position,type SizingInputs,sizeContracts} from './logic.ts';
 import type {PaperConfig} from '../config.ts';
+import {SOL_MAKER_FILTER_OFF} from '../scanners/solMakerExperiment.ts';
 export const BASKET_SCANNER='rsi-volume-ladder-basket';
 export const BASKET_MARKER='VNEDGE RSI volume candidate';
 export const BASKET_ACCOUNTING_VERSION=2;
 export const BASKET_REPLAY_REQUIRED='Basket execution requires stateful shadow replay; single-position candle screening is unsupported';
-export function candleReplayBlock(scannerId:string){return scannerId===BASKET_SCANNER?BASKET_REPLAY_REQUIRED:null;}
+export function candleReplayBlock(scannerId:string){return scannerId===BASKET_SCANNER?BASKET_REPLAY_REQUIRED:scannerId===SOL_MAKER_FILTER_OFF?'SOL trend-filter study requires isolated research plans; ordinary screening and paper admission are disabled':null;}
 export interface BasketState {version:1;entries:number;lastEntry:number;lowestEntry:number;marginUsed:number;lastSignalBar:number}
 /** Planned cash loss at the shared stop, frozen at the latest confirmed entry.
  * Paid funding debits count; credits do not enlarge the loss budget. Future funding

@@ -20,7 +20,7 @@ test('liquid finalists add two isolated plans without changing 79 existing cohor
  const {file,raw,plans}=fixture(t),before=fs.readFileSync(file,'utf8'),cfg=new ConfigStore(file).get();
  const original=planSnapshot(cfg,plans[0],'pinned-source');
  assert.equal(enableLiquidImportShadow(file,true).totalPlans,81);assert.equal(fs.readFileSync(file,'utf8'),before);
- const result=enableLiquidImportShadow(file);assert.equal(result.changed,true);assert.equal(result.totalPlans,MAX_RESEARCH_PLANS);
+ const result=enableLiquidImportShadow(file);assert.equal(result.changed,true);assert.equal(result.totalPlans,81);
  assert.ok('backup' in result);assert.equal(fs.readFileSync(result.backup,'utf8'),before);
  const after=JSON.parse(fs.readFileSync(file,'utf8')),next=new ConfigStore(file).get();
  assert.deepEqual(after.executionPlans.slice(0,79),raw.executionPlans);
@@ -42,7 +42,7 @@ test('liquid rollout refuses edited plans, changed native readers and capacity o
  const cases=[
   {...raw,executionPlans:[...plans,{...LIQUID_IMPORT_PLANS[0],referenceEquity:2000}]},
   {...raw,scanners:{...new ConfigStore(file).get().scanners,[LIQUID_IMPORT_PLANS[0].scannerId]:{...new ConfigStore(file).get().scanners[LIQUID_IMPORT_PLANS[0].scannerId],reader:1}}},
-  {...raw,executionPlans:[...plans,{...plans[0],id:'extra'}]},
+  {...raw,executionPlans:Array.from({length:MAX_RESEARCH_PLANS-1},(_,i)=>({...plans[0],id:`capacity-${i}`}))},
  ];
  for(const [i,c] of cases.entries()){
   fs.writeFileSync(file,JSON.stringify(c));const before=fs.readFileSync(file,'utf8');

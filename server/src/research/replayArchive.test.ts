@@ -9,6 +9,17 @@ import {Db} from '../db.ts';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 const T=1800000000000;
+test('coverage is a conservative sealed-segment inventory, including gaps and retention boundaries',async t=>{
+ const {archive,advance,now}=await fixture(t);archive.setSymbols(['ETHUSD']);
+ assert.equal(archive.coverage('ETHUSD',T-1000,T).segments,0);
+ archive.record('ETHUSD','checkpoint',{observed:true},T);await archive.flush();advance(61000);
+ archive.record('ETHUSD','trade',{price:100},now());await archive.close();
+ const c=archive.coverage('ETHUSD',T-1000,now());
+ assert.equal(c.capturing,false);assert.ok(c.segments>0);assert.equal(c.checkpoints,1);
+ assert.ok(c.segmentsWithGaps>0);assert.ok(c.from!>T-1000);
+ assert.equal(archive.coverage('UNKNOWNUSD',T,now()).segments,0);
+ assert.equal('complete' in c,false);
+});
 async function fixture(t:any,opts:Record<string,unknown>={}){
  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'vnedge-replay-'));let now=T;
  const archive=new ReplayArchive({dir,now:()=>now,minFreeBytes:0,...opts});
@@ -16,6 +27,16 @@ async function fixture(t:any,opts:Record<string,unknown>={}){
  return {dir,archive,advance:(ms:number)=>{now+=ms;},now:()=>now};
 }
 async function rows(dir:string){const out:ReplayEvent[]=[];for await(const r of readReplay(dir))out.push(r);return out;}
+test('one-character bases retain prospective replay events without accepting malformed paths',async t=>{
+ const {dir,archive}=await fixture(t);archive.setSymbols(['MUSD','SUSD','USD','../MUSD','MUSDT']);
+ assert.deepEqual(archive.status().symbols,['MUSD','SUSD']);
+ archive.record('MUSD','trade',{price:.8,qty:3},T,'execution-feed');
+ archive.record('SUSD','checkpoint',{observed:true},T,'advisory-depth');
+ archive.record('../MUSD','trade',{price:.8},T);await archive.close();
+ const events=await rows(dir);assert.equal(events.filter(r=>r.symbol==='MUSD'&&r.kind==='trade').length,1);
+ assert.equal(events.filter(r=>r.symbol==='SUSD'&&r.kind==='checkpoint').length,1);
+ assert.equal(events.filter(r=>r.symbol==='../MUSD').length,0);
+});
 test('sealed replay preserves receipt time, ignores unselected pairs and verifies manifests',async t=>{
  const {dir,archive}=await fixture(t);archive.setSymbols(['INITUSD']);
  archive.record('INITUSD','trade',{timeMs:T-20,price:1,qty:4},T,'execution-feed');
@@ -134,4 +155,14 @@ test('export CLI preserves gap warnings, refuses overwrite and removes a corrupt
  await assert.rejects(promisify(execFile)(process.execPath,args),/output already exists/);await fs.unlink(out);
  const [m]=await replayManifests(dir);await fs.appendFile(path.join(dir,m.id+'.ndjson.gz'),'corrupt');
  await assert.rejects(promisify(execFile)(process.execPath,args),/checksum mismatch/);await assert.rejects(fs.access(out));
+});
+
+test('newly focused symbol checkpoints its next verified update without relabeling old depth as fresh',t=>{
+ const d=new Db(':memory:');t.after(()=>d.db.close());const r=new DepthRecorder(d,['SOLUSD'],()=>{},false),captured: any[]=[];
+ r.setCapture((s,k,p,at)=>captured.push({s,k,p,at}));
+ const snap={sy:'SOLUSD',action:'snapshot',seq:1,ts:T*1000,a:[['101','3']],b:[['99','2']],cs:crc32('101:3|99:2')};
+ r.onDepth(snap,T);captured.length=0;r.requestCheckpoint('SOLUSD');
+ assert.equal(captured.length,0);assert.equal(r.bookAt('SOLUSD',T+2000,1000),null);
+ r.onDepth({...snap,action:'update',seq:2,ts:(T+3000)*1000,a:[],b:[]},T+3001);
+ const cp=captured.find(x=>x.k==='checkpoint');assert.equal(cp.at,T+3001);assert.equal(cp.p.ts,(T+3000)*1000);assert.equal(cp.p.seq,2);
 });

@@ -1,0 +1,390 @@
+{
+  "study": "SOL maker trend filter, shadow only",
+  "verifiedAt": "2026-11-21T07:05:29.409545+00:00",
+  "baselineCommit": "bda47e158ed2c9c0583e8ff04fbeb665c9d3407d",
+  "sourceSha256": "0c47ade7557ac23e25869b6a017d09a9773b525534a4fa35f5a0f6c06c1b07a5",
+  "signalStudy": {
+    "from": 1795156200000,
+    "to": 1795241700000,
+    "prefixesPerArm": 96,
+    "on": 4,
+    "off": 11,
+    "common": 4,
+    "extra": [
+      {
+        "time": 1795175100000,
+        "side": "short",
+        "label": "Lower Retest",
+        "bar": {
+          "time": 1795175100000,
+          "open": 71.936,
+          "high": 71.996,
+          "low": 71.67,
+          "close": 71.796,
+          "volume": 13490
+        },
+        "atr": 0.36888148371991836
+      },
+      {
+        "time": 1795187700000,
+        "side": "short",
+        "label": "Lower Retest",
+        "bar": {
+          "time": 1795187700000,
+          "open": 69.864,
+          "high": 69.865,
+          "low": 68.464,
+          "close": 69.074,
+          "volume": 121120
+        },
+        "atr": 0.5912286629136
+      },
+      {
+        "time": 1795202100000,
+        "side": "short",
+        "label": "Lower Retest",
+        "bar": {
+          "time": 1795202100000,
+          "open": 68.134,
+          "high": 68.2,
+          "low": 67.453,
+          "close": 67.974,
+          "volume": 49847
+        },
+        "atr": 0.6702491534296687
+      },
+      {
+        "time": 1795206600000,
+        "side": "short",
+        "label": "Lower Retest",
+        "bar": {
+          "time": 1795206600000,
+          "open": 68.435,
+          "high": 68.435,
+          "low": 67.299,
+          "close": 67.413,
+          "volume": 23282
+        },
+        "atr": 0.6699276044288874
+      },
+      {
+        "time": 1795230000000,
+        "side": "short",
+        "label": "Lower Retest",
+        "bar": {
+          "time": 1795230000000,
+          "open": 68.554,
+          "high": 68.555,
+          "low": 67.733,
+          "close": 68.244,
+          "volume": 27332
+        },
+        "atr": 0.42005602396226643
+      },
+      {
+        "time": 1795233600000,
+        "side": "short",
+        "label": "Lower Retest",
+        "bar": {
+          "time": 1795233600000,
+          "open": 66.303,
+          "high": 66.484,
+          "low": 65.152,
+          "close": 65.642,
+          "volume": 60205
+        },
+        "atr": 0.6192784803307543
+      },
+      {
+        "time": 1795239900000,
+        "side": "short",
+        "label": "Lower Retest",
+        "bar": {
+          "time": 1795239900000,
+          "open": 65.432,
+          "high": 65.733,
+          "low": 65.322,
+          "close": 65.422,
+          "volume": 12658
+        },
+        "atr": 0.6068679005753242
+      }
+    ]
+  },
+  "executionReplay": {
+    "generatedAt": 1795244344987,
+    "signalCounts": {
+      "on": 4,
+      "off": 11
+    },
+    "events": 90355,
+    "from": 1795240317110,
+    "to": 1795244181506,
+    "coveredSignals": 1,
+    "uncoveredSignals": 14,
+    "results": [
+      {
+        "delayMs": 0,
+        "report": {
+          "arms": [
+            {
+              "id": "sol-filter-v1-on-candle",
+              "filter": "on",
+              "fillModel": "candle",
+              "signals": 0,
+              "filled": 0,
+              "open": 0,
+              "pending": 0,
+              "closed": 0,
+              "net": null,
+              "stops": null,
+              "reasons": {}
+            },
+            {
+              "id": "sol-filter-v1-off-candle",
+              "filter": "off",
+              "fillModel": "candle",
+              "signals": 1,
+              "filled": 0,
+              "open": 0,
+              "pending": 0,
+              "closed": 0,
+              "net": null,
+              "stops": null,
+              "reasons": {
+                "no fill: price did not come back to 65.5327 within 0.3333333333333333 15m bars": 1
+              }
+            },
+            {
+              "id": "sol-filter-v1-on-tick",
+              "filter": "on",
+              "fillModel": "tick-depth",
+              "signals": 0,
+              "filled": 0,
+              "open": 0,
+              "pending": 0,
+              "closed": 0,
+              "net": null,
+              "stops": null,
+              "reasons": {}
+            },
+            {
+              "id": "sol-filter-v1-off-tick",
+              "filter": "off",
+              "fillModel": "tick-depth",
+              "signals": 1,
+              "filled": 0,
+              "open": 0,
+              "pending": 0,
+              "closed": 0,
+              "net": null,
+              "stops": null,
+              "reasons": {
+                "no fill: price did not come back to 65.5327 within 0.3333333333333333 15m bars": 1
+              }
+            }
+          ],
+          "comparisons": [
+            {
+              "fillModel": "candle",
+              "sharedSignals": 0,
+              "onOnly": 0,
+              "offOnly": 1,
+              "matchedClosed": 0,
+              "matchedDeltaNet": null,
+              "matchedStopsOn": 0,
+              "matchedStopsOff": 0,
+              "matchedWinnersCut": 0
+            },
+            {
+              "fillModel": "tick-depth",
+              "sharedSignals": 0,
+              "onOnly": 0,
+              "offOnly": 1,
+              "matchedClosed": 0,
+              "matchedDeltaNet": null,
+              "matchedStopsOn": 0,
+              "matchedStopsOff": 0,
+              "matchedWinnersCut": 0
+            }
+          ],
+          "promotionEligible": false,
+          "limitations": [
+            "Research plans use independent reference purses and full fees; account-level portfolio contention is not reproduced.",
+            "Compare on/off within each fill model. Candle fills are not exchange fill proof; tick/depth prints do not establish queue priority.",
+            "Unfilled, open or rejected entries have no assumed net outcome. No automatic paper admission."
+          ]
+        },
+        "gaps": 51,
+        "goodBooks": 11962,
+        "maxEventGap": 11964,
+        "outcomes": [],
+        "fillEvidence": [],
+        "partialReports": 0
+      },
+      {
+        "delayMs": 60000,
+        "report": {
+          "arms": [
+            {
+              "id": "sol-filter-v1-on-candle",
+              "filter": "on",
+              "fillModel": "candle",
+              "signals": 0,
+              "filled": 0,
+              "open": 0,
+              "pending": 0,
+              "closed": 0,
+              "net": null,
+              "stops": null,
+              "reasons": {}
+            },
+            {
+              "id": "sol-filter-v1-off-candle",
+              "filter": "off",
+              "fillModel": "candle",
+              "signals": 1,
+              "filled": 1,
+              "open": 0,
+              "pending": 0,
+              "closed": 1,
+              "net": 1.4278159148000191,
+              "stops": 0,
+              "reasons": {}
+            },
+            {
+              "id": "sol-filter-v1-on-tick",
+              "filter": "on",
+              "fillModel": "tick-depth",
+              "signals": 0,
+              "filled": 0,
+              "open": 0,
+              "pending": 0,
+              "closed": 0,
+              "net": null,
+              "stops": null,
+              "reasons": {}
+            },
+            {
+              "id": "sol-filter-v1-off-tick",
+              "filter": "off",
+              "fillModel": "tick-depth",
+              "signals": 1,
+              "filled": 1,
+              "open": 0,
+              "pending": 0,
+              "closed": 1,
+              "net": 1.4278159148000191,
+              "stops": 0,
+              "reasons": {}
+            }
+          ],
+          "comparisons": [
+            {
+              "fillModel": "candle",
+              "sharedSignals": 0,
+              "onOnly": 0,
+              "offOnly": 1,
+              "matchedClosed": 0,
+              "matchedDeltaNet": null,
+              "matchedStopsOn": 0,
+              "matchedStopsOff": 0,
+              "matchedWinnersCut": 0
+            },
+            {
+              "fillModel": "tick-depth",
+              "sharedSignals": 0,
+              "onOnly": 0,
+              "offOnly": 1,
+              "matchedClosed": 0,
+              "matchedDeltaNet": null,
+              "matchedStopsOn": 0,
+              "matchedStopsOff": 0,
+              "matchedWinnersCut": 0
+            }
+          ],
+          "promotionEligible": false,
+          "limitations": [
+            "Research plans use independent reference purses and full fees; account-level portfolio contention is not reproduced.",
+            "Compare on/off within each fill model. Candle fills are not exchange fill proof; tick/depth prints do not establish queue priority.",
+            "Unfilled, open or rejected entries have no assumed net outcome. No automatic paper admission."
+          ]
+        },
+        "gaps": 51,
+        "goodBooks": 11962,
+        "maxEventGap": 11964,
+        "outcomes": [
+          {
+            "id": 1,
+            "scanner_id": "plan:sol-filter-v1-off-candle:v1:25da92abed6c",
+            "status": "closed",
+            "entry_at": 1795240962582,
+            "entry_price": 65.3837,
+            "qty": 11,
+            "exit_at": 1795241843434,
+            "exit_reason": "trail",
+            "net": 1.4278159148000191
+          },
+          {
+            "id": 2,
+            "scanner_id": "plan:sol-filter-v1-off-tick:v1:142c558e58b0",
+            "status": "closed",
+            "entry_at": 1795240879549,
+            "entry_price": 65.3837,
+            "qty": 11,
+            "exit_at": 1795241843434,
+            "exit_reason": "trail",
+            "net": 1.4278159148000191
+          }
+        ],
+        "fillEvidence": [
+          {
+            "source": "limit-candle-model",
+            "at": 1795240962582,
+            "position_id": 1,
+            "price": 65.3837,
+            "qty": 11
+          },
+          {
+            "source": "limit-tick-depth-model",
+            "at": 1795240879549,
+            "position_id": 2,
+            "price": 65.3837,
+            "qty": 11
+          }
+        ],
+        "partialReports": 1
+      }
+    ],
+    "limitations": [
+      "Counterfactual input-filter test, not prospective trade evidence. Signal availability uses recorded account scan completion, stressed by 60 seconds; exact alternate shadow completion was not recorded.",
+      "Only the archive-covered window is evaluated. Earlier extra signals have no exact execution-depth replay in this export.",
+      "Current product metadata, full fees and source risk settings; portfolio contention and historical market-verdict snapshots are not reconstructed.",
+      "Depth gaps stay unavailable; queue position is unknown. Results do not qualify paper adoption."
+    ]
+  },
+  "capture": {
+    "at": 1795244190802,
+    "since": 1795240312000,
+    "events": 90355,
+    "from": 1795240317110,
+    "to": 1795244181506,
+    "note": "Completed checksum-verified broad segments only. SOL and wildcard gaps; stable received-time merge; no synthetic observations."
+  },
+  "completeSegments": 162,
+  "artifactSha256": {
+    "signals.ts": "fe5c602f5ec549107927ca097eaa551cb6938a10e6ba391633ac022b448b9ce5",
+    "signal-comparison.json": "79096719c3c641e78a9278b887715ede55a3099f6627a99a49f48abfb2459bd7",
+    "replay.ts": "efefb183c47706dd0443613af69eb5efc8cb948963769de6012281b494f601a7",
+    "replay-results.json": "232ea1a352f871e07f23e17d81feb3fe7575da336fcd801800f877c5c1b314a0",
+    "capture-stats.json": "fa84a1f04ca2d46fb23ec0b6d4e709191bb9ca28b91e33c950bfd4437629fddc",
+    "events.ndjson.gz": "cd03a98c2448f1eb4ae70af81d1e25713f2d3d7ba58bf49d2713996d64879fba"
+  },
+  "decision": "Deploy tested isolated shadow collection only; no profit improvement established, paper filter and fill model unchanged.",
+  "limitations": [
+    "Older candle warmup was obtained from REST rather than archived per-run snapshots. Only closed bars used, each arm receives identical 1000-bar history.",
+    "The 14 uncovered observations include four shared signals counted in both arms. Six of seven extra signals lack exact execution-depth coverage in this export.",
+    "Recorded account scan completion is a timing proxy for hypothetical shadow; a later availability can change maker price and outcome.",
+    "Prospective shadow plans use independent reference purses; current paper portfolio contention is not reconstructed."
+  ]
+}

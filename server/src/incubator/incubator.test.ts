@@ -100,6 +100,26 @@ test('lifecycle: screen → shadow → proposed → approved into the config', (
   assert.ok(store.events(10).some(e => e.to === 'live' && e.actor === 'admin'));
 });
 
+test('approval rechecks the optional trial count after new candidates arrive', t => {
+  const { db, store, cfg, insertTrade } = world(); t.after(() => db.db.close());
+  cfg.scanners = {};
+  cfg.incubator.gate.pool = 'pair';
+  cfg.incubator.gate.multipleTesting = { enabled: true, alpha: 0.05 };
+  const key = { scannerId: 'candidate', symbol: 'BTCUSD', tf: '15m' };
+  store.move(key, 'shadow', 'test', null, null, T0);
+  for (let i = 0; i < 40; i++) {
+    const at = T0 + i * 6 * 3600_000;
+    insertTrade(2, key.scannerId, key.symbol, { entryAt: at, exitAt: at + 3600_000, side: 'long', r: i < 22 ? 0.3 : -0.1 });
+  }
+  assert.deepEqual(evaluate(store, cfg, T0 + 20 * DAY).proposed, ['candidate BTCUSD 15m']);
+  for (let i = 0; i < 1000; i++) store.move({ ...key, scannerId: `new-${i}` }, 'candidate', 'test', null, null, T0 + 20 * DAY);
+  const row = store.find(key.scannerId, key.symbol, key.tf)!;
+  const patches: unknown[] = [];
+  assert.throws(() => approve(store, cfg, row.id, 'admin', (_id, patch) => patches.push(patch), T0 + 20 * DAY), /multiple testing/);
+  assert.equal(store.get(row.id)!.stage, 'proposed');
+  assert.equal(patches.length, 0, 'a stale proposal must not bypass the current evidence rule');
+});
+
 test('approval refuses past the weekly limit and when the fleet is full', () => {
   const { store, cfg, screen, insertTrade } = world();
   cfg.incubator.promote.maxPerWeek = 1;
@@ -322,6 +342,18 @@ test('decision 88: a script that fires on more than a tenth of all bars cannot p
   const dense = screenVerdict(good, stressed, bars, inc, T0, 300);
   assert.equal(dense.pass, false, 'three hundred entries on a thousand bars is a state');
   assert.ok((dense.entryDensity ?? 0) > 0.10);
+});
+
+test('holdout bars cannot dilute a dense training sample into a screen pass', () => {
+  const cfg: AppConfig = structuredClone(DEFAULT_CONFIG);
+  const inc = { ...cfg.incubator, screen: { ...cfg.incubator.screen, minTrades: 10, minWindowsUp: 3, holdoutShare: 0.3, minHoldoutTrades: 5 } };
+  const bars = Array.from({ length: 1000 }, (_, i) => ({ time: T0 + i * 900_000 }));
+  const good = Array.from({ length: 40 }, (_, k) => ({ entryAt: T0 + (k * 24 + 5) * 900_000, pnl: k % 3 === 2 ? -10 : 15, rMultiple: (k % 3 === 2 ? -10 : 15) / 10 }));
+  const stressed = good.map(t => ({ ...t, pnl: t.pnl - 1 }));
+  const training = Array.from({ length: 75 }, (_, i) => bars[i * 8].time);
+  const diluted = screenVerdict(good, stressed, bars, inc, T0, training);
+  assert.ok((diluted.entryDensity ?? 0) > 0.10, String(diluted.entryDensity));
+  assert.equal(diluted.pass, false);
 });
 
 test('decision 90: a pair whose shadow delivery is flat or worse against a screen promise half an R higher is retired by its record', () => {

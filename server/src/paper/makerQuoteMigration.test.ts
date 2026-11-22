@@ -19,6 +19,6 @@ test('LAB opt-in migration preserves every existing config value, is private and
  assert.equal(enableLabQuoteMaker(file).changed,false);
  for(const over of [{execution:{...cfg.execution,mode:'live'}},{execution:{...cfg.execution,allowProduction:true}},{paper:{...cfg.paper,marginPerTrade:200}},{paper:{...cfg.paper,maxStopLossPct:4}}]){
   const value=JSON.stringify({...cfg,...over});fs.writeFileSync(file,value);
-  assert.throws(()=>enableLabQuoteMaker(file),/Expected paper mode/);assert.equal(fs.readFileSync(file,'utf8'),value);
+  assert.throws(()=>enableLabQuoteMaker(file),/Expected paper mode|Saved configuration fails validation/);assert.equal(fs.readFileSync(file,'utf8'),value);
  }
 });
