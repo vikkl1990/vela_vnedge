@@ -104,3 +104,15 @@ test('mirrorTitle swaps every direction word and leaves a neutral title alone', 
   assert.equal(mirrorTitle('Cross above AVWAP'), 'cross below avwap');
   assert.equal(mirrorTitle('New ranked anchor'), undefined);
 });
+
+
+test('lookahead audit distinguishes current timeframe, known opens and uncertain aliases',()=>{
+ const source=(tf:string,expr:string)=>`//@version=6\nindicator("x")\nh=request.security(syminfo.tickerid, ${tf}, ${expr}, lookahead=barmerge.lookahead_on)\nplotshape(b,"Buy")`;
+ for(const [tf,expr] of [['timeframe.period','close'],['""','high'],['"D"','open'],['"D"','close[1]']]){
+  assert.equal(auditScript(source(tf,expr)).corrections.some(c=>c.code==='lookahead'),false,`${tf} ${expr}`);
+ }
+ for(const expr of ['alias','f(close)','[close[1], close]']){
+  assert.equal(auditScript(source('"D"',expr)).corrections.find(c=>c.code==='lookahead')?.severity,'review');
+ }
+ assert.equal(auditScript(source('"D"','close')).corrections.find(c=>c.code==='lookahead')?.severity,'high');
+});

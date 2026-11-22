@@ -7,6 +7,8 @@ export interface PositionOverlay {
   id: string
   title: string
   symbol: string
+  /** Fill time. A replay whose last bar is still before this does not draw today's stop. */
+  entryAt: number
   levels: Level[]
 }
 export const POSITION_LEVELS = 'vnedge.position-levels'
@@ -64,6 +66,7 @@ export function positionOverlay(p: Position, peakR?: number | null): PositionOve
     id: `position-${p.id}`,
     title: `#${p.id} ${p.symbol} ${p.side}`,
     symbol: p.symbol,
+    entryAt: p.entryAt,
     levels: levels.filter((l) => Number.isFinite(l.price) && l.price > 0),
   }
 }
@@ -87,7 +90,8 @@ export const positionLevelsIndicator: NativeIndicatorDescriptor = {
       let out: NativeIndicatorOutput = { priceLines: [] }
       try {
         const p = JSON.parse(payload) as PositionOverlay
-        // Today's stop must never be presented as the stop in a historical replay.
+        // These are today's mutable stop/peak/target states, not an as-of snapshot.
+        // Historical trade paths belong to replayOverlay; never leak live levels into replay.
         if (context.live && context.symbol.replace(/^delta:/, '') === p.symbol && Array.isArray(p.levels))
           out = {
             priceLines: p.levels

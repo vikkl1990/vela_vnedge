@@ -104,6 +104,7 @@ test('position updates use native levels with no Pine worker and preserve the ch
     },
     T + 100 * M,
   )
+  // Even after entry, today's mutable stop must not leak into a historical replay.
   await expect
     .poll(() => page.evaluate(() => (window as unknown as State).__vnChart.inspect().totals.priceLines))
     .toBe(0)

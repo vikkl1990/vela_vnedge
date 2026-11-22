@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Db } from '../db.ts';
-import { AuthStore, can, hashPassword, passwordProblem, usernameProblem, verifyPassword } from './store.ts';
+import { AuthStore, can, hashPassword, passwordProblem, sessionKey, usernameProblem, verifyPassword } from './store.ts';
 import { permissionFor } from './routes.ts';
 
 function store(t: { after: (fn: () => void) => void }) {
@@ -166,4 +166,21 @@ test('decision 117: a share link signs in as a read-only guest, expires with the
   assert.throws(() => s.createShareLink({ hours: 24 * 30 }, t0), /hours/);
   // the guest cannot be logged into with a password
   assert.equal(s.login('share-guest', 'anything-at-all-12', t0), null);
+});
+
+test('session rows store a hash, and a plaintext row from an older database still resolves', t => {
+  const db = new Db(':memory:');
+  t.after(() => db.db.close());
+  db.db.exec(`CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT, display_name TEXT, password_hash TEXT, role TEXT, created_at INTEGER, last_login_at INTEGER, disabled INTEGER);
+    CREATE TABLE sessions (token TEXT PRIMARY KEY, user_id INTEGER, created_at INTEGER, expires_at INTEGER);`);
+  db.run('INSERT INTO users(username, display_name, password_hash, role, created_at, disabled) VALUES (?,?,?,?,?,0)', 'ada', 'Ada', hashPassword('a-reasonable-one'), 'admin', 1);
+  db.run('INSERT INTO sessions(token, user_id, created_at, expires_at) VALUES (?,?,?,?)', 'legacy-cookie-token', 1, 1, 10_000);
+  const auth = new AuthStore(db);
+  assert.equal(db.get<{ token: string }>('SELECT token FROM sessions')!.token, sessionKey('legacy-cookie-token'));
+  assert.equal(auth.resolve('legacy-cookie-token', 2)?.username, 'ada');
+  const fresh = auth.startSession(1, 2);
+  assert.notEqual(db.get<{ token: string }>('SELECT token FROM sessions WHERE user_id=1 AND created_at=2')!.token, fresh.token);
+  assert.equal(auth.resolve(fresh.token, 3)?.username, 'ada');
+  auth.revoke(fresh.token);
+  assert.equal(auth.resolve(fresh.token, 3), null);
 });

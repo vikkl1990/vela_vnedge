@@ -12,7 +12,7 @@ dashboard.
 
 ## Requirements
 
-* Node.js ≥ 22.18 (tested on 25.x; TypeScript runs natively, no compile step)
+* Node.js ≥ 22.18. Production hosts use the version in `.node-version` (24.22.3). TypeScript runs natively, no compile step.
 * Internet access to Delta Exchange India and (for the first dashboard build) npm
 
 ## Quick start
@@ -298,6 +298,16 @@ docs/        PROCESS.md (the scanner process, for the operator), API.md (contrac
 ops/         launchd plist + install scripts, pm2 config
 data/        runtime: vnedge.db, config.json, logs/, backups/   (ignored by version control)
 ```
+
+## Licenses
+
+There is no single license for this repository. That choice belongs to the owner.
+
+* The bot and dashboard sources are the project's own code. A copy of an MIT grant sits at `scripts/licenses/vnedge-MIT.txt` and does not by itself license the Pine library.
+* `scripts/pine/` holds third-party TradingView scripts. Many headers are CC BY-NC-SA, some are MPL, and some publish no license. Those files stay under the terms in their own headers.
+* `scripts/libraries/` holds imported Pine libraries under the licenses those libraries publish, commonly MPL.
+
+Do not treat a missing header as permission to reuse a script.
 
 ## Notes & limitations
 

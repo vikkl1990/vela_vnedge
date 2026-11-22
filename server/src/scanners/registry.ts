@@ -131,6 +131,8 @@ export class ScannerRegistry {
       try { patched = pineLibraries().pin(compatible); pineLibraries().resolver(patched); }
       catch (error) { status = 'incompatible'; reason = reason ?? `Pine dependencies: ${(error as Error).message}`; }
       if (!source.trim() || source.trim().length < 100) { status = 'unavailable'; reason = reason ?? 'source not published'; }
+      // Static audit findings remain advisory: timeframe/alias dependencies need a
+      // per-cell prefix check. Confirmed holds remain enforced by reviewedStatus.
       this.map.set(m.id, {
         id: m.id, name: m.name, author: m.author ?? 'WillyAlgoTrader', file: m.file, url: m.url, pub: m.pub ?? null, access: m.access ?? null,
         pineVersion: m.pineVersion ?? null, lines: m.lines ?? null, updated: m.updated ?? null,

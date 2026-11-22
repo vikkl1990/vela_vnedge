@@ -92,6 +92,8 @@ export class ApiServer {
   }
 
   private async dispatch(req: http.IncomingMessage, res: http.ServerResponse) {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Content-Security-Policy', "frame-ancestors 'none'");
     const url = new URL(req.url ?? '/', 'http://localhost');
     // The Prometheus alias goes through exactly the same session/role checks as the API.
     if (/^\/metrics\/?$/.test(url.pathname)) url.pathname = '/api/metrics';

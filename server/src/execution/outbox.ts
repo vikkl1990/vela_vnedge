@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto';
 import type { Db } from '../db.ts';
 
 export type CommandState = 'pending' | 'dispatching' | 'delivered' | 'cancelled' | 'blocked';
@@ -18,10 +17,15 @@ export class ExecutionOutbox {
   record(sourceOrderId: number, o: { positionId: number; symbol: string; side: string; qty: number; reason: string }): void {
     if (o.reason === 'funding' || !(o.qty > 0) || (o.side !== 'buy' && o.side !== 'sell')) return;
     if (!this.db.inTransaction) throw new Error('execution intent must share the paper fill transaction');
+    const existing = this.db.get<{ id: number }>('SELECT id FROM execution_commands WHERE source_order_id=? AND scope=?', sourceOrderId, this.scope);
+    if (existing) return;
     const at = this.now();
+    // Stable for this paper fill so a retry looks up the same exchange order instead of sending another.
+    const clientOrderId = `vnedge-so-${sourceOrderId}`;
+    if (clientOrderId.length > 32) throw new Error('client order id exceeds the exchange limit');
     this.db.run(`INSERT INTO execution_commands(source_order_id,scope,position_id,symbol,side,qty,reason,client_order_id,created_at,updated_at)
       VALUES (?,?,?,?,?,?,?,?,?,?)`,sourceOrderId,this.scope,o.positionId,o.symbol,o.side,o.qty,o.reason,
-      `vnedge-cmd-${randomUUID().replaceAll('-','').slice(0,20)}`,at,at);
+      clientOrderId,at,at);
   }
   pending(): ExecutionCommand[] {
     return this.db.all<any>("SELECT * FROM execution_commands WHERE scope=? AND state IN ('pending','dispatching') ORDER BY id",this.scope).map(command);

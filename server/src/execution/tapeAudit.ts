@@ -128,10 +128,11 @@ export class TapeAudit {
       }
       // decision 201: funding is a cash adjustment, not an order — nothing on the tape to compare it with
       if (o.reason === 'funding') return;
-      const report=engine.exitExecution?.state(o.positionId) && o.reason!=='entry' ? this.db.get<any>('SELECT i.id,i.trigger_at,i.ready_at,r.at FROM paper_exit_reports r JOIN paper_exit_intents i ON i.id=r.intent_id WHERE i.position_id=? AND r.at=? ORDER BY r.id DESC LIMIT 1',o.positionId,o.at) : undefined;
+      const executionState=engine.exitExecution?.state(o.positionId);
+      const report=executionState && o.reason!=='entry' ? this.db.get<any>('SELECT i.id,i.trigger_at,i.ready_at,r.at FROM paper_exit_reports r JOIN paper_exit_intents i ON i.id=r.intent_id WHERE i.position_id=? AND r.at=? ORDER BY r.id DESC LIMIT 1',o.positionId,o.at) : undefined;
       const kind = report ? `depth exit (${o.reason})` : o.reason === 'entry' ? 'market entry' : STOP_REASONS.has(o.reason) ? `stop (${o.reason})` : /^tp\d$/.test(o.reason) ? 'target' : `market exit (${o.reason})`;
       if (kind === 'target') return;   // a resting take-profit fills at its level or not at all; nothing to compare
-      this.open.push({ execution:report?{model:211,intentId:report.id,triggerAt:report.trigger_at,readyAt:report.ready_at,benchmark:'public prints after observed depth fill; not executable proof'}:undefined, book, fill: o, kind, level: o.price, riskUnit, tf: pos?.tf ?? '', due: o.at + AFTER_MS + 500, giveUpAt: o.at + GRACE_MS });
+      this.open.push({ execution:report?{model:executionState!.version,intentId:report.id,triggerAt:report.trigger_at,readyAt:report.ready_at,benchmark:'public prints after observed depth fill; not executable proof'}:undefined, book, fill: o, kind, level: o.price, riskUnit, tf: pos?.tf ?? '', due: o.at + AFTER_MS + 500, giveUpAt: o.at + GRACE_MS });
     } catch (e: any) { log.warn(`fill not audited: ${e?.message ?? e}`); }
   }
 

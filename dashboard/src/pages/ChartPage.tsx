@@ -5,15 +5,7 @@ import { useInfiniteQuery, useQueries } from '@tanstack/react-query'
 import { useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { api } from '../api/client'
-import {
-  qk,
-  useConfig,
-  useMarkets,
-  usePositionPath,
-  usePositions,
-  useScannerIndex,
-  useSignals,
-} from '../api/queries'
+import { qk, useConfig, useMarkets, usePositions, useScannerIndex, useSignals } from '../api/queries'
 import { ChartFrames, FramePicker } from '../chart/ChartFrames'
 import { activeChartKeys, retainChartRecord } from '../chart/activeRecords'
 import { CryptoComparison } from '../chart/CryptoComparison'
@@ -230,11 +222,7 @@ export function ChartPage() {
     return out
   }, [selectedIds, sources, scanners.data])
 
-  const path = usePositionPath(showPosition && position ? position.id : null)
-  const peakR = useMemo(() => {
-    const rows = path.data?.path ?? []
-    return rows.length ? Math.max(...rows.map((r) => r.r)) : null
-  }, [path.data])
+  const peakR = position?.peakR ?? null
 
   const positionLevels = useMemo(
     () => (showPosition && position ? positionOverlay(position, peakR) : null),
@@ -286,19 +274,26 @@ export function ChartPage() {
     ],
     [closedTrades.data],
   )
-  const shownLedgers = Object.values(ledgers).filter(
-    (l) =>
-      l.symbol === symbol &&
-      (view === 'frames' ? frames.includes(l.tf) : l.tf === tf) &&
-      !scriptErrors[l.id] &&
-      scripts.some((s) => s.id === l.id && scriptContextKey(s) === l.contextKey),
+  const shownLedgers = useMemo(
+    () =>
+      Object.values(ledgers).filter(
+        (l) =>
+          l.symbol === symbol &&
+          (view === 'frames' ? frames.includes(l.tf) : l.tf === tf) &&
+          !scriptErrors[l.id] &&
+          scripts.some((s) => s.id === l.id && scriptContextKey(s) === l.contextKey),
+      ),
+    [ledgers, symbol, view, frames, tf, scriptErrors, scripts],
   )
-  const marksFor = (frame: string) => [
-    ...decisionMarks((signals.data ?? []).filter((s) => allSignalFrames || s.tf === frame)),
-    ...(showClosed ? botTradeMarks(tradeRows.filter((r) => r.tf === frame)) : []),
-    ...(showAuthors ? authorTradeMarks(shownLedgers.filter((l) => l.tf === frame)) : []),
-  ]
-  const marks = marksFor(tf)
+  const marksByFrame = useMemo(() => {
+    const build = (frame: string) => [
+      ...decisionMarks((signals.data ?? []).filter((s) => allSignalFrames || s.tf === frame)),
+      ...(showClosed ? botTradeMarks(tradeRows.filter((r) => r.tf === frame)) : []),
+      ...(showAuthors ? authorTradeMarks(shownLedgers.filter((l) => l.tf === frame)) : []),
+    ]
+    return Object.fromEntries([...new Set([tf, ...frames])].map((frame) => [frame, build(frame)]))
+  }, [signals.data, allSignalFrames, showClosed, tradeRows, showAuthors, shownLedgers, frames, tf])
+  const marks = marksByFrame[tf] ?? []
 
   const positionBadge =
     showPosition && position ? (
@@ -626,13 +621,17 @@ export function ChartPage() {
         )}
       </Section>
       {positionBadge}
+      <p className="muted small">
+        Scanner plots are a browser preview of the Pine script in this tab. Marks, fills and position lines
+        come from the bot journal.
+      </p>
       <div className={`chart-layout ${view === 'frames' ? 'chart-layout-frames' : ''}`}>
         <div className="chart-main" style={{ position: 'relative' }}>
           {symbol && view === 'frames' ? (
             <ChartFrames
               key={symbol}
               onScriptRun={recordRun}
-              marksByFrame={Object.fromEntries(frames.map((frame) => [frame, marksFor(frame)]))}
+              marksByFrame={marksByFrame}
               onSignalCheck={recordSignalCheck}
               captureLedger={showAuthors}
               onAuthorLedger={recordLedger}

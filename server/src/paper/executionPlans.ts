@@ -12,7 +12,7 @@ import { createHash } from 'node:crypto';
 import type { AppConfig, PaperConfig, ExitMode, ScannerConfig } from '../config.ts';
 import {readerContractError,labelStyleContractError} from '../scanners/readerFixes.ts';
 import {willyNativeReady} from '../scanners/willyContracts.ts';
-import {CAUSAL_EXIT_VERSION} from './exitExecution.ts';
+import {CAUSAL_CANDLE_VERSION} from './exitExecution.ts';
 import {scannerEntryConfig} from './entryProtection.ts';
 import {protectEntry} from './entryProtection.ts';
 import type { Bar } from '../data/candleStore.ts';
@@ -127,7 +127,7 @@ export function planSnapshot(cfg: AppConfig, p: ExecutionPlan, sourceHash: strin
     floorAtR:p.trailing.floorAtR,floorKeepR:p.trailing.floorKeepR,trailAtrMult:0,trailDistanceR:0,trailSteps:[],trailStall:undefined});
   if(p.profitFloor)Object.assign(paper,{floorAtR:p.profitFloor.afterR,floorKeepR:p.profitFloor.keepR});
   if(p.maxStopLossPct!==undefined)paper.maxStopLossPct=paper.maxStopLossPct>0?Math.min(paper.maxStopLossPct,p.maxStopLossPct):p.maxStopLossPct;
-  const result = {...lifecycleIdentity(paper),...(p.profitFloor?{profitFloor:structuredClone(p.profitFloor)}:{}),...(p.failedTradeExit?{failedTradeExit:p.failedTradeExit}:{}),...(p.exitPolicy?{exitPolicy:p.exitPolicy}:{}),...(p.basket?{basket:p.basket,basketAccountingVersion:BASKET_ACCOUNTING_VERSION as 2}:{}),id:p.id,revision:p.revision,executionVersion:CAUSAL_EXIT_VERSION,sourceHash,reading:sc?structuredClone(sc):null,sourceScannerId:p.scannerId,variant:p.variant,symbol:p.symbol,tf:p.tf,
+  const result = {...lifecycleIdentity(paper),...(p.profitFloor?{profitFloor:structuredClone(p.profitFloor)}:{}),...(p.failedTradeExit?{failedTradeExit:p.failedTradeExit}:{}),...(p.exitPolicy?{exitPolicy:p.exitPolicy}:{}),...(p.basket?{basket:p.basket,basketAccountingVersion:BASKET_ACCOUNTING_VERSION as 2}:{}),id:p.id,revision:p.revision,executionVersion:CAUSAL_CANDLE_VERSION,sourceHash,reading:sc?structuredClone(sc):null,sourceScannerId:p.scannerId,variant:p.variant,symbol:p.symbol,tf:p.tf,
     paper,exitMode,requireAtrStop:Boolean(paper.skipScriptStops),referenceEquity:p.referenceEquity,maxHoldMinutes:p.maxHoldMinutes,
     ...(p.takeProfit?{takeProfit:structuredClone(p.takeProfit)}:{}),...(p.label?{label:p.label}:{}),
     ...(p.comparison?{comparison:structuredClone(p.comparison)}:{})};

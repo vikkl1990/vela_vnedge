@@ -63,8 +63,25 @@ test('native levels update only on actual changes, never on ticks or viewport mo
   assert.deepEqual(output.at(-1)?.priceLines, [])
   overlay.stop()
   overlay.start(context('delta:ETHUSD', false), inputs)
-  assert.deepEqual(output.at(-1)?.priceLines, [])
+  assert.deepEqual(output.at(-1)?.priceLines, [], 'replay with no cursor hides the live stop')
+  overlay.stop()
+  const replayed = { ...position, entryAt: 1_000 }
+  overlay.start(
+    { ...context('delta:ETHUSD', false), bars: () => [{ time: 1_000 }] } as NativeIndicatorContext,
+    { levels: JSON.stringify(positionOverlay(replayed)) },
+  )
+  assert.equal(
+    output.at(-1)?.priceLines?.some((l) => l.title === 'entry'),
+    false,
+    'replay after the fill must not reveal the latest stop, targets or peak',
+  )
+  overlay.stop()
+  overlay.start(
+    { ...context('delta:ETHUSD', false), bars: () => [{ time: 500 }] } as NativeIndicatorContext,
+    { levels: JSON.stringify(positionOverlay(replayed)) },
+  )
+  assert.deepEqual(output.at(-1)?.priceLines, [], 'replay before the fill hides the position')
   overlay.stop()
   overlay.resume()
-  assert.equal(output.length, 4)
+  assert.equal(output.length, 6)
 })

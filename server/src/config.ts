@@ -654,7 +654,7 @@ export const DEFAULT_CONFIG: AppConfig = {
     mirror: { enabled: false, minTrades: 5, minNetR: 0, minTurnoverUsd: 2_000_000 },
     maxContractRiskShare: 0.5,
   },
-  autoTune: { enabled: true, minTrades: 3, minProfitFactor: 1, intervalHours: 6, oos: { enabled: false, minTrades: 10, minProfitFactor: 1.1, minPositiveWeeks: 2 }, tuneTimeframes: false },
+  autoTune: { enabled: false, minTrades: 30, minProfitFactor: 1.2, intervalHours: 6, oos: { enabled: false, minTrades: 10, minProfitFactor: 1.1, minPositiveWeeks: 2 }, tuneTimeframes: false },
   timeframes: ['15m'],
   historyBars: 1000,
   paper: {

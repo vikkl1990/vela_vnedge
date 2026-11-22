@@ -26,7 +26,7 @@ export function additionalReadinessCompatibility(previous:TradePolicy,current:Tr
     if(stablePolicy(old)===stablePolicy(now))return 'scope';
     // Only removal of the capital-drawdown schedule is replayable here. This is
     // not permission to ignore changed risk settings or to reweight old profits.
-    if(current.sim!==211||previous.sim!==211||!a.risk.enabled||a.risk.ddFrom==='peak'||!a.risk.ddScale.length||b.risk.ddScale.length)return null;
+    if(current.sim!==previous.sim||![211,212].includes(current.sim)||!a.risk.enabled||a.risk.ddFrom==='peak'||!a.risk.ddScale.length||b.risk.ddScale.length)return null;
     if(a.risk.ddScale.some(r=>!Number.isFinite(r.ddPct)||r.ddPct<0||r.ddPct>100||!Number.isFinite(r.leverageMult)||r.leverageMult<=0||r.leverageMult>1))return null;
     old.risk.ddScale=[];
     return stablePolicy(old)===stablePolicy(now)?'sizing-proof':null;

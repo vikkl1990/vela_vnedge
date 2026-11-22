@@ -3,7 +3,7 @@ import { api } from '../api/client'
 import type { Candle, Market } from '../api/types'
 import { tfMs, velaToDeltaTf } from '../lib/timeframes'
 import { sseBus } from '../sse/bus'
-import { CandleStream } from './candleStream'
+import { CandleBackfill } from './candleBackfill'
 
 /**
  * Vela `DataProvider` backed by the VNEdge server:
@@ -120,14 +120,35 @@ export const deltaProvider: DataProvider = {
 
   subscribe(ticker, timeframe, onBar) {
     const tf = velaToDeltaTf(timeframe)
-    const stream = new CandleStream(tfMs(tf), onBar)
+    const interval = tfMs(tf)
+    let stopped = false
+    const stream = new CandleBackfill(
+      interval,
+      onBar,
+      (from, to, limit, signal) => api.candles({ symbol: ticker, tf, from, to, limit }, signal),
+      (error) => console.warn('[delta-provider] candle gap could not be recovered', error),
+    )
+    const take = (bar: Candle, closed: boolean) => stream.candle(bar, closed)
+    void api
+      .candles({ symbol: ticker, tf, limit: 2 })
+      .then((rows) => {
+        if (stopped || !Array.isArray(rows) || !rows.length) return
+        const latest = rows[rows.length - 1]
+        const bucket = interval > 0 ? Math.floor(Date.now() / interval) * interval : latest.time
+        take(latest, latest.time < bucket)
+      })
+      .catch(() => {
+        /* live events still start the stream */
+      })
     const offCandle = sseBus.on('candle', (e) => {
-      if (e.symbol === ticker && e.tf === tf && e.bar) stream.candle(e.bar, e.closed)
+      if (e.symbol === ticker && e.tf === tf && e.bar) take(e.bar, e.closed)
     })
     const offTick = sseBus.on('tick', (t) => {
       if (t.symbol === ticker) stream.tick(t.price, t.time)
     })
     return () => {
+      stopped = true
+      stream.stop()
       offCandle()
       offTick()
     }

@@ -8,7 +8,7 @@ const near=(a:number,b:number)=>Number.isFinite(a)&&Number.isFinite(b)&&Math.abs
 const positive=(n:number)=>Number.isFinite(n)&&n>0;
 export type SizingProof={ok:true;equity:number;qty:number;risk:number}|{ok:false;reason:'different-size'|'missing-sizing-proof'};
 
-/** Replay-only exception for version 211, ordinary full-quantity depth-priced
+/** Replay-only exception within the same version (211 or 212), ordinary full-quantity depth-priced
  * market entries. No candle, missing book, partial entry, basket, estimated equity,
  * reconstructed fee or hypothetical larger fill may qualify through this path. */
 export function proveSameReadinessSize(db:Db,positionId:number,previous:TradePolicy,current:TradePolicy):SizingProof {
@@ -18,7 +18,7 @@ export function proveSameReadinessSize(db:Db,positionId:number,previous:TradePol
     if(additionalReadinessCompatibility(previous,current)!=='sizing-proof')return missing;
     const r=db.get<any>('SELECT * FROM positions WHERE id=?',positionId);
     if(!r||r.bt!==0||r.evidence_scope!=='account'||r.status!=='closed'||r.policy_id!==previous.id||r.scanner_id!==previous.scannerId||r.symbol!==previous.symbol||r.tf!==previous.tf||r.policy_adopted_at!=null||r.entry_at>r.exit_at||!positive(r.risk_amount))return missing;
-    if(previous.sim!==211||current.sim!==211||previous.sizing.sizingMode!=='margin'||current.sizing.sizingMode!=='margin'||(previous.paper.depthUsdPerBp??0)!==0||(previous.sizing.depthUsdPerBp??0)!==0)return missing;
+    if(previous.sim!==current.sim||![211,212].includes(current.sim)||previous.sizing.sizingMode!=='margin'||current.sizing.sizingMode!=='margin'||(previous.paper.depthUsdPerBp??0)!==0||(previous.sizing.depthUsdPerBp??0)!==0)return missing;
     const meta=JSON.parse(r.fills),fills=meta.fills as Fill[],entries=fills.filter(f=>f.reason==='entry');
     if(meta.basket||meta.executionPlan||entries.length!==1||!Number.isSafeInteger(r.qty)||r.qty<=0||!positive(meta.leverage)||!positive(meta.marginLeverage)||!positive(r.sl_original))return missing;
     const entry=entries[0];

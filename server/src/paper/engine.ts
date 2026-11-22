@@ -8,7 +8,7 @@ import {isExecutableTrade} from '../execution/tradeFreshness.ts';
 import {quoteMakerCell,passiveMakerPrice,tradedVolume,makerTapeCell,freshMakerPrint} from './makerPricing.ts';
 import {SOL_MAKER_FILTER_OFF,solMakerRiskSource} from '../scanners/solMakerExperiment.ts';
 import {qualifiedEvidence,evidenceCoverage} from '../evidence/trades.ts';
-import {PaperExitExecution,CAUSAL_EXIT_VERSION,type ExitBook} from './exitExecution.ts';
+import {PaperExitExecution,CAUSAL_EXIT_VERSION,CAUSAL_CANDLE_VERSION,type ExitBook} from './exitExecution.ts';
 import {recordGatedSignal,type GateStage} from '../evidence/gatedSignals.ts';
 import { transientTradingBlock } from '../delta/tradingStatus.ts';
 import type { ExecutionPlanSnapshot } from './executionPlans.ts';
@@ -34,7 +34,7 @@ import type { Side, ExitType, ScanEvent } from '../scanners/extractor.ts';
 import { logger } from '../log.ts';
 import { configFingerprint, sourceHash } from './fingerprint.ts';
 import {
-  feeFor, slip, roundTick, giveBackPct, type Position, type Fill, type PriceBar, type LevelResult, applyLiveBar, openR, reversalAllowed, applyScriptExit, applyTrade, applyMark, applyFunding, checkRiskVsFees, trendExit, computeStats, fillExit, openPosition, resolveLevels, sizeContracts, recordLeverage, unrealized, notionalOf, rMultiple, type TradeStats, exitConfigFor, earlyStallExit, earlyCutExit, staleExit, splitLegs, liquidationPrice, pnlOf, modelTrail } from './logic.ts';
+  feeFor, slip, roundTick, giveBackPct, type Position, type Fill, type PriceBar, type LevelResult, applyLiveBar, openR, reversalAllowed, applyScriptExit, applyTrade, applyMark, applyFunding, checkRiskVsFees, trendExit, computeStats, fillExit, openPosition, resolveLevels, sizeContracts, recordLeverage, unrealized, notionalOf, rMultiple, type TradeStats, exitConfigFor, earlyStallExit, earlyCutExit, staleExit, splitLegs, liquidationPrice, pnlOf, modelTrail, trailStop, stopMarketReference, stopReason } from './logic.ts';
 import type { StructureLevel } from './luxExits.ts';
 import { classOf, matchesClass } from '../markets/classes.ts';
 
@@ -112,6 +112,12 @@ export interface PendingEntry {
  * `position` ({type, position}), `trade` (closed position), `order` (fill) and `stats`.
  */
 export class PaperEngine extends EventEmitter {
+  /**
+   * `simulated` keeps fills inside this book. `mirrored` means an exchange executor is
+   * attached and will copy fills out; wick handling then stays on the candle path.
+   * The executor sets this together with `executionIntent`.
+   */
+  fillMode: 'simulated' | 'mirrored' = 'simulated';
   /** Synchronous durable execution sink, called inside the fill transaction. */
   executionIntent?: (orderId: number, order: ReturnType<typeof orderOf>) => void;
   /** Wired only in production-feed paper mode; old bound policies retain their execution model. */
@@ -450,7 +456,8 @@ export class PaperEngine extends EventEmitter {
       exitPending:!!this.exitExecution.active(p.id)};
   }
   private partial(p:Position){return this.causal(p) && (p.executionPlan?.partialExitVersion===1 || p.legs.filter(q=>q>0).length>1);}
-  private causal(p:Position){return this.causalExits&&!this.executionIntent&&this.cfgRef().execution.mode==='paper'&&(p.executionPlan?.executionVersion??p.policy?.sim??0)>=CAUSAL_EXIT_VERSION;}
+  private mirrored(): boolean { return this.fillMode === 'mirrored' || Boolean(this.executionIntent); }
+  private causal(p:Position){return this.causalExits&&!this.mirrored()&&this.cfgRef().execution.mode==='paper'&&(p.executionPlan?.executionVersion??p.policy?.sim??0)>=CAUSAL_EXIT_VERSION;}
   pendingExits(){return this.exitExecution.pending().filter(i=>{const p=this.open.get(i.position_id);return !!p&&this.causal(p);});}
   /** Reports and position accounting share one transaction and rollback checkpoint. */
   settleExits(symbol:string,book:ExitBook|null,at=this.now()):number {
@@ -1063,7 +1070,8 @@ export class PaperEngine extends EventEmitter {
     // Excursions before a cost-basis change cannot be reinterpreted under the new risk distance.
     held.peakR=0;held.worstR=0;held.peakAt=fill.at;held.worstAt=fill.at;this.peakSeen.set(held.id,0);
     this.db.run("DELETE FROM positions WHERE id=? AND status='pending' AND bt=2",leg.id);
-    this.db.run('UPDATE paper_execution_positions SET market_qty=?,desired_stop=NULL,ack_at=NULL WHERE position_id=? AND book=2',qty,held.id);
+    this.db.run('UPDATE paper_execution_positions SET market_qty=?,desired_stop=NULL,ack_at=NULL,queued_stop=NULL,queued_ack_at=NULL,stop_active_at=? WHERE position_id=? AND book=2',qty,fill.at,held.id);
+    this.db.run('INSERT OR REPLACE INTO paper_stop_amendments VALUES(?,?,?)',held.id,fill.at,sl);
     this.persistFill(held,fill,context);this.recordBasketEntry(held,fill,context);this.persist(held);
     recordFillBudget(this.db,held,this.book,cfg,'basket-add');
     this.emit('order',orderOf(held,fill));this.emit('position',{type:'updated',position:held});
@@ -1550,6 +1558,57 @@ export class PaperEngine extends EventEmitter {
   }
 
   /**
+   * Candle fallback for a minute that opened at or after the fill. Stop-first, including a gap
+   * through the open. Take-profit wicks are not filled (a close is not a print through a limit).
+   * The favourable extreme only ratchets the trail.
+   */
+  private causalCandle(p: Position, bar: PriceBar, at: number): void {
+    const run = () => {
+      if (this.exitExecution.active(p.id)) { this.causalPrice(p, bar.close, at); return; }
+      const ack = this.exitExecution.acknowledge(p, at);
+      const activeStop = p.sl;
+      const offBefore = p.trailOff;
+      const cfg = this.configFor(p);
+      const atr = (cfg.trailAtrMult ?? 0) > 0 ? this.atrFor?.(p.symbol, p.tf) : undefined;
+      const long = p.side === 'long';
+      const anchor = bar.open !== undefined && Number.isFinite(bar.open) && bar.open > 0 ? bar.open : bar.close;
+      // Adverse extreme plus the close, so a target beyond the close cannot fill from the wick.
+      const stopBar: PriceBar = {
+        time: at, open: bar.open, close: bar.close,
+        high: long ? Math.max(anchor, bar.close) : bar.high,
+        low: long ? bar.low : Math.min(anchor, bar.close),
+      };
+      // Ratchets can only tighten. The stop active at minute-open was protective
+      // throughout its range; later amendments are judged against the close below.
+      const stopLevel = this.exitExecution.stopAt(p.id, bar.time);
+      const stopHit = stopLevel !== null && (long ? stopBar.low <= stopLevel : stopBar.high >= stopLevel);
+      if (stopHit && stopLevel !== null) {
+        // A candle is not a print through a resting limit, so a target wick is not a fill.
+        this.requestExit(p, stopReason({...p, sl:stopLevel}), p.qtyOpen, stopMarketReference(p.side, stopLevel, stopBar.open), at);
+        if (ack) this.persist(p);
+        return;
+      }
+      const trail = structuredClone(p);
+      trailStop(trail, long ? bar.high : bar.low, cfg, atr, at);
+      p.peakR = trail.peakR; p.peakAt = trail.peakAt;
+      p.trailOff = trail.trailOff; p.trailArmedAt = trail.trailArmedAt;
+      p.trailPeakR = trail.trailPeakR; p.trailPeakAt = trail.trailPeakAt;
+      const desired = trail.sl;
+      p.sl = activeStop;
+      if (p.breakEven && activeStop !== p.entryPrice) p.breakEven = false;
+      this.exitExecution.amend(p, desired, at, cfg.latencyMs);
+      if (ack || desired !== activeStop || p.trailOff !== offBefore) this.persist(p);
+      this.recordPath(p, bar.close, at, ack ? 'stop acknowledged' : desired !== activeStop ? 'stop requested' : undefined);
+      // Keep liquidation and all close/time-based protections on the same path as fresh ticks.
+      // qty=0 cannot manufacture resting target fills or activate tick-only research rules.
+      this.causalPrice(p, bar.close, at);
+    };
+    if (this.decisionActive) run();
+    else try { this.commitDecision(run, p); }
+    catch (e) { log.error(`paper candle #${p.id} rolled back: ${String(e)}`); }
+  }
+
+  /**
    * Feed a 1m candle for a symbol. In `candles` mode (legacy) it drives every fill; in `tape` mode it
    * only takes over while the tape has been silent for more than `tapeFallbackMs`, otherwise it just
    * refreshes each position's candle baseline so a later fallback sees only new movement.
@@ -1603,7 +1662,14 @@ export class PaperEngine extends EventEmitter {
       if (pos.symbol !== symbol) continue;
       if(this.causal(pos)){
         // Recovery candles cannot submit a past client order or retrospectively move a stop.
-        if(!historical&&observedAt>=pos.entryAt&&!this.tapeActive(symbol,observedAt))this.causalPrice(pos,bar.close,observedAt);
+        if(!historical&&observedAt>=pos.entryAt&&!this.tapeActive(symbol,observedAt)){
+          // The entry minute's low may have printed before the fill. Later minutes are entirely
+          // after entry: a wick through the stop must fill, and the favourable extreme must trail.
+          const lastEntryAt = pos.fills.reduce((at,f)=>f.reason==='entry'?Math.max(at,f.at):at,pos.entryAt);
+          const entryMinute = Math.floor(lastEntryAt / 60_000) * 60_000;
+          if ((pos.executionPlan?.executionVersion ?? pos.policy?.sim ?? 0) >= CAUSAL_CANDLE_VERSION && bar.time > entryMinute) this.causalCandle(pos, bar, observedAt);
+          else this.causalPrice(pos, bar.close, observedAt);
+        }
         const st=this.configFor(pos).structureTrail;
         if(!historical&&pos.status==='open'&&!this.exitExecution.active(pos.id)&&st?.enabled&&st.books.includes(this.book===0?'account':'shadow')){
           const level=this.structureFor?.(pos.symbol,pos.tf);if(level){const probe=structuredClone(pos);modelTrail(probe,bar,{level});this.exitExecution.amend(pos,probe.sl,observedAt,this.configFor(pos).latencyMs);}
@@ -1625,7 +1691,12 @@ export class PaperEngine extends EventEmitter {
         if (level) modelTrail(pos, bar, { level });
       }
       for (const f of fills) this.recordPath(pos, f.price, eventAt, f.reason, `${f.qty} at ${f.price}`);
-      if (pos.sl !== slBefore && pos.status === 'open') this.recordPath(pos, bar.close, eventAt, 'stop moved', `${slBefore} → ${pos.sl}`);
+      if (pos.sl !== slBefore && pos.status === 'open') {
+        this.recordPath(pos, bar.close, eventAt, 'stop moved', `${slBefore} → ${pos.sl}`);
+        this.persist(pos);
+        // The exchange mirror edits its resting stop from this event. Do not wait for the sweep.
+        this.emit('position', { type: 'updated', position: pos });
+      }
       if (pos.status === 'open') this.recordPath(pos, bar.close, eventAt);
       if (pos.status === 'open' && !historical) {
         const sf = earlyStallExit(pos, bar.close, eventAt, pcfg);
