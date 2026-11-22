@@ -1,6 +1,6 @@
 import { memo, useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { useClosePosition, useExecution, useMarkets, usePaperFleet, usePositionsHealth } from '../api/queries'
+import { useClosePosition, useExecution, useMarkets, usePositionsHealth } from '../api/queries'
 import type { Position } from '../api/types'
 import { useAuth } from '../auth/AuthGate'
 import { fmtAge, fmtInt, fmtMoney, fmtPrice, fmtR } from '../lib/format'
@@ -13,7 +13,6 @@ import { DataTable, type Column } from './DataTable'
 import { ConfirmDialog, Pnl, SidePill, StatusDot, Time } from './kit'
 import { TradePath } from './TradePath'
 import { SourceTag } from './SourceTag'
-import { ownCellSet, sourceOfCell } from '../lib/fleet'
 import { ActiveStop, CloseNow } from './PositionHealth'
 import { healthMatches, quoteFresh } from '../lib/positionHealth'
 
@@ -126,9 +125,6 @@ function PositionTargets({ p, tick }: { p: Position; tick?: number }) {
 
 export function PositionsTable({ positions, compact = false }: { positions: Position[]; compact?: boolean }) {
   const health = usePositionsHealth(positions.length > 0)
-  const fleet = usePaperFleet()
-  const own = useMemo(() => ownCellSet(fleet.data), [fleet.data])
-  const copyScale = fleet.data?.copy.sizeScale
   const [clock, setClock] = useState(() => performance.now())
   useEffect(() => {
     if (!positions.length) return
@@ -197,7 +193,7 @@ export function PositionsTable({ positions, compact = false }: { positions: Posi
                 <Link to={`/scanners/${p.scannerId}`} className="link">
                   {p.scannerName}
                 </Link>{' '}
-                <SourceTag source={sourceOfCell(own, p.scannerId, p.symbol, p.tf)} scale={copyScale} />
+                <SourceTag source={p.fleetSource} scale={p.entrySizeScale} />
                 {compact && (
                   <div>
                     {fmtInt(p.qtyOpen)}/{fmtInt(p.qty)} contracts ·{' '}
@@ -413,20 +409,7 @@ export function PositionsTable({ positions, compact = false }: { positions: Posi
         ),
       },
     ]
-  }, [
-    markets,
-    compact,
-    dense,
-    narrow,
-    pending,
-    anyRealized,
-    healthById,
-    health.data,
-    health.isError,
-    clock,
-    own,
-    copyScale,
-  ])
+  }, [markets, compact, dense, narrow, pending, anyRealized, healthById, health.data, health.isError, clock])
 
   return (
     <div className="position-layout">
@@ -453,7 +436,7 @@ export function PositionsTable({ positions, compact = false }: { positions: Posi
               <Link className="link" to={`/scanners/${p.scannerId}`}>
                 {p.scannerName}
               </Link>{' '}
-              <SourceTag source={sourceOfCell(own, p.scannerId, p.symbol, p.tf)} scale={copyScale} />
+              <SourceTag source={p.fleetSource} scale={p.entrySizeScale} />
               <ExecutionState p={p} />
               <dl className="position-metrics">
                 <div>

@@ -1,13 +1,12 @@
 import { useEffect, useRef } from 'react'
 import { Link } from 'react-router-dom'
-import { useJournalDetail, usePaperFleet } from '../api/queries'
+import { useJournalDetail } from '../api/queries'
 import { fmtR, fmtRecordedMoney as money, fmtRecordedPrice as price } from '../lib/format'
 import { Callout, Pill, Pnl, QueryState, Section, Time } from './kit'
 import { SourceTag } from './SourceTag'
 
 export function JournalDetailPanel({ book, id, onClose }: { book: string; id: number; onClose: () => void }) {
   const q = useJournalDetail(book, id)
-  const copyScale = usePaperFleet().data?.copy.sizeScale
   const ref = useRef<HTMLElement>(null)
   useEffect(() => {
     ref.current?.scrollIntoView({ block: 'start' })
@@ -40,7 +39,7 @@ export function JournalDetailPanel({ book, id, onClose }: { book: string; id: nu
                     {r.symbol} · {r.tf} · {r.side ?? 'Direction unknown'}
                   </b>{' '}
                   <Pill>{r.status}</Pill> {r.archived && <Pill tone="warn">Before account reset</Pill>}{' '}
-                  <SourceTag source={r.fleetSource} scale={copyScale} />{' '}
+                  <SourceTag source={r.fleetSource} scale={r.entrySizeScale} />{' '}
                   <Link to={`/scanners/${encodeURIComponent(r.scannerId)}`}>{r.scannerName}</Link>
                 </p>
                 {r.missingPosition && (

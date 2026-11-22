@@ -467,7 +467,7 @@ test('the paper fleet route needs a session and reports the own list and the ent
   assert.equal(r.status, 200);
   assert.equal(typeof r.body.own.pairs, 'number');
   assert.equal(r.body.window.days, 14);
-  assert.equal(r.body.window.entries.total, r.body.window.entries.own + r.body.window.entries.copy);
+  assert.equal(r.body.window.entries.total, r.body.window.entries.own + r.body.window.entries.copy + r.body.window.entries.unknown);
   assert.ok(Array.isArray(r.body.ownCells) && Array.isArray(r.body.idle));
   assert.equal(typeof r.body.copy.enabled, 'boolean');
   const journal = await getJson('/api/journal?list=own');

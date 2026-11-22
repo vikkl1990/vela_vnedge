@@ -35,6 +35,7 @@ export interface JournalRow {
   evidenceScope: string
   /** Decision 323. Null for shadow, research plans and journals that cannot tell. */
   fleetSource?: import('./paperFleet').FleetSource | null
+  entrySizeScale?: number | null
   entryAt: number | null
   exitAt: number | null
   eventAt: number | null

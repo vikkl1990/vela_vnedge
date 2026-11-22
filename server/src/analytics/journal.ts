@@ -1,7 +1,7 @@
 import type { Db } from '../db.ts';
 import { fundingOf, validatePerformanceFilter, type PerformanceFilter } from './performance.ts';
 import { classClause, classOf, matchesClass } from '../markets/classes.ts';
-import { sourceOf, type TradeSource } from './paperFleet.ts';
+import { entryOrigin, entryOriginSql, type TradeSource } from './paperFleet.ts';
 
 export type JournalBook = 'paper' | 'shadow';
 export type JournalFilter = PerformanceFilter & { list: 'all' | TradeSource; book: JournalBook; status: string; scope: string; history: string; dateBy: 'entry' | 'exit'; offset: number; limit: number; sort: string };
@@ -16,7 +16,7 @@ export function journalFilter(p: URLSearchParams): JournalFilter {
   const sort = p.get('sort') ?? 'newest';
   const history = p.get('history') ?? 'current';
   const list = p.get('list') ?? 'all';
-  if (!['all', 'own', 'copy'].includes(list)) throw new JournalError('Choose all, own or copy.');
+  if (!['all', 'own', 'copy', 'unknown'].includes(list)) throw new JournalError('Choose all, own, copy or unknown.');
   if (list !== 'all' && book !== 'paper') throw new JournalError('Own list and copy apply to the paper account only.');
   if (!['current','archived','all'].includes(history)) throw new JournalError('Invalid journal history.');
   if (!['paper', 'shadow'].includes(book)) throw new JournalError('Choose paper or shadow.');
@@ -58,16 +58,16 @@ export function journalRow(r: Raw) {
     pending: pending ? { price: finite(pending.limit?.price), expiresAt: finite(pending.limit?.expiresAt), dueAt: finite(pending.dueAt) } : null,
     missingPosition: !!r.missing_position,
     /** Decision 323: whether the account's own list or a shadow copy produced the trade. Set by the journal; null for shadow and plans. */
-    fleetSource: null as TradeSource | null,
+    fleetSource: [0,-1].includes(r.bt) && !r.scanner_id.startsWith('plan:') && !r.missing_position ? entryOrigin(r.fills,r.origin_receipt).fleetSource : null as TradeSource | null,
+    entrySizeScale: [0,-1].includes(r.bt) && !r.scanner_id.startsWith('plan:') ? entryOrigin(r.fills,r.origin_receipt).entrySizeScale : null,
   };
 }
 export type JournalRow = ReturnType<typeof journalRow>;
 
 /** Read model only. Never mutates either engine or joins the observer's real account ledger. */
 export class Journal {
-  constructor(privateDb: Db, ownCells?: () => ReadonlySet<string>) { this.db = privateDb; this.ownCells = ownCells; }
+  constructor(privateDb: Db) { this.db = privateDb; }
   private db: Db;
-  private ownCells?: () => ReadonlySet<string>;
 
   private records(f: JournalFilter, id?: number): JournalRow[] {
     const book = f.book === 'paper' ? 0 : 2;
@@ -84,7 +84,7 @@ export class Journal {
     if (f.scope === 'plans') where.push("p.scanner_id LIKE 'plan:%'");
     if (f.scope === 'evidence') where.push("p.scanner_id NOT LIKE 'plan:%' AND (p.bt IN (0,-1) OR p.evidence_scope IN ('shadow','legacy-shadow'))");
     if (f.scope === 'watch') where.push("p.scanner_id NOT LIKE 'plan:%' AND p.bt IN (2,-3) AND p.evidence_scope IN ('tracker','legacy-tracker')");
-    const rows = this.db.all<Raw>(`SELECT p.*,
+    const rows = this.db.all<Raw>(`SELECT p.*, ${entryOriginSql} origin_receipt,
       (SELECT t.source_hash FROM trade_policies t WHERE t.id=p.policy_id) policy_source_hash,
       EXISTS(SELECT 1 FROM execution_accounting a WHERE a.position_id=p.id AND a.state!='complete') accounting_pending,
       (SELECT o.price_source FROM orders o WHERE o.position_id=p.id AND o.bt=p.bt AND o.reason='entry' ORDER BY o.at,o.id LIMIT 1) fill_source
@@ -107,11 +107,7 @@ export class Journal {
           symbol: d.symbol, tf: d.tf, side: null, exit_at: d.at, exit_reason: d.reason, signal_id: d.signal_id, missing_position: true }));
       }
     }
-    if (f.book === 'paper' && this.ownCells) {
-      const own = this.ownCells();
-      for (const r of rows) if (!r.scannerId.startsWith('plan:') && !r.missingPosition) r.fleetSource = sourceOf(own, r.scannerId, r.symbol, r.tf);
-      if (f.list !== 'all') { const keep = rows.filter(r => r.fleetSource === f.list); rows.length = 0; rows.push(...keep); }
-    }
+    if (f.list !== 'all') { const keep = rows.filter(r => r.fleetSource === f.list); rows.length = 0; rows.push(...keep); }
     const timeOf = (r: JournalRow) => f.dateBy === 'entry' ? r.entryAt : r.eventAt;
     return rows.sort((a, b) => {
       const av = ['worst', 'best'].includes(f.sort) ? a.net : timeOf(a), bv = ['worst', 'best'].includes(f.sort) ? b.net : timeOf(b);

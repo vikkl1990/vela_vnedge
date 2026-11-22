@@ -4,23 +4,6 @@ import type { FleetSource, PaperFleet } from '../api/paperFleet'
 export const OWN_LABEL = 'Own list'
 export const COPY_LABEL = 'Copy'
 
-export const cellKey = (scannerId: string, symbol: string, tf: string) => `${scannerId}|${symbol}|${tf}`
-
-export function ownCellSet(fleet: Pick<PaperFleet, 'ownCells'> | undefined): ReadonlySet<string> | null {
-  return fleet ? new Set(fleet.ownCells.map((c) => cellKey(c.scannerId, c.symbol, c.tf))) : null
-}
-
-/** Null while the allocation is unknown, so a row is never guessed to be a copy. */
-export function sourceOfCell(
-  own: ReadonlySet<string> | null,
-  scannerId: string,
-  symbol: string,
-  tf: string,
-): FleetSource | null {
-  if (!own) return null
-  return own.has(cellKey(scannerId, symbol, tf)) ? 'own' : 'copy'
-}
-
 const FRACTIONS: Array<[number, string]> = [
   [1 / 2, '½'],
   [1 / 3, '⅓'],
@@ -37,16 +20,19 @@ export function sizeLabel(scale: number | null | undefined): string {
 }
 
 export function sourceLabel(source: FleetSource, scale?: number | null): string {
+  if (source === 'unknown') return 'Origin unknown'
   if (source === 'own') return OWN_LABEL
   const size = sizeLabel(scale)
   return size ? `${COPY_LABEL} ${size}` : COPY_LABEL
 }
 
 export function sourceTitle(source: FleetSource, scale?: number | null): string {
+  if (source === 'unknown')
+    return 'Entry origin was not retained. Current allocations cannot establish historical origin.'
   if (source === 'own')
-    return 'On the account’s own list: a scanner allocated to this market and timeframe, traded at full size.'
+    return 'Recorded at admission as an entry from the account’s own scanner list. Actual size remains subject to sizing and risk checks.'
   const size = sizeLabel(scale)
-  return `A copy: this cell is not on the own list. The account took a shadow cell’s signal${size ? ` at ${size} of normal size` : ''}, under the account’s own gates.`
+  return `Recorded at admission as a copied shadow signal${size ? ` with ${size} of the requested base size` : ''}, under the account’s own gates.`
 }
 
 /** The rule a shadow cell must meet before the account copies it, in words. */
@@ -56,8 +42,8 @@ export function copyRuleText(copy: PaperFleet['copy']): string {
   const record =
     copy.minTrades && copy.minTrades > 0
       ? `at least ${copy.minTrades} shadow closes${typeof copy.minNetR === 'number' ? ` and net R above ${copy.minNetR}` : ''}`
-      : 'no record is required'
-  return `A shadow cell is copied once it has ${record}${size ? `, then trades at ${size} size` : ''}.`
+      : 'the shared evidence requirements'
+  return `Copying requires ${record}, shared evidence checks, entry pricing, liquidity and account risk checks.${size ? ` Current requested pilot size: ${size} of base size.` : ''}`
 }
 
 export function copySharePct(w: PaperFleet['window']): number | null {

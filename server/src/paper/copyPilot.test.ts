@@ -55,3 +55,17 @@ test('removing a horizon split admits another swing without resetting pilot dail
  await ingest('SOLUSD','third swing today','4h');assert.equal(paper.pendingEntries().length,2);
  assert.equal(db.kvGet<any>('incubator.copyPilot').entries,3,'no 2-swing daily ceiling and no daily counter reset');
 });
+
+
+test('scanner admission freezes copy origin and requested scale in the trace without changing sizing', async t=>{
+ const {db,c,paper,ingest}=setup(t);
+ await ingest('BTCUSD');const copied=paper.openPositions()[0];
+ c.scanners.s={enabled:true,hidden:false,pairs:[{symbol:'ETHUSD',tf:'1m'}],symbols:null,timeframes:null,exitMode:'both'};
+ await ingest('ETHUSD');const own=paper.openPositions().find(p=>p.symbol==='ETHUSD')!;
+ const receipt=(id:number)=>JSON.parse(db.get<any>("SELECT snapshot FROM decision_trace WHERE position_id=? AND stage='opened'",id)!.snapshot).entryOrigin;
+ assert.deepEqual(receipt(copied.id),{version:1,source:'copy',sizeScale:1/3});
+ assert.deepEqual(receipt(own.id),{version:1,source:'own',sizeScale:1});
+ c.incubator.mirror!.pilot!.sizeScale=.5;
+ assert.equal(receipt(copied.id).sizeScale,1/3);
+ assert.equal(copied.qty,2);assert.equal(own.qty,7);
+});

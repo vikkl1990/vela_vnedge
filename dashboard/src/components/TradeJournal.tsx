@@ -1,6 +1,6 @@
 import { useSearchParams } from 'react-router-dom'
 import type { JournalQuery, JournalRow } from '../api/journal'
-import { useJournal, useMarkets, usePaperFleet, useScannerIndex } from '../api/queries'
+import { useJournal, useMarkets, useScannerIndex } from '../api/queries'
 import { useBook } from '../lib/bookScope'
 import { fmtR, fmtRecordedMoney as money, fmtRecordedPrice as price } from '../lib/format'
 import { ASSET_GROUPS, ASSET_SECTORS, matchesClass } from '../../../shared/assetClass'
@@ -78,7 +78,7 @@ export function TradeJournal({
     status = params.get('status') ?? 'closed',
     scope = params.get('scope') ?? 'all'
   const listParam = params.get('list')
-  const list = listParam === 'own' || listParam === 'copy' ? listParam : 'all'
+  const list = listParam === 'own' || listParam === 'copy' || listParam === 'unknown' ? listParam : 'all'
   const history = params.get('history') ?? 'current'
   const dateBy = params.get('dateBy') ?? 'exit',
     sort = params.get('sort') ?? 'newest'
@@ -95,7 +95,6 @@ export function TradeJournal({
   const q = useJournal(query, !f.error),
     scanners = useScannerIndex(),
     markets = useMarkets()
-  const copyScale = usePaperFleet().data?.copy.sizeScale
   const update = (values: Record<string, string>) => {
     const next = updateJournalFilters(params, values)
     next.delete('trade')
@@ -140,7 +139,7 @@ export function TradeJournal({
           </b>{' '}
           <AssetChip symbol={r.symbol} withSector />
           <div className="small muted">{r.scannerName}</div>
-          <SourceTag source={r.fleetSource} scale={copyScale} />{' '}
+          <SourceTag source={r.fleetSource} scale={r.entrySizeScale} />{' '}
           <span className="small">{r.evidenceScope}</span>
         </span>
       ),
@@ -521,9 +520,10 @@ export function TradeJournal({
                         value={list}
                         onChange={(e) => update({ list: e.target.value === 'all' ? '' : e.target.value })}
                       >
-                        <option value="all">Own list and copies</option>
+                        <option value="all">All entry origins</option>
                         <option value="own">Own list only</option>
                         <option value="copy">Copies only</option>
+                        <option value="unknown">Origin unknown</option>
                       </select>
                     </label>
                   )}
