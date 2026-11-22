@@ -110,6 +110,7 @@ export class App {
   readonly enricher: FeatureEnricher;
   /** Decision 321: the market as it was when each position opened, kept for both books. Observation only. */
   readonly entryState: EntryStateRecorder;
+  private entryStateTimer: ReturnType<typeof setTimeout> | null = null;
   readonly scanners: ScannerEngine;
   readonly boundExits: BoundExits;
   readonly profiles: ProfileStore;
@@ -409,7 +410,7 @@ export class App {
     this.marketTimer = setInterval(refreshMarkets, Math.max(1, this.config.get().risk.marketGate?.refreshMinutes ?? 60) * 60_000);
     this.marketTimer.unref?.();
     // positions already open at a restart have no record yet: take it from the bars closed at their entry, once the series are loaded
-    setTimeout(() => { for (const engine of [this.paper, this.shadow]) for (const p of engine.openPositions()) this.entryState.record(engine.book, p); }, 5 * 60_000).unref?.();
+    this.entryStateTimer = setTimeout(() => { for (const engine of [this.paper, this.shadow]) for (const p of engine.openPositions()) this.entryState.record(engine.book, p); }, 5 * 60_000).unref?.();
     // the movers strip needs a reading each minute whether or not a dashboard is open, so a pump is on the strip from its first minutes
     this.moverTimer = setInterval(() => { this.markets().catch(e => log.warn(`movers sample failed: ${e?.message ?? e}`)); }, 60_000);
     this.moverTimer.unref?.();
@@ -1144,6 +1145,7 @@ export class App {
     this.screenQueue.stop();
     this.incubator.stop();
     this.executor?.stop();
+    if (this.entryStateTimer) { clearTimeout(this.entryStateTimer); this.entryStateTimer = null; }
     if (this.marketTimer) clearInterval(this.marketTimer);
     if (this.moverTimer) clearInterval(this.moverTimer);
     if (this.huntTimer) clearInterval(this.huntTimer);
