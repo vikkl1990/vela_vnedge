@@ -82,3 +82,30 @@ test('a failed refresh retains held trades but marks the list unverified', async
   await expect(page.getByText('No open positions', { exact: true })).toHaveCount(0)
   expect(writes).toEqual([])
 })
+
+test('a live stop update keeps the saved copy origin and historical size visible', async ({
+  page,
+  faults,
+  writes,
+}) => {
+  void faults
+  await page.route('**/api/positions', (route) =>
+    route.fulfill({ json: [{ ...position, fleetSource: 'copy', entrySizeScale: 1 / 3 }] }),
+  )
+  await page.goto('/')
+  const label = page.getByText('Copy ⅓', { exact: true }).filter({ visible: true })
+  await expect(label).toBeVisible()
+  await page.evaluate(
+    (p) =>
+      window.dispatchEvent(
+        new CustomEvent('fixture-sse', {
+          detail: { name: 'position', data: { type: 'updated', position: { ...p, sl: 1800 } } },
+        }),
+      ),
+    position,
+  )
+  await expect(page.getByText('1,800.00', { exact: true }).filter({ visible: true }).first()).toBeVisible()
+  await expect(label).toBeVisible()
+  await expect(page.getByText('Copy ½', { exact: true })).toHaveCount(0)
+  expect(writes).toEqual([])
+})

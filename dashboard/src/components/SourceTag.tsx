@@ -1,7 +1,7 @@
 import type { FleetSource } from '../api/paperFleet'
 import { sourceLabel, sourceTitle } from '../lib/fleet'
 
-/** Where a paper trade came from: the account's own list, or a shadow copy at the pilot size. Nothing when unknown. */
+/** Where a paper trade came from: the account's own list, or a shadow copy at the pilot size. Unverified historical origins are labelled explicitly. */
 export function SourceTag({
   source,
   scale,
