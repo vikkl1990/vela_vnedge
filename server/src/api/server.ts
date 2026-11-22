@@ -2,6 +2,7 @@ import {fillComparison} from './fillComparison.ts';
 import {chartReceipt} from '../scanners/chartReceipts.ts';
 import {gatedSignalPage} from '../evidence/gatedSignals.ts';
 import {positionsHealthReader} from './positionsHealth.ts';
+import {paperPositionViews} from './paperPositions.ts';
 import {isAssetGroup,isAssetSector} from '../../../shared/assetClass.ts';
 import { pineLibraries } from '../pine/libraries.ts';
 import { costAudit } from '../paper/costAudit.ts';
@@ -55,9 +56,11 @@ export class ApiServer {
   private authCtx: ReturnType<typeof createAuth>;
   private server: http.Server;
   private app: App;
+  private positionViews: ReturnType<typeof paperPositionViews>;
 
   constructor(app: App) {
     this.app = app;
+    this.positionViews = paperPositionViews(app);
     // nothing a request does may take the process down: a rejected dispatch answers 500 and is logged
     this.server = http.createServer((req, res) => { void this.dispatch(req, res).catch((e: any) => { log.error(`${req.method} ${req.url}: ${e?.stack ?? e}`); try { if (!res.headersSent) json(res, 500, { error: 'internal error' }, req); else res.end(); } catch { /* socket gone */ } }); });
     this.auth = new AuthStore(app.db);
@@ -225,7 +228,7 @@ export class ApiServer {
     a.candles.on('closed', (e: any) => this.broadcast('candle', { symbol: e.symbol, tf: e.tf, bar: e.bar, closed: true }));
     a.scanners.on('signal', (s: any) => this.broadcast('signal', s));
     a.scanners.on('scanner', (s: any) => this.broadcast('scanner', s));
-    a.paper.on('position', (e: any) => this.broadcast('position', { type: e.type, position: a.paper.view(e.position, a.marks.mark(e.position.symbol) ?? null) }));
+    a.paper.on('position', (e: any) => this.broadcast('position', { type: e.type, position: this.positionViews.one(e.position) }));
     a.paper.on('trade', (t: any) => this.broadcast('trade', t));
     a.paper.on('order', (o: any) => this.broadcast('order', o));
     a.paper.on('pending', (e: {type:string;id?:number;entry?:{id:number};reason?:string}) => this.broadcast('pending', {type:e.type,id:e.id??e.entry?.id,reason:e.reason}));
@@ -422,12 +425,9 @@ export class ApiServer {
         return { ...r, price: r.price ?? p.entryPrice, sl: r.sl ?? p.slOriginal ?? p.sl, tp: r.tp?.length ? r.tp : p.tp, levelsSource: r.levelsSource ?? p.levelsSource, derived: true };
       });
     });
-    this.add('GET', '/api/positions', () => {
-      const origins = new Map(a.db.all<{id:number;fills:string;receipt:string|null}>(`SELECT p.id,p.fills,${entryOriginSql} receipt FROM positions p WHERE p.bt=0 AND p.status='open'`).map(p => [p.id,entryOrigin(p.fills,p.receipt)]));
-      return a.paper.openPositions().map(p => ({...a.paper.view(p,a.marks.mark(p.symbol)??null),...origins.get(p.id)}));
-    });
+    this.add('GET', '/api/positions', () => this.positionViews.all());
     this.add('GET', '/api/positions/health', positionsHealthReader(a));
-    this.add('POST', '/api/positions/:id/close', (_r, _s, p) => { const pos = a.paper.closeManual(Number(p.id)); if (!pos) throw new HttpError(404, 'no open position'); return a.paper.view(pos); });
+    this.add('POST', '/api/positions/:id/close', (_r, _s, p) => { const pos = a.paper.closeManual(Number(p.id)); if (!pos) throw new HttpError(404, 'no open position'); return this.positionViews.one(pos); });
     // the path a trade took, for the forensic view: samples plus level events (decision 35)
     this.add('GET', '/api/positions/:id/path', (_r, _s, p) => {
       const id = Number(p.id);
