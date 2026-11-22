@@ -59,6 +59,7 @@ export interface EntryStatePosition {
   entryAt: number;
   entryPrice: number;
   sl?: number | null;
+  slOriginal?: number | null;
   tp?: number[] | null;
   levelsSource?: string | null;
   features?: Record<string, number> | null;
@@ -166,9 +167,9 @@ export class EntryStateRecorder {
       let missing: string | null = null;
       if (pos.features && Object.keys(pos.features).length) { features = pos.features; from = 'engine'; }
       else {
-        features = this.d.enricher.compute({ book, id: pos.id, symbol: pos.symbol, tf: pos.tf, side: pos.side, entryAt: pos.entryAt, entryPrice: pos.entryPrice, sl: pos.sl ?? null, tp: pos.tp ?? null, levelsSource: pos.levelsSource ?? null });
+        features = this.d.enricher.compute({ book, id: pos.id, symbol: pos.symbol, tf: pos.tf, side: pos.side, entryAt: pos.entryAt, entryPrice: pos.entryPrice, sl: pos.slOriginal ?? pos.sl ?? null, tp: pos.tp ?? null, levelsSource: pos.levelsSource ?? null });
         if (features) from = 'bars';
-        else missing = TF_SECONDS[pos.tf] === undefined ? 'unknown timeframe' : !(typeof pos.sl === 'number' && pos.sl > 0) ? 'no stop to measure from' : 'too few closed bars in the store';
+        else missing = TF_SECONDS[pos.tf] === undefined ? 'unknown timeframe' : !(typeof (pos.slOriginal ?? pos.sl) === 'number' && (pos.slOriginal ?? pos.sl)! > 0) ? 'no stop to measure from' : 'too few closed bars in the store';
       }
       const now = Date.now();
       this.d.db.run('INSERT OR IGNORE INTO entry_state(position_id,book,symbol,tf,side,entry_at,recorded_at,features,features_from,missing,market,version) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',

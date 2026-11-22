@@ -214,3 +214,12 @@ test('context with an invalid timestamp is missing rather than a zero-age histor
     db.db.close();
   }
 });
+
+
+test('restart recovery measures the original entry stop rather than a later trailing stop', () => {
+  const db=new Db(':memory:'); const stops:Array<number|null|undefined>=[];
+  const recorder=new EntryStateRecorder({db,enricher:{compute:t=>{stops.push(t.sl);return null;}},candles:store({}),context:()=>null});
+  const id=insertPosition(db,{bt:2,entryAt,status:'open'});
+  recorder.record(2,{id,symbol:'ETHUSD',tf:'15m',side:'long',entryAt,entryPrice:130,sl:131,slOriginal:128});
+  assert.deepEqual(stops,[128]); db.db.close();
+});
