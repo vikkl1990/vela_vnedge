@@ -8499,3 +8499,9 @@ Current own-list allocations and historical entry origins are different facts. T
 The journal and open-position API read these receipts. A retained legacy `copy_pilot=1` positively identifies a copy; missing provenance is `unknown`, never inferred from today's allocation. Copy scale is read from the admission record when available, never from today's pilot settings. A copied position promoted later stays a copy. An own-list position whose scanner is removed stays own-list. Plans and shadow trades have no paper-origin label.
 
 The journal filters `list=own|copy|unknown` before paging, totals and export. The dashboard shows recorded source/scale in positions, journal and detail; unknown origins are visible. The fleet panel separates current allocation and copy settings from historical entry counts. No trade, size, gate, risk setting or evidence rule changes, and historical rows are not rewritten.
+
+## 328. Record the AGPL packages in NOTICE and the README (22 November 2026)
+
+`NOTICE` and the README licence section now say which dependencies carry which licence, read from the npm registry on 22 November 2026: `pinets` and `@luxalgo/vela-pinets` are AGPL-3.0-only, `@luxalgo/vela` and `@luxalgo/vela-ui` are Apache-2.0. Neither file mentioned them before, although the scanners and the chart run on the AGPL ones.
+
+This is a record, not a licence choice. The owner still decides what the project's own code is released under, and the notice is not legal advice. What was checked: the packages are installed unmodified, because `server/src/pine/patches.ts` rewrites Pine scripts and no patch files or install hooks edit the packages. What was not checked: the packages' own LICENSE files (only the npm metadata), and whether serving the bundled dashboard from a localhost-only bot is covered by the network clause in any particular reading. No code, setting, scanner or paper trade changes.
