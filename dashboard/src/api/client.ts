@@ -183,6 +183,7 @@ export const api = {
 
   // markets & candles
   markets: () => get<Market[]>('/markets'),
+  movers: () => get<import('./types').MoversResponse>('/markets/movers'),
   assetClasses: () => get<import('./types').AssetClassesResponse>('/markets/classes'),
   candles: (q: CandleQuery, signal?: AbortSignal) => request<Candle[]>(`/candles${qs(q)}`, { signal }),
   ticker: (symbol: string) => get<Ticker>(`/ticker${qs({ symbol })}`),
@@ -420,6 +421,7 @@ export const api = {
         capacityCompatible?: number
         scopeCompatible?: number
         sizingCompatible?: number
+        executionCompatible?: number
         totalClosed?: number
         outsideWindow?: number
         exclusions?: Array<{ reason: string; label: string; trades: number }>

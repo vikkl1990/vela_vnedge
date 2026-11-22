@@ -2,6 +2,7 @@ import { RuntimeState } from './runtime.ts';
 import {candleReplayBlock} from './paper/basket.ts';
 import {scannerAttentionReadiness} from './scanners/attention.ts';
 import {classMap,classOf} from './markets/classes.ts';
+import { MoverStore, MOVER_WINDOWS_MIN } from './markets/movers.ts';
 import {ASSET_GROUPS,ASSET_SECTORS} from '../../shared/assetClass.ts';
 import {copyRecoveryRefusal} from './incubator/copyRecovery.ts';
 import {bindScalperConnection} from './connections/scalperOffer.ts';
@@ -121,6 +122,9 @@ export class App {
   private lastAdmissionAt = 0;
   private huntTimer: ReturnType<typeof setInterval> | null = null;
   readonly marks = new MarkStore();
+  /** Short price history per market for the movers strip (display only). */
+  readonly movers = new MoverStore();
+  private moverTimer: ReturnType<typeof setInterval> | null = null;
   readonly exchangeStatus = new TradingStatus();
   /** Decision 187: every paper fill set beside the real prints on the tape. */
   tapeAudit!: TapeAudit;
@@ -406,6 +410,9 @@ export class App {
     this.marketTimer.unref?.();
     // positions already open at a restart have no record yet: take it from the bars closed at their entry, once the series are loaded
     setTimeout(() => { for (const engine of [this.paper, this.shadow]) for (const p of engine.openPositions()) this.entryState.record(engine.book, p); }, 5 * 60_000).unref?.();
+    // the movers strip needs a reading each minute whether or not a dashboard is open, so a pump is on the strip from its first minutes
+    this.moverTimer = setInterval(() => { this.markets().catch(e => log.warn(`movers sample failed: ${e?.message ?? e}`)); }, 60_000);
+    this.moverTimer.unref?.();
     // Closed trades and the clock drive evidence reviews independently of screening.
     // Reviews share one operation with manual and pair-agent calls; failed screens stay retryable.
     this.lastAdmissionAt=Date.now();
@@ -608,14 +615,24 @@ export class App {
     return { groups: ASSET_GROUPS, sectors: ASSET_SECTORS, classes: classMap([...new Set([...products.keys(), ...traded])]) };
   }
 
+  /** The biggest recent movers with their asset class, for the dashboard strip. */
+  async moversNow(limit = Infinity) {
+    await this.markets().catch(() => null); // a cold server answers from one fresh reading rather than from nothing
+    const now = Date.now();
+    return { at: now, windows: [...MOVER_WINDOWS_MIN], historyMinutes: this.movers.historyMinutes(now), rows: this.movers.movers(now, limit).map(r => ({ ...r, group: classOf(r.symbol).group, sector: classOf(r.symbol).sector })) };
+  }
+
   async markets() {
     if (this.marketCache && Date.now() - this.marketCache.at < 30_000) return this.marketCache.list;
+    const sampledAt = Date.now();
     const [tickers] = await Promise.all([this.rest.tickers(),this.rest.products()]);
+    if (this.marketCache && this.marketCache.at > sampledAt) return this.marketCache.list;
     const list = tickers.filter(t => t.contract_type === 'perpetual_futures' || !t.contract_type).map(t => ({
       symbol: t.symbol, description: t.description ?? t.symbol, tickSize: Number(t.tick_size ?? 0), contractValue: Number(t.contract_value ?? 0), group: classOf(t.symbol).group, sector: classOf(t.symbol).sector,
       markPrice: Number(t.mark_price ?? t.close), price: Number(t.close ?? t.mark_price), change24hPct: Number(t.mark_change_24h ?? 0), volume24h: Number(t.turnover_usd ?? 0),
     })).sort((a, b) => b.volume24h - a.volume24h);
-    this.marketCache = { at: Date.now(), list };
+    this.marketCache = { at: sampledAt, list };
+    this.movers.record(this.marketCache.at, list.map(m => ({ symbol: m.symbol, price: m.markPrice })));
     return list;
   }
 
@@ -859,9 +876,10 @@ export class App {
     const capacityCompatible=liveTrades.filter(t=>policyEvidence.capacityCompatibleIds.has(t.id)).length;
     const scopeCompatible=liveTrades.filter(t=>policyEvidence.scopeCompatibleIds.has(t.id)).length;
     const sizingCompatible=liveTrades.filter(t=>policyEvidence.sizingCompatibleIds.has(t.id)).length;
-    if(capacityCompatible||scopeCompatible||sizingCompatible)golive.advisories.push({
+    const executionCompatible=liveTrades.filter(t=>policyEvidence.executionCompatibleIds.has(t.id)).length;
+    if(capacityCompatible||scopeCompatible||sizingCompatible||executionCompatible)golive.advisories.push({
       key:'capacity-evidence',label:'Readiness evidence in the last 30 days',
-      value:`${liveTrades.length-capacityCompatible-scopeCompatible-sizingCompatible} exact + ${capacityCompatible} capacity-compatible${scopeCompatible?` + ${scopeCompatible} unrelated-cell settings`:''}${sizingCompatible?` + ${sizingCompatible} same-size replay`:''} trades`,
+      value:`${liveTrades.length-capacityCompatible-scopeCompatible-sizingCompatible-executionCompatible} exact + ${capacityCompatible} capacity-compatible${scopeCompatible?` + ${scopeCompatible} unrelated-cell settings`:''}${sizingCompatible?` + ${sizingCompatible} same-size replay`:''}${executionCompatible?` + ${executionCompatible} identical execution replay`:''} trades`,
       note:'Compatible history is verified against saved policies. Same-size replays must reproduce the recorded contracts, entry price and stop risk using saved orders, quotes and depth; profits are never scaled up. All other settings and evidence exclusions must match. This history does not establish performance at higher concurrency; promotion and leverage rules are unchanged.',
     });
     return { at: Date.now(), live, current, shadow: { ...shadow, windowDays: 30 }, funnel, golive };
@@ -1127,6 +1145,7 @@ export class App {
     this.incubator.stop();
     this.executor?.stop();
     if (this.marketTimer) clearInterval(this.marketTimer);
+    if (this.moverTimer) clearInterval(this.moverTimer);
     if (this.huntTimer) clearInterval(this.huntTimer);
     this.feed.stop();
     await this.pool.stop();
