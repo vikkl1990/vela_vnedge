@@ -44,3 +44,18 @@ test('a single event cannot create a successful empty query or renew full-list f
   assert.equal(client.getQueryState(key)?.dataUpdatedAt, 1000)
   client.clear()
 })
+
+test('live position updates retain recorded origin when an older stream omits it', () => {
+  const original = { ...a, fleetSource: 'copy' as const, entrySizeScale: 1 / 3 }
+  const next = mergePositionEvent([original], { type: 'updated', position: { ...a, sl: 99 } })!
+  assert.equal(next[0].fleetSource, 'copy')
+  assert.equal(next[0].entrySizeScale, 1 / 3)
+  assert.equal(next[0].sl, 99)
+  // An explicit authoritative correction is still accepted, including null scale.
+  const corrected = mergePositionEvent(next, {
+    type: 'updated',
+    position: { ...a, fleetSource: 'unknown', entrySizeScale: null },
+  })!
+  assert.equal(corrected[0].fleetSource, 'unknown')
+  assert.equal(corrected[0].entrySizeScale, null)
+})

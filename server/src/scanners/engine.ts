@@ -774,7 +774,7 @@ export class ScannerEngine extends EventEmitter {
       } else if (mlCfg.minProb > 0 && mlProb !== null && mlProb < mlCfg.minProb) {
         action = `rejected:ml ${(mlProb * 100).toFixed(0)}% < ${(mlCfg.minProb * 100).toFixed(0)}%`;
       } else {
-        const d = this.paper.onEntry(ev, { scannerId: s.id, scannerName: s.name, symbol, tf, market, signalBar:lastBar, atr, refPrice, at: now, signalId: sigId, exitMode, features: pilot ? {...features,copy_pilot:1} : features, mlProb, scoreOverride, sizeScale: pilot?.sizeScale });
+        const d = this.paper.onEntry(ev, { scannerId: s.id, scannerName: s.name, symbol, tf, market, signalBar:lastBar, atr, refPrice, at: now, signalId: sigId, exitMode, features: pilot ? {...features,copy_pilot:1} : features, mlProb, scoreOverride, sizeScale: pilot?.sizeScale, entryOrigin: copied && !(this.isActive(s) && this.runsOn(s.id,symbol,tf)) ? 'copy' : 'own' });
         if (pilot && ['opened','reversed','pending'].includes(d.action)) this.db.kvSet('incubator.copyPilot',reservePilotEntry(pilotState,tf));
         action = d.action === 'opened' || d.action === 'reversed' ? d.action : `${d.action}:${d.reason ?? ''}`;
         positionId = d.position?.id ?? d.pendingId ?? null;

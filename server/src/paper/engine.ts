@@ -44,7 +44,7 @@ const log = logger.scoped('paper');
 interface FillContext extends EntryFillEvidence { ref?: number; source?: 'quote' | 'depth' | 'slippage' | 'exchange' | 'candle-model' | 'tape-limit-model' | 'limit-candle-model' | 'limit-tape-model' | 'limit-tick-depth-model' }
 
 export interface MarketInfo { contractValue: number; tickSize: number; maintenanceMarginPct?: number; maxLeverage?: number; productFees?:ProductFees }
-export type EntryContext = {policy?: TradePolicy;executionPlan?: ExecutionPlanSnapshot;scannerId: string; scannerName: string; symbol: string; tf: string; market: MarketInfo; signalBar?: Pick<Bar,'time'|'high'|'low'|'close'>; atr?: number; refPrice: number; at: number; signalId: number | null; exitMode: ExitMode; features?: Record<string, number>; mlProb?: number | null; scoreOverride?: number; sizeScale?: number};
+export type EntryContext = {entryOrigin?: 'own'|'copy';policy?: TradePolicy;executionPlan?: ExecutionPlanSnapshot;scannerId: string; scannerName: string; symbol: string; tf: string; market: MarketInfo; signalBar?: Pick<Bar,'time'|'high'|'low'|'close'>; atr?: number; refPrice: number; at: number; signalId: number | null; exitMode: ExitMode; features?: Record<string, number>; mlProb?: number | null; scoreOverride?: number; sizeScale?: number};
 type ReclaimTrial = NonNullable<PaperConfig['reclaimTrials']>[number];
 type PlannedReclaim = {price: number; expiresAt: number; ruleKey: string};
 
@@ -692,7 +692,7 @@ export class PaperEngine extends EventEmitter {
     const write = (stage: string, reason: string | null, positionId: number | null = null) => this.db.run(
       'INSERT INTO decision_trace(at,book,signal_id,position_id,scanner_id,symbol,tf,stage,reason,snapshot) VALUES(?,?,?,?,?,?,?,?,?,?)',
       this.now(),this.book,ctx.signalId,positionId,ctx.scannerId,ctx.symbol,ctx.tf,stage,reason,
-      JSON.stringify({version:3,policyId:ctx.policy?.id??null,strategyId:ctx.policy?.strategyId??null,executionPlan:ctx.executionPlan ? {id:ctx.executionPlan.id,revision:ctx.executionPlan.revision,signature:ctx.executionPlan.signature} : null,configFp:auditConfig.fp,signalAt:ctx.at,reference:ctx.refPrice,side:ev.side,atr:ctx.atr??null,
+      JSON.stringify({version:3,entryOrigin:ctx.entryOrigin?{version:1,source:ctx.entryOrigin,sizeScale:ctx.sizeScale??1}:null,policyId:ctx.policy?.id??null,strategyId:ctx.policy?.strategyId??null,executionPlan:ctx.executionPlan ? {id:ctx.executionPlan.id,revision:ctx.executionPlan.revision,signature:ctx.executionPlan.signature} : null,configFp:auditConfig.fp,signalAt:ctx.at,reference:ctx.refPrice,side:ev.side,atr:ctx.atr??null,
         scannerStop:ev.sl??null,scannerTargets:ev.tp??[],entryProtection:protection??'inherit',quote:this.quotes?.markState?.(ctx.symbol)??null,
         market:ctx.market,sizeScale:ctx.sizeScale??1,feeRatePct:feeConfig.feeRatePct,
         makerFeeRatePct:feeConfig.makerFeeRatePct,feeTaxPct:feeConfig.feeTaxPct,

@@ -7,6 +7,8 @@ export interface JournalQuery extends TradeQuery {
   history: string
   dateBy: string
   sort: string
+  /** Paper only: 'own' (the account's own list), 'copy' (shadow copies) or 'all'. */
+  list?: string
 }
 export interface JournalFill {
   at: number
@@ -31,6 +33,9 @@ export interface JournalRow {
   tf: string
   side: string | null
   evidenceScope: string
+  /** Decision 323. Null for shadow, research plans and journals that cannot tell. */
+  fleetSource?: import('./paperFleet').FleetSource | null
+  entrySizeScale?: number | null
   entryAt: number | null
   exitAt: number | null
   eventAt: number | null
