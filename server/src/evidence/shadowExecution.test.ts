@@ -124,7 +124,7 @@ test('replay collection hints follow current active policies without qualifying 
  const before=JSON.stringify(x.db.all('SELECT * FROM positions'));
  assert.equal((await store.replayCollectionKeys(T)).size,0,'future receipts do not schedule a priority');
  assert.deepEqual([...await store.replayCollectionKeys(T+200000)],[`${x.cell.scannerId}:${x.cell.symbol}:${x.cell.tf}`]);
- assert.match(store.copyRefusal(x.cell,{minTrades:5,minNetR:0},1e8,T+200000)!,/1\/5/);
+ assert.match(store.copyRefusal(x.cell,{enabled:true,minTrades:5,minNetR:0},1e8,T+200000)!,/1\/5/);
  const current=x.current;store.policyFor=()=>({...current,strategyId:'changed'});
  assert.equal((await store.replayCollectionKeys(T+200000)).size,0);
  store.policyFor=()=>current;store.move(x.cell,'tracked','test');
