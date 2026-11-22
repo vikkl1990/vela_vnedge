@@ -1,3 +1,5 @@
+import { MarketScopeNote } from './MarketScopeNote'
+import { useMarketScope } from '../lib/marketScope'
 import { useSearchParams } from 'react-router-dom'
 import type { JournalQuery, JournalRow } from '../api/journal'
 import { useJournal, useMarkets, useScannerIndex } from '../api/queries'
@@ -73,7 +75,8 @@ export function TradeJournal({
   const { scope: bookScope } = useBook()
   const params = new URLSearchParams(urlParams)
   if (bookScope === 'paper' || bookScope === 'shadow') params.set('book', bookScope)
-  const f = journalFilters(params, useNow(60_000))
+  const [marketScope] = useMarketScope()
+  const f = journalFilters(params, useNow(60_000), marketScope)
   const book = params.get('book') ?? 'paper',
     status = params.get('status') ?? 'closed',
     scope = params.get('scope') ?? 'all'
@@ -283,6 +286,7 @@ export function TradeJournal({
               )}
             </div>
           )}
+          {f.groupFromScope && <MarketScopeNote scope={marketScope} />}
           <Section
             variant="panel"
             className="trade-journal"
@@ -340,10 +344,10 @@ export function TradeJournal({
                   <select
                     className="select"
                     aria-label="Journal asset class"
-                    value={f.group}
+                    value={f.group || 'all'}
                     onChange={(e) => update({ group: e.target.value })}
                   >
-                    <option value="">All classes</option>
+                    <option value="all">All classes</option>
                     {ASSET_GROUPS.map((g) => (
                       <option key={g.key} value={g.key} title={g.hint}>
                         {g.label}

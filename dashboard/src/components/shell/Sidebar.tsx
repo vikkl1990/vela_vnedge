@@ -1,3 +1,4 @@
+import { MarketScopeSelect } from './MarketScopeSelect'
 import { NavLink } from 'react-router-dom'
 import { fmtAge } from '../../lib/format'
 import { useNow } from '../../lib/useNow'
@@ -102,6 +103,7 @@ export function Sidebar({
         ))}
       </nav>
       <div className="sidebar-foot">
+        <MarketScopeSelect />
         <div className="sidebar-conn" title={`${stream.label} · ${feed.label} · last tick`}>
           <span className="conn">
             <StatusDot tone={stream.tone} /> <span className="_lbl">{stream.label}</span>

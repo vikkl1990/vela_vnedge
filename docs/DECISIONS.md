@@ -8499,3 +8499,17 @@ Current own-list allocations and historical entry origins are different facts. T
 The journal and open-position API read these receipts. A retained legacy `copy_pilot=1` positively identifies a copy; missing provenance is `unknown`, never inferred from today's allocation. Copy scale is read from the admission record when available, never from today's pilot settings. A copied position promoted later stays a copy. An own-list position whose scanner is removed stays own-list. Plans and shadow trades have no paper-origin label.
 
 The journal filters `list=own|copy|unknown` before paging, totals and export. The dashboard shows recorded source/scale in positions, journal and detail; unknown origins are visible. The fleet panel separates current allocation and copy settings from historical entry counts. No trade, size, gate, risk setting or evidence rule changes, and historical rows are not rewritten.
+
+## 331. A market scope: one asset class that follows you between lists (16 November 2026)
+
+Asset class filters existed on each page (Journals and Performance in the URL, Radar's menu, the Workspace watchlist), so
+looking at only the meme coins meant choosing it again on every page. The top bar now has a market scope, remembered in this
+browser, that Journals, Performance, Radar and Signals use as their default asset class. A phone gets it in the menu drawer.
+
+It is a default, not a hidden filter. A page's own asset-class choice always wins, and "All classes" is a choice, written
+as `group=all`, not an absence. A page narrowed by the scope says so at the top with the way out ("Showing Meme only, from your
+market scope · 0 of 206 · Show all markets"), the select is lit while a class is chosen, and the Signals empty state explains
+the scope instead of claiming no alerts arrived. A stored value that is not a known class means every market, so a stale or
+edited value cannot hide everything. "Reset filters" on Performance does not count the scope as a filter the page set.
+
+Display only. It changes which rows a page shows, never what a scanner, gate or account does, and the Workspace watchlist and Home keep their own controls.
