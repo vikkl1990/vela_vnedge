@@ -104,9 +104,10 @@ test('position updates use native levels with no Pine worker and preserve the ch
     },
     T + 100 * M,
   )
+  // This replay starts after the fill, so the recorded levels stay. A cursor before the fill is covered in the unit test.
   await expect
     .poll(() => page.evaluate(() => (window as unknown as State).__vnChart.inspect().totals.priceLines))
-    .toBe(0)
+    .toBe(6)
   expect(writes).toEqual([])
 })
 
