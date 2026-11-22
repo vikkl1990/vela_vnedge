@@ -68,6 +68,7 @@ test('apply allocates the cells like the dashboard does: enabled, un-hidden, exi
   const marker = JSON.parse(fs.readFileSync((r as any).marker, 'utf8'));
   assert.equal(marker.added.length, 4);
   assert.equal(marker.appliedAt, T0);
+  assert.equal(marker.state, 'applied');
   assert.deepEqual(marker.before.alpha, JSON.parse(before).scanners.alpha);
   assert.equal(marker.before.gamma, null);
   assert.throws(() => enableFleet({ ...x.opts, apply: true }), /already applied/);
@@ -254,7 +255,8 @@ test('failed atomic replacement leaves every scanner unchanged and a recoverable
   });
   assert.throws(() => enableFleet({...x.opts,apply:true}), /injected replacement failure/);
   assert.equal(fs.readFileSync(x.configFile,'utf8'),before);
-  assert.equal(JSON.parse(fs.readFileSync(path.join(x.dir,'fleet-test.json'),'utf8')).version,2);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(x.dir,'fleet-test.json'),'utf8')).state,'prepared');
+  assert.throws(()=>scoreFleet({dbFile:x.dbFile,markerFile:path.join(x.dir,'fleet-test.json')}),/application is unconfirmed/);
   t.mock.restoreAll();
   releaseFleet({configFile:x.configFile,fleetId:'fleet-test',apply:true,now:T0+1});
   assert.deepEqual(JSON.parse(fs.readFileSync(x.configFile,'utf8')),JSON.parse(before));
@@ -298,7 +300,7 @@ test('fleet scores exclude watch-only, experimental, quarantined and future outc
   };
   add('account',false,T0+1000,'alpha',0);add('shadow');add('tracked');add('experimental');add('shadow',true);add('shadow',false,T0+3*DAY);add('shadow',false,T0+1000,'plan:test');
   db.db.close();
-  const markerFile=write(x.dir,'score.json',{id:'test',appliedAt:T0,added:[cells[0]]});
+  const markerFile=write(x.dir,'score.json',{version:2,state:'applied',id:'test',appliedAt:T0,added:[cells[0]]});
   const score=scoreFleet({dbFile:x.dbFile,markerFile,now:T0+DAY});
   assert.equal(score.shadowBaselineTrades,1);assert.equal(score.fleet.trades,1);assert.equal(score.fleet.excessR,0);assert.equal(score.missingBaseline,0);
   const noBase=scoreTrades([tr({r:10})],[],[cells[0]],T0,T0+30*DAY);
