@@ -136,7 +136,10 @@ export class EntryStateRecorder {
       try { value = this.d.context(); } catch { /* no context is a valid, recorded state */ }
       this.ctxCache = { at: now, value };
     }
-    const g = this.ctxCache.value;
+    // The collector only supplies its latest record. In particular a restart may
+    // recover old positions: today's context must never be assigned to their entry.
+    const candidate = this.ctxCache.value;
+    const g = candidate && Number.isSafeInteger(candidate.at) && candidate.at >= 0 && candidate.at <= entryAt ? candidate : null;
     const btcBars = (tf: string, tfMs: number, limit: number) => {
       try { return this.d.candles.get('BTCUSD', tf, { to: entryAt - tfMs, closedOnly: true, limit }); } catch { return []; }
     };
@@ -144,7 +147,7 @@ export class EntryStateRecorder {
     const ret24 = h1.length >= 25 ? (h1[h1.length - 1].close / h1[h1.length - 25].close - 1) * 100 : null;
     return {
       ctxAt: g ? num(g.at) : null,
-      ctxAgeMin: g && num(g.at) !== null ? Math.max(0, Math.round((entryAt - g.at) / 60_000)) : null,
+      ctxAgeMin: g && num(g.at) !== null ? Math.round((entryAt - g.at) / 60_000) : null,
       session: g?.session ?? null,
       btcBiasH4: num(g?.bias?.BTC?.h4), btcBiasD1: num(g?.bias?.BTC?.d1),
       ethBiasH4: num(g?.bias?.ETH?.h4), ethBiasD1: num(g?.bias?.ETH?.d1),

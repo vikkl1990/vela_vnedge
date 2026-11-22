@@ -185,3 +185,32 @@ test('BTC trend in ATRs needs enough closed bars and has the sign of the move', 
   assert.ok((trendInAtr(bars(300, H, T0, 100, 0.002)) ?? 0) > 0, 'a climb sits above its EMA50');
   assert.ok((trendInAtr(bars(300, H, T0, 100, -0.002)) ?? 0) < 0, 'a fall sits below it');
 });
+
+
+test('restart recovery never assigns later cached context to an earlier entry', () => {
+  const { db, recorder } = setup({ 'BTCUSD:1h': bars(300, H, entryAt - H) }, () => ctx({ at: entryAt }));
+  // Populate the minute cache with a legitimate current entry first.
+  for (const at of [entryAt, entryAt - H]) {
+    const id = insertPosition(db, { bt: 2, entryAt: at, status: 'open' });
+    recorder.record(2, { id, symbol: 'ETHUSD', tf: '15m', side: 'long', entryAt: at, entryPrice: 130, sl: 128 });
+  }
+  const [current, recovered] = recorder.list({ book: 2 });
+  assert.equal(current.market.ctxAt, entryAt);
+  assert.equal(current.market.ctxAgeMin, 0);
+  for (const field of ['ctxAt', 'ctxAgeMin', 'session', 'btcBiasH4', 'btcBiasD1', 'ethBiasH4', 'ethBiasD1', 'fundingSkewPct'] as const)
+    assert.equal(recovered.market[field], null, field);
+  assert.ok((recovered.market.btcH1Trend50 ?? 0) > 0, 'as-of closed bars remain available independently');
+});
+
+test('context with an invalid timestamp is missing rather than a zero-age historical observation', () => {
+  for (const at of [NaN, Infinity, -1, entryAt + 1, entryAt + 0.5]) {
+    const { db, recorder } = setup({}, () => ctx({ at }));
+    const id = insertPosition(db, { bt: 0, entryAt });
+    recorder.record(0, { id, symbol: 'ETHUSD', tf: '15m', side: 'long', entryAt, entryPrice: 130, sl: 128 });
+    const market = recorder.list({ book: 0 })[0].market;
+    assert.equal(market.ctxAt, null);
+    assert.equal(market.fundingSkewPct, null);
+    assert.equal(market.session, null);
+    db.db.close();
+  }
+});

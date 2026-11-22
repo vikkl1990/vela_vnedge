@@ -8470,3 +8470,5 @@ are recorded five minutes after start from the bars at their entry.
 Observation only. It runs after the book's transaction has committed, never throws into the book, and changes no decision, size,
 fill, gate or threshold. It does not backfill closed history: the existing 35 days stay reconstructed from candles. It is not an
 experiment and promotes nothing; its purpose is to let the next side or regime question be answered from recorded state.
+
+Review correction (22 Nov): entry context must have a valid timestamp at or before the entry, including restart recovery and cached records. Later context stays missing; historical closed-bar features remain available. This observes trades without changing admission, fills, risk or evidence rules.
