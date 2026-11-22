@@ -3,7 +3,7 @@ import { usePaperFleet } from '../../api/queries'
 import { COPY_LABEL, OWN_LABEL, copyRuleText, copySharePct } from '../../lib/fleet'
 import { QueryState, Section } from '../kit'
 
-/** What the paper account is made of: its own list at full size, and shadow copies at the pilot size (decision 323). */
+/** Current allocations, recorded entry origins and current copy eligibility settings. */
 export function PaperFleetPanel() {
   const fleet = usePaperFleet()
   return (

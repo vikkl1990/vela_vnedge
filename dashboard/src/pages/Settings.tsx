@@ -405,7 +405,7 @@ const SECTIONS: Section[] = [
       {
         path: 'incubator.mirror.enabled',
         label: 'Copy shadow cells: the account takes a shadow cell’s signals once the cell has a record',
-        hint: 'A cell is copied only after it has enough shadow closes with a positive net R (5 closes and net R above 0 unless changed in the config), and then trades at the copy size below under the account’s own gates. Cells on the account’s own list are not copied. See Paper fleet on Overview.',
+        hint: 'A cell must pass the shared policy-compatible shadow evidence and copy eligibility checks. Pricing, liquidity and account risk checks still apply to each new entry. The fraction below scales requested base size; integer contracts, available capital and risk caps determine actual size. See Paper fleet on Overview.',
         kind: 'bool',
       },
       {
