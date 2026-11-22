@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {Db} from '../db.ts';
+import {FundingJournal} from '../execution/fundingJournal.ts';
 import {DEFAULT_CONFIG} from '../config.ts';
 import {PaperEngine} from '../paper/engine.ts';
 import {saveTradePolicy,tradePolicyIdFor} from '../paper/tradePolicy.ts';
@@ -129,4 +130,50 @@ test('harmless entry candle retains credit and prior algorithm receipts expire',
  const proof=x.run();assert.equal(proof.outcome,'identical');recordExecutionReplay(x.db,proof);
  x.db.run("UPDATE readiness_execution_replays SET result=json_set(result,'$.version',1)");
  assert.equal(executionReplayEvidence(x.db,x.p.id,x.previous,x.current),null);
+});
+
+function addFunding(x:ReturnType<typeof fixture>,rate=.01){
+ new FundingJournal(x.db);
+ const at=T+2000;
+ x.db.run("INSERT INTO funding_settlements(symbol,at,rate,rate_at,mark,mark_at,status,source) VALUES(?,?,?,?,?,?,'applied','observed-websocket')",x.p.symbol,at,rate,at-1000,100,at);
+ // Late accounting reconciliation is deliberately after the recorded close.
+ assert.equal(x.engine.reconcileFunding(x.p.symbol,rate,100,at),1);
+}
+for(const side of ['long','short'] as const)test(`verified ${side} funding survives replay without changing the price exit`,t=>{
+ const x=fixture(t,'winner',side);addFunding(x);
+ const result=x.run();assert.equal(result.outcome,'identical',JSON.stringify(result));assert.equal(result.extensions?.funding,1);
+ recordExecutionReplay(x.db,result);assert.equal(executionReplayEvidence(x.db,x.p.id,x.previous,x.current),'identical');
+ x.db.run('UPDATE funding_settlements SET mark=101');
+ assert.equal(executionReplayEvidence(x.db,x.p.id,x.previous,x.current),null);
+ assert.equal(x.run().reason,'funding-unverified');
+});
+test('funding evidence must be fresh, applied and complete; changed exits still do not count',t=>{
+ const x=fixture(t,'changed');addFunding(x);assert.equal(x.run().outcome,'changed');
+ x.db.run("INSERT INTO funding_settlements(symbol,at,status,source) VALUES(?,?,'unresolved','missed-feed')",x.p.symbol,T+2500);
+ assert.equal(x.run().reason,'funding-unverified');x.db.run('DELETE FROM funding_settlements WHERE at=?',T+2500);
+ x.db.run("UPDATE funding_settlements SET status='unresolved'");assert.equal(x.run().reason,'funding-unverified');
+ x.db.run("UPDATE funding_settlements SET status='applied',rate_at=at-120001");assert.equal(x.run().reason,'funding-unverified');
+ x.db.run('DELETE FROM funding_settlements');assert.equal(x.run().reason,'funding-unverified');
+});
+test('verified quiet capture replaces a missing seed tick, never missing capture',t=>{
+ const x=fixture(t);
+ x.events[0]={...x.events[0],receivedAt:T-20000,kind:'mark',payload:{markPrice:100,timeMs:T-20000}};
+ const coverage={...x.coverage,selectionWindow:{symbol:x.p.symbol,from:T-60000,to:x.p.exitAt!}};
+ const run=()=>replayReadinessExecution(x.db,x.p.id,x.previous,x.current,x.events,coverage);
+ assert.equal(run().outcome,'identical');assert.equal(run().extensions?.quietTape,1);
+ assert.equal(x.run().reason,'missing-tape-preroll');
+ x.events[0].receivedAt=T-6000;assert.equal(run().reason,'missing-tape-preroll');
+ x.events[0].receivedAt=T-20000;coverage.selectionWindow.from=T-10000;assert.equal(run().outcome,'unverified');
+});
+test('filtered capture windows must contain the trade even with a seed tick',t=>{
+ const x=fixture(t);
+ for(const window of [{symbol:'ETHUSD',from:T-60000,to:T+6000},{symbol:'BTCUSD',from:NaN,to:T+6000},{symbol:'BTCUSD',from:T-60000,to:T+1000}]){
+  assert.equal(replayReadinessExecution(x.db,x.p.id,x.previous,x.current,x.events,{...x.coverage,selectionWindow:window}).reason,'archive-coverage');
+ }
+});
+test('funding replay extension preserves existing no-funding version-2 receipts',t=>{
+ const x=fixture(t);recordExecutionReplay(x.db,x.run());
+ new FundingJournal(x.db);
+ x.db.run("INSERT INTO funding_settlements(symbol,at,status,source) VALUES(?,?,'unresolved','missed-feed')",x.p.symbol,T-100000);
+ assert.equal(executionReplayEvidence(x.db,x.p.id,x.previous,x.current),'identical');
 });

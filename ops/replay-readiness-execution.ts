@@ -9,6 +9,7 @@ import {createHash} from 'node:crypto';
 import {Db} from '../server/src/db.ts';
 import {DEFAULT_CONFIG} from '../server/src/config.ts';
 import {PaperEngine} from '../server/src/paper/engine.ts';
+import {FundingJournal} from '../server/src/execution/fundingJournal.ts';
 import type {TradePolicy} from '../server/src/paper/tradePolicy.ts';
 import {executionPolicyCompatible,replayReadinessExecution,recordExecutionReplay,type ExecutionReplayEvent} from '../server/src/analytics/readinessExecutionReplay.ts';
 
@@ -22,7 +23,8 @@ if(!manifest.segments?.length||manifest.segments.some((s:any,i:number)=>! /^[a-f
 const catalog=JSON.parse(fs.readFileSync(arg('--catalog'),'utf8')) as Array<{id:number;current:TradePolicy}>;
 if(snapshot.config.execution.mode!=='paper')throw Error('paper snapshot required');
 const db=new Db(':memory:');new PaperEngine(db,()=>structuredClone(DEFAULT_CONFIG));
-const allowed=new Set(['positions','trade_policies','orders','entry_fill_evidence','entry_execution','paper_execution_positions','paper_stop_amendments','paper_exit_intents','decision_trace','evidence_flags','paper_basket_entries','position_path','paper_exit_reports','signals']);
+new FundingJournal(db);
+const allowed=new Set(['positions','trade_policies','orders','entry_fill_evidence','entry_execution','paper_execution_positions','paper_stop_amendments','paper_exit_intents','decision_trace','evidence_flags','paper_basket_entries','position_path','paper_exit_reports','signals','readiness_execution_replays','funding_settlements']);
 for(const [table,rows] of Object.entries(snapshot.tables) as [string,Record<string,any>[]][]){
  if(!allowed.has(table))throw Error('unsupported snapshot table');if(!rows.length)continue;
  const columns=db.all<{name:string}>(`PRAGMA table_info(${table})`).map(c=>c.name),keys=Object.keys(rows[0]);
@@ -58,7 +60,9 @@ try{
   const old=JSON.parse(row.snapshot) as TradePolicy;
   if(!executionPolicyCompatible(db,r.id,old,item.current))continue;
   const events=[...(bySymbol.get(r.symbol)??[]),...globals].filter(e=>e.receivedAt>=r.entry_at-60000&&e.receivedAt<=r.exit_at).sort((a,b)=>a.archiveSequence-b.archiveSequence);
-  const result=replayReadinessExecution(db,r.id,old,item.current,events,coverage);
+  const window=manifest.windows?.[r.symbol]?.find((w:any)=>Array.isArray(w)&&w.length===2&&Number.isFinite(w[0])&&Number.isFinite(w[1])&&w[0]<=r.entry_at-60000&&w[1]>=r.exit_at);
+  const selected={...coverage,verified:!!window,selectionWindow:window?{symbol:r.symbol,from:window[0],to:window[1]}:undefined};
+  const result=replayReadinessExecution(db,r.id,old,item.current,events,selected);
   if(live)recordExecutionReplay(live,result);
   results.push(result);
   if(results.length%25===0)process.stderr.write(JSON.stringify({processed:results.length})+'\n');
