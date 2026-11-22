@@ -57,6 +57,16 @@ test('tape benchmarks exclude late/restart records, compare the correct side, an
  x.db.run('UPDATE tape_audit SET extra=NULL');assert.equal(fillComparison(x.db,p.id)!.fills[0].tape.deltaBps,100);
  x.db.run(sql,...values);assert.equal(fillComparison(x.db,p.id)!.fills[0].tape.status,'Ambiguous tape records');
 });
+test('maker fill comparison ignores an old market-labelled tape benchmark without rewriting it',t=>{
+ const x=fixture(t);x.enter();x.bar(T+2000);const p=x.e.openPositions()[0];new TapeAudit(x.db,[]);
+ x.db.run("UPDATE orders SET price_source='limit-tick-depth-model' WHERE position_id=?",p.id);
+ x.db.run("INSERT INTO tape_audit(at,book,position_id,symbol,kind,side,paper_price,tape_price,first_print,prints,slip_bps) VALUES(?,0,?,'SOLUSD','market entry','buy',?,101,101,2,100)",p.entryAt,p.id,p.entryPrice);
+ const before=x.db.get<any>('SELECT total_changes() n').n,f=fillComparison(x.db,p.id)!.fills[0];
+ assert.equal(f.tape.status,'Maker fill; inspect recorded print/depth evidence');
+ assert.equal(f.tape.first,null);assert.equal(f.tape.vwap,null);assert.equal(f.tape.deltaBps,null);
+ assert.equal(x.db.get<any>('SELECT total_changes() n').n,before);
+ assert.equal(x.db.get<any>('SELECT kind FROM tape_audit').kind,'market entry');
+});
 for(const model of ['tick-depth-v1','tick-depth-v2'])test(model+' report comparisons retain executable size and passive-depth limits without claiming queue proof',t=>{
  const x=fixture(t);x.enter();x.bar(T+2000);const p=x.e.openPositions()[0],o=x.db.get<any>('SELECT * FROM orders WHERE position_id=?',p.id)!;
  const depth=(at:number,qty:number)=>({receivedAt:at,exchangeAt:at,evaluatedAt:at,checkedQty:qty,bids:[{price:99.8,size:1000}],asks:[{price:100.2,size:1000}]});
