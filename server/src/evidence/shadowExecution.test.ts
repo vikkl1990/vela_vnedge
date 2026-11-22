@@ -116,3 +116,20 @@ test('qualification validates exact replay evidence once and preserves limit sem
   assert.deepEqual(actual,readEvidence(x.db,x.cell,x.current,{at:T+200000,limit}));
  }
 });
+
+test('replay collection hints follow current active policies without qualifying or rewriting evidence',async t=>{
+ const x=shadow(t,'loss');x.install();
+ const store=new IncubatorStore(x.db);store.policyFor=()=>x.current;
+ store.move(x.cell,'shadow','test',null,null,T);
+ const before=JSON.stringify(x.db.all('SELECT * FROM positions'));
+ assert.equal((await store.replayCollectionKeys(T)).size,0,'future receipts do not schedule a priority');
+ assert.deepEqual([...await store.replayCollectionKeys(T+200000)],[`${x.cell.scannerId}:${x.cell.symbol}:${x.cell.tf}`]);
+ assert.match(store.copyRefusal(x.cell,{minTrades:5,minNetR:0},1e8,T+200000)!,/1\/5/);
+ const current=x.current;store.policyFor=()=>({...current,strategyId:'changed'});
+ assert.equal((await store.replayCollectionKeys(T+200000)).size,0);
+ store.policyFor=()=>current;store.move(x.cell,'tracked','test');
+ assert.equal((await store.replayCollectionKeys(T+200000)).size,0);
+ store.move(x.cell,'shadow','test');x.db.run("UPDATE shadow_execution_cohorts SET proof='broken'");
+ assert.equal((await store.replayCollectionKeys(T+200000)).size,0);
+ assert.equal(JSON.stringify(x.db.all('SELECT * FROM positions')),before);
+});

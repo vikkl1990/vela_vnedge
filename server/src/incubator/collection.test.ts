@@ -159,3 +159,27 @@ test('stopping during cooperative qualification releases work without launching 
  setImmediate(()=>f.runner.stop());await f.runner.sync();await flush();await flush();
  assert.equal(f.runner.scheduledBars.size,0);assert.equal(f.runner.dispatchStats.started,0);assert.deepEqual(f.seen,[]);
 });
+
+test('replay-restored sample shortfalls use bounded timely research and release it after the sample completes',async t=>{
+ const f=fixture(t),pool=f.runner.deps.pool,key='s:BTCUSD:15m';
+ const before=JSON.stringify({paper:f.cfg.paper,risk:f.cfg.risk});
+ f.cfg.incubator.mirror={enabled:true,minTrades:5,minNetR:0};f.runner.deps.mirror=()=>assert.fail('priority cannot admit paper');
+ f.store.replayCollectionKeys=async()=>new Set([key]);
+ let refusal:string|null='mirror held: 4/5 shadow closes';f.store.copyRefusal=()=>refusal;
+ pool.stats.queuedLive=1;await f.runner.sync();await flush();
+ assert.equal(f.runner.dispatch.opts.timely({r:f.pair}),true);assert.equal(f.runner.dispatchStats.started,0);
+ pool.stats.queuedLive=0;pool.stats.queuedMirror=1;f.runner.dispatch.drain();await flush();assert.equal(f.runner.dispatchStats.started,0);
+ pool.stats.queuedMirror=0;pool.rssReader=()=>.86;f.runner.dispatch.drain();await flush();assert.equal(f.runner.dispatchStats.started,0);
+ pool.rssReader=()=>.84;f.runner.dispatch.drain();await flush();assert.equal(f.runner.dispatchStats.timelyTurns,1);
+ // A completed losing sample gets no permanent preference. The same applies to
+ // market/quarantine refusals and stale cohort statistics after a policy change.
+ for(const reason of ['mirror held: -1.0R over 5 shadow closes (need > 0R)','scanner quarantined: test','market data unavailable: test']){
+  refusal=reason;await f.runner.launchClose([f.pair],CLOSE,Date.now(),'BTCUSD','15m');
+  assert.equal(f.runner.dispatch.opts.timely({r:f.pair}),false);
+ }
+ refusal='mirror held: 1/5 shadow closes';f.store.replayCollectionKeys=async()=>new Set();await f.runner.sync();
+ await f.runner.launchClose([f.pair],CLOSE,Date.now(),'BTCUSD','15m');assert.equal(f.runner.dispatch.opts.timely({r:f.pair}),false);
+ assert.equal(f.cfg.paper.maxSignalAgeSec,300);assert.equal(pool.reserved,2);
+ assert.equal(JSON.stringify({paper:f.cfg.paper,risk:f.cfg.risk}),before);
+ assert.equal(f.db.get('SELECT count(*) n FROM positions')!.n,0);
+});

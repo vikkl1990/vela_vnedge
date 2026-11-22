@@ -308,6 +308,26 @@ export class IncubatorStore {
     for(const r of rows)if(this.policyFor(r).strategyId===r.strategyId)keys.add(`${r.scannerId}:${r.symbol}:${r.tf}`);
     return keys;
   }
+  /** Scheduling hints only. The close-time copy check still validates every
+   * replay proof and decides whether the cell is short of its real sample. */
+  async replayCollectionKeys(at=Date.now()):Promise<ReadonlySet<string>> {
+    const keys=new Set<string>();
+    if(!this.policyFor)return keys;
+    const active=new Set(this.db.all<{scannerId:string;symbol:string;tf:string}>(
+      "SELECT scanner_id scannerId,symbol,tf FROM incubator_pairs WHERE stage IN ('shadow','proposed')")
+      .map(r=>`${r.scannerId}:${r.symbol}:${r.tf}`));
+    const rows=this.db.all<{strategyId:string;scannerId:string;symbol:string;tf:string}>(`SELECT strategy_id strategyId,
+      json_extract(proof,'$.policy.scannerId') scannerId,json_extract(proof,'$.policy.symbol') symbol,json_extract(proof,'$.policy.tf') tf
+      FROM shadow_execution_cohorts WHERE recorded_at<=? AND json_valid(proof)
+      AND json_extract(CASE WHEN json_valid(proof) THEN proof ELSE '{}' END,'$.version')=1`,at);
+    let deadline=performance.now()+10;
+    for(const r of rows){
+      const key=`${r.scannerId}:${r.symbol}:${r.tf}`;
+      if(active.has(key)&&this.policyFor(r).strategyId===r.strategyId)keys.add(key);
+      if(performance.now()>=deadline){await new Promise<void>(resolve=>setImmediate(resolve));deadline=performance.now()+10;}
+    }
+    return keys;
+  }
   restoration(cell:{scannerId:string;symbol:string;tf:string},at=Date.now()) {
     if(!this.policyFor || !this.db.get('SELECT 1 FROM evidence_restorations WHERE scanner_id=? AND symbol=? AND tf=?',cell.scannerId,cell.symbol,cell.tf))return null;
     const policy=this.policyFor(cell);
