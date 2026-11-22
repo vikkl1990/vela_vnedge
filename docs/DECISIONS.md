@@ -8428,3 +8428,21 @@ supported by the backtests. The "hot" thresholds (1.5% in 5 minutes, 3% in 15, 5
 highlighted. Direction is shown by an arrow and a sign as well as by colour.
 
 PR #64 review correction: discard out-of-order samples before coalescing, retain their real observation times in fixed buckets, and ignore older refresh completions. Return the complete small market universe so a 5m mover cannot disappear behind an unrelated 1h ranking. Hedged positions show both sides. Regression tests cover stale arrivals, dense sampling, refresh races and the API's window candidates. Display only; no trading settings changed.
+
+## 323. Every average R on Performance carries its sample and a verdict (16 November 2026)
+
+The research of 10 to 16 November kept finding that an average R looked like an edge until the sample was examined: +0.134R on
+a handful of events, +0.29R per event that was timing, +100 bps that was a fill artefact. The Performance page showed the
+number alone. It now shows the number with a badge: `edge`, `losing`, `not proven` or `too few`, the trade count, and in the
+tooltip the 95% interval, the number of closing days and the sentence that explains the verdict.
+
+The interval is built from a standard error clustered by closing day, computed on the server (`seR`, `rDays` on every
+`PerformanceStats`): trades closed on the same day move together, so counting them as independent would claim more certainty
+than the data holds. The t value follows the number of days. A verdict needs 30 trades on at least 5 days; below that the badge
+says `too few` whatever the average looks like. `edge` means only that the interval is above zero in this window: it does not
+adjust for the number of groups compared on the page, for market drift, or for selection, and it is not a promotion rule.
+
+No gate, threshold, sizing or promotion rule reads this. It is a reading aid. Not built: a drift-neutral toggle, which needs
+per-side series the report does not carry.
+
+PR #65 correction: daily-cluster uncertainty uses the finite-cluster correction, and large-df intervals no longer jump to the normal critical value at 31 days. A five-day/30-trade positive-mean fixture remains unproven; repeating the same daily observations does not manufacture confidence. Bad numeric inputs remain unmeasured. These are reporting intervals only, not copy, promotion or readiness gates.

@@ -686,6 +686,9 @@ export interface PerformanceStats {
   noLosses: boolean
   fundingUnknown: number
   avgCommissionR: number | null
+  /** Day-clustered standard error of avgR and the number of closing days behind it; null with fewer than two days. */
+  seR?: number | null
+  rDays?: number
 }
 export interface PerformanceGroup {
   key: string
