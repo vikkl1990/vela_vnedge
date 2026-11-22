@@ -82,3 +82,8 @@ test('import is offline, checksummed, atomic, duplicate-safe and cannot shrink a
  x.install();assert.throws(()=>x.install([{...c,from:c.from+1}]),/cannot shrink/);
  assert.deepEqual(validateShadowCohort(x.db,{...c,results:[c.results[0],c.results[0]]},x.current),[]);
 });
+
+test('per-trade backwards receipt time remains unverified even with increasing archive order',t=>{
+ const x=shadow(t);x.events[1].receivedAt=T+4000;
+ assert.equal(x.run().reason,'input-order');assert.equal(x.run().outcome,'unverified');
+});

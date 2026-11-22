@@ -46,7 +46,8 @@ const results=[];
 try {
  for await(const line of readline.createInterface({input:fs.createReadStream(arg('--events')).pipe(zlib.createGunzip())})){
   const e=JSON.parse(line) as ExecutionReplayEvent;
-  if(!Number.isSafeInteger(e.archiveSequence)||e.archiveSequence<=sequence||e.receivedAt<previousAt)throw Error('invalid archive order');sequence=e.archiveSequence;count++;
+  // Capture order is global; timestamps are checked per affected trade by the kernel.
+  if(!Number.isSafeInteger(e.archiveSequence)||e.archiveSequence<=sequence||!Number.isFinite(e.receivedAt))throw Error('invalid archive order');sequence=e.archiveSequence;count++;
   if(e.kind==='gap'&&e.source==='archive')gaps.push({from:Math.min(previousAt,e.receivedAt),to:e.receivedAt});previousAt=e.receivedAt;
   if(!['trade','mark','paper_bar','gap','selection'].includes(e.kind))continue;
   if(e.kind==='paper_bar'&&(e.source!=='paper-input'||e.payload.book!==2))continue;
