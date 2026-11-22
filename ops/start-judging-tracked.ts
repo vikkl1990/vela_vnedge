@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Start judging a tracked cell (decision 312).
+ * Start judging a tracked cell (decision 322).
  *
  * A tracked cell is shadow-traded for the operator to watch, outside the incubator's judgement: the gate never promotes, retires
  * or ages it, its trades are watch-only evidence, and the account never copies it. This moves chosen cells from `tracked` to

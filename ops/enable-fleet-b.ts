@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * A second scanner list, running in the paper account beside the current one (decision 312).
+ * A second scanner list, running in the paper account beside the current one (decision 322).
  *
  * Each cell in the list becomes an explicit operator allocation, exactly what the Scanners page does and what promotion does
  * for a proposal: the scanner is enabled and un-hidden, and the cell is added to its pairs (a legacy symbol list is converted

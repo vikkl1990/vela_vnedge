@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Score the parallel list against the rest of the paper account (decision 312). Read-only.
+ * Score the parallel list against the rest of the paper account (decision 322). Read-only.
  *
  *   node ops/score-fleet-b.ts            VNEDGE_DB and VNEDGE_CONFIG override the paths; FLEET_ID the fleet (default fleet-b)
  *
