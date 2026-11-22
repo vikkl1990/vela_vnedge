@@ -8444,3 +8444,5 @@ adjust for the number of groups compared on the page, for market drift, or for s
 
 No gate, threshold, sizing or promotion rule reads this. It is a reading aid. Not built: a drift-neutral toggle, which needs
 per-side series the report does not carry.
+
+PR #65 correction: daily-cluster uncertainty uses the finite-cluster correction, and large-df intervals no longer jump to the normal critical value at 31 days. A five-day/30-trade positive-mean fixture remains unproven; repeating the same daily observations does not manufacture confidence. Bad numeric inputs remain unmeasured. These are reporting intervals only, not copy, promotion or readiness gates.

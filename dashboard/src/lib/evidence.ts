@@ -19,7 +19,13 @@ const T95 = [
   12.706, 4.303, 3.182, 2.776, 2.571, 2.447, 2.365, 2.306, 2.262, 2.228, 2.201, 2.179, 2.16, 2.145, 2.131,
   2.12, 2.11, 2.101, 2.093, 2.086, 2.08, 2.074, 2.069, 2.064, 2.06, 2.056, 2.052, 2.048, 2.045, 2.042,
 ]
-export const tCritical = (df: number): number => (df < 1 ? Infinity : df > 30 ? 1.96 : T95[df - 1])
+// Beyond the exact table, use an upper-rounded critical value from a lower
+// degree of freedom. The interval stays conservative instead of jumping to 1.96.
+export const tCritical = (df: number): number => {
+  if (!Number.isSafeInteger(df) || df < 1) return Infinity
+  if (df <= 30) return T95[df - 1]
+  return df <= 40 ? 2.042 : df <= 60 ? 2.022 : df <= 120 ? 2.001 : 1.98
+}
 
 export interface Evidence {
   verdict: EvidenceVerdict
@@ -36,7 +42,17 @@ export function evidenceOf(
   const trades = s.rTrades,
     days = s.rDays ?? 0
   const base = { avgR: s.avgR, trades, days }
-  if (s.avgR === null || s.seR == null || !Number.isFinite(s.seR))
+  if (
+    s.avgR === null ||
+    !Number.isFinite(s.avgR) ||
+    s.seR == null ||
+    !Number.isFinite(s.seR) ||
+    s.seR < 0 ||
+    !Number.isSafeInteger(days) ||
+    days < 2 ||
+    !Number.isSafeInteger(trades) ||
+    trades < days
+  )
     return { verdict: 'thin', lo: null, hi: null, ...base }
   const half = tCritical(days - 1) * s.seR
   const lo = s.avgR - half,

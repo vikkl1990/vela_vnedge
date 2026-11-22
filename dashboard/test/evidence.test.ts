@@ -38,7 +38,11 @@ test('few days widen the interval: the t value, not 1.96', () => {
   assert.equal(tCritical(1), 12.706)
   assert.equal(tCritical(9), 2.262)
   assert.equal(tCritical(30), 2.042)
-  assert.equal(tCritical(31), 1.96)
+  assert.equal(tCritical(31), 2.042)
+  assert.equal(tCritical(40), 2.042)
+  assert.equal(tCritical(60), 2.022)
+  assert.equal(tCritical(120), 2.001)
+  assert.equal(tCritical(NaN), Infinity)
   assert.equal(tCritical(0), Infinity)
   // the same average and error is an edge over 40 days but not proven over 6
   assert.equal(evidenceOf(s(0.12, 0.05, 80, 40)).verdict, 'edge')
@@ -51,4 +55,11 @@ test('the sentence names the average, the interval, the sample and the verdict',
   assert.match(t, /95% interval −?\+?[\d.−+]+R to/)
   assert.match(t, /includes zero/)
   assert.match(evidenceDetail(evidenceOf(s(0.5, 0.01, 10, 1))), /1 closing day\b/)
+})
+
+test('small-cluster correction keeps the five-day boundary sample unproven', () => {
+  assert.equal(evidenceOf(s(0.9, Math.sqrt(0.125), 30, 5)).verdict, 'unproven')
+  assert.equal(evidenceOf(s(0.9, Math.sqrt(0.125), 300, 5)).verdict, 'unproven')
+  assert.equal(evidenceOf(s(NaN, 0.1, 30, 5)).verdict, 'thin')
+  assert.equal(evidenceOf(s(0.9, -0.1, 30, 5)).verdict, 'thin')
 })

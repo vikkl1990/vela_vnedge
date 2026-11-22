@@ -62,7 +62,9 @@ function stats(rows: Trade[]): PerformanceStats {
   const mean = rTrades ? sumR / rTrades : 0, byDay = new Map<number, number>();
   for (const t of rows) if (t.r !== null) { const d = Math.floor(t.exit_at / 86_400_000); byDay.set(d, (byDay.get(d) ?? 0) + (t.r - mean)); }
   let ss = 0; for (const v of byDay.values()) ss += v * v;
-  const seR = rTrades >= 2 && byDay.size >= 2 ? Math.sqrt(ss) / rTrades : null;
+  // CR1 finite-cluster correction. For an intercept-only mean, the remaining
+  // (n-1)/(n-k) factor is one. Repeating trades within a day adds no independent days.
+  const seR = rTrades >= 2 && byDay.size >= 2 ? Math.sqrt(ss * byDay.size / (byDay.size - 1)) / rTrades : null;
   return { trades: rows.length, rTrades, wins, stops, trails, net, commission, funding, grossTrading, seR, rDays: byDay.size,
     sumR: rTrades ? sumR : null, avgR: rTrades ? sumR / rTrades : null,
     winRate: rows.length ? wins / rows.length * 100 : null, stopRate: rows.length ? stops / rows.length * 100 : null,

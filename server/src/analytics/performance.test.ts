@@ -129,8 +129,8 @@ test('the standard error of R is clustered by closing day', () => {
   for (const pnl of [-9, -9, -9, -9]) insert(db2, { pnl, fees: 1, at: start + DAY }); // -1R x4 on day two
   const swing = performanceReport(db2, {}, start + 3 * DAY).paper;
   assert.equal(swing.avgR, 0.5);
-  // day sums of deviation: +6 and -6, so sqrt(36+36)/8
-  assert.ok(Math.abs((swing.seR ?? 0) - Math.sqrt(72) / 8) < 1e-9);
+  // day sums of deviation: +6 and -6, with CR1 correction 2/(2-1), so sqrt(2*(36+36))/8
+  assert.ok(Math.abs((swing.seR ?? 0) - Math.sqrt(144) / 8) < 1e-9);
   assert.ok((swing.seR ?? 0) > 1, 'four trades a day that all go the same way are not eight independent observations');
 });
 
@@ -141,4 +141,18 @@ test('one closing day gives no clustered error rather than a made-up one', () =>
   assert.equal(s.rDays, 1); assert.equal(s.seR, null);
   const none = performanceReport(new Db(':memory:'), {}, now).paper;
   assert.equal(none.seR, null); assert.equal(none.rDays, 0);
+});
+
+
+test('five independent closing days retain their uncertainty when each day has many trades', () => {
+ const results=[];
+ for(const repeats of [6,60]){
+  const db=new Db(':memory:');
+  for(const [day,r] of [-.1,.4,.9,1.4,1.9].entries())for(let i=0;i<repeats;i++)insert(db,{at:start+day*DAY,pnl:r*10+1});
+  const stats=performanceReport(db,{},start+6*DAY).paper;results.push(stats);
+  assert.ok(Math.abs(stats.seR!-Math.sqrt(.125))<1e-10);
+  assert.ok(stats.avgR!-2.776*stats.seR!<0,'this small sample cannot establish a positive lower bound');
+  db.db.close();
+ }
+ assert.ok(Math.abs(results[0].seR!-results[1].seR!)<1e-10);
 });
