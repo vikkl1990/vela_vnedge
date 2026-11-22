@@ -18,6 +18,25 @@ export interface AssetClassesResponse {
   classes: Record<string, { group: string; sector: string; tags: string[] }>
 }
 
+/** What is moving now: change over 5, 15 and 60 minutes from a short server-side price ring (null when it does not reach back that far). */
+export interface MoverRow {
+  symbol: string
+  price: number
+  ch5: number | null
+  ch15: number | null
+  ch60: number | null
+  peak: number
+  group: string
+  sector: string
+}
+export interface MoversResponse {
+  at: number
+  windows: number[]
+  /** Minutes of history the server holds, so the strip can say it is still warming up. */
+  historyMinutes: number
+  rows: MoverRow[]
+}
+
 export interface Candle {
   time: number
   open: number

@@ -129,6 +129,15 @@ export const useConfig = () =>
   useQuery({ queryKey: qk.config, queryFn: api.config, staleTime: 60_000, retry: 1 })
 export const useConfigDefaults = () =>
   useQuery({ queryKey: ['config', 'defaults'], queryFn: api.configDefaults, staleTime: 3_600_000, retry: 1 })
+/** What moved in the last 5, 15 and 60 minutes. Display only, so a failed load just hides the strip's numbers. */
+export const useMovers = () =>
+  useQuery({
+    queryKey: ['markets', 'movers'],
+    queryFn: api.movers,
+    staleTime: REFRESH.normal,
+    refetchInterval: REFRESH.normal,
+    retry: 1,
+  })
 export const useMarkets = () =>
   // a failed load (a restart, a Delta hiccup) retries every 30 s instead of waiting out the 5-minute refresh
   useQuery({
