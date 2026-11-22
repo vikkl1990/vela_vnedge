@@ -8412,3 +8412,19 @@ At the frozen audit snapshot all 130 prior matches survive and 56 additional tra
 A one-off receipt importer ran beside the service after decision 320. Its repeated immediate transactions coincided with database-lock warnings, a fatal shutdown and six abandoned in-flight scans. Systemd recovered the service. The 186 matched receipts and original ledger were verified; the audit must not compete with the trading writer again.
 
 Both the legacy replay --record option and the new precomputed-report importer now require a verified inactive vnedge service before opening a writable database. Unknown, failed, activating and active service states refuse the operation. The expensive replay runs without --record while paper remains active; the reviewed report is imported inside the existing deployment stop window. The importer pins the result checksum, rechecks ledger/policy identity, preserves existing valid receipts and applies the batch atomically. It creates no trades and changes no risk, mode or evidence rules. Regression tests cover service refusal, checksum mismatch, full rollback, idempotency and immutable trade rows.
+
+## 322. A "Moving now" strip on Home shows 5-minute, 15-minute and 1-hour moves (16 November 2026)
+
+Delta's tickers carry only a 24-hour change, so a pump ten minutes old looked like any other busy market. The spike study
+(`docs/research/spike-catcher-2026-11-16/`) found about 93 moves of 5 sigma and 1.2% a day across 81 markets, and the bot held
+a position in 9% of the biggest ones: the first step toward seeing them is seeing them. The server keeps a ring of mark prices
+per market (filled once a minute by the existing market-list fetch, 65 minutes deep) and `GET /api/markets/movers` reads the
+change over each window from it. A figure is reported only when the ring reaches back that far, and a market that stopped
+updating shows none. The strip lists the biggest movers in the chosen window with their asset class, the side the account holds
+there (if any) and a link to the chart, and falls back to the 24-hour tape until the server has history.
+
+Display only. Nothing here opens, sizes or skips a trade, and the study's conclusion stands: no chase or fade catcher is
+supported by the backtests. The "hot" thresholds (1.5% in 5 minutes, 3% in 15, 5% in an hour) only decide which chips are
+highlighted. Direction is shown by an arrow and a sign as well as by colour.
+
+PR #64 review correction: discard out-of-order samples before coalescing, retain their real observation times in fixed buckets, and ignore older refresh completions. Return the complete small market universe so a 5m mover cannot disappear behind an unrelated 1h ranking. Hedged positions show both sides. Regression tests cover stale arrivals, dense sampling, refresh races and the API's window candidates. Display only; no trading settings changed.
