@@ -43,7 +43,19 @@ export function executionReplaySubject(db:Db,id:number){
  const orders=db.all<any>('SELECT * FROM orders WHERE position_id=? ORDER BY id',id);
  return {position,intents,reports,state,orders};
 }
-export const executionReplayLedgerHash=(db:Db,id:number)=>hash(executionReplaySubject(db,id));
+function subjectHash(subject:ReturnType<typeof executionReplaySubject>){
+ const r=subject.position;if(!r)return hash(subject);
+ let meta:any;try{meta=JSON.parse(r.fills);}catch{return hash(subject);}
+ if(!meta||typeof meta!=='object')return hash(subject);
+ // Later ML/feature enrichment and presentation labels cannot change a fill.
+ // Keep every field consumed by this replay plus scope, original risk and policy.
+ const keys=['id','status','scanner_id','symbol','tf','side','qty','qty_open','contract_value','entry_price','entry_at','sl_original','tp','tp_hit','break_even',
+  'realized_pnl','fees','risk_amount','exit_at','exit_price','exit_reason','signal_id','bt','policy_id','policy_adopted_at','evidence_scope','levels_source'];
+ const position=Object.fromEntries(keys.map(k=>[k,r[k]??null]));
+ position.fills=Object.fromEntries(['fills','legs','leverage','marginLeverage','liqPrice','maintenanceMarginPct','openedAt','basket','executionPlan'].map(k=>[k,meta[k]??null]));
+ return hash({...subject,position});
+}
+export const executionReplayLedgerHash=(db:Db,id:number)=>subjectHash(executionReplaySubject(db,id));
 
 function run(subject:ReturnType<typeof executionReplaySubject>,policy:TradePolicy,events:ExecutionReplayEvent[]){
  const {position:r,reports,state}=subject,meta=JSON.parse(r.fills),entry=meta.fills[0];
@@ -86,7 +98,7 @@ function run(subject:ReturnType<typeof executionReplaySubject>,policy:TradePolic
  * baskets, restart gaps and external context-dependent exits need dedicated replayers. */
 export function replayReadinessExecution(db:Db,id:number,previous:TradePolicy,current:TradePolicy,events:ExecutionReplayEvent[],coverage:ExecutionReplayCoverage):ExecutionReplayResult {
  const subject=executionReplaySubject(db,id),r=subject.position;
- const result:ExecutionReplayResult={version:1,positionId:id,entryAt:r?.entry_at??0,previousId:previous.id,currentId:current.id,ledgerHash:hash(subject),
+ const result:ExecutionReplayResult={version:1,positionId:id,entryAt:r?.entry_at??0,previousId:previous.id,currentId:current.id,ledgerHash:subjectHash(subject),
   outcome:'unverified',reason:'unsupported-lifecycle',inputHash:hash({coverage,events}),events:events.length};
  const refuse=(reason:string)=>({...result,reason});
  try{
@@ -145,7 +157,7 @@ export function executionReplayEvidence(db:Db,id:number,previous:TradePolicy,cur
   if(!row)return null;
   const proof=JSON.parse(row.result) as ExecutionReplayResult,subject=executionReplaySubject(db,id),r=subject.position;
   if(!r||row.entry_at!==r.entry_at||proof.entryAt!==r.entry_at||proof.positionId!==id||proof.version!==EXECUTION_REPLAY_VERSION||
-   proof.previousId!==previous.id||proof.currentId!==current.id||proof.ledgerHash!==hash(subject)||! /^[a-f0-9]{64}$/.test(proof.inputHash)||
+   proof.previousId!==previous.id||proof.currentId!==current.id||proof.ledgerHash!==subjectHash(subject)||! /^[a-f0-9]{64}$/.test(proof.inputHash)||
    !executionPolicyCompatible(db,id,previous,current))return null;
   if(proof.outcome==='changed'||proof.outcome==='unverified')return proof.outcome;
   const observed={intent:subject.intents.map(({reason,trigger_at,ready_at,reference,qty,market_qty})=>({reason,trigger_at,ready_at,reference,qty,market_qty})),

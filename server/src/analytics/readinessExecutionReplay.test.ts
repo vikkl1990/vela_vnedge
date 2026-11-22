@@ -9,7 +9,7 @@ import {currentPolicyEvidence} from './policyHealth.ts';
 import {executionReplayEvidence,executionPolicyCompatible,replayReadinessExecution,recordExecutionReplay,type ExecutionReplayEvent} from './readinessExecutionReplay.ts';
 
 const T=1800000060000;
-function fixture(t:any,kind:'loss'|'winner'|'changed'|'candle'='loss'){
+function fixture(t:any,kind:'loss'|'winner'|'changed'|'candle'='loss',side:'long'|'short'='long'){
  const db=new Db(':memory:');t.after(()=>db.db.close());const cfg=structuredClone(DEFAULT_CONFIG);
  Object.assign(cfg.paper,{sizingMode:'margin',marginPerTrade:150,maxStopLossPct:3,minRiskFeeRatio:0,maxSignalAgeSec:0,minSizeShare:0,
   slippageBps:0,quotedSlippageBps:0,depthUsdPerBp:0,feeRatePct:.05,makerFeeRatePct:.02,feeTaxPct:18,useSpread:false,requireQuote:false,
@@ -17,10 +17,10 @@ function fixture(t:any,kind:'loss'|'winner'|'changed'|'candle'='loss'){
   trailAfterR:.5,floorAtR:0,trailGiveBackPct:20,trailSteps:[],trailStall:undefined,trailAtrMult:0,staleBars:0,earlyCut:undefined,earlyStall:undefined,
   tpSplit:[0,0,1],limitEntry:{enabled:false,tfs:[],atr:0,bars:2,books:[]}});
  let now=T-2000;const engine=new PaperEngine(db,()=>cfg,{now:()=>now});engine.sourceHashFor=()=> 'source';engine.causalExits=true;
- engine.onEntry({kind:'entry',side:'long',price:100,sl:98,tp:[104,108,112],source:'alert',label:'long',message:'',barTime:T-900000,barIndex:0},
+ engine.onEntry({kind:'entry',side,price:100,sl:side==='long'?98:102,tp:side==='long'?[104,108,112]:[96,92,88],source:'alert',label:side,message:'',barTime:T-900000,barIndex:0},
   {scannerId:'audit',scannerName:'audit',symbol:'BTCUSD',tf:'15m',market:{contractValue:1,tickSize:.01},atr:1,refPrice:100,at:now,signalId:null,exitMode:'both'});
  const events:ExecutionReplayEvent[]=[];let sequence=0;
- const tick=(at:number,price:number)=>{now=at;const payload={price,qty:1000,timeMs:at,id:String(at)};events.push({version:1,receivedAt:at,archiveSequence:++sequence,symbol:'BTCUSD',kind:'trade',source:'execution-feed',payload});engine.onTrade('BTCUSD',price,1000,at,at,String(at));};
+ const tick=(at:number,price:number)=>{now=at;price=side==='long'?price:200-price;const payload={price,qty:1000,timeMs:at,id:String(at)};events.push({version:1,receivedAt:at,archiveSequence:++sequence,symbol:'BTCUSD',kind:'trade',source:'execution-feed',payload});engine.onTrade('BTCUSD',price,1000,at,at,String(at));};
  tick(T-1000,100);now=T;engine.onBar('BTCUSD',{time:T,close:100,low:100,high:100,volume:100},now);
  const p=engine.openPositions()[0];assert.ok(p,'fixture entered');
  const current=structuredClone(p.policy!),previous=structuredClone(current);previous.sim=211;previous.strategyId=strategyIdFor(previous);previous.id=tradePolicyIdFor(previous);
@@ -37,13 +37,14 @@ function fixture(t:any,kind:'loss'|'winner'|'changed'|'candle'='loss'){
   tick(T+3000,kind==='changed'?101.2:100.9);
   if(kind==='changed')tick(T+4000,100.9);
  }
- now=kind==='candle'?T+124000:T+6000;engine.settleExits(p.symbol,{receivedAt:now,exchangeAt:now-10,bids:[{price:['loss','candle'].includes(kind)?97.8:100.8,size:10000}],asks:[{price:['loss','candle'].includes(kind)?97.9:100.9,size:10000}]},now);
+ now=kind==='candle'?T+124000:T+6000;const bid=['loss','candle'].includes(kind)?97.8:100.8,ask=bid+.1;
+ engine.settleExits(p.symbol,{receivedAt:now,exchangeAt:now-10,bids:[{price:side==='long'?bid:200-ask,size:10000}],asks:[{price:side==='long'?ask:200-bid,size:10000}]},now);
  assert.equal(p.status,'closed');
  const coverage={from:T-60000,to:now,segments:1,verified:true,sha256:'a'.repeat(64)};
  return {db,engine,p,previous,current,events,coverage,run:()=>replayReadinessExecution(db,p.id,previous,current,events,coverage)};
 }
-for(const kind of ['loss','winner'] as const)test(`verified identical ${kind} counts without rewriting history`,t=>{
- const x=fixture(t,kind),before=JSON.stringify({p:x.db.all('SELECT * FROM positions'),o:x.db.all('SELECT * FROM orders'),policies:x.db.all('SELECT * FROM trade_policies')});
+for(const side of ['long','short'] as const)for(const kind of ['loss','winner'] as const)test(`verified identical ${side} ${kind} counts without rewriting history`,t=>{
+ const x=fixture(t,kind,side),before=JSON.stringify({p:x.db.all('SELECT * FROM positions'),o:x.db.all('SELECT * FROM orders'),policies:x.db.all('SELECT * FROM trade_policies')});
  const result=x.run();assert.equal(result.outcome,'identical',JSON.stringify(result));
  assert.equal(currentPolicyEvidence(x.db,x.engine).ids.size,0);
  recordExecutionReplay(x.db,result);assert.equal(executionReplayEvidence(x.db,x.p.id,x.previous,x.current),'identical');
@@ -90,6 +91,11 @@ test('receipt fails after journal correction, policy change or receipt tampering
  assert.throws(()=>recordExecutionReplay(x.db,proof),/subject changed/);
  x.db.run('UPDATE positions SET fees=fees-1 WHERE id=?',x.p.id);
  x.db.run("UPDATE readiness_execution_replays SET result='{}'");assert.equal(executionReplayEvidence(x.db,x.p.id,x.previous,x.current),null);
+});
+test('later advisory feature enrichment does not erase verified execution history',t=>{
+ const x=fixture(t),proof=x.run();recordExecutionReplay(x.db,proof);
+ x.db.run("UPDATE positions SET fills=json_set(fills,'$.features.new_context',123,'$.mlProb',0.75),scanner_name='Renamed display' WHERE id=?",x.p.id);
+ assert.equal(executionReplayEvidence(x.db,x.p.id,x.previous,x.current),'identical');
 });
 test('risk, fees, source, reader and 210 history cannot bypass evidence requirements',t=>{
  const x=fixture(t);
