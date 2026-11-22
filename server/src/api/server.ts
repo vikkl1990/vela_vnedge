@@ -484,7 +484,7 @@ export class ApiServer {
       try { validatePerformanceFilter(filter); } catch (e) { throw new HttpError(400, (e as Error).message); }
       return performanceReport(a.db, filter);
     });
-    // decision 311: the market at each entry, with the outcome once the trade has closed (research read; observation only)
+    // decision 321: the market at each entry, with the outcome once the trade has closed (research read; observation only)
     this.add('GET', '/api/entry-state', (_r, _s, _p, url) => {
       const n = (k: string): number | undefined => {
         const v = url.searchParams.get(k);

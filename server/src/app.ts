@@ -107,7 +107,7 @@ export class App {
   readonly ml: MlService;
   /** Decision 108: entry-time features for trades opened without them, costed once from the candle store. */
   readonly enricher: FeatureEnricher;
-  /** Decision 311: the market as it was when each position opened, kept for both books. Observation only. */
+  /** Decision 321: the market as it was when each position opened, kept for both books. Observation only. */
   readonly entryState: EntryStateRecorder;
   readonly scanners: ScannerEngine;
   readonly boundExits: BoundExits;

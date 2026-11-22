@@ -240,7 +240,7 @@ test('bar close → scanner run → signal → paper position (exactly one close
   const open = app.paper.openPositions();
   assert.equal(open.length, 1);
   assert.equal(open[0].side, 'long'); assert.equal(open[0].sl, 50_420); assert.deepEqual(open[0].tp, [50_570, 50_620, 50_670]);
-  // decision 311: the open was recorded with the market as it was, readable over an authenticated, validated route
+  // decision 321: the open was recorded with the market as it was, readable over an authenticated, validated route
   assert.equal((await fetch(base + '/api/entry-state?book=0')).status, 401);
   const es = await getJson('/api/entry-state?book=0');
   assert.equal(es.status, 200);
