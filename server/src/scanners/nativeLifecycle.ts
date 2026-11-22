@@ -1,3 +1,4 @@
+import {upstreamLifecycle} from './upstreamLifecycle.ts';
 /** Validated native trade engines. This capability never grants evidence eligibility. */
 export const NATIVE_REENTRY_SCANNERS = new Set([
   'structure-anchored-vwap-upstream-2-0',
@@ -10,4 +11,4 @@ export const NATIVE_REENTRY_SCANNERS = new Set([
 
 export const nativeReentry = (id: string, reader?: number) =>
   reader === 3 && NATIVE_REENTRY_SCANNERS.has(id) ||
-  reader === 2 && id === 'stealthtrail-supertrend-author-native-v1';
+  reader === 2 && (id === 'stealthtrail-supertrend-author-native-v1' || upstreamLifecycle(id));

@@ -1,3 +1,5 @@
+import { FillComparisons } from '../chart/FillComparisons'
+import { fillComparisonMarks, useFillComparison } from '../chart/fillEvidence'
 import type { Vela as VelaType } from '@luxalgo/vela'
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
@@ -82,6 +84,8 @@ function ReplayBody({
   const endT = (exitBar ?? barOf(openedAt)) + TAIL_BARS * barMs
   const finalR =
     lv.status === 'closed' && lv.riskAmount ? ((lv.realizedPnl ?? 0) - (lv.fees ?? 0)) / lv.riskAmount : null
+  const fillEvidence = useFillComparison(lv.id)
+  const evidenceMarks = useMemo(() => fillComparisonMarks(fillEvidence.data), [fillEvidence.data])
   const overlay = useMemo(() => replayOverlay(lv, path, barMs, finalR), [lv, path, barMs, finalR])
   const scripts = useMemo(() => [overlay], [overlay])
 
@@ -254,6 +258,7 @@ function ReplayBody({
         Trade timeframe {lv.tf ?? '15m'}, replay {tf}. Recorded path samples and candle bars cannot show tick
         order or exact hypothetical fills.
       </Callout>
+      <FillComparisons id={lv.id} />
       {lv.execution && (
         <details className="panel replay-exec">
           <summary>Paper execution · model {lv.execution.version}</summary>
@@ -370,7 +375,14 @@ function ReplayBody({
 
       <div className="replay-grid">
         <div className="replay-chart">
-          <VelaChart symbol={lv.symbol} tf={tf} height="100%" scripts={scripts} onChartReady={setChart} />
+          <VelaChart
+            marks={evidenceMarks}
+            symbol={lv.symbol}
+            tf={tf}
+            height="100%"
+            scripts={scripts}
+            onChartReady={setChart}
+          />
         </div>
 
         <aside className="replay-side" aria-label="The trade at the cursor">

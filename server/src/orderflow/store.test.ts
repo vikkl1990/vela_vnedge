@@ -14,6 +14,10 @@ import { applyPatches } from '../pine/patches.ts';
 import { Indicator } from 'pinets';
 
 const T = 1800000000000, M = 60000;
+test('flow diagnostics accept real one-character Delta bases and retain symbol validation',()=>{
+ for(const s of ['MUSD','SUSD','delta:mUSD'])assert.equal(flowQuery(new URLSearchParams({symbol:s}),T).symbol,s.replace(/^delta:/,'').toUpperCase());
+ for(const s of ['USD','../MUSD','MUSDT','A'.repeat(25)+'USD'])assert.throws(()=>flowQuery(new URLSearchParams({symbol:s}),T));
+});
 const print = (timeMs: number, aggressor: 'buy' | 'sell' | null, qty = 2) => ({ symbol: 'BTCUSD', price: 100, timeMs, aggressor, qty });
 const minute = (openTime: number, buy = 2, covered = true): FlowMinute => ({ openTime, buy, sell: 1, unknown: 0, trades: 2, covered, levels: [{ price: 100, buyVolume: buy, sellVolume: 1 }] });
 

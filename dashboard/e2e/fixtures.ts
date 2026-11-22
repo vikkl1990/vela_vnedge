@@ -123,6 +123,7 @@ const fixtures: Record<string, unknown> = {
   '/health': health,
   '/stats': stats,
   '/positions': [],
+  '/positions/health': { at: now, positions: [] },
   '/orders': [],
   '/markets': [{ symbol: 'ETHUSD', tickSize: 0.01, name: 'Ethereum' }],
   '/scanners': scanners,

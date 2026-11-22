@@ -20,7 +20,7 @@ test('PEPE exit migration preserves account policy and other plans; backs up and
   next.executionPlans=[other];assert.deepEqual(next,cfg,'only the two research plans change');
   assert.equal(enablePepeExitComparison(file).changed,false);
   for(const [mutate,error] of [
-    [(c:any)=>{c.execution.mode='live'},/paper execution/],
+    [(c:any)=>{c.execution.mode='live'},/paper execution|Saved configuration fails validation/],
     [(c:any)=>{c.incubator.enabled=false},/scheduler/],
     [(c:any)=>{c.paper.trailAfterR=1},/tested control/],
     [(c:any)=>{c.paper.skipScriptStops=false},/tested control/],

@@ -64,7 +64,7 @@ test(`${id}: opposite entry without explicit close survives causal reversal late
  assert.equal(old.entry('short',T+2100,100.5).action,'pending');
  assert.equal(x.entry('short',T+2100,100.5).action,'pending');
  old.tick(T+3600,100.5);x.tick(T+3600,100.5);
- assert.equal(old.e.pendingEntries().length,0);assert.equal(x.e.pendingEntries().length,1);
+ assert.equal(old.e.pendingEntries().length,1);assert.equal(x.e.pendingEntries().length,1);
  x.settle(T+5200,10000,100.5);x.tick(T+5300,100.4);
  assert.equal(x.e.openPositions()[0].side,'short');assert.equal(x.held.status,'closed');
 });

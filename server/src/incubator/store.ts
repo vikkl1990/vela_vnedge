@@ -1,3 +1,4 @@
+import {recordChartReceipt,type ChartReceiptArgs} from '../scanners/chartReceipts.ts';
 import {recoverPendingFunnel} from './pendingFunnel.ts';
 import {emptyRotation, type RotationState} from './rotation.ts';
 import type {TradePolicy} from '../paper/tradePolicy.ts';
@@ -51,6 +52,7 @@ export function funnelClass(action: string): 'opened' | 'pending' | 'regime' | '
 
 export class IncubatorStore {
   private db: Db;
+  noteChartReceipt(...args:ChartReceiptArgs){recordChartReceipt(this.db,...args);}
   /** Installed by the runtime/screen composition root. Raw history stays available for audit. */
   policyFor?: (cell:{scannerId:string;symbol:string;tf:string})=>TradePolicy;
   evidenceConfig?:()=>AppConfig;
@@ -284,8 +286,14 @@ export class IncubatorStore {
     enrollRestoration(this.db,cell,policy,this.evidenceConfig(),exact,compatible,at);
   }
   startRestorations(at=Date.now()) {
+    for(const _ of this.startRestorationSteps(at)){ /* synchronous CLI */ }
+  }
+  *startRestorationSteps(at=Date.now()):Generator<void> {
     if(!this.policyFor)return;
-    for(const cell of this.list(['shadow','proposed']))this.ensureRestoration(cell,this.policyFor(cell),at);
+    for(const cell of this.list(['shadow','proposed'])){
+      yield;
+      if(this.get(cell.id)?.stage===cell.stage)this.ensureRestoration(cell,this.policyFor(cell),at);
+    }
   }
   /** Enrolled forward experiments need timely collection even while copying is held.
    * This is scheduling metadata only: no new enrollment, qualification or stage change. */

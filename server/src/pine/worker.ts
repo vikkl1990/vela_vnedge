@@ -41,9 +41,9 @@ export interface WorkerJob {
 /** One trade from a strategy's own ledger. `size` is signed (negative = short); open trades have no exit. */
 export interface LedgerTrade { size: number; entryPrice: number; exitPrice: number | null; entryIdx: number; exitIdx: number | null }
 export interface WorkerAlert { barIndex: number; time: number; type: 'alert' | 'alertcondition'; title?: string; message: string }
-export interface WorkerShape { title: string; shape?: string; location?: string; color?: string; times: number[] }
+export interface WorkerShape { key?: string; title: string; shape?: string; location?: string; color?: string; times: number[] }
 export interface WorkerLabel { time: number; y: number; text: string; color?: string; style?: string; barIndex?: number; /** Decision 172: the bar the label was created on, from the label stamp; absent when the script set no stamp. */ createdAt?: number }
-export interface WorkerPlot { title: string; style: string; overlay: boolean; color?: string; data: Array<{ time: number; value: number | null; color?: string }> }
+export interface WorkerPlot { key?: string; title: string; style: string; overlay: boolean; color?: string; data: Array<{ time: number; value: number | null; color?: string }> }
 
 export interface WorkerResult {
   id: number;
@@ -151,12 +151,12 @@ async function runJob(job: WorkerJob): Promise<WorkerResult> {
           const d = data[i];
           if (d && d.value !== false && d.value !== null && d.value !== undefined && d.value !== 0 && !Number.isNaN(d.value)) times.push(d.time);
         }
-        shapes.push({ title: pl.title ?? key, shape: shapeKind(opts), location: opts.location, color: opts.color, times });
+        shapes.push({ key, title: pl.title ?? key, shape: shapeKind(opts), location: opts.location, color: opts.color, times });
         continue;
       }
       if (opts.style === 'fill' || opts.style === 'bgcolor' || opts.style === 'barcolor') continue;
       const tail = data.slice(-job.plotTail).map((d: any) => ({ time: d.time, value: (typeof d.value === 'number' && Number.isFinite(d.value)) ? d.value : null, color: d.options?.color ?? d.color }));
-      if (tail.some(p => p.value !== null)) plots.push({ title: pl.title ?? key, style: opts.style ?? 'line', overlay: Boolean(ctx.indicator?.overlay ?? opts.overlay), color: opts.color, data: tail });
+      if (tail.some(p => p.value !== null)) plots.push({ key, title: pl.title ?? key, style: opts.style ?? 'line', overlay: Boolean(ctx.indicator?.overlay ?? opts.overlay), color: opts.color, data: tail });
     }
 
     const labels: WorkerLabel[] = [];

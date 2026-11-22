@@ -1,3 +1,5 @@
+import {SOL_MAKER_REFERENCE_ID,SOL_MAKER_TICK_REFERENCE_ID,SOL_MAKER_SCANNER} from '../research/solMakerStudy.ts';
+import {solFilterPlan,solMakerRiskSource} from '../scanners/solMakerExperiment.ts';
 import {sourceHash} from '../paper/fingerprint.ts';
 import {sameExitSource} from '../scanners/boundExits.ts';
 import {policyReading} from '../paper/tradePolicy.ts';
@@ -52,7 +54,7 @@ export type FunnelKind = 'opened' | 'pending' | 'regime' | 'cost' | 'market' | '
  */
 export function shadowRefusal(inp: { regime: RiskConfig['regime'] | undefined; scannerId: string; symbol: string; at: number; price: number; atr?: number; bars: Bar[]; market: { allowed: boolean; reasons: string[] } | null | undefined }): { kind: 'market' | 'regime'; reason: string } | null {
   if (inp.market && !inp.market.allowed) return { kind: 'market', reason: `market: ${inp.market.reasons.join('; ') || 'not allowed'}` };
-  const regime = regimeRefusal(inp.regime, inp.scannerId, { at: inp.at, price: inp.price, atr: inp.atr }, inp.bars);
+  const regime = regimeRefusal(inp.regime, solMakerRiskSource(inp.scannerId), { at: inp.at, price: inp.price, atr: inp.atr }, inp.bars);
   return regime ? { kind: 'regime', reason: regime } : null;
 }
 /** Decision 201: background shadow scans stop above this share of the pool's memory guard. */
@@ -62,6 +64,7 @@ const RUN_ALLOWANCE_MS = 5_000;
 
 export class ShadowRunner {
   private pairs: PairRow[] = [];
+  private stopped=false;
   private timelyCells:ReadonlySet<string>=new Set();
   private forwardCells:ReadonlySet<string>=new Set();
   private readingCells:ReadonlySet<string>=new Set();
@@ -72,8 +75,8 @@ export class ShadowRunner {
     const key=`${r.scannerId}:${r.symbol}:${r.tf}`;
     if(this.scheduledBars.get(key)===barAt)this.scheduledBars.delete(key);
   }
-  private async runScheduled(r:PairRow,barAt:number,live:boolean,seenAt:number) {
-    try{await this.run(r,barAt,live,seenAt);}
+  private async runScheduled(r:PairRow,barAt:number,live:boolean,seenAt:number,rank?:number,releaseCompute?:()=>void) {
+    try{await this.run(r,barAt,live,seenAt,rank,releaseCompute);}
     catch(e){this.deps.store.noteShadowScan?.(r,barAt-TF_SECONDS[r.tf]*1000,'failed',String((e as Error)?.message??e));throw e;}
     finally{this.releaseScheduled(r,barAt);}
   }
@@ -84,7 +87,7 @@ export class ShadowRunner {
   private seen = new Set<string>();
   private labels = new Map<string, Set<string>>();
   private timer: NodeJS.Timeout | null = null;
-  private deps: { timelyResearch?: () => ReadonlySet<string>; compare?: PlanComparisons['observe']; compareScan?: PlanComparisons['observeScan']; store: IncubatorStore; cfgRef: () => AppConfig; candles: CandleStore; pool: PinePool; registry: ScannerRegistry; paper: PaperEngine; marketInfo: (symbol: string) => Promise<MarketInfo>; /** Decision 116: the account takes the shadow pair's events too, under its own gates, when `incubator.mirror.enabled`. */ mirror?: (s: LoadedScanner, symbol: string, tf: string, ev: ScanEvent, bars: Bar[], market: MarketInfo, exitMode: ExitMode, lastBar: Bar) => void | Promise<void>; /** Decision 112: the market gate's verdict on a symbol today, as the account reads it. */ marketVerdict?: (symbol: string) => { allowed: boolean; reasons: string[] } | null; /** Decision 108: every shadow entry carries the model's features and probability, as a live entry does. */ ml?: Pick<MlService,'features'|'scoreEntry'|'bindPrediction'>; subscribe?: (symbols: string[]) => void; /** Decision 166: what the account can act on now, to order a wave's scans by it. */ accountFocus?: () => { held: Set<string>; full: boolean }; /** Decision 201: whether the account holds an open position on this scanner, market and timeframe — its exits must reach the account whatever the copy setting. */ accountHolds?: (scannerId: string, symbol: string, tf: string) => boolean };
+  private deps: { timelyResearch?: () => ReadonlySet<string>; compare?: PlanComparisons['observe']; compareScan?: PlanComparisons['observeScan']; compareSourceScan?: PlanComparisons['observeSourceScan']; store: IncubatorStore; cfgRef: () => AppConfig; candles: CandleStore; pool: PinePool; registry: ScannerRegistry; paper: PaperEngine; marketInfo: (symbol: string) => Promise<MarketInfo>; /** Decision 116: the account takes the shadow pair's events too, under its own gates, when `incubator.mirror.enabled`. */ mirror?: (s: LoadedScanner, symbol: string, tf: string, ev: ScanEvent, bars: Bar[], market: MarketInfo, exitMode: ExitMode, lastBar: Bar) => void | Promise<void>; /** Decision 112: the market gate's verdict on a symbol today, as the account reads it. */ marketVerdict?: (symbol: string) => { allowed: boolean; reasons: string[] } | null; /** Decision 108: every shadow entry carries the model's features and probability, as a live entry does. */ ml?: Pick<MlService,'features'|'scoreEntry'|'bindPrediction'>; subscribe?: (symbols: string[]) => void; /** Decision 166: what the account can act on now, to order a wave's scans by it. */ accountFocus?: () => { held: Set<string>; full: boolean }; /** Decision 201: whether the account holds an open position on this scanner, market and timeframe — its exits must reach the account whatever the copy setting. */ accountHolds?: (scannerId: string, symbol: string, tf: string) => boolean };
   private marketsCache: { at: number; map: Map<string, { turnoverUsd: number | null }> } | null = null;
   /** The market gate's 24h turnover for a symbol (null when unjudged), read at most once a minute. */
   private turnoverOf(symbol: string): number | null {
@@ -106,11 +109,14 @@ export class ShadowRunner {
     this.deps = deps;
     this.dispatch=new ShadowDispatch({
       limit:()=>Math.max(1,(deps.pool.size??1)-(deps.pool.reserved??0)),
+      // Pricing and admission can wait on I/O after Pine releases its worker.
+      // Bound retained results separately; never borrow reserved paper workers.
+      maxInFlight:()=>4*Math.max(1,(deps.pool.size??1)-(deps.pool.reserved??0)),
       ready:()=>!deps.pool.stats.queuedLive && !deps.pool.stats.queuedMirror && deps.pool.rssReader()<deps.pool.memoryGuardBytes*SHADOW_MEMORY_SHARE,
       priority:({r})=>evidencePriority(r,this.deps.cfgRef().incubator),
       timely:({r})=>this.readingCells.has(`${r.scannerId}:${r.symbol}:${r.tf}`) || (r.stage==='tracked'&&this.timelyCells.has(`${r.scannerId}:${r.symbol}:${r.tf}`))
         || (['shadow','proposed'].includes(r.stage)&&this.forwardCells.has(`${r.scannerId}:${r.symbol}:${r.tf}`)),
-      run:({r,barAt,seenAt})=>this.runScheduled(r,barAt,false,seenAt),
+      run:({r,barAt,seenAt},releaseCompute)=>this.runScheduled(r,barAt,false,seenAt,undefined,releaseCompute),
       dropped:({r,barAt},reason)=>{this.releaseScheduled(r,barAt);this.deps.store.noteShadowScan?.(r,barAt-TF_SECONDS[r.tf]*1000,reason,reason==='expired'?'scan could not start within the unchanged signal-age window':'cell no longer scheduled');},
       error:(e,{r})=>{this.noteError(r,String((e as any)?.message??e));log.warn(`shadow ${r.scannerId} ${r.symbol}: ${String(e)}`);}
     });
@@ -194,6 +200,7 @@ export class ShadowRunner {
   symbols(): string[] { return [...new Set([...this.pairs.map(r => r.symbol), ...this.deps.paper.openPositions().map(p => p.symbol)])]; }
 
   start() {
+    this.stopped=false;
     // each pair runs on its own timeframe: the daily screen is 15m, but a survey can admit 1h or 4h pairs
     this.deps.candles.on('closed', (e: { symbol: string; tf: string; bar: Bar; historical?: boolean }) => {
       if (!this.pairs.some(r => r.tf === e.tf))return;
@@ -206,7 +213,7 @@ export class ShadowRunner {
     this.timer.unref();
   }
 
-  stop() { this.dispatch.stop();if(this.dispatchTimer)clearInterval(this.dispatchTimer);this.dispatchTimer=null; if (this.timer) clearInterval(this.timer); this.timer = null; this.saveFunnel(); }
+  stop() { this.stopped=true;this.dispatch.stop();if(this.dispatchTimer)clearInterval(this.dispatchTimer);this.dispatchTimer=null; if (this.timer) clearInterval(this.timer); this.timer = null; this.saveFunnel(); }
 
   private planSources(): PairRow[] {
     const cfg=this.deps.cfgRef(), cells=new Map<string,{scannerId:string;symbol:string;tf:string}>();
@@ -236,7 +243,7 @@ export class ShadowRunner {
     this.timelyCells=this.deps.timelyResearch?.()??new Set();
     this.forwardCells=this.deps.store.forwardCollectionKeys?.()??new Set();
     this.readingCells=new Set([
-      ...(cfg.executionPlans??[]).filter(p=>p.enabled&&p.readingOverride).map(p=>`${p.scannerId}:${p.symbol}:${p.tf}`),
+      ...(cfg.executionPlans??[]).filter(p=>p.enabled&&(p.comparison?.kind==='maker-fill'||p.readingOverride||solFilterPlan(p)||([SOL_MAKER_REFERENCE_ID,SOL_MAKER_TICK_REFERENCE_ID].includes(p.id)&&p.revision===1&&p.scannerId===SOL_MAKER_SCANNER&&p.symbol==='SOLUSD'&&p.tf==='15m'))).map(p=>`${p.scannerId}:${p.symbol}:${p.tf}`),
       ...this.deps.paper.openPositions().filter(p=>p.executionPlan?.readingOverride).map(p=>`${p.executionPlan!.sourceScannerId}:${p.symbol}:${p.tf}`),
     ]);
     if (!cfg.incubator?.enabled) { this.pairs = [];this.dispatch.prune(new Set()); return; }
@@ -280,6 +287,13 @@ export class ShadowRunner {
       this.scheduledBars.set(`${r.scannerId}:${symbol}:${tf}`,barAt);
       this.deps.store.noteShadowScan?.(r,barAt-TF_SECONDS[tf]*1000,'scheduled');
     }
+    void this.launchClose(due,barAt,seenAt,symbol,tf).catch(e=>{
+      for(const r of due)this.releaseScheduled(r,barAt);
+      log.warn(`shadow close dispatch failed: ${String(e)}`);
+    });
+  }
+
+  private async launchClose(due:PairRow[],barAt:number,seenAt:number,symbol:string,tf:string){
     // decision 165: a pair the account may copy is scanned at once, in the pool's `mirror` tier (after the account's own
     // scans, before background work); the 20 s wait and the background queue had put the account's mirrored entries a
     // median 54 s after the bar's close
@@ -295,7 +309,21 @@ export class ShadowRunner {
     const rank = (r: PairRow) => (r.stage === 'live' || focus?.held.has(r.symbol) ? 0 : canEnter(r) ? 1 : 2);
     // In copy mode, unqualified research cells must not consume the urgent lane.
     const copyable=(r:PairRow)=>r.stage!=='tracked' && (r.stage==='live' || !this.deps.store.copyRefusal(r,this.deps.cfgRef().incubator.mirror,this.turnoverOf(r.symbol)));
-    const urgent=due.filter(r=>holds(r)||(mirror&&copyable(r))).sort((a,b)=>rank(a)-rank(b));
+    // Rank across symbols in the shared mirror queue, not just within this
+    // symbol's callback. Research positions still precede ordinary research.
+    const mirrorRanks = new Map<PairRow, number>();
+    const urgent:PairRow[]=[];
+    let deadline=performance.now()+10;
+    for(const r of due){
+      if(this.stopped){for(const cell of due)this.releaseScheduled(cell,barAt);return;}
+      const held=holds(r),canCopy=mirror&&copyable(r);
+      if(held||canCopy){mirrorRanks.set(r,this.deps.accountHolds?.(r.scannerId,r.symbol,r.tf)?3:canCopy?2:1);urgent.push(r);}
+      // Qualification still happens on the same rules, then again at entry.
+      // Only ranking is cooperative: never block quote/exit timers for the universe.
+      if(r!==due.at(-1)&&performance.now()>=deadline){await new Promise<void>(resolve=>setImmediate(resolve));deadline=performance.now()+10;}
+    }
+    if(this.stopped){for(const cell of due)this.releaseScheduled(cell,barAt);return;}
+    urgent.sort((a,b)=>rank(a)-rank(b));
     const later = due.filter(r => !urgent.includes(r));
     const launch = (rows: PairRow[], live: boolean) => {
       if (!rows.length) return;
@@ -305,7 +333,7 @@ export class ShadowRunner {
         for(const r of rows)this.dispatch.enqueue(`${r.scannerId}:${r.symbol}:${r.tf}`,{r,barAt,seenAt},deadline);
         this.dispatch.drain();return;
       }
-      for (const r of rows) this.runScheduled(r, barAt, live, seenAt).catch(e => { this.noteError(r, String(e?.message ?? e)); log.warn(`shadow ${r.scannerId} ${symbol}: ${e?.message ?? e}`); });
+      for (const r of rows) this.runScheduled(r, barAt, live, seenAt, mirrorRanks.get(r)).catch(e => { this.noteError(r, String(e?.message ?? e)); log.warn(`shadow ${r.scannerId} ${symbol}: ${e?.message ?? e}`); });
     };
     launch(urgent, true);
     // Closed, integrity-checked bars are ready now. Pool priorities and reservations
@@ -354,7 +382,7 @@ export class ShadowRunner {
     if (keys.length > 60) delete this.stats.lastErrors[keys.sort((a, b) => this.stats.lastErrors[a].at - this.stats.lastErrors[b].at)[0]];
   }
 
-  private async run(rAtStart: PairRow, barAt = Date.now(), live = false, seenAt = Date.now()): Promise<void> {
+  private async run(rAtStart: PairRow, barAt = Date.now(), live = false, seenAt = Date.now(), rank?:number,releaseCompute?:()=>void): Promise<void> {
     let r = rAtStart;
     const s = this.deps.registry.get(r.scannerId);
     if (!s || s.status !== 'ok') {this.deps.store.noteShadowScan?.(r,barAt-TF_SECONDS[r.tf]*1000,'unavailable','scanner unavailable');return;}
@@ -382,7 +410,8 @@ export class ShadowRunner {
     const win = this.marks.window(`${r.scannerId}:${r.symbol}:${r.tf}`, bars.at(-1)!.time, r.tf);
     const res = await this.deps.pool.run(
       { scannerId: s.id, source: s.patched, symbol: r.symbol, tf: r.tf, tickSize: market.tickSize, bars, tailBars: win.tailBars, plotTail: 400, inputs: inputs && Object.keys(inputs).length ? inputs : undefined, timezone: cfg.scanners[s.id]?.timezone },
-      { deadlineMs: budget, priority: live ? 'mirror' : 'shadow' });
+      { deadlineMs: budget, priority: live ? 'mirror' : 'shadow', ...(live&&rank!==undefined?{rank}:{}) });
+    releaseCompute?.();
     this.stats.runs++; this.stats.lastBarAt = bars.at(-1)!.time;
     if (live) this.noteWave(r.tf, barAt, seenAt, tPool, Date.now(), res.ms ?? 0);
     if (!res.ok) { this.deps.store.noteShadowScan?.(r,barAt-TF_SECONDS[r.tf]*1000,'failed',res.error??'unknown scanner error'); if (/too late to be useful/.test(res.error ?? '')) this.stats.expired++; else this.noteError(r, res.error ?? 'unknown'); return; }
@@ -407,10 +436,17 @@ export class ShadowRunner {
     const READ = readingOf(cfg.scanners[s.id], s.id, (TF_SECONDS[r.tf] ?? 0) * 1000, s.patched, s.variantOf);   // decision 195
     const derived = applyRules({ scannerId: s.id, alerts: res.alerts, shapes: res.shapes, labels: res.labels, plots: res.plots, rule: cfg.scanners[s.id]?.rule ?? null, bars, mode: 'live', newLabelKeys, ...READ.rule });
     // decision 125: read from the bar after the last one this pair acted on; entries on a superseded bar are stale and dropped
-    const events = extractEvents(res.alerts, res.shapes, { barMs: (TF_SECONDS[r.tf] ?? 0) * 1000, drawn: res.labels, scannerId: s.id, sinceBarTime: win.since, derived, ...READ.extract })
+    const drops:Record<string,number>={};
+    const events = extractEvents(res.alerts, res.shapes, { drops, barMs: (TF_SECONDS[r.tf] ?? 0) * 1000, drawn: res.labels, scannerId: s.id, sinceBarTime: win.since, derived, ...READ.extract })
       .filter(ev => !(ev.kind === 'entry' && ev.barTime < lastBar.time));
+    this.deps.store.noteChartReceipt?.(s.id,r.symbol,r.tf,s.patched,cfg.scanners[s.id],bars,res,events);
+    if(this.deps.compareSourceScan && (cfg.executionPlans??[]).some(p=>p.enabled&&p.comparison?.kind==='maker-fill'&&p.scannerId===s.id&&p.symbol===r.symbol&&p.tf===r.tf)){
+      try { this.deps.compareSourceScan({scannerId:s.id,scannerName:s.name,symbol:r.symbol,tf:r.tf,events,drops,bars,market,
+        at:Date.now(),refPrice:this.deps.paper.mark(r.symbol)??lastBar.close}); }
+      catch(error){log.warn(`maker comparison scan receipt ${s.id} ${r.symbol}: ${String(error)}`);}
+    }
     // Interpretation experiments see the raw output even when today's reader found no entry.
-    if(this.deps.compareScan && ((cfg.executionPlans??[]).some(p=>p.enabled&&p.readingOverride&&p.scannerId===s.id&&p.symbol===r.symbol&&p.tf===r.tf)
+    if(this.deps.compareScan && ((cfg.executionPlans??[]).some(p=>p.enabled&&(p.readingOverride||solFilterPlan(p))&&p.scannerId===s.id&&p.symbol===r.symbol&&p.tf===r.tf)
       ||this.deps.paper.openPositions().some(p=>p.executionPlan?.readingOverride&&p.executionPlan.sourceScannerId===s.id&&p.symbol===r.symbol&&p.tf===r.tf))){
       if(this.deps.paper.prepareEntryDepth)await this.deps.paper.prepareEntryDepth(r.symbol);
       const at=Date.now(),refPrice=this.deps.paper.mark(r.symbol)??lastBar.close,atr=lastAtr(bars,14);

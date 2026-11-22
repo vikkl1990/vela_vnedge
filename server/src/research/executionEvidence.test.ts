@@ -108,3 +108,12 @@ test('export CLI writes one private snapshot and refuses to overwrite it or the 
  const dbOverwrite=spawnSync(process.execPath,[...args.slice(0,-1),dbPath],{encoding:'utf8'});assert.notEqual(dbOverwrite.status,0);
  assert.equal(db.get<any>('SELECT count(*) n FROM positions').n,1);
 });
+
+
+test('stop activation receipts export for their position lifetime without inferring a book field',t=>{
+ const {db,add,read}=fixture(t);const id=add({entry_at:1000});
+ db.db.exec('CREATE TABLE paper_stop_amendments(position_id INTEGER NOT NULL,active_at INTEGER NOT NULL,stop REAL NOT NULL,PRIMARY KEY(position_id,active_at))');
+ for(const [at,stop] of [[999,90],[1000,95],[1500,100],[2001,105]])db.run('INSERT INTO paper_stop_amendments VALUES(?,?,?)',id,at,stop);
+ const rows=read().trades.find(r=>r.positionId===id)!.receipts.paper_stop_amendments;
+ assert.deepEqual(rows.map(r=>[r.active_at,r.stop]),[[1000,95],[1500,100]]);
+});

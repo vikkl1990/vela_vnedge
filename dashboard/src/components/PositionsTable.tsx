@@ -1,6 +1,6 @@
-import { memo, useMemo, useState } from 'react'
+import { memo, useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { useClosePosition, useExecution, useMarkets } from '../api/queries'
+import { useClosePosition, useExecution, useMarkets, usePositionsHealth } from '../api/queries'
 import type { Position } from '../api/types'
 import { useAuth } from '../auth/AuthGate'
 import { fmtAge, fmtInt, fmtMoney, fmtPrice, fmtR } from '../lib/format'
@@ -10,8 +10,10 @@ import { useMediaQuery } from '../lib/useMediaQuery'
 import { useLivePrice, useLiveTick } from '../sse/prices'
 import { AssetChip } from './AssetChip'
 import { DataTable, type Column } from './DataTable'
-import { ConfirmDialog, Pill, Pnl, SidePill, StatusDot, Time } from './kit'
+import { ConfirmDialog, Pnl, SidePill, StatusDot, Time } from './kit'
 import { TradePath } from './TradePath'
+import { ActiveStop, CloseNow } from './PositionHealth'
+import { healthMatches, quoteFresh } from '../lib/positionHealth'
 
 /** Live unrealized PnL from the latest tick (falls back to the server's number). */
 function livePnl(p: Position, price: number | undefined): number {
@@ -59,15 +61,6 @@ const LiveDot = memo(function LiveDot({ p }: { p: Position }) {
   const price = useLivePrice(p.symbol, p.markPrice)
   return <StatusDot tone={livePnl(p, price) >= 0 ? 'ok' : 'danger'} />
 })
-
-function stopState(p: Position): { badge: string | null; tone: 'muted' | 'ok'; title: string } {
-  const r = p.sl == null ? null : targetR(p, p.sl)
-  if (r == null) return { badge: null, tone: 'muted', title: protectionText(p) }
-  if (r > 0.005) return { badge: `PROTECTED ${fmtR(r)}`, tone: 'ok', title: protectionText(p) }
-  if (p.breakEven || Math.abs(r) <= 0.005)
-    return { badge: 'BE', tone: 'muted', title: 'Stop is at entry, before costs. ' + protectionText(p) }
-  return { badge: null, tone: 'muted', title: protectionText(p) }
-}
 
 function ExecutionState({ p }: { p: Position }) {
   const e = p.execution
@@ -130,6 +123,17 @@ function PositionTargets({ p, tick }: { p: Position; tick?: number }) {
 }
 
 export function PositionsTable({ positions, compact = false }: { positions: Position[]; compact?: boolean }) {
+  const health = usePositionsHealth(positions.length > 0)
+  const [clock, setClock] = useState(() => performance.now())
+  useEffect(() => {
+    if (!positions.length) return
+    const timer = window.setInterval(() => setClock(performance.now()), 500)
+    return () => window.clearInterval(timer)
+  }, [positions.length])
+  const healthById = useMemo(
+    () => new Map(health.data?.response.positions.map((h) => [h.id, h]) ?? []),
+    [health.data],
+  )
   const [pathOf, setPathOf] = useState<{ id: number; title: string } | null>(null)
   // Eighteen columns need about 1500px. Below that, drop the derived values rather than making
   // the reader scroll sideways: notional, margin and liquidation can all be inferred from the
@@ -158,11 +162,25 @@ export function PositionsTable({ positions, compact = false }: { positions: Posi
   const pending = close.isPending || !auth.canTrade
 
   const cols = useMemo<Column<Position>[]>(() => {
+    const observed = (p: Position) => {
+      const h = healthById.get(p.id)
+      return healthMatches(p, h) ? h : undefined
+    }
+    const fresh = (p: Position) => {
+      const h = observed(p)
+      return (
+        !!h &&
+        !health.isError &&
+        !!health.data &&
+        quoteFresh(h, health.data.receivedAt, health.data.requestMs, clock)
+      )
+    }
     const tick = (sym: string) => markets?.find((m) => m.symbol === sym)?.tickSize
     return [
       {
         key: 'symbol',
         header: 'Symbol',
+        className: 'position-identity',
         value: (p) => p.symbol,
         render: (p) => (
           <span className="cell-sym">
@@ -174,6 +192,13 @@ export function PositionsTable({ positions, compact = false }: { positions: Posi
                 <Link to={`/scanners/${p.scannerId}`} className="link">
                   {p.scannerName}
                 </Link>
+                {compact && (
+                  <div>
+                    {fmtInt(p.qtyOpen)}/{fmtInt(p.qty)} contracts ·{' '}
+                    {(p.marginLeverage ?? p.leverage)?.toFixed(1) ?? '–'}×<br />
+                    Filled <Time t={p.entryAt} mode="datetime" /> · <Time t={p.entryAt} mode="ago" />
+                  </div>
+                )}
                 <ExecutionState p={p} />
               </div>
             </span>
@@ -181,43 +206,62 @@ export function PositionsTable({ positions, compact = false }: { positions: Posi
         ),
       },
       { key: 'side', header: 'Side', value: (p) => p.side, render: (p) => <SidePill side={p.side} /> },
-      {
-        key: 'qty',
-        header: 'Qty',
-        numeric: true,
-        value: (p) => p.qtyOpen,
-        render: (p) => (
-          <span className="mono">
-            {fmtInt(p.qtyOpen)}
-            <span className="muted">/{fmtInt(p.qty)}</span>
-          </span>
-        ),
-      },
+      ...(compact
+        ? []
+        : ([
+            {
+              key: 'qty',
+              header: 'Qty',
+              numeric: true,
+              value: (p) => p.qtyOpen,
+              render: (p) => (
+                <span className="mono">
+                  {fmtInt(p.qtyOpen)}
+                  <span className="muted">/{fmtInt(p.qty)}</span>
+                </span>
+              ),
+            },
+          ] as Column<Position>[])),
       {
         key: 'entry',
-        header: 'Entry',
+        header: compact ? 'Entry / Last' : 'Entry',
         numeric: true,
         value: (p) => p.entryPrice,
-        render: (p) => <span className="mono">{fmtPrice(p.entryPrice, tick(p.symbol))}</span>,
-      },
-      {
-        key: 'mark',
-        header: 'Last',
-        numeric: true,
-        value: (p) => p.markPrice,
-        render: (p) => <LiveMark p={p} tick={tick(p.symbol)} />,
-      },
-      {
-        key: 'lev',
-        header: 'Lev',
-        numeric: true,
-        value: (p) => p.marginLeverage ?? p.leverage ?? 0,
         render: (p) => (
-          <span className="mono">
-            {(p.marginLeverage ?? p.leverage) ? `${(p.marginLeverage ?? p.leverage)!.toFixed(1)}x` : '–'}
-          </span>
+          <div>
+            <span className="mono">{fmtPrice(p.entryPrice, tick(p.symbol))}</span>
+            {compact && (
+              <div className="small muted">
+                Last <LiveMark p={p} tick={tick(p.symbol)} />
+              </div>
+            )}
+          </div>
         ),
       },
+      ...(compact
+        ? []
+        : ([
+            {
+              key: 'mark',
+              header: 'Last',
+              numeric: true,
+              value: (p) => p.markPrice,
+              render: (p) => <LiveMark p={p} tick={tick(p.symbol)} />,
+            },
+            {
+              key: 'lev',
+              header: 'Lev',
+              numeric: true,
+              value: (p) => p.marginLeverage ?? p.leverage ?? 0,
+              render: (p) => (
+                <span className="mono">
+                  {(p.marginLeverage ?? p.leverage)
+                    ? `${(p.marginLeverage ?? p.leverage)!.toFixed(1)}x`
+                    : '–'}
+                </span>
+              ),
+            },
+          ] as Column<Position>[])),
       ...(narrow || compact
         ? []
         : ([
@@ -254,19 +298,10 @@ export function PositionsTable({ positions, compact = false }: { positions: Posi
           ] as Column<Position>[])),
       {
         key: 'sl',
-        header: 'SL',
+        header: 'Active SL',
         numeric: true,
         value: (p) => p.sl,
-        render: (p) => (
-          <span className="mono">
-            {fmtPrice(p.sl, tick(p.symbol))}
-            {stopState(p).badge && (
-              <Pill tone={stopState(p).tone} className="ml" title={stopState(p).title}>
-                {stopState(p).badge}
-              </Pill>
-            )}
-          </span>
-        ),
+        render: (p) => <ActiveStop p={p} h={observed(p)} tick={tick(p.symbol)} />,
       },
       {
         key: 'tp',
@@ -277,12 +312,32 @@ export function PositionsTable({ positions, compact = false }: { positions: Posi
           return <PositionTargets p={p} tick={tick(p.symbol)} />
         },
       },
+      ...(compact
+        ? []
+        : ([
+            {
+              key: 'upnl',
+              header: 'Gross unrealized',
+              numeric: true,
+              value: (p) => p.unrealizedPnl,
+              render: (p) => <LiveUpnl p={p} />,
+            },
+          ] as Column<Position>[])),
       {
-        key: 'upnl',
-        header: 'Unrealized',
+        key: 'closeNow',
+        header: 'Net close-now · USD',
         numeric: true,
-        value: (p) => p.unrealizedPnl,
-        render: (p) => <LiveUpnl p={p} />,
+        sortable: false,
+        render: (p) => (
+          <div>
+            <CloseNow p={p} h={observed(p)} fresh={fresh(p)} unavailable={health.isError} />
+            {compact && (
+              <div className="small muted">
+                Gross unrealized <LiveUpnl p={p} />
+              </div>
+            )}
+          </div>
+        ),
       },
       ...(dense || !anyRealized
         ? []
@@ -319,18 +374,22 @@ export function PositionsTable({ positions, compact = false }: { positions: Posi
               render: (p) => <span className="mono">{fmtMoney(p.riskAmount)}</span>,
             },
           ] as Column<Position>[])),
-      {
-        key: 'age',
-        header: 'Filled',
-        value: (p) => p.entryAt,
-        render: (p) => (
-          <div>
-            <Time t={p.entryAt} mode="datetime" className="small" />
-            <br />
-            <Time t={p.entryAt} mode="ago" className="muted small" />
-          </div>
-        ),
-      },
+      ...(compact
+        ? []
+        : ([
+            {
+              key: 'age',
+              header: 'Filled',
+              value: (p) => p.entryAt,
+              render: (p) => (
+                <div>
+                  <Time t={p.entryAt} mode="datetime" className="small" />
+                  <br />
+                  <Time t={p.entryAt} mode="ago" className="muted small" />
+                </div>
+              ),
+            },
+          ] as Column<Position>[])),
       {
         key: 'actions',
         header: '',
@@ -348,13 +407,20 @@ export function PositionsTable({ positions, compact = false }: { positions: Posi
         ),
       },
     ]
-  }, [markets, compact, dense, narrow, pending, anyRealized])
+  }, [markets, compact, dense, narrow, pending, anyRealized, healthById, health.data, health.isError, clock])
 
   return (
-    <>
+    <div className="position-layout">
       <div className="position-cards" aria-label="Open positions">
         {positions.length === 0 && <p className="muted">No open positions</p>}
         {positions.map((p) => {
+          const candidate = healthById.get(p.id)
+          const h = healthMatches(p, candidate) ? candidate : undefined
+          const fresh =
+            !!h &&
+            !health.isError &&
+            !!health.data &&
+            quoteFresh(h, health.data.receivedAt, health.data.requestMs, clock)
           const tick = markets?.find((m) => m.symbol === p.symbol)?.tickSize
           return (
             <article className="position-card" key={p.id}>
@@ -379,7 +445,7 @@ export function PositionsTable({ positions, compact = false }: { positions: Posi
                   </dd>
                 </div>
                 <div>
-                  <dt>Unrealized P&L (USD)</dt>
+                  <dt>Gross unrealized P&L (USD)</dt>
                   <dd>
                     <LiveUpnl p={p} />
                   </dd>
@@ -391,8 +457,10 @@ export function PositionsTable({ positions, compact = false }: { positions: Posi
                   </dd>
                 </div>
                 <div>
-                  <dt>Stop loss {p.breakEven ? '(break-even)' : ''}</dt>
-                  <dd>{fmtPrice(p.sl, tick)}</dd>
+                  <dt>Active SL</dt>
+                  <dd>
+                    <ActiveStop p={p} h={h} tick={tick} />
+                  </dd>
                 </div>
                 <div>
                   <dt>
@@ -447,6 +515,8 @@ export function PositionsTable({ positions, compact = false }: { positions: Posi
                   <dd>{fmtMoney(p.riskAmount)}</dd>
                 </div>
               </dl>
+              <h4>Net close-now · USD</h4>
+              <CloseNow p={p} h={h} fresh={fresh} unavailable={health.isError} />
               <PositionTargets p={p} tick={tick} />
               <div className="position-card-actions">
                 <button
@@ -471,7 +541,7 @@ export function PositionsTable({ positions, compact = false }: { positions: Posi
       <div className="position-desktop">
         <DataTable
           columns={cols}
-          rows={positions}
+          rows={compact ? [...positions].sort((a, b) => b.entryAt - a.entryAt) : positions}
           rowKey={(p) => p.id}
           onRowClick={(p) => setPathOf({ id: p.id, title: `${p.symbol} ${p.side} · ${p.scannerName}` })}
           emptyLabel={
@@ -525,6 +595,6 @@ export function PositionsTable({ positions, compact = false }: { positions: Posi
           })
         }}
       />
-    </>
+    </div>
   )
 }

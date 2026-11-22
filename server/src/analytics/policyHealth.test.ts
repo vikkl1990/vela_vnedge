@@ -20,12 +20,12 @@ test('account readiness matches capital, risk and ML policy as well as strategy'
  assert.equal(currentPolicyIds(db,engine,0,3000).size,0);
 });
 
-test('capacity-compatible readiness retains winners and losers without admitting excluded evidence or altering promotion',t=>{
+for(const cap of ['global','market'])test(`${cap} capacity-compatible readiness retains winners and losers without admitting excluded evidence or altering promotion`,t=>{
  const db=new Db(':memory:');t.after(()=>db.db.close());const cfg=structuredClone(DEFAULT_CONFIG);
  cfg.paper.maxOpenPositions=8;cfg.risk.maxPositionsTotal=8;
  const paper=new PaperEngine(db,()=>cfg);paper.sourceHashFor=()=> 'source';
  const cell={scannerId:'s',symbol:'BTCUSD',tf:'1h'},old=paper.policyForCell(cell);saveTradePolicy(db,old);
- cfg.paper.maxOpenPositions=0;cfg.risk.maxPositionsTotal=0;
+ if(cap==='global'){cfg.paper.maxOpenPositions=0;cfg.risk.maxPositionsTotal=0;}else cfg.risk.maxPositionsPerSymbol=0;
  const current=paper.policyForCell(cell);saveTradePolicy(db,current);
  let at=1000;
  const add=(extra:Record<string,unknown>={})=>{

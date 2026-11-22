@@ -201,7 +201,7 @@ export class RiskManager extends EventEmitter implements RiskGate {
     const total = open.length + pending.length;
     if (c.maxPositionsTotal > 0 && total >= c.maxPositionsTotal) return reject(`max positions ${c.maxPositionsTotal} reached`);
     const bySymbol = open.filter(p => p.symbol === req.symbol).length + pending.filter(p => p.symbol === req.symbol).length;
-    if (bySymbol >= c.maxPositionsPerSymbol) return reject(`max ${c.maxPositionsPerSymbol} positions on ${req.symbol}`);
+    if (c.maxPositionsPerSymbol > 0 && bySymbol >= c.maxPositionsPerSymbol) return reject(`max ${c.maxPositionsPerSymbol} positions on ${req.symbol}`);
     const byScanner = open.filter(p => p.scannerId === req.scannerId).length + pending.filter(p => p.scannerId === req.scannerId).length;
     if (byScanner >= c.perScannerMaxPositions) return reject(`scanner at its ${c.perScannerMaxPositions}-position budget`);
     if (c.perScannerDailyLossPct > 0) {
@@ -358,7 +358,7 @@ export class RiskManager extends EventEmitter implements RiskGate {
       manualHalt: this.st.manualHalt, equity: eq, peakEquity: this.peakEquity(), drawdownPct: this.drawdownPct(), leverageMult: this.leverageMult(),
       sizing: { from: this.ddFrom(), drawdownPct: this.sizingDrawdownPct(), startEquity: this.paper.initialEquity },
       day: period(this.st.day, c?.maxDailyLossPct ?? 0), week: period(this.st.week, c?.maxWeeklyLossPct ?? 0),
-      positions: { open: open.length, pending: pending.length, max: c?.maxPositionsTotal > 0 ? c.maxPositionsTotal : null, bySymbol: count('symbol'), byScanner: count('scannerId'), maxPerSymbol: c?.maxPositionsPerSymbol ?? null, maxPerScanner: c?.perScannerMaxPositions ?? null },
+      positions: { open: open.length, pending: pending.length, max: c?.maxPositionsTotal > 0 ? c.maxPositionsTotal : null, bySymbol: count('symbol'), byScanner: count('scannerId'), maxPerSymbol: c?.maxPositionsPerSymbol > 0 ? c.maxPositionsPerSymbol : null, maxPerScanner: c?.perScannerMaxPositions ?? null },
       scanners: Object.fromEntries(Object.entries(this.st.scanners).map(([id, s]) => [id, { ...s, dayPnl: this.scannerDayPnl(id), inCooldown: Boolean(s.cooldownUntil && now < s.cooldownUntil) }])),
       exposure: { tf, ...this.exposure(tf), limitPct: c?.maxBetaExposurePct ?? 0 },
       regime: c?.regime ?? null, config: c, rejections: this.rejections.slice(-50).reverse(),

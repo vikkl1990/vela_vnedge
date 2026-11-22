@@ -124,7 +124,7 @@ test('all basket legs retain exact pricing, order identity and budgets without o
  const gate=new EntryDepthGate({cfg:()=>x.cfg,now:x.getNow,book:async()=>({timestamp:(x.getNow()-10)*1000,buy:[{price:price-.01,size:1e6}],sell:[{price,size:1e6}]})});
  wireEntryDepth(new PaperEngine(x.db,()=>x.cfg),x.e,gate);
  for(const [i,v] of [100,98.4,96.8].entries()){
-  price=v;x.at(T+i*H);await gate.prepare('ETHUSD');assert.equal(x.enter(price,T+(i-1)*H).action,'pending');x.fill(price);
+  price=v;x.at(T+i*H);await gate.prepare('ETHUSD');assert.equal(x.enter(price,T+(i-1)*H).action,'pending');x.at(T+i*H+100);await gate.prepare('ETHUSD',true,x.getNow());x.fill(price,x.getNow()+1);
  }
  const p=x.e.openPositions()[0],detail=new Journal(x.db).detail('shadow',p.id),rows=detail.basketEntries as any[];
  assert.equal(rows.length,3);assert.equal(p.fills.length,3);
@@ -132,7 +132,7 @@ test('all basket legs retain exact pricing, order identity and budgets without o
   const a=row.context.audit,b=row.context.budget,f=p.fills[i];
   assert.equal(a.orderId,f.orderId);assert.equal(a.qty,f.qty);assert.equal(a.price,f.price);assert.equal(a.entryFee,f.fee);assert.equal(a.at,f.at);
   assert.equal(a.role,'taker');assert.equal(a.source,'depth');assert.equal(a.depth.requestedQty,f.qty);assert.equal(a.depth.vwap,f.price);
-  assert.equal(a.admissionDepth.checkedQty,f.qty);assert.equal(a.depth.receivedAt,T+i*H);assert.equal(a.depth.exchangeAt,T+i*H-10);
+  assert.equal(a.admissionDepth.checkedQty,f.qty);assert.equal(a.depth.receivedAt,T+i*H+100);assert.equal(a.depth.exchangeAt,T+i*H+90);
   assert.equal(b.basketEntries,i+1);assert.equal(b.basketAccountingVersion,2);
   assert.equal(b.entryFee,p.fills.slice(0,i+1).reduce((n,f)=>n+f.fee,0));assert.ok(b.risk<=30);
  }
@@ -175,4 +175,21 @@ test('funding debits already paid consume add-on capacity; credits never expand 
  assert.ok(sizeBasketEntry(98.4,sl,inputs,debit).qty<base.qty);
  const credit=structuredClone(p);credit.realizedPnl=15;
  assert.equal(sizeBasketEntry(98.4,sl,inputs,credit).qty,base.qty);
+});
+
+
+test('basket basis changes clear queued amendments and record the new bracket activation',t=>{
+ const x=fixture(t);x.enter(100);x.fill(100);const p=x.e.openPositions()[0];
+ x.at(T+H);x.enter(98.4,T);
+ x.e.exitExecution.amend(p,97.2,T+H+90,100);
+ x.e.exitExecution.amend(p,97.4,T+H+95,100);
+ x.fill(98.4,T+H+100);
+ assert.equal(p.basket!.entries,2);
+ const state=x.e.exitExecution.state(p.id)!;
+ assert.equal(state.desired_stop,null);assert.equal(state.queued_stop,null);assert.equal(state.ack_at,null);assert.equal(state.queued_ack_at,null);
+ assert.equal(x.e.exitExecution.stopAt(p.id,T+H+100),p.sl);
+ x.restart();const held=x.e.openPositions()[0];
+ x.at(T+H+60000);x.e.onBar('ETHUSD',{time:T+H,open:100,high:100,low:90,close:98.4},x.getNow());
+ assert.equal(x.e.pendingExits().length,0,'an add-on minute cannot charge the whole new basket for an earlier wick');
+ assert.equal(held.status,'open');
 });

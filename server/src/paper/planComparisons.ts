@@ -1,4 +1,5 @@
 import type { AppConfig } from '../config.ts';
+import {solFilterPlan} from '../scanners/solMakerExperiment.ts';
 import type { Db } from '../db.ts';
 import type { Bar } from '../data/candleStore.ts';
 import {extractEvents, type ScanEvent} from '../scanners/extractor.ts';
@@ -12,6 +13,7 @@ import { planSnapshot, planScannerId, planEvents, takeProfitLabel, type Executio
 
 type Observation={scannerId:string;scannerName:string;symbol:string;tf:string;event:ScanEvent;bars:Bar[];market:MarketInfo;at:number;refPrice:number;refusal?:string|null};
 export type ComparisonScan=Omit<Observation,'event'|'refusal'> & {result:WorkerResult;patched:string;variantOf?:string;since:number;newLabelKeys:Set<string>;refusal:(event:ScanEvent)=>string|null|undefined};
+export type SourceScan=Omit<Observation,'event'|'refusal'> & {events:ScanEvent[];drops:Record<string,number>};
 
 /** Reporting only: these titles are the same Pine condition on different output channels.
  * Preserve the stored marker and admission identity. Never pair unrelated flips just because
@@ -86,11 +88,23 @@ export class PlanComparisons {
     }
   }
 
+  /** Maker arms use the existing source reading. Record even a successful silent run,
+   * without extracting twice, preparing depth or admitting an entry from diagnostics. */
+  observeSourceScan(input:SourceScan){
+    for(const d of this.cfg().executionPlans??[]){
+      if(!d.enabled||d.comparison?.kind!=='maker-fill'||d.scannerId!==input.scannerId||d.symbol!==input.symbol||d.tf!==input.tf)continue;
+      const p=planSnapshot(this.cfg(),d,this.sourceHash(d.scannerId),input.market.productFees??this.paper.marketFeesFor?.(input.symbol));
+      this.remember(input,p);
+      this.db.run('INSERT OR IGNORE INTO execution_plan_scans VALUES(?,?,?,?,?,?)',planScannerId(p),input.bars.at(-1)!.time,input.at,
+        input.events.filter(e=>e.kind==='entry').length,input.events.filter(e=>e.kind==='exit').length,JSON.stringify(input.drops));
+    }
+  }
+
   /** Read both arms from the same raw run, before the control can discard a marker. */
   observeScan(input:ComparisonScan){
     const snapshots=new Map<string,{p:ExecutionPlanSnapshot;enabled:boolean}>();
     for(const d of this.cfg().executionPlans??[]){
-      if(!d.enabled||!d.readingOverride||d.scannerId!==input.scannerId||d.symbol!==input.symbol||d.tf!==input.tf)continue;
+      if(!d.enabled||(!d.readingOverride&&!solFilterPlan(d))||d.scannerId!==input.scannerId||d.symbol!==input.symbol||d.tf!==input.tf)continue;
       const p=planSnapshot(this.cfg(),d,this.sourceHash(d.scannerId),input.market.productFees??this.paper.marketFeesFor?.(input.symbol));
       snapshots.set(planScannerId(p),{p,enabled:true});
     }
@@ -107,6 +121,9 @@ export class PlanComparisons {
         .filter(e=>e.kind!=='entry'||e.barTime>=input.bars.at(-1)!.time);
       this.remember(input,p);
       if(enabled)this.db.run('INSERT OR IGNORE INTO execution_plan_scans VALUES(?,?,?,?,?,?)',scannerId,input.bars.at(-1)!.time,input.at,events.filter(e=>e.kind==='entry').length,events.filter(e=>e.kind==='exit').length,JSON.stringify(drops));
+      // Input studies already consume the normal source-event path. This receipt
+      // exposes successful zero-signal runs without admitting the event twice.
+      if(!p.readingOverride)continue;
       for(const event of events){
         if(event.kind==='info'||(!enabled&&event.kind==='entry'))continue;
         this.execute({...input,event,refusal:event.kind==='entry'?input.refusal(event):null},p);
@@ -114,7 +131,7 @@ export class PlanComparisons {
     }
   }
 
-  private remember(input:Observation|ComparisonScan,p:ExecutionPlanSnapshot){
+  private remember(input:{at:number},p:ExecutionPlanSnapshot){
     this.db.run('INSERT OR IGNORE INTO execution_plan_cohorts VALUES(?,?,?,?,?,?,?,?)',planScannerId(p),p.id,p.revision,p.signature,p.symbol,p.tf,input.at,JSON.stringify(p));
   }
   private execute(input:Observation,p:ExecutionPlanSnapshot){
@@ -157,7 +174,7 @@ export class PlanComparisons {
     const eventsByCohort=new Map<string,any[]>();
     const cohorts=this.db.all<any>('SELECT * FROM execution_plan_cohorts ORDER BY first_at DESC').map(row=>{
       const p=JSON.parse(row.snapshot) as ExecutionPlanSnapshot;
-      const events=this.db.all<any>('SELECT e.*,p.status,p.realized_pnl,p.fees,p.risk_amount,p.exit_reason,p.exit_at FROM execution_plan_events e LEFT JOIN positions p ON p.id=e.position_id AND p.bt=2 WHERE e.scanner_id=? ORDER BY e.at',row.scanner_id);
+      const events=this.db.all<any>('SELECT e.*,p.status,p.realized_pnl,p.fees,p.risk_amount,p.exit_reason,p.exit_at,p.entry_at,p.entry_price,p.qty,p.contract_value,p.side,p.sl_original FROM execution_plan_events e LEFT JOIN positions p ON p.id=e.position_id AND p.bt=2 WHERE e.scanner_id=? ORDER BY e.at',row.scanner_id);
       eventsByCohort.set(row.scanner_id,events);
       const positions=[...new Map(events.filter(e=>e.status==='open'||e.status==='closed').map(e=>[e.position_id,e])).values()];
       const closed=positions.filter(e=>e.status==='closed').sort((a,b)=>a.exit_at-b.exit_at);
@@ -189,17 +206,28 @@ export class PlanComparisons {
       const key=(e:any,p:typeof control)=>p.readingOverride?matchedReadingKey(e.source_event):e.source_event;
       const cm=new Map(ce.map(e=>[key(e,control),e])),vm=new Map(ve.map(e=>[key(e,candidate),e]));
       const shared=[...cm.keys()].filter(k=>vm.has(k));
-      const paired=shared.map(k=>[cm.get(k)!,vm.get(k)!]).filter(([a,b])=>a.status==='closed'&&b.status==='closed');
+      const closedPairs=shared.map(k=>[cm.get(k)!,vm.get(k)!]).filter(([a,b])=>a.status==='closed'&&b.status==='closed');
+      // Exit-only evidence must not attribute different entry prices or size to the exit.
+      const sameEntry=([a,b]:any[])=>['entry_at','entry_price','qty','contract_value','side','sl_original','risk_amount'].every(k=>a[k]===b[k]);
+      const paired=['two-bar','profit-floor'].includes(control.comparison?.kind??'')?closedPairs.filter(sameEntry):closedPairs;
       const unresolved=(e:any)=>e.status!=='closed'&&(e.status==='open'||e.status==='pending'||['pending','processing','error','interrupted'].includes(e.action));
       const controlNet=cohorts.find(c=>c.id===control.id&&c.signature===control.signature)?.net??0;
       const candidateNet=cohorts.find(c=>c.id===candidate.id&&c.signature===candidate.signature)?.net??0;
-      comparisons.push({kind:control.comparison?.kind==='exit-policy'?'exit':control.readingOverride?'reading':'exit',group,symbol:control.symbol,tf:control.tf,enabled:control.enabled&&candidate.enabled,
+      comparisons.push({kind:['two-bar','profit-floor','maker-fill'].includes(control.comparison?.kind??'')?control.comparison!.kind:control.comparison?.kind==='exit-policy'?'exit':control.readingOverride?'reading':'exit',group,symbol:control.symbol,tf:control.tf,enabled:control.enabled&&candidate.enabled,
         controlId:control.id,candidateId:candidate.id,controlLabel:control.label??control.id,candidateLabel:candidate.label??candidate.id,
         controlSignature:control.signature,candidateSignature:candidate.signature,controlNet,candidateNet,
         sharedSignals:shared.length,controlOnly:cm.size-shared.length,candidateOnly:vm.size-shared.length,
         unresolvedSignals:shared.filter(k=>unresolved(cm.get(k))||unresolved(vm.get(k))).length,
         differentAdmissions:shared.filter(k=>Boolean(cm.get(k).status==='open'||cm.get(k).status==='closed')!==Boolean(vm.get(k).status==='open'||vm.get(k).status==='closed')).length,
-        matchedClosed:paired.length,matchedDeltaNet:paired.length?paired.reduce((sum,[a,b])=>sum+(b.realized_pnl-b.fees)-(a.realized_pnl-a.fees),0):null});
+        matchedEntryMismatch:['two-bar','profit-floor'].includes(control.comparison?.kind??'')?closedPairs.length-paired.length:0,matchedClosed:paired.length,matchedDeltaNet:paired.length?paired.reduce((sum,[a,b])=>sum+(b.realized_pnl-b.fees)-(a.realized_pnl-a.fees),0):null,
+        promotionEligible:false,
+        matchedControlNet:paired.length?paired.reduce((n,[a])=>n+a.realized_pnl-a.fees,0):null,
+        matchedCandidateNet:paired.length?paired.reduce((n,[,b])=>n+b.realized_pnl-b.fees,0):null,
+        matchedControlStops:paired.filter(([a])=>a.exit_reason==='sl').length,
+        matchedCandidateStops:paired.filter(([,b])=>b.exit_reason==='sl').length,
+        matchedControlLosses:paired.filter(([a])=>a.realized_pnl-a.fees<0).length,
+        matchedCandidateLosses:paired.filter(([,b])=>b.realized_pnl-b.fees<0).length,
+        matchedWinnersCut:paired.filter(([a,b])=>a.realized_pnl-a.fees>0&&b.realized_pnl-b.fees<a.realized_pnl-a.fees-1e-8).length});
     }
     return {configured,cohorts,comparisons};
   }

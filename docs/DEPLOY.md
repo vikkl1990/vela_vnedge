@@ -51,8 +51,8 @@ front of it, so passwords and session cookies would cross the network in the cle
 ## Install
 
 ```
-# Node (arm64; use node-v25.5.0-linux-x64.tar.xz on amd64)
-curl -fsSL -o /tmp/node.tar.xz https://nodejs.org/dist/v25.5.0/node-v25.5.0-linux-arm64.tar.xz
+# Node: the production pin is the version in .node-version (currently 24.22.3). amd64 uses linux-x64.
+curl -fsSL -o /tmp/node.tar.xz https://nodejs.org/dist/v24.22.3/node-v24.22.3-linux-arm64.tar.xz
 sudo mkdir -p /opt/node && sudo tar -xJf /tmp/node.tar.xz -C /opt/node --strip-components=1
 sudo ln -sf /opt/node/bin/node /usr/local/bin/node && sudo ln -sf /opt/node/bin/npm /usr/local/bin/npm
 
@@ -122,10 +122,13 @@ option and needs nothing open but 22.
 
 Behind nginx the bot sees `127.0.0.1` as the peer for every request, which would make a caller on
 the internet pass the loopback check that guards first-run setup. The application therefore trusts
-`X-Forwarded-For` only when the immediate peer is loopback, and takes its leftmost entry as the real
-client; a direct connection cannot forge it because its peer is not loopback. nginx additionally
-refuses `/api/auth/setup` outright, so the first administrator can only ever be created over the SSH
-tunnel. If you put a different proxy in front, it must set `X-Forwarded-For`, or the same hole opens.
+`X-Forwarded-For` only when the immediate peer is loopback, and takes its rightmost entry as the real
+client. A proxy appends the peer it actually saw, so the rightmost address is the one the proxy
+added; a caller cannot put `127.0.0.1` there and pass the setup check. A direct connection cannot
+forge the header at all, because its peer is not loopback. nginx additionally refuses
+`/api/auth/setup` outright (see `ops/nginx-dashboard.conf.sample`), so the first administrator can
+only ever be created over the SSH tunnel. A different proxy must set `X-Forwarded-For` to
+`$remote_addr` (one address, not a forwarded list), or the same hole opens.
 
 ## Incubator (daily screen)
 

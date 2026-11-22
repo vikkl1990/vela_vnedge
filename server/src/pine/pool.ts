@@ -10,6 +10,14 @@ import type { WorkerJob, WorkerResult } from './worker.ts';
 import type { FlowMinute } from '../orderflow/store.ts';
 
 const log = logger.scoped('pool');
+
+/** Exchange and alert credentials stay in the parent. A Pine worker only needs the job. */
+const WORKER_SECRET_ENV = ['DELTA_API_KEY', 'DELTA_API_SECRET', 'DELTA_LIVE', 'TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_ID'];
+export function workerEnv(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env, ...extra };
+  for (const key of WORKER_SECRET_ENV) delete env[key];
+  return env;
+}
 /** Decision 184: how long a terminated worker may take to exit before its slot is replaced regardless. */
 const RETIRE_GRACE_MS = 30_000;
 const WORKER_FILE = path.join(path.dirname(fileURLToPath(import.meta.url)), 'worker.ts');
@@ -60,7 +68,7 @@ export function memoryUsedBytes(): number {
 export function processWorker(index: number, heapMb = WORKER_HEAP_MB): PoolWorker {
   const child = fork(WORKER_FILE, [], {
     execArgv: ['--no-warnings=ExperimentalWarning', `--max-old-space-size=${heapMb}`],
-    env: { ...process.env, WORKER_INDEX: String(index) },
+    env: workerEnv({ WORKER_INDEX: String(index) }),
     serialization: 'advanced', stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
   });
   return {
@@ -89,7 +97,7 @@ export interface PoolWorker {
 export { readingLegacy as legacyConditionTitles } from '../scanners/legacy.ts';
 import { readingLegacy } from '../scanners/legacy.ts';
 
-interface Pending { job: WorkerJob; resolve: (r: WorkerResult) => void; startedAt?: number; queuedAt: number; deadline?: number; live: boolean; /** Dispatch order inside the live queue: a higher rank goes first, equal ranks keep arrival order. */ rank?: number; /** Decision 201: the tier it was queued in, so the memory guard can spare the account's own runs. */ priority?: JobPriority }
+interface Pending { job: WorkerJob; resolve: (r: WorkerResult) => void; startedAt?: number; queuedAt: number; deadline?: number; live: boolean; /** Dispatch order inside the live or mirror queue: higher rank first, equal ranks retain arrival order. */ rank?: number; /** Decision 201: the tier it was queued in, so the memory guard can spare the account's own runs. */ priority?: JobPriority }
 /**
  * `live` is a current bar's evaluation, which can open or close a trade; `background` is
  * everything that can wait: backtests, warm-ups, the incubator's shadow runs and research.
@@ -301,12 +309,15 @@ export class PinePool {
       const ttl = opts.deadlineMs ?? (live ? LIVE_QUEUE_DEADLINE_MS : undefined);
       const p: Pending = { job: { legacyConditionTitles: readingLegacy().has(job.scannerId), ...job, id: this.nextId++ }, resolve, queuedAt: now, deadline: ttl === undefined ? undefined : now + ttl, live: live || opts.priority === 'mirror', priority: opts.priority ?? 'background', rank: opts.rank };
       if (this.stopped) { this.fail(p, 'worker pool stopped'); return; }
-      if (live && p.rank !== undefined) {
+      if ((live || opts.priority === 'mirror') && p.rank !== undefined) {
         // Decision 268: every bar close of a longer timeframe lands with the closes of the shorter ones (a 4h close is also a
         // 1h and a 15m close), and a plain first-in-first-out queue made the 4h scan wait behind two dozen shorter ones.
         // A ranked job goes ahead of queued jobs of lower rank and behind those of equal or higher rank.
-        const at = this.live.findIndex(q => (q.rank ?? -Infinity) < p.rank!);
-        if (at < 0) this.live.push(p); else this.live.splice(at, 0, p);
+        // Mirror ranking serves account exits and qualified copy candidates before
+        // shadow-only positions, without moving any job above the live tier.
+        const queue = live ? this.live : this.mirror;
+        const at = queue.findIndex(q => (q.rank ?? -Infinity) < p.rank!);
+        if (at < 0) queue.push(p); else queue.splice(at, 0, p);
       } else (live ? this.live : opts.priority === 'mirror' ? this.mirror : opts.priority === 'shadow' ? this.shadow : this.queue).push(p);
       this.pump();
     });

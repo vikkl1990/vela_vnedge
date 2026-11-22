@@ -1,5 +1,8 @@
+import { RuntimeState } from './runtime.ts';
 import {candleReplayBlock} from './paper/basket.ts';
+import {scannerAttentionReadiness} from './scanners/attention.ts';
 import {classMap,classOf} from './markets/classes.ts';
+import { MoverStore, MOVER_WINDOWS_MIN } from './markets/movers.ts';
 import {ASSET_GROUPS,ASSET_SECTORS} from '../../shared/assetClass.ts';
 import {copyRecoveryRefusal} from './incubator/copyRecovery.ts';
 import {bindScalperConnection} from './connections/scalperOffer.ts';
@@ -24,7 +27,7 @@ import { aliasMap, duplicateGroups } from './scanners/identity.ts';
 import { ShadowRunner } from './incubator/shadow.ts';
 import { dailyReport } from './analytics/daily.ts';
 import { listTrackers, removeTracker, saveTracker, trackerView, timelyTrackerKeys } from './incubator/tracker.ts';
-import { approve as incubatorApprove, demote as incubatorDemote, reject as incubatorReject, evaluate as incubatorEvaluate, admitOnly as incubatorAdmitOnly, candidateBlockers, syncLive as incubatorSyncLive, autoPromote as incubatorAutoPromote, livePairs } from './incubator/cycle.ts';
+import { approve as incubatorApprove, demote as incubatorDemote, reject as incubatorReject, evaluate as incubatorEvaluate, evaluateCooperative, admitOnly as incubatorAdmitOnly, candidateBlockers, syncLive as incubatorSyncLive, autoPromote as incubatorAutoPromote, livePairs } from './incubator/cycle.ts';
 import { pairStats } from './incubator/gate.ts';
 import { ConfigStore, type ScannerConfig, DATA_DIR, ROOT_DIR, type AppConfig } from './config.ts';
 import { band, learnBook } from './analytics/learning.ts';
@@ -55,6 +58,7 @@ import type { DepthRecorder } from './execution/depthRecorder.ts';
 import type { OrderFlowStore } from './orderflow/store.ts';
 import type { MonitorRuntime } from './research/monitorRuntime.ts';
 import type { FocusedReplay } from './research/focusedReplay.ts';
+import type {ExecutionTiming} from './execution/executionTiming.ts';
 import {eligibleEvidence} from './evidence/trades.ts';
 import { TapeAudit } from './execution/tapeAudit.ts';
 import { TF_SECONDS } from './config.ts';
@@ -108,10 +112,16 @@ export class App {
   readonly profiles: ProfileStore;
   readonly marketGate: MarketGate;
   private marketTimer: ReturnType<typeof setInterval> | null = null;
+  /** Periodic execution work registered during construction and armed only from {@link start}. */
+  readonly executionLoops: Array<() => ReturnType<typeof setInterval>> = [];
+  private executionLoopsStarted = false;
   readonly evidenceReview: EvidenceReview<{synced: ReturnType<typeof incubatorSyncLive>; report: ReturnType<typeof incubatorEvaluate>; promoted: string[]; blocked: string[]}>;
   private lastAdmissionAt = 0;
   private huntTimer: ReturnType<typeof setInterval> | null = null;
   readonly marks = new MarkStore();
+  /** Short price history per market for the movers strip (display only). */
+  readonly movers = new MoverStore();
+  private moverTimer: ReturnType<typeof setInterval> | null = null;
   readonly exchangeStatus = new TradingStatus();
   /** Decision 187: every paper fill set beside the real prints on the tape. */
   tapeAudit!: TapeAudit;
@@ -123,6 +133,7 @@ export class App {
   orderFlow!: OrderFlowStore;
   tradeMonitor!: MonitorRuntime;
   replayArchive!: FocusedReplay;
+  executionTiming!: ExecutionTiming;
   readonly advisoryFeedFactory:(()=>DeltaFeed)|undefined;
   stopExecutionAudit?: () => void | Promise<void>;
   readonly risk: RiskManager;
@@ -133,6 +144,7 @@ export class App {
   readonly screenQueue: ScreenQueue;
   readonly pairAgents: PairAgents;
   readonly context: ContextCollector;
+  readonly runtime = new RuntimeState();
   lastError: string | null = null;
   private marketCache: { at: number; list: any[] } | null = null;
   /** Symbols actually scanned after resolving the universe (list / top N / all). */
@@ -226,6 +238,7 @@ export class App {
       timelyResearch: () => timelyTrackerKeys(listTrackers(this.db)),
       compare: input=>this.planComparisons.observe(input),
       compareScan: input=>this.planComparisons.observeScan(input),
+      compareSourceScan: input=>this.planComparisons.observeSourceScan(input),
       store: this.incubatorStore, cfgRef: cfg, candles: this.candles, pool: this.pool, registry: this.registry, paper: this.shadow, marketInfo: s => this.scanners.marketInfo(s), ml: this.ml,
       marketVerdict: s => { const v = this.marketGate?.verdict(s); return v ? { allowed: v.allowed, reasons: v.reasons } : null; },
       mirror: (s, symbol, tf, ev, bars, market, exitMode, lastBar) => this.scanners.ingestEvent(s, symbol, tf, ev, bars, market, exitMode, lastBar),
@@ -277,18 +290,18 @@ export class App {
         return { bids: side(ob.buy), asks: side(ob.sell) };
       },
     });
-    this.entryDepth=new EntryDepthGate({cfg,book:async symbol=>await this.rest.orderbook(symbol,25),save:state=>this.db.kvSet('risk.entryDepth',state)});
+    this.entryDepth=new EntryDepthGate({cfg,book:async symbol=>await this.rest.orderbook(symbol,25),save:state=>this.db.kvSet('risk.entryDepth',state),
+      quote:q=>{if(cfg().execution.mode==='paper')this.marks.setQuotes(q.symbol,q.bid,q.ask,q.receivedAt,q.exchangeAt,'rest_depth',
+        {bidSize:q.bidSize,askSize:q.askSize,bookAt:q.exchangeAt});}});
     wireEntryDepth(this.paper,this.shadow,this.entryDepth);
     for(const book of [this.paper,this.shadow])book.alignmentBars=(symbol,tf)=>this.candles.get(symbol,tf,{closedOnly:true});
     this.risk = new RiskManager({ db: this.db, paper: this.paper, candles: this.candles, cfgRef: cfg, marketGate: this.marketGate });
     this.paper.risk = this.risk;
     this.executor = createExecutor(this.paper, cfg);
     this.tapeAudit = new TapeAudit(this.db, [{ engine: this.paper, book: 0 }, { engine: this.shadow, book: 2 }]);
-    this.tapeAudit.start();
     wireRealtime(this);
     // flow intelligence from public data, once an hour (decision 101)
     this.context = new ContextCollector({ db: this.db, rest: this.rest, symbols: () => [...new Set([...this.resolvedSymbols, ...this.incubator.symbols()])] });
-    this.context.start();
     this.ops = new OpsService({ cfg, onConfigChange: l => this.config.onChange(l), db: this.db, dataDir: DATA_DIR, feed: this.feed, pool: this.pool, paper: this.paper, marks: this.marks, candles: this.candles, scanners: this.scanners, workers, transport: deps.alertTransport, peakEquity: () => this.risk.peakEquity(),
       telegramTarget:()=>this.telegram?this.telegram.deliveryTarget():telegramFromEnv(cfg().alerts.telegram) });
     this.telegram=new TelegramControl({db:this.db,dataDir:DATA_DIR,actions:telegramActions(this),alerts:()=>this.ops.alerts,manageDelivery:!deps.alertTransport,
@@ -332,8 +345,6 @@ export class App {
     this.paper.on('trade',()=>this.evidenceReview.noteEvidence());
     this.shadow.on('trade',()=>this.evidenceReview.noteEvidence());
     this.validation=createValidation(this);
-    process.on('unhandledRejection', (e: any) => { this.lastError = String(e?.message ?? e); log.error('unhandled rejection', this.lastError); });
-    process.on('uncaughtException', (e: any) => { this.lastError = String(e?.message ?? e); log.error('uncaught exception', e?.stack ?? e); });
   }
 
   /** Resolve the configured universe to concrete Delta symbols. */
@@ -361,7 +372,17 @@ export class App {
     return out;
   }
 
+  startExecutionLoops(): void {
+    if (this.executionLoopsStarted) return;
+    this.executionLoopsStarted = true;
+    for (const start of this.executionLoops) start();
+    this.tradeMonitor?.start();
+  }
+
   async start(): Promise<void> {
+    this.startExecutionLoops();
+    this.tapeAudit.start();
+    this.context.start();
     this.accountObserver.start();
     this.feed.start();
     // positions of removed scanners keep running to their levels (the engine manages exits regardless of scanner state)
@@ -382,6 +403,9 @@ export class App {
     void refreshMarkets();
     this.marketTimer = setInterval(refreshMarkets, Math.max(1, this.config.get().risk.marketGate?.refreshMinutes ?? 60) * 60_000);
     this.marketTimer.unref?.();
+    // the movers strip needs a reading each minute whether or not a dashboard is open, so a pump is on the strip from its first minutes
+    this.moverTimer = setInterval(() => { this.markets().catch(e => log.warn(`movers sample failed: ${e?.message ?? e}`)); }, 60_000);
+    this.moverTimer.unref?.();
     // Closed trades and the clock drive evidence reviews independently of screening.
     // Reviews share one operation with manual and pair-agent calls; failed screens stay retryable.
     this.lastAdmissionAt=Date.now();
@@ -399,7 +423,8 @@ export class App {
     this.screenQueue.start();
     this.pairAgents.start();
     // don't block the API on warm-up
-    this.scanners.start().catch(e => { this.lastError = String(e?.message ?? e); log.error('scanner start failed', e); });
+    // A failed scanner startup is fatal; the entry point's supervisor owns process failures.
+    void this.scanners.start();
     // the incubator's live rows follow the config from the first second (decision 83): a fleet edited on disk and restarted used to
     // keep its new cells in the shadow stage until the next hunt
     { const synced = incubatorSyncLive(this.incubatorStore, this.config.get()); if (synced.added || synced.removed) log.info(`incubator live rows synced to the config: +${synced.added} −${synced.removed}`); }
@@ -457,9 +482,12 @@ export class App {
 
   health() {
     const cfg = this.config.get();
+    const configFile = this.config.status();
     const all = this.registry.all();
     return {
-      status: 'ok', uptimeSec: Math.floor((Date.now() - this.startedAt) / 1000), mode: cfg.execution.mode, now: Date.now(),
+      status: this.runtime.state !== 'running' ? this.runtime.state : configFile.valid ? 'ok' : 'degraded',
+      runtime: { state: this.runtime.state, reason: this.runtime.reason }, configFile,
+      uptimeSec: Math.floor((Date.now() - this.startedAt) / 1000), mode: cfg.execution.mode, now: Date.now(),
       exchangeStatus: this.exchangeStatus.snapshot(),
       feed: { endpoint: this.feed.endpoint, connected: this.feed.connected, lastTickAt: this.feed.lastTickAt, subscriptions: this.feed.subscriptions },
       candles: this.candles.tracked(),
@@ -580,19 +608,30 @@ export class App {
     return { groups: ASSET_GROUPS, sectors: ASSET_SECTORS, classes: classMap([...new Set([...products.keys(), ...traded])]) };
   }
 
+  /** The biggest recent movers with their asset class, for the dashboard strip. */
+  async moversNow(limit = Infinity) {
+    await this.markets().catch(() => null); // a cold server answers from one fresh reading rather than from nothing
+    const now = Date.now();
+    return { at: now, windows: [...MOVER_WINDOWS_MIN], historyMinutes: this.movers.historyMinutes(now), rows: this.movers.movers(now, limit).map(r => ({ ...r, group: classOf(r.symbol).group, sector: classOf(r.symbol).sector })) };
+  }
+
   async markets() {
     if (this.marketCache && Date.now() - this.marketCache.at < 30_000) return this.marketCache.list;
+    const sampledAt = Date.now();
     const [tickers] = await Promise.all([this.rest.tickers(),this.rest.products()]);
+    if (this.marketCache && this.marketCache.at > sampledAt) return this.marketCache.list;
     const list = tickers.filter(t => t.contract_type === 'perpetual_futures' || !t.contract_type).map(t => ({
       symbol: t.symbol, description: t.description ?? t.symbol, tickSize: Number(t.tick_size ?? 0), contractValue: Number(t.contract_value ?? 0), group: classOf(t.symbol).group, sector: classOf(t.symbol).sector,
       markPrice: Number(t.mark_price ?? t.close), price: Number(t.close ?? t.mark_price), change24hPct: Number(t.mark_change_24h ?? 0), volume24h: Number(t.turnover_usd ?? 0),
     })).sort((a, b) => b.volume24h - a.volume24h);
-    this.marketCache = { at: Date.now(), list };
+    this.marketCache = { at: sampledAt, list };
+    this.movers.record(this.marketCache.at, list.map(m => ({ symbol: m.symbol, price: m.markPrice })));
     return list;
   }
 
   /** Pre-grouped lookups so building the whole scanner list is linear rather than quadratic. */
   private scannerViewIndex() {
+    const week=this.weekFunnelByScanner(),pairs=this.incubatorStore.list();
     return {
       closed: this.paper.closedByScanner(),
       open: this.paper.openCountByScanner(),
@@ -600,9 +639,19 @@ export class App {
       backtests: this.scanners.backtestsByScanner(),
       lastRun: this.scanners.lastRunByScanner(),
       profiles: this.profiles.summaries(),
-      books: this.scannerBooks(),
-      week: this.weekFunnelByScanner(),
+      books: this.scannerBooks(pairs),
+      week,
+      attention:this.scannerAttentionIndex(week,pairs),
     };
+  }
+
+  private scannerAttentionIndex(week=this.weekFunnelByScanner(),pairs=this.incubatorStore.list()){
+    const cfg=this.config.get(),at=Date.now(),markets=this.incubatorStore.marketsToday(at);
+    return scannerAttentionReadiness({week,pairs,store:this.incubatorStore,mirror:cfg.incubator.mirror,at,
+      copyEnabled:!!(cfg.incubator.enabled&&cfg.incubator.mirror?.enabled&&cfg.execution.mode==='paper'),
+      turnover:s=>markets.get(s)?.turnoverUsd??null,
+      scanners:this.registry.all().map(s=>({id:s.id,enabled:!!cfg.scanners[s.id]?.enabled,hidden:cfg.scanners[s.id]?.hidden,
+        scheduledCells:this.scanners.isActive(s)?this.scanners.pairsFor(s.id).length:0}))});
   }
 
   /** The last seven days of entry signals per scanner, by what became of them (decision 87): the week explained, not just the last run. */
@@ -611,11 +660,12 @@ export class App {
   }
 
   /** Which books each scanner is in (decision 64): markets it trades in the account, markets it is proving in the shadow book. */
-  private scannerBooks() {
-    const out = new Map<string, { account: string[]; shadow: string[]; proposed: string[] }>();
-    for (const r of this.incubatorStore.list(['live', 'demote_proposed', 'shadow', 'proposed'])) {
-      const b = out.get(r.scannerId) ?? { account: [], shadow: [], proposed: [] };
-      (r.stage === 'live' || r.stage === 'demote_proposed' ? b.account : r.stage === 'proposed' ? b.proposed : b.shadow).push(`${r.symbol} ${r.tf}`);
+  private scannerBooks(pairs=this.incubatorStore.list()) {
+    const out = new Map<string, { account: string[]; shadow: string[]; proposed: string[]; tracked:string[]; candidates:string[] }>();
+    for (const r of pairs) {
+      if(r.stage==='retired')continue;
+      const b = out.get(r.scannerId) ?? { account: [], shadow: [], proposed: [],tracked:[],candidates:[] };
+      (r.stage === 'live' || r.stage === 'demote_proposed' ? b.account : r.stage === 'proposed' ? b.proposed : r.stage==='tracked'?b.tracked:r.stage==='candidate'?b.candidates:b.shadow).push(`${r.symbol} ${r.tf}`);
       out.set(r.scannerId, b);
     }
     return out;
@@ -646,6 +696,7 @@ export class App {
       lastRun: idx ? (idx.lastRun.get(id) ?? null) : this.scanners.getLastRun(id), stats,
       books: (idx ? idx.books : this.scannerBooks()).get(id) ?? { account: [], shadow: [], proposed: [] },
       week: (idx ? idx.week : this.weekFunnelByScanner()).get(id) ?? null,
+      paperReadiness:(idx?idx.attention:this.scannerAttentionIndex()).get(id)??null,
     };
   }
 
@@ -818,9 +869,10 @@ export class App {
     const capacityCompatible=liveTrades.filter(t=>policyEvidence.capacityCompatibleIds.has(t.id)).length;
     const scopeCompatible=liveTrades.filter(t=>policyEvidence.scopeCompatibleIds.has(t.id)).length;
     const sizingCompatible=liveTrades.filter(t=>policyEvidence.sizingCompatibleIds.has(t.id)).length;
-    if(capacityCompatible||scopeCompatible||sizingCompatible)golive.advisories.push({
+    const executionCompatible=liveTrades.filter(t=>policyEvidence.executionCompatibleIds.has(t.id)).length;
+    if(capacityCompatible||scopeCompatible||sizingCompatible||executionCompatible)golive.advisories.push({
       key:'capacity-evidence',label:'Readiness evidence in the last 30 days',
-      value:`${liveTrades.length-capacityCompatible-scopeCompatible-sizingCompatible} exact + ${capacityCompatible} capacity-compatible${scopeCompatible?` + ${scopeCompatible} unrelated-cell settings`:''}${sizingCompatible?` + ${sizingCompatible} same-size replay`:''} trades`,
+      value:`${liveTrades.length-capacityCompatible-scopeCompatible-sizingCompatible-executionCompatible} exact + ${capacityCompatible} capacity-compatible${scopeCompatible?` + ${scopeCompatible} unrelated-cell settings`:''}${sizingCompatible?` + ${sizingCompatible} same-size replay`:''}${executionCompatible?` + ${executionCompatible} identical execution replay`:''} trades`,
       note:'Compatible history is verified against saved policies. Same-size replays must reproduce the recorded contracts, entry price and stop risk using saved orders, quotes and depth; profits are never scaled up. All other settings and evidence exclusions must match. This history does not establish performance at higher concurrency; promotion and leverage rules are unchanged.',
     });
     return { at: Date.now(), live, current, shadow: { ...shadow, windowDays: 30 }, funnel, golive };
@@ -1054,7 +1106,7 @@ export class App {
   private async performIncubatorEvaluate(actor: string) {
     const cfg = this.config.get();
     const synced = incubatorSyncLive(this.incubatorStore, cfg);
-    const report = incubatorEvaluate(this.incubatorStore, cfg, Date.now(), { needsRescreen: id => this.registry.get(id)?.scriptType === 'strategy', unavailable: id => this.incubatorUnavailable(id) });
+    const report = await evaluateCooperative(this.incubatorStore, cfg, Date.now(), { needsRescreen: id => this.registry.get(id)?.scriptType === 'strategy', unavailable: id => this.incubatorUnavailable(id) },()=>this.config.get()===cfg);
     let promoted: string[] = [], blocked: string[] = [];
     if (cfg.incubator.enabled && cfg.execution.mode==='paper' && cfg.incubator.promote.auto) {
       ({ promoted, blocked } = incubatorAutoPromote(this.incubatorStore, cfg, (sid, patch) => { this.config.setScanner(sid, patch); }));
@@ -1075,6 +1127,8 @@ export class App {
   }
 
   async stop() {
+    this.tapeAudit.stop();
+    this.context.stop();
     await this.telegram.stop();
     this.pairAgents.stop();
     this.scanners.stop();this.boundExits.stop();
@@ -1084,6 +1138,7 @@ export class App {
     this.incubator.stop();
     this.executor?.stop();
     if (this.marketTimer) clearInterval(this.marketTimer);
+    if (this.moverTimer) clearInterval(this.moverTimer);
     if (this.huntTimer) clearInterval(this.huntTimer);
     this.feed.stop();
     await this.pool.stop();

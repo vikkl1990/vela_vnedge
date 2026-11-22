@@ -36,3 +36,17 @@ test('shadow copying is distinct from the direct-paper enable switch', () => {
   assert.match(scannerActivity(s).detail, /only after evidence and entry checks pass/)
   assert.equal(scannerActivity({ ...s, health: { quarantined: true } as Scanner['health'] }).key, 'fault')
 })
+test('enabled without direct cells can still be shadow allocated or watch-only', () => {
+  const s = {
+    ...base,
+    scheduledCells: 0,
+    books: { account: [], shadow: ['ETHUSD'], proposed: [], tracked: ['BTCUSD'] },
+  }
+  assert.equal(scannerActivity(s).key, 'shadow')
+  assert.equal(scannerActivity({ ...s, books: { ...s.books, shadow: [] } }).key, 'watch')
+  assert.match(
+    scannerActivity({ ...s, books: { ...s.books, shadow: [] } }).detail,
+    /do not count toward promotion/,
+  )
+  assert.equal(scannerActivity({ ...s, scheduledCells: 2 }).key, 'scheduled')
+})

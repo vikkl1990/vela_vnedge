@@ -1,0 +1,65 @@
+{
+  "date": "2026-11-21",
+  "baselineCommit": "7ef128e389023519829ba2dcae9b436e7e001eeb",
+  "scope": "Execution correctness; no exit-policy or profitability claim",
+  "regressions": {
+    "originalCases": 7,
+    "baselineFailures": 6,
+    "correctedFailures": 0,
+    "additionalShadowDepthCase": true
+  },
+  "replay": {
+    "events": 472017,
+    "timestampRegressions": 0,
+    "pairedTrades": 8,
+    "currentNet": -25.635863159200056,
+    "candidateNet": -25.635863159200056,
+    "currentStops": 4,
+    "candidateStops": 4,
+    "partialEntries": 5,
+    "unverifiedTrades": 4,
+    "limitations": [
+      "No original execution-depth stream retained; recorded advisory book is an explicit proxy.",
+      "Queue position unknown. A crossing print is a quantity ceiling, not an exchange fill.",
+      "Only originally filled closed orders have frozen sizes; rejected/expired order opportunity cost not reconstructed.",
+      "Half-stop uses recorded observer opportunities; absent/late observations are excluded.",
+      "No new risk, margin, promotion or account config is written."
+    ],
+    "manifest": {
+      "sources": [
+        {
+          "path": "exit-replay-20261120-data",
+          "segments": 3367,
+          "manifestSha256": "2a481b1228faf9dd07430731f60a76489a67e716bda9afe4f577c537388149c9"
+        },
+        {
+          "path": "sol-replay-coverage-20261121-data",
+          "segments": 111,
+          "manifestSha256": "24548d4f3aed6ec16ef6c1e524644fb3fce95898bf94c492f5579d3202b9faad"
+        },
+        {
+          "path": "sol-replay-coverage-20261121-data/new-reference",
+          "segments": 13,
+          "manifestSha256": "9e9ed15ed9c82856d9354f6aa1445ca388f50d538f6c9fccfa4457aa7bdfed87"
+        }
+      ],
+      "events": 472017,
+      "note": "Deduplicated by complete event; stable received-time merge. No new history synthesized.",
+      "eventsSha256": "2d21c60401fe9da1dc078a9521114ac0f160fb71a7872726603de72a6ca52973",
+      "exportSha256": "540d1e2f75c255731db11837ee3e460976fae4603cc9891eb713893f733e0ff5"
+    }
+  },
+  "deployment": {
+    "paperMode": true,
+    "riskCapsChanged": false,
+    "evidenceRulesChanged": false,
+    "halfStop": "advisory only",
+    "makerCandidate": "separate SOL shadow plan; candle control retained",
+    "researchPlanCapacity": 107
+  },
+  "remainingAuditWork": [
+    "Generic non-versioned partial-target completion and protective priority",
+    "Early-cut and stale-exit parity with the candle backtester (currently disabled on paper)",
+    "Profile residual event-loop pauses under live load"
+  ]
+}

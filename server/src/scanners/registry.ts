@@ -6,7 +6,7 @@ import { applyPatches } from '../pine/patches.ts';
 import { familyFor, originOf } from '../library/families.ts';
 import { variantCompatibleSource } from './variantCompat.ts';
 import { markitTickSourceError } from './markitTick.ts';
-import {TREND_CONTINUATION} from './plotLifecycle.ts';
+import {lifecycleSources} from './plotLifecycle.ts';
 
 /** `removed`: retired from the library for good (decision 127); the row stays in the manifest so the library sync never re-imports it, the source file is gone, and the registry never loads it. */
 export type ScannerStatus = 'ok' | 'incompatible' | 'unavailable' | 'removed';
@@ -117,7 +117,7 @@ export class ScannerRegistry {
       const file = path.join(m.__dir, m.file);
       const source = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
       let observed=source, observationPatch:string|undefined, observationError:string|undefined;
-      if(m.id===TREND_CONTINUATION){
+      if(Boolean(lifecycleSources[m.id])){
         try{const result=variantCompatibleSource(m.id,source);observed=result.source;observationPatch=result.patch;}
         catch(error){observationError=(error as Error).message;}
       }
@@ -131,6 +131,8 @@ export class ScannerRegistry {
       try { patched = pineLibraries().pin(compatible); pineLibraries().resolver(patched); }
       catch (error) { status = 'incompatible'; reason = reason ?? `Pine dependencies: ${(error as Error).message}`; }
       if (!source.trim() || source.trim().length < 100) { status = 'unavailable'; reason = reason ?? 'source not published'; }
+      // Static audit findings remain advisory: timeframe/alias dependencies need a
+      // per-cell prefix check. Confirmed holds remain enforced by reviewedStatus.
       this.map.set(m.id, {
         id: m.id, name: m.name, author: m.author ?? 'WillyAlgoTrader', file: m.file, url: m.url, pub: m.pub ?? null, access: m.access ?? null,
         pineVersion: m.pineVersion ?? null, lines: m.lines ?? null, updated: m.updated ?? null,
