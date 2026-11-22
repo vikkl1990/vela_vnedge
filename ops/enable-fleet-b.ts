@@ -17,6 +17,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { ConfigStore, TF_SECONDS, type ScannerConfig } from '../server/src/config.ts';
@@ -39,6 +40,7 @@ export interface FleetMarker {
   /** Exact written scanner snapshots; a release refuses subsequent operator edits. */
   after: Record<string, Partial<ScannerConfig>>;
   version: 2;
+  state: 'prepared'|'applied';
 }
 export interface FleetOptions {
   configFile: string;
@@ -152,7 +154,7 @@ export function enableFleet(o: FleetOptions) {
 
   const afterRaw = JSON.parse(after);
   const mark: FleetMarker = {
-    version: 2, id: def.id, appliedAt: now, added: planned.flatMap((p) => p.added),
+    version: 2, state: 'prepared', id: def.id, appliedAt: now, added: planned.flatMap((p) => p.added),
     before: Object.fromEntries(planned.map((p) => [p.scannerId, raw.scanners?.[p.scannerId] ?? null])),
     after: Object.fromEntries(planned.map((p) => [p.scannerId, afterRaw.scanners[p.scannerId]])),
   };
@@ -162,6 +164,15 @@ export function enableFleet(o: FleetOptions) {
     fs.writeFileSync(marker, JSON.stringify(mark, null, 2) + '\n', { mode: 0o600, flag: 'wx' });
     const fd = fs.openSync(marker, 'r'); try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
   });
+  // A prepared marker is recoverable but never scoreable. Mark success only
+  // after the config rename is durable; interrupted finalization requires review/release.
+  const finished = `${marker}.${randomUUID()}.tmp`;
+  try {
+    fs.writeFileSync(finished, JSON.stringify({...mark,state:'applied'},null,2)+'\n', {mode:0o600,flag:'wx'});
+    const fd=fs.openSync(finished,'r');try{fs.fsyncSync(fd);}finally{fs.closeSync(fd);}
+    fs.renameSync(finished,marker);
+    const dir=fs.openSync(path.dirname(marker),'r');try{fs.fsyncSync(dir);}finally{fs.closeSync(dir);}
+  } finally { fs.rmSync(finished,{force:true}); }
   return { ...result, dryRun: false, backup, marker };
 }
 

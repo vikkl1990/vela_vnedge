@@ -77,6 +77,7 @@ export function scoreTrades(account: ScoredTrade[], shadow: ScoredTrade[], cells
 export function scoreFleet(o: { dbFile: string; markerFile: string; now?: number }) {
   const now = o.now ?? Date.now();
   const mark = JSON.parse(fs.readFileSync(o.markerFile, 'utf8')) as FleetMarker;
+  if(mark.version!==2||mark.state!=='applied')throw new Error('fleet application is unconfirmed; release or review its recovery marker before scoring');
   const db = new DatabaseSync(o.dbFile, { readOnly: true });
   try {
     const q = (bt: number) => db.prepare(`SELECT p.scanner_id sc, p.symbol sym, p.tf, p.side, p.entry_at at, p.exit_at exitAt, (p.realized_pnl-p.fees)/p.risk_amount r
