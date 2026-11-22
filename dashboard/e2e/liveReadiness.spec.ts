@@ -130,7 +130,7 @@ test('Live reconciles the compatible count with the full journal without passing
               key: 'trades',
               label: 'Policy-compatible closed paper trades (last 30 days)',
               ok: false,
-              value: '28',
+              value: '158',
               need: '≥ 200',
             },
           ],
@@ -148,16 +148,17 @@ test('Live reconciles the compatible count with the full journal without passing
         books: [
           {
             book: 'paper',
-            matching: 28,
+            matching: 158,
             totalClosed: 1095,
             outsideWindow: 51,
             capacityCompatible: 15,
             scopeCompatible: 0,
             sizingCompatible: 9,
+            executionCompatible: 130,
             exclusions: [
               { reason: 'missing-policy', label: 'No bound execution policy', trades: 743 },
               { reason: 'adopted-policy', label: 'Original policy unknown at adoption', trades: 2 },
-              { reason: 'execution-version', label: 'Different execution model', trades: 163 },
+              { reason: 'execution-version', label: 'Different execution model', trades: 33 },
               {
                 reason: 'different-size',
                 label: 'Recorded size not proven equivalent to current sizing',
@@ -177,19 +178,22 @@ test('Live reconciles the compatible count with the full journal without passing
   await page.goto('/live')
   const row = page.locator('.live-checks tbody tr')
   await expect(row).toContainText('Policy-compatible closed paper trades (last 30 days)')
-  await expect(row.locator('.live-now')).toHaveText('28')
+  await expect(row.locator('.live-now')).toHaveText('158')
   await expect(row).toContainText('≥ 200')
   await expect(page.locator('.live-count')).toHaveText('0 of 1 pass')
   await page.getByRole('link', { name: 'See counted trades and exclusions below' }).click()
   const history = page.locator('#readiness-history')
   await expect(history).toContainText('1095 closed paper trades in the journal; 51 are outside')
-  await expect(history).toContainText('Within the window, 28 qualify.')
+  await expect(history).toContainText('Within the window, 158 qualify.')
   await expect(history).toContainText(
-    'Included: 4 exact matches + 15 capacity-compatible + 0 unrelated-cell settings + 9 same-size replay.',
+    'Included: 4 exact matches + 15 capacity-compatible + 0 unrelated-cell settings + 9 same-size replay + 130 identical execution replay.',
   )
   await expect(history.locator('li')).toHaveCount(5)
   await expect(history).toContainText('No bound execution policy: 743')
-  await expect(history).toContainText('Different execution model: 163')
+  await expect(history).toContainText('Different execution model: 33')
+  await expect(history).toContainText(
+    'An execution-model change can reduce the compatible count without deleting trades.',
+  )
   expect(writes).toEqual([])
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
 })
