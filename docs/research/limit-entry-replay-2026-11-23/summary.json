@@ -1,0 +1,273 @@
+{
+ "at": "2026-11-22T19:13:39.652Z",
+ "horizonH": 120,
+ "summary": {
+  "counts": {
+   "total": 7906,
+   "limit:closed": 7149,
+   "market:closed": 7733,
+   "limit:unfilled": 633,
+   "limit:censored": 111,
+   "market:censored": 112,
+   "market:rejected": 58,
+   "limit:rejected": 9,
+   "market:unverified": 3,
+   "limit:unverified": 4,
+   "used": 7773
+  },
+  "all": {
+   "signals": 7773,
+   "filled": 7137,
+   "fillRatePct": 91.8,
+   "limitR": {
+    "n": 7773,
+    "mean": -0.050169891367484766,
+    "se": 0.023125605800382476
+   },
+   "marketR": {
+    "n": 7773,
+    "mean": -0.06803325304070623,
+    "se": 0.02859732593015575
+   },
+   "difference": {
+    "mean": 0.01786336167322167,
+    "se": 0.009643839113051413
+   },
+   "verdict": "no difference detected",
+   "marketRWhenFilled": {
+    "n": 7137,
+    "mean": -0.10766926206234873,
+    "se": 0.02545131527921179
+   },
+   "marketRWhenUnfilled": {
+    "n": 627,
+    "mean": 0.38215797042036675,
+    "se": 0.026687402820922964
+   },
+   "missedMinusTaken": {
+    "mean": 0.4898272324827155,
+    "se": 0.03687800047139279
+   }
+  },
+  "byTf": {
+   "1h": {
+    "signals": 6176,
+    "filled": 5599,
+    "fillRatePct": 90.7,
+    "limitR": {
+     "n": 6176,
+     "mean": -0.04766176237964741,
+     "se": 0.019601896408013783
+    },
+    "marketR": {
+     "n": 6176,
+     "mean": -0.07442219414217176,
+     "se": 0.024116919810940267
+    },
+    "difference": {
+     "mean": 0.026760431762524593,
+     "se": 0.00977794346789322
+    },
+    "verdict": "limit adds R",
+    "marketRWhenFilled": {
+     "n": 5599,
+     "mean": -0.12024689646369155,
+     "se": 0.02123101384450218
+    },
+    "marketRWhenUnfilled": {
+     "n": 573,
+     "mean": 0.37282879978735395,
+     "se": 0.027154850269990153
+    },
+    "missedMinusTaken": {
+     "mean": 0.4930756962510455,
+     "se": 0.034469433445460454
+    }
+   },
+   "4h": {
+    "signals": 1597,
+    "filled": 1538,
+    "fillRatePct": 96.3,
+    "limitR": {
+     "n": 1597,
+     "mean": -0.05986945594411817,
+     "se": 0.056080917799458806
+    },
+    "marketR": {
+     "n": 1597,
+     "mean": -0.04332561356503241,
+     "se": 0.06117496567669502
+    },
+    "difference": {
+     "mean": -0.01654384237908579,
+     "se": 0.011891762019695593
+    },
+    "verdict": "no difference detected",
+    "marketRWhenFilled": {
+     "n": 1538,
+     "mean": -0.06188111185875994,
+     "se": 0.059178554974814106
+    },
+    "marketRWhenUnfilled": {
+     "n": 54,
+     "mean": 0.48115083658178115,
+     "se": 0.019412818036150095
+    },
+    "missedMinusTaken": {
+     "mean": 0.543031948440541,
+     "se": 0.0622812883056522
+    }
+   }
+  },
+  "bySide": {
+   "long": {
+    "signals": 3831,
+    "filled": 3595,
+    "fillRatePct": 93.8,
+    "limitR": {
+     "n": 3831,
+     "mean": -0.14397171009195409,
+     "se": 0.028930412804134213
+    },
+    "marketR": {
+     "n": 3831,
+     "mean": -0.17046124316568662,
+     "se": 0.03158638884876764
+    },
+    "difference": {
+     "mean": 0.026489533073732606,
+     "se": 0.008001136048669357
+    },
+    "verdict": "limit adds R",
+    "marketRWhenFilled": {
+     "n": 3595,
+     "mean": -0.20492659852893932,
+     "se": 0.028718011387347184
+    },
+    "marketRWhenUnfilled": {
+     "n": 235,
+     "mean": 0.3560599963565555,
+     "se": 0.03617354276103029
+    },
+    "missedMinusTaken": {
+     "mean": 0.5609865948854948,
+     "se": 0.04618711263900234
+    }
+   },
+   "short": {
+    "signals": 3942,
+    "filled": 3542,
+    "fillRatePct": 89.9,
+    "limitR": {
+     "n": 3942,
+     "mean": 0.04099062804739136,
+     "se": 0.04178985100219661
+    },
+    "marketR": {
+     "n": 3942,
+     "mean": 0.031510539493235616,
+     "se": 0.05032018652226889
+    },
+    "difference": {
+     "mean": 0.009480088554155653,
+     "se": 0.01852033453540352
+    },
+    "verdict": "no difference detected",
+    "marketRWhenFilled": {
+     "n": 3542,
+     "mean": -0.0089566351291487,
+     "se": 0.047765195415707354
+    },
+    "marketRWhenUnfilled": {
+     "n": 392,
+     "mean": 0.39780343956576397,
+     "se": 0.04122275258724353
+    },
+    "missedMinusTaken": {
+     "mean": 0.40676007469491265,
+     "se": 0.06309381288184923
+    }
+   }
+  },
+  "byBook": {
+   "account": {
+    "signals": 290,
+    "filled": 253,
+    "fillRatePct": 87.2,
+    "limitR": {
+     "n": 290,
+     "mean": -0.006886388468751481,
+     "se": 0.05051530379555816
+    },
+    "marketR": {
+     "n": 290,
+     "mean": -0.008359517373037561,
+     "se": 0.05578435059239897
+    },
+    "difference": {
+     "mean": 0.0014731289042861136,
+     "se": 0.014775338716783408
+    },
+    "verdict": "no difference detected",
+    "marketRWhenFilled": {
+     "n": 253,
+     "mean": -0.05899024041138689,
+     "se": 0.05890291072842446
+    },
+    "marketRWhenUnfilled": {
+     "n": 37,
+     "mean": 0.33784515637567525,
+     "se": 0.05140511858810031
+    },
+    "missedMinusTaken": {
+     "mean": 0.39683539678706214,
+     "se": 0.07817953126834029
+    }
+   },
+   "shadow": {
+    "signals": 7483,
+    "filled": 6884,
+    "fillRatePct": 92,
+    "limitR": {
+     "n": 7483,
+     "mean": -0.05184732232306844,
+     "se": 0.022542527538650454
+    },
+    "marketR": {
+     "n": 7483,
+     "mean": -0.07034587943969386,
+     "se": 0.028138305867482363
+    },
+    "difference": {
+     "mean": 0.018498557116625534,
+     "se": 0.010008815765685528
+    },
+    "verdict": "no difference detected",
+    "marketRWhenFilled": {
+     "n": 6884,
+     "mean": -0.10945830803528489,
+     "se": 0.024757462130138668
+    },
+    "marketRWhenUnfilled": {
+     "n": 590,
+     "mean": 0.3849369096062203,
+     "se": 0.02662171044667398
+    },
+    "missedMinusTaken": {
+     "mean": 0.4943952176415052,
+     "se": 0.03635446875188525
+    }
+   }
+  }
+ },
+ "calibration": {
+  "recordedFills": 7250,
+  "replayAlsoFilled": 7121,
+  "replayDidNotFill": 129,
+  "sameFillTimeAndPricePct": 98.3,
+  "actualMeanR": -0.04662849909961482,
+  "replayMeanR": -0.05345741861044745,
+  "correlation": 0.933902845401967,
+  "pairs": 7107
+ }
+}
