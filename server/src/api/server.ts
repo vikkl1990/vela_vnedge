@@ -34,6 +34,7 @@ import { ContractRegistry } from '../scanners/contracts.ts';
 import { deltaConnectionRoutes } from '../connections/routes.ts';
 import {telegramRoutes} from '../telegram/routes.ts';
 import { Journal, journalFilter } from '../analytics/journal.ts';
+import { ownCellKeys, paperFleet } from '../analytics/paperFleet.ts';
 import { configView, configPatch } from './configView.ts';
 
 const log = logger.scoped('api');
@@ -458,7 +459,12 @@ export class ApiServer {
     };
     this.add('GET', '/api/trades', (_r, _s, _p, url) => a.paper.trades({ limit: Number(url.searchParams.get('limit') ?? 200), ...tradeFilter(url) }));
     this.add('GET', '/api/trades/page', (_r, _s, _p, url) => a.paper.tradesPage({ limit: Number(url.searchParams.get('limit') ?? 300), offset: Number(url.searchParams.get('offset') ?? 0), ...tradeFilter(url) }));
-    const journal = new Journal(a.db);
+    const journal = new Journal(a.db, () => ownCellKeys(a.config.get()));
+    this.add('GET', '/api/paper/fleet', () => {
+      const now = Date.now(), days = 14;
+      const entries = a.db.all<{ scannerId: string; symbol: string; tf: string }>("SELECT scanner_id scannerId, symbol, tf FROM positions WHERE bt=0 AND scanner_id NOT LIKE 'plan:%' AND entry_at>=?", now - days * 86_400_000);
+      return paperFleet(a.config.get(), entries, now, days);
+    });
     this.add('GET', '/api/evidence/gated-signals', (_r, _s, _p, url) => gatedSignalPage(a.db,url.searchParams));
     this.add('GET', '/api/journal', (_r, _s, _p, url) => journal.page(journalFilter(url.searchParams)));
     this.add('GET', '/api/journal/export', (_r, res, _p, url) => {

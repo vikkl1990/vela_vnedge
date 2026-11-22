@@ -49,6 +49,7 @@ import {
 import { AssetClassBreakdown } from '../components/AssetClassBreakdown'
 import { classRows } from '../lib/assetClass'
 import { RunHealthPanel } from '../components/RunHealthPanel'
+import { PaperFleetPanel } from '../components/home/PaperFleetPanel'
 import { fmtInt, fmtMoney, fmtPct, fmtPnl, fmtProfitFactor, fmtR, pnlClass } from '../lib/format'
 import { useNow } from '../lib/useNow'
 import '../styles/pages/home.css'
@@ -361,7 +362,10 @@ export function Overview() {
               <ScannerPnlBoard rows={pnlRows} />
             )}
           </Section>
-          <FleetPanel />
+          <div className="stack">
+            <PaperFleetPanel />
+            <FleetPanel />
+          </div>
         </div>
       </TabPanel>
       <TabPanel idPrefix="ov" id="system" value={tab}>

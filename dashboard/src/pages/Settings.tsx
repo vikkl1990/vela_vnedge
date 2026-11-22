@@ -400,16 +400,17 @@ const SECTIONS: Section[] = [
     title: 'Incubator',
     risk: 'medium',
     intro:
-      'How the library becomes the fleet: the screen, the shadow book, the gate, the clocks. The mirror is the one switch here that changes what the account trades.',
+      'How the library becomes the fleet: the screen, the shadow book, the gate, the clocks. Copying is the one switch here that changes what the account trades: besides its own list, the account takes signals from shadow cells at a reduced size.',
     fields: [
       {
         path: 'incubator.mirror.enabled',
-        label: "Mirror: the account takes every shadow pair's signals under its own gates",
+        label: 'Copy shadow cells: the account takes a shadow cell’s signals once the cell has a record',
+        hint: 'A cell is copied only after it has enough shadow closes with a positive net R (5 closes and net R above 0 unless changed in the config), and then trades at the copy size below under the account’s own gates. Cells on the account’s own list are not copied. See Paper fleet on Overview.',
         kind: 'bool',
       },
       {
         path: 'incubator.mirror.pilot.sizeScale',
-        label: 'Paper copy pilot: fraction of normal size',
+        label: 'Copy size: fraction of normal size',
         hint: 'Applies to copied, unallocated cells. Native allocations keep normal sizing. Paper mode only.',
         kind: 'number',
         step: '0.05',
@@ -417,7 +418,7 @@ const SECTIONS: Section[] = [
       },
       {
         path: 'incubator.mirror.pilot.maxDailyEntries',
-        label: 'Paper copy pilot: daily entry cap (0 = no pilot cap)',
+        label: 'Copy entries: daily cap (0 = no cap)',
         hint: 'Counts accepted order reservations, including later cancellations. At 0, entries are still counted but there is no pilot daily quota.',
         kind: 'number',
         step: '1',
@@ -425,7 +426,7 @@ const SECTIONS: Section[] = [
       },
       {
         path: 'incubator.mirror.pilot.maxOpenPositions',
-        label: 'Paper copy pilot: open or pending cap (0 = account capacity)',
+        label: 'Copy entries: open or pending cap (0 = account capacity)',
         hint: 'At 0, pilots share the account position and margin limits with native trades. No fixed scalp/swing allocation.',
         kind: 'number',
         step: '1',

@@ -1,6 +1,6 @@
 import { memo, useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { useClosePosition, useExecution, useMarkets, usePositionsHealth } from '../api/queries'
+import { useClosePosition, useExecution, useMarkets, usePaperFleet, usePositionsHealth } from '../api/queries'
 import type { Position } from '../api/types'
 import { useAuth } from '../auth/AuthGate'
 import { fmtAge, fmtInt, fmtMoney, fmtPrice, fmtR } from '../lib/format'
@@ -12,6 +12,8 @@ import { AssetChip } from './AssetChip'
 import { DataTable, type Column } from './DataTable'
 import { ConfirmDialog, Pnl, SidePill, StatusDot, Time } from './kit'
 import { TradePath } from './TradePath'
+import { SourceTag } from './SourceTag'
+import { ownCellSet, sourceOfCell } from '../lib/fleet'
 import { ActiveStop, CloseNow } from './PositionHealth'
 import { healthMatches, quoteFresh } from '../lib/positionHealth'
 
@@ -124,6 +126,9 @@ function PositionTargets({ p, tick }: { p: Position; tick?: number }) {
 
 export function PositionsTable({ positions, compact = false }: { positions: Position[]; compact?: boolean }) {
   const health = usePositionsHealth(positions.length > 0)
+  const fleet = usePaperFleet()
+  const own = useMemo(() => ownCellSet(fleet.data), [fleet.data])
+  const copyScale = fleet.data?.copy.sizeScale
   const [clock, setClock] = useState(() => performance.now())
   useEffect(() => {
     if (!positions.length) return
@@ -191,7 +196,8 @@ export function PositionsTable({ positions, compact = false }: { positions: Posi
               <div className="muted small">
                 <Link to={`/scanners/${p.scannerId}`} className="link">
                   {p.scannerName}
-                </Link>
+                </Link>{' '}
+                <SourceTag source={sourceOfCell(own, p.scannerId, p.symbol, p.tf)} scale={copyScale} />
                 {compact && (
                   <div>
                     {fmtInt(p.qtyOpen)}/{fmtInt(p.qty)} contracts ·{' '}
@@ -407,7 +413,20 @@ export function PositionsTable({ positions, compact = false }: { positions: Posi
         ),
       },
     ]
-  }, [markets, compact, dense, narrow, pending, anyRealized, healthById, health.data, health.isError, clock])
+  }, [
+    markets,
+    compact,
+    dense,
+    narrow,
+    pending,
+    anyRealized,
+    healthById,
+    health.data,
+    health.isError,
+    clock,
+    own,
+    copyScale,
+  ])
 
   return (
     <div className="position-layout">
@@ -433,7 +452,8 @@ export function PositionsTable({ positions, compact = false }: { positions: Posi
               </div>
               <Link className="link" to={`/scanners/${p.scannerId}`}>
                 {p.scannerName}
-              </Link>
+              </Link>{' '}
+              <SourceTag source={sourceOfCell(own, p.scannerId, p.symbol, p.tf)} scale={copyScale} />
               <ExecutionState p={p} />
               <dl className="position-metrics">
                 <div>
