@@ -157,7 +157,7 @@ export function wireRealtime(app: App): void {
     try{flow.flush();}catch(e:any){log.warn(`order flow: ${e.message}`);}
     void replay.flush();
   }, 5000);
-  app.stopExecutionAudit=async()=>{app.tradeMonitor.stop();exitPump.stop();stopExit();app.accountObserver.stop();stopStatus();for(const stop of [stopAudit,stopHistory,stopDepth])stop();depth.disconnect();try{depth.flush();flow.connection(false);}catch(e:any){log.warn(`audit shutdown flush: ${e.message}`);}timing.flush();await replay.close();};
+  app.stopExecutionAudit=async()=>{app.tradeMonitor.stop();exitPump.stop();stopExit();app.accountObserver.stop();stopStatus();for(const stop of [stopAudit,stopHistory,stopDepth,stopScheduler])stop();depth.disconnect();try{depth.flush();flow.connection(false);}catch(e:any){log.warn(`audit shutdown flush: ${e.message}`);}timing.flush();await replay.close();};
   const status = app.exchangeStatus ?? new TradingStatus();
   const stopStatus = wireTradingStatus(app, status);
   for (const b of books) b.entryBlock = (symbol, at) => app.runtime?.entryBlock ?? status.block(symbol, at);
@@ -209,7 +209,7 @@ export function wireRealtime(app: App): void {
   });
   app.feed.on('mark', (m: WsMark) => { replay.record(m.symbol,'mark',m,Date.now(),'execution-feed');funding.mark(m); app.marks.onWsMark(m); for (const b of books) b.onMarkPrice(m.symbol, m.markPrice, m.timeMs); });
   app.feed.on('funding', (f: WsFunding) => { replay.record(f.symbol,'funding',f,Date.now(),'execution-feed');funding.observe(f); app.marks.onWsFunding(f); });
-  deferLoop(app, () => {
+  const stopScheduler = deferLoop(app, () => {
     const now = Date.now();
     try {
       funding.settle(now,(symbol,rate,mark,at)=>{for(const b of books)b.reconcileFunding(symbol,rate,mark,at);});

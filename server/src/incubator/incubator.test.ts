@@ -100,6 +100,26 @@ test('lifecycle: screen → shadow → proposed → approved into the config', (
   assert.ok(store.events(10).some(e => e.to === 'live' && e.actor === 'admin'));
 });
 
+test('approval rechecks the optional trial count after new candidates arrive', t => {
+  const { db, store, cfg, insertTrade } = world(); t.after(() => db.db.close());
+  cfg.scanners = {};
+  cfg.incubator.gate.pool = 'pair';
+  cfg.incubator.gate.multipleTesting = { enabled: true, alpha: 0.05 };
+  const key = { scannerId: 'candidate', symbol: 'BTCUSD', tf: '15m' };
+  store.move(key, 'shadow', 'test', null, null, T0);
+  for (let i = 0; i < 40; i++) {
+    const at = T0 + i * 6 * 3600_000;
+    insertTrade(2, key.scannerId, key.symbol, { entryAt: at, exitAt: at + 3600_000, side: 'long', r: i < 22 ? 0.3 : -0.1 });
+  }
+  assert.deepEqual(evaluate(store, cfg, T0 + 20 * DAY).proposed, ['candidate BTCUSD 15m']);
+  for (let i = 0; i < 1000; i++) store.move({ ...key, scannerId: `new-${i}` }, 'candidate', 'test', null, null, T0 + 20 * DAY);
+  const row = store.find(key.scannerId, key.symbol, key.tf)!;
+  const patches: unknown[] = [];
+  assert.throws(() => approve(store, cfg, row.id, 'admin', (_id, patch) => patches.push(patch), T0 + 20 * DAY), /multiple testing/);
+  assert.equal(store.get(row.id)!.stage, 'proposed');
+  assert.equal(patches.length, 0, 'a stale proposal must not bypass the current evidence rule');
+});
+
 test('approval refuses past the weekly limit and when the fleet is full', () => {
   const { store, cfg, screen, insertTrade } = world();
   cfg.incubator.promote.maxPerWeek = 1;
