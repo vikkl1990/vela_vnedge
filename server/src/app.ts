@@ -292,11 +292,9 @@ export class App {
     this.paper.risk = this.risk;
     this.executor = createExecutor(this.paper, cfg);
     this.tapeAudit = new TapeAudit(this.db, [{ engine: this.paper, book: 0 }, { engine: this.shadow, book: 2 }]);
-    this.tapeAudit.start();
     wireRealtime(this);
     // flow intelligence from public data, once an hour (decision 101)
     this.context = new ContextCollector({ db: this.db, rest: this.rest, symbols: () => [...new Set([...this.resolvedSymbols, ...this.incubator.symbols()])] });
-    this.context.start();
     this.ops = new OpsService({ cfg, onConfigChange: l => this.config.onChange(l), db: this.db, dataDir: DATA_DIR, feed: this.feed, pool: this.pool, paper: this.paper, marks: this.marks, candles: this.candles, scanners: this.scanners, workers, transport: deps.alertTransport, peakEquity: () => this.risk.peakEquity(),
       telegramTarget:()=>this.telegram?this.telegram.deliveryTarget():telegramFromEnv(cfg().alerts.telegram) });
     this.telegram=new TelegramControl({db:this.db,dataDir:DATA_DIR,actions:telegramActions(this),alerts:()=>this.ops.alerts,manageDelivery:!deps.alertTransport,
@@ -368,6 +366,8 @@ export class App {
   }
 
   async start(): Promise<void> {
+    this.tapeAudit.start();
+    this.context.start();
     this.accountObserver.start();
     this.feed.start();
     // positions of removed scanners keep running to their levels (the engine manages exits regardless of scanner state)
@@ -1098,6 +1098,8 @@ export class App {
   }
 
   async stop() {
+    this.tapeAudit.stop();
+    this.context.stop();
     await this.telegram.stop();
     this.pairAgents.stop();
     this.scanners.stop();this.boundExits.stop();
