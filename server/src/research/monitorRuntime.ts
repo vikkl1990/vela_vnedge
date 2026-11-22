@@ -13,7 +13,7 @@ const log=logger.scoped('trade-monitor');
 export class MonitorRuntime {
  readonly monitor:OpenTradeMonitor;readonly depth:AdvisoryDepthPool;
  private app:App;private symbols:string[]=[];private markets=new Map<string,MarketObservation>();
- private timer:ReturnType<typeof setInterval>;private pump:ReturnType<typeof setInterval>;private stopped=false;
+ private timer:ReturnType<typeof setInterval>|null=null;private pump:ReturnType<typeof setInterval>|null=null;private stopped=false;
  private busy=new Set<string>();private lastFetch=new Map<string,number>();private nextFetch=0;private lastSample=0;
  private focusedSymbols=new Set<string>();
  private capturedContexts=new Set<string>();
@@ -23,6 +23,10 @@ export class MonitorRuntime {
   app.db.db.exec(`CREATE TABLE IF NOT EXISTS advisory_market_samples(symbol TEXT NOT NULL,bucket INTEGER NOT NULL,observed_at INTEGER NOT NULL,depth_at INTEGER,
    bid REAL,ask REAL,bid_qty10 REAL,ask_qty10 REAL,flow_imbalance REAL,flow_covered INTEGER NOT NULL,flow_through INTEGER,PRIMARY KEY(symbol,bucket));
    CREATE INDEX IF NOT EXISTS advisory_market_time ON advisory_market_samples(bucket);`);
+ }
+ start(){
+  if(this.timer)return;
+  this.stopped=false;
   this.timer=setInterval(()=>{try{this.tick();}catch(e){log.warn(`observation failed: ${String(e)}`);}},5000);this.timer.unref();
   this.pump=setInterval(()=>this.settle(),250);this.pump.unref();
  }
@@ -171,5 +175,5 @@ export class MonitorRuntime {
   });
   return {...monitor,generatedAt:now,pairs,connections:this.depth.summary(),marketError,replay:this.app.replayArchive?.status(),retention:'Compact flow/depth: 72h, up to 500k rows each. Checkpoints/trials: 90d, up to 200k/50k. Broad replay: 14-day target / 16 GiB. Focused studies and active/recent paper pairs: 21-day target / 4 GiB, 4 GiB free-disk reserve. Recent paper pairs remain captured for 24h after closure; gaps remain explicit.'};
  }
- stop(){this.stopped=true;clearInterval(this.timer);clearInterval(this.pump);this.depth.stop();}
+ stop(){this.stopped=true;if(this.timer)clearInterval(this.timer);if(this.pump)clearInterval(this.pump);this.timer=null;this.pump=null;this.depth.stop();}
 }
