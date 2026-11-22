@@ -1,3 +1,4 @@
+import { CopyEvidence, CopyEvidenceSummary } from '../components/CopyEvidence'
 import { ambiguousScannerNames } from '../lib/scannerNames'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Fragment, useDeferredValue, useEffect, useState } from 'react'
@@ -29,7 +30,7 @@ import { sectionFromUrl } from '../lib/researchNavigation'
 import { tfMinutes } from '../lib/timeframes'
 import { useResearchFilters } from '../lib/useResearchFilters'
 
-import { Clocks, Evidence, Funnel, Need } from '../components/incubatorBits'
+import { Clocks, Funnel, Need } from '../components/incubatorBits'
 import { OverlapPanel } from '../components/OverlapPanel'
 import { ScreenQueuePanel } from '../components/ScreenQueuePanel'
 import { fmtNum, fmtR, timeAgo } from '../lib/format'
@@ -199,8 +200,12 @@ export default function Incubator() {
                 const trades = gate?.stats?.trades ?? 0
                 const netR = gate?.stats?.netR ?? 0
                 const days = gate?.stats?.days ?? 0
-                const pos = ps.filter((p) => (p.stats?.trades ?? 0) >= 3 && (p.stats?.avgR ?? 0) > 0).length
-                const judged = ps.filter((p) => (p.stats?.trades ?? 0) >= 3).length
+                const pos = ps.filter(
+                  (p) =>
+                    (p.paperCopy?.evidence?.stats.trades ?? 0) >= 3 &&
+                    (p.paperCopy?.evidence?.stats.avgR ?? 0) > 0,
+                ).length
+                const judged = ps.filter((p) => (p.paperCopy?.evidence?.stats.trades ?? 0) >= 3).length
                 const rate = days > 0 ? trades / days : 0
                 // decision 196: the minimums of this timeframe, as the judge applies them (4h needs 45 days, not 14)
                 const gg = gateFor(g, ps[0].tf)
@@ -218,7 +223,10 @@ export default function Incubator() {
                   scanner: ps[0].scannerName,
                   scannerId: ps[0].scannerId,
                   tf: ps[0].tf,
-                  members: ps.sort((a, b) => (b.stats?.trades ?? 0) - (a.stats?.trades ?? 0)),
+                  members: ps.sort(
+                    (a, b) =>
+                      (b.paperCopy?.evidence?.stats.trades ?? 0) - (a.paperCopy?.evidence?.stats.trades ?? 0),
+                  ),
                   trades,
                   avgR: trades ? netR / trades : 0,
                   days,
@@ -288,6 +296,7 @@ export default function Incubator() {
                   {d.paperCopy.enabled ? 'Copying enabled' : 'Copying off'}. Full promotion is separate:{' '}
                   {by('proposed').length} proposals waiting. A copy candidate still needs a new signal and
                   must pass entry pricing, liquidity and account risk checks.
+                  <CopyEvidenceSummary pairs={d.pairs} />
                 </div>
               )}
 
@@ -676,19 +685,10 @@ export default function Incubator() {
                                       {c.trades ? fmtR(c.avgR) : '–'}
                                     </span>
                                     /trade · {`PF ${pf(c.gate?.stats?.pfR)}`}
-                                    <div className="muted">Current gate evidence</div>
-                                    {!byCohort && c.members[0].paperCopy && (
-                                      <div
-                                        title={
-                                          c.members[0].paperCopy.reason ??
-                                          'Evidence and turnover pass; fresh signal and entry checks still required'
-                                        }
-                                      >
-                                        {c.members[0].paperCopy.eligible
-                                          ? 'Paper-copy candidate'
-                                          : c.members[0].paperCopy.reason}
-                                      </div>
-                                    )}
+                                    <div className="muted">
+                                      Last promotion review{c.gate?.at ? ` · ${timeAgo(c.gate.at)}` : ''}
+                                    </div>
+                                    {!byCohort && <CopyEvidence pair={c.members[0]} />}
                                   </td>
                                   <td className="small muted">
                                     {c.members.some((p) => p.funnel?.historyCapped) ? '≥' : ''}
@@ -753,7 +753,7 @@ export default function Incubator() {
                                         )}
                                       </td>
                                       <td>
-                                        <Evidence s={p.stats} g={c.gg} />
+                                        <CopyEvidence pair={p} />
                                       </td>
                                       <td className="small">
                                         <Funnel f={p.funnel} pair={p} />

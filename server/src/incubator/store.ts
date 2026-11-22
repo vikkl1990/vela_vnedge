@@ -4,7 +4,7 @@ import {emptyRotation, type RotationState} from './rotation.ts';
 import type {TradePolicy} from '../paper/tradePolicy.ts';
 import {enrollRestoration,restorationAssessment} from '../evidence/restoration.ts';
 import type {AppConfig} from '../config.ts';
-import {mirrorRefusal} from './gate.ts';
+import {mirrorRefusal,pairStats} from './gate.ts';
 import {qualifiedEvidence,readEvidence,evidenceCoverage} from '../evidence/trades.ts';
 import {withoutCachedBookVeto} from '../risk/marketGate.ts';
 /**
@@ -341,12 +341,28 @@ export class IncubatorStore {
     // independent of market availability, but never label an unverified copy ready.
     const marketMissing=(mirror?.minTurnoverUsd??0)>0&&(turnover===null||!Number.isFinite(turnover))
       ?'market data unavailable: 24h turnover not verified for copy':null;
-    if(readOnly){
-      const r=this.restoration(cell,at);
-      if(r&&!r.passed)return `restored cell in forward shadow evaluation: ${r.reasons.join('; ')}`;
-      return marketMissing??mirrorRefusal(mirror,qualifiedEvidence(this.db,cell,this.policyFor?.(cell),{at}),turnover);
-    }
+    if(readOnly)return this.copyReadiness(cell,mirror,turnover,at).reason;
     return this.restorationRefusal(cell,at)??marketMissing??mirrorRefusal(mirror,this.qualifiedTrades(cell.scannerId,cell.symbol,cell.tf,2,at),turnover);
+  }
+  /** Read-only explanation of the exact sample used by copying. Stage age and raw
+   * journal history cannot silently remove/add closes to this displayed sample. */
+  copyReadiness(cell:{scannerId:string;symbol:string;tf:string},mirror:AppConfig['incubator']['mirror'],turnover:number|null,at=Date.now()) {
+    const policy=this.policyFor?.(cell);
+    const trades=qualifiedEvidence(this.db,cell,policy,{at});
+    const restoration=this.restoration(cell,at);
+    const available=restoration&&!restoration.passed?readEvidence(this.db,cell,policy,{at}):trades;
+    const count=(basis:string,rows=trades)=>rows.filter(t=>(t.basis??'exact')===basis).length;
+    const since=trades.length?Math.min(...trades.map(t=>t.entryAt)):at;
+    const evidence={at,minTrades:mirror?.minTrades??0,minNetR:mirror?.minNetR??null,
+      stats:pairStats(trades,since,at),exact:count('exact'),replayed:count('execution-replay'),feeCompatible:count('full-fee'),
+      available:available.length,availableReplayed:count('execution-replay',available)};
+    const quarantine=this.quarantineReason(cell.scannerId);
+    const marketMissing=(mirror?.minTurnoverUsd??0)>0&&(turnover===null||!Number.isFinite(turnover))
+      ?'market data unavailable: 24h turnover not verified for copy':null;
+    const reason=quarantine?`scanner quarantined: ${quarantine}`
+      :restoration&&!restoration.passed?`restored cell in forward shadow evaluation: ${restoration.reasons.join('; ')}`
+      :marketMissing??mirrorRefusal(mirror,trades,turnover);
+    return {eligible:reason===null,reason,evidence};
   }
   policyEvidence(cell:{scannerId:string;symbol:string;tf:string},at=Date.now()) {
     if(!this.policyFor)return {mode:'unconfigured' as const};
