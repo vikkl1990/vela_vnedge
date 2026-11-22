@@ -46,13 +46,21 @@ test('the list is capped', () => {
   assert.equal(pickMovers(rows, 5)[0].row.symbol, 'M19USD')
 })
 
-test('the account side per market is the first open position', () => {
+test('both held sides remain visible regardless of position order', () => {
   const m = heldSides([
     { symbol: 'AUSD', side: 'long' },
     { symbol: 'AUSD', side: 'short' },
     { symbol: 'BUSD', side: 'short' },
   ])
-  assert.equal(m.get('AUSD'), 'long')
+  assert.equal(m.get('AUSD'), 'both sides')
+  assert.equal(
+    heldSides([
+      { symbol: 'AUSD', side: 'short' },
+      { symbol: 'AUSD', side: 'long' },
+      { symbol: 'AUSD', side: 'long' },
+    ]).get('AUSD'),
+    'both sides',
+  )
   assert.equal(m.get('BUSD'), 'short')
   assert.equal(m.get('CUSD'), undefined)
 })

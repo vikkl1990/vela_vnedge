@@ -36,16 +36,18 @@ export class MoverStore {
 
   /** Record one reading for every market. Non-finite or non-positive prices are skipped, never stored as zero. */
   record(at: number, readings: Iterable<{ symbol: string; price: number }>): void {
+    if (!Number.isSafeInteger(at) || at < 0) return;
     for (const { symbol, price } of readings) {
       if (!Number.isFinite(price) || price <= 0) continue;
       let ring = this.rings.get(symbol);
       if (!ring) this.rings.set(symbol, (ring = []));
       const last = ring[ring.length - 1];
-      if (last && at - last.at < MIN_GAP_MS) {
+      if (last && at < last.at) continue; // stale samples cannot overwrite the latest bucket
+      if (last && Math.floor(at / MIN_GAP_MS) === Math.floor(last.at / MIN_GAP_MS)) {
+        last.at = at;
         last.price = price;
         continue;
       }
-      if (last && at < last.at) continue; // a late arrival never rewrites history
       ring.push({ at, price });
       const cut = at - KEEP_MS;
       let drop = 0;
@@ -63,7 +65,7 @@ export class MoverStore {
 
   private change(ring: Sample[], now: number, windowMin: number): number | null {
     const last = ring[ring.length - 1];
-    if (!last || now - last.at > SLACK_MS) return null; // the market stopped updating: no figure is better than a stale one
+    if (!last || last.at > now || now - last.at > SLACK_MS) return null; // the market stopped updating: no figure is better than a stale one
     const start = now - windowMin * 60_000;
     let base: Sample | null = null;
     for (let i = ring.length - 1; i >= 0; i--) {

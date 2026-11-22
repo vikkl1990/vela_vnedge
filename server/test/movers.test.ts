@@ -59,3 +59,29 @@ test('the ring forgets what is older than the longest window', () => {
   assert.ok(rows[0].ch60 !== null);
   assert.ok(s.historyMinutes(T0 + 200 * MIN) <= 66);
 });
+
+test('late samples cannot turn a fresh gain into a stale loss', () => {
+ const s=new MoverStore();tick(s,0,{BTCUSD:100});tick(s,5,{BTCUSD:110});tick(s,4.9,{BTCUSD:80});
+ assert.equal(s.movers(T0+5*MIN)[0].price,110);
+ assert.ok(Math.abs(s.movers(T0+5*MIN)[0].ch5!-10)<1e-9);
+ s.record(NaN,[{symbol:'BTCUSD',price:1}]);assert.equal(s.movers(T0+5*MIN)[0].price,110);
+});
+test('coalescing never backdates prices or loses history under frequent samples', () => {
+ const s=new MoverStore();for(let sec=0;sec<=360;sec++)s.record(T0+sec*1000,[{symbol:'BTCUSD',price:100+sec}]);
+ const row=s.movers(T0+360000)[0];assert.ok(row.ch5!==null);assert.ok(s.historyMinutes(T0+360000)>=5);
+ assert.equal(s.movers(T0+359000).length,0,'a future sample is not current data after a clock correction');
+});
+test('an older refresh completing last cannot overwrite newer market data', async t => {
+ const {App}=await import('../src/app.ts');let at=T0; t.mock.method(Date,'now',()=>at);
+ const replies:Array<(v:any)=>void>=[];
+ const app:any={rest:{tickers:()=>new Promise(r=>replies.push(r)),products:async()=>[]},marketCache:null,movers:new MoverStore()};
+ const older=App.prototype.markets.call(app);at+=1000;const newer=App.prototype.markets.call(app);
+ replies[1]([{symbol:'BTCUSD',mark_price:'110'}]);await newer;
+ replies[0]([{symbol:'BTCUSD',mark_price:'80'}]);const result=await older;
+ assert.equal(result[0].markPrice,110);assert.equal(app.marketCache.at,T0+1000);
+});
+test('API supplies every window candidate instead of truncating by the largest other-window move', async () => {
+ const {App}=await import('../src/app.ts');let supplied=0;
+ const app:any={markets:async()=>[],movers:{historyMinutes:()=>60,movers:(_now:number,limit:number)=>{supplied=limit;return [];}}};
+ await App.prototype.moversNow.call(app);assert.equal(supplied,Infinity);
+});

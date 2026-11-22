@@ -609,7 +609,7 @@ export class App {
   }
 
   /** The biggest recent movers with their asset class, for the dashboard strip. */
-  async moversNow(limit = 60) {
+  async moversNow(limit = Infinity) {
     await this.markets().catch(() => null); // a cold server answers from one fresh reading rather than from nothing
     const now = Date.now();
     return { at: now, windows: [...MOVER_WINDOWS_MIN], historyMinutes: this.movers.historyMinutes(now), rows: this.movers.movers(now, limit).map(r => ({ ...r, group: classOf(r.symbol).group, sector: classOf(r.symbol).sector })) };
@@ -617,12 +617,14 @@ export class App {
 
   async markets() {
     if (this.marketCache && Date.now() - this.marketCache.at < 30_000) return this.marketCache.list;
+    const sampledAt = Date.now();
     const [tickers] = await Promise.all([this.rest.tickers(),this.rest.products()]);
+    if (this.marketCache && this.marketCache.at > sampledAt) return this.marketCache.list;
     const list = tickers.filter(t => t.contract_type === 'perpetual_futures' || !t.contract_type).map(t => ({
       symbol: t.symbol, description: t.description ?? t.symbol, tickSize: Number(t.tick_size ?? 0), contractValue: Number(t.contract_value ?? 0), group: classOf(t.symbol).group, sector: classOf(t.symbol).sector,
       markPrice: Number(t.mark_price ?? t.close), price: Number(t.close ?? t.mark_price), change24hPct: Number(t.mark_change_24h ?? 0), volume24h: Number(t.turnover_usd ?? 0),
     })).sort((a, b) => b.volume24h - a.volume24h);
-    this.marketCache = { at: Date.now(), list };
+    this.marketCache = { at: sampledAt, list };
     this.movers.record(this.marketCache.at, list.map(m => ({ symbol: m.symbol, price: m.markPrice })));
     return list;
   }

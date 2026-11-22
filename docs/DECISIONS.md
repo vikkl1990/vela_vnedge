@@ -8426,3 +8426,5 @@ there (if any) and a link to the chart, and falls back to the 24-hour tape until
 Display only. Nothing here opens, sizes or skips a trade, and the study's conclusion stands: no chase or fade catcher is
 supported by the backtests. The "hot" thresholds (1.5% in 5 minutes, 3% in 15, 5% in an hour) only decide which chips are
 highlighted. Direction is shown by an arrow and a sign as well as by colour.
+
+PR #64 review correction: discard out-of-order samples before coalescing, retain their real observation times in fixed buckets, and ignore older refresh completions. Return the complete small market universe so a 5m mover cannot disappear behind an unrelated 1h ranking. Hedged positions show both sides. Regression tests cover stale arrivals, dense sampling, refresh races and the API's window candidates. Display only; no trading settings changed.

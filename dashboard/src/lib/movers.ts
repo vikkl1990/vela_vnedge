@@ -28,12 +28,13 @@ export function pickMovers(rows: ReadonlyArray<MoverRow>, w: MoverWindow, limit 
     .map((x) => ({ ...x, hot: Math.abs(x.ch) >= HOT_PCT[w] }))
 }
 
-/** Which way the account is positioned in each market (the first open position wins when it holds both). */
+/** Which way the account is positioned in each market (both sides are explicit when positions are hedged). */
 export function heldSides(
   positions: ReadonlyArray<Pick<Position, 'symbol' | 'side'>>,
-): Map<string, 'long' | 'short'> {
-  const m = new Map<string, 'long' | 'short'>()
-  for (const p of positions) if (!m.has(p.symbol)) m.set(p.symbol, p.side)
+): Map<string, 'long' | 'short' | 'both sides'> {
+  const m = new Map<string, 'long' | 'short' | 'both sides'>()
+  for (const p of positions)
+    m.set(p.symbol, m.has(p.symbol) && m.get(p.symbol) !== p.side ? 'both sides' : p.side)
   return m
 }
 
