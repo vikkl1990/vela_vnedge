@@ -2,6 +2,7 @@ import {fillComparison} from './fillComparison.ts';
 import {chartReceipt} from '../scanners/chartReceipts.ts';
 import {gatedSignalPage} from '../evidence/gatedSignals.ts';
 import {positionsHealthReader} from './positionsHealth.ts';
+import {paperPositionViews} from './paperPositions.ts';
 import {isAssetGroup,isAssetSector} from '../../../shared/assetClass.ts';
 import { pineLibraries } from '../pine/libraries.ts';
 import { costAudit } from '../paper/costAudit.ts';
@@ -34,6 +35,7 @@ import { ContractRegistry } from '../scanners/contracts.ts';
 import { deltaConnectionRoutes } from '../connections/routes.ts';
 import {telegramRoutes} from '../telegram/routes.ts';
 import { Journal, journalFilter } from '../analytics/journal.ts';
+import { entryOrigin, entryOriginSql, paperFleet } from '../analytics/paperFleet.ts';
 import { configView, configPatch } from './configView.ts';
 
 const log = logger.scoped('api');
@@ -54,9 +56,11 @@ export class ApiServer {
   private authCtx: ReturnType<typeof createAuth>;
   private server: http.Server;
   private app: App;
+  private positionViews: ReturnType<typeof paperPositionViews>;
 
   constructor(app: App) {
     this.app = app;
+    this.positionViews = paperPositionViews(app);
     // nothing a request does may take the process down: a rejected dispatch answers 500 and is logged
     this.server = http.createServer((req, res) => { void this.dispatch(req, res).catch((e: any) => { log.error(`${req.method} ${req.url}: ${e?.stack ?? e}`); try { if (!res.headersSent) json(res, 500, { error: 'internal error' }, req); else res.end(); } catch { /* socket gone */ } }); });
     this.auth = new AuthStore(app.db);
@@ -224,7 +228,7 @@ export class ApiServer {
     a.candles.on('closed', (e: any) => this.broadcast('candle', { symbol: e.symbol, tf: e.tf, bar: e.bar, closed: true }));
     a.scanners.on('signal', (s: any) => this.broadcast('signal', s));
     a.scanners.on('scanner', (s: any) => this.broadcast('scanner', s));
-    a.paper.on('position', (e: any) => this.broadcast('position', { type: e.type, position: a.paper.view(e.position, a.marks.mark(e.position.symbol) ?? null) }));
+    a.paper.on('position', (e: any) => this.broadcast('position', { type: e.type, position: this.positionViews.one(e.position) }));
     a.paper.on('trade', (t: any) => this.broadcast('trade', t));
     a.paper.on('order', (o: any) => this.broadcast('order', o));
     a.paper.on('pending', (e: {type:string;id?:number;entry?:{id:number};reason?:string}) => this.broadcast('pending', {type:e.type,id:e.id??e.entry?.id,reason:e.reason}));
@@ -265,6 +269,7 @@ export class ApiServer {
     this.add('GET', '/api/markets', async () => a.markets());
     // every market the bot has seen or traded with its asset group and sector, so each page can show and filter by class
     this.add('GET', '/api/markets/classes', async () => a.assetClasses());
+    this.add('GET', '/api/markets/movers', async () => a.moversNow());
     this.add('GET', '/api/ticker', async (_r, _s, _p, url) => {
       const symbol = url.searchParams.get('symbol') ?? a.config.get().symbols[0];
       const price = a.paper.mark(symbol) ?? a.candles.lastPrice(symbol);
@@ -420,9 +425,9 @@ export class ApiServer {
         return { ...r, price: r.price ?? p.entryPrice, sl: r.sl ?? p.slOriginal ?? p.sl, tp: r.tp?.length ? r.tp : p.tp, levelsSource: r.levelsSource ?? p.levelsSource, derived: true };
       });
     });
-    this.add('GET', '/api/positions', () => a.paper.openPositions().map(p => a.paper.view(p, a.marks.mark(p.symbol) ?? null)));
+    this.add('GET', '/api/positions', () => this.positionViews.all());
     this.add('GET', '/api/positions/health', positionsHealthReader(a));
-    this.add('POST', '/api/positions/:id/close', (_r, _s, p) => { const pos = a.paper.closeManual(Number(p.id)); if (!pos) throw new HttpError(404, 'no open position'); return a.paper.view(pos); });
+    this.add('POST', '/api/positions/:id/close', (_r, _s, p) => { const pos = a.paper.closeManual(Number(p.id)); if (!pos) throw new HttpError(404, 'no open position'); return this.positionViews.one(pos); });
     // the path a trade took, for the forensic view: samples plus level events (decision 35)
     this.add('GET', '/api/positions/:id/path', (_r, _s, p) => {
       const id = Number(p.id);
@@ -459,6 +464,13 @@ export class ApiServer {
     this.add('GET', '/api/trades', (_r, _s, _p, url) => a.paper.trades({ limit: Number(url.searchParams.get('limit') ?? 200), ...tradeFilter(url) }));
     this.add('GET', '/api/trades/page', (_r, _s, _p, url) => a.paper.tradesPage({ limit: Number(url.searchParams.get('limit') ?? 300), offset: Number(url.searchParams.get('offset') ?? 0), ...tradeFilter(url) }));
     const journal = new Journal(a.db);
+    this.add('GET', '/api/paper/fleet', () => {
+      const now = Date.now(), days = 14;
+      const entries = a.db.all<{ scannerId: string; symbol: string; tf: string; fills:string; origin_receipt:string|null }>(`SELECT p.scanner_id scannerId, p.symbol, p.tf, p.fills, ${entryOriginSql} origin_receipt
+        FROM positions p WHERE p.bt=0 AND p.status IN ('open','closed') AND p.qty>0 AND p.scanner_id NOT LIKE 'plan:%' AND p.entry_at>=? AND p.entry_at<=?`, now - days * 86_400_000, now)
+        .map(p => ({...p,...entryOrigin(p.fills,p.origin_receipt)}));
+      return paperFleet(a.config.get(), entries, now, days);
+    });
     this.add('GET', '/api/evidence/gated-signals', (_r, _s, _p, url) => gatedSignalPage(a.db,url.searchParams));
     this.add('GET', '/api/journal', (_r, _s, _p, url) => journal.page(journalFilter(url.searchParams)));
     this.add('GET', '/api/journal/export', (_r, res, _p, url) => {
@@ -499,6 +511,22 @@ export class ApiServer {
       try { validatePerformanceFilter(filter); } catch (e) { throw new HttpError(400, (e as Error).message); }
       return performanceReport(a.db, filter);
     });
+    // decision 321: the market at each entry, with the outcome once the trade has closed (research read; observation only)
+    this.add('GET', '/api/entry-state', (_r, _s, _p, url) => {
+      const n = (k: string): number | undefined => {
+        const v = url.searchParams.get(k);
+        if (v === null || v === '') return undefined;
+        const x = Number(v);
+        if (!Number.isSafeInteger(x) || x < 0) throw new HttpError(400, `${k} must be a non-negative integer`);
+        return x;
+      };
+      const book = n('book') ?? 2;
+      if (book !== 0 && book !== 2) throw new HttpError(400, 'book must be 0 (account) or 2 (shadow)');
+      const side = url.searchParams.get('side') ?? undefined;
+      if (side && side !== 'long' && side !== 'short') throw new HttpError(400, 'side must be long or short');
+      return { at: Date.now(), rows: a.entryState.list({ book, from: n('from'), to: n('to'), symbol: url.searchParams.get('symbol') || undefined, side, limit: n('limit') }) };
+    });
+    this.add('GET', '/api/entry-state/status', () => a.entryState.status());
     this.add('GET', '/api/trackers', () => a.trackers());
     this.add('GET', '/api/incubator/agents', async () => {const {due,...view}=await a.pairAgents.view();return {...view,dueCells:due.length};});
     this.add('GET', '/api/reclaim-trials', () => reclaimStatus(a.db,a.config.get(),a.paper));

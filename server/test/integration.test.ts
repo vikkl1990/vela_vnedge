@@ -240,6 +240,22 @@ test('bar close → scanner run → signal → paper position (exactly one close
   const open = app.paper.openPositions();
   assert.equal(open.length, 1);
   assert.equal(open[0].side, 'long'); assert.equal(open[0].sl, 50_420); assert.deepEqual(open[0].tp, [50_570, 50_620, 50_670]);
+  // decision 321: the open was recorded with the market as it was, readable over an authenticated, validated route
+  assert.equal((await fetch(base + '/api/entry-state?book=0')).status, 401);
+  const es = await getJson('/api/entry-state?book=0');
+  assert.equal(es.status, 200);
+  assert.equal(es.body.rows.length, 1);
+  assert.equal(es.body.rows[0].positionId, open[0].id);
+  assert.equal(es.body.rows[0].side, 'long');
+  assert.equal(es.body.rows[0].status, 'open');
+  assert.equal(es.body.rows[0].r, null, 'no R for a trade that has not closed');
+  assert.ok(es.body.rows[0].market && 'btcBiasH4' in es.body.rows[0].market, 'the market block is there, known or not');
+  assert.equal((await getJson('/api/entry-state?book=2')).body.rows.length, 0, 'the shadow book opened nothing');
+  const esStatus = await getJson('/api/entry-state/status');
+  assert.equal(esStatus.status, 200);
+  assert.equal(esStatus.body.rows, 1);
+  assert.equal(esStatus.body.failed, 0);
+  for (const bad of ['book=1', 'side=up', 'limit=-1', 'from=abc']) assert.equal((await getJson(`/api/entry-state?${bad}`)).status, 400, bad);
   // a second update of the same new bar must not close anything again
   feed.push('5m', bar(T0 + TF, 50_520, 50_530));
   assert.equal(closedCounts.get(`5m:${T0}`), 1);
@@ -443,6 +459,20 @@ test('gated signal journal is authenticated, bounded and explicitly ineligible f
   assert.equal(page.status,200);assert.equal(page.body.scope,'diagnostic-only');assert.equal(page.body.promotionEligible,false);
   assert.equal(page.body.rows.length,1);assert.equal(page.body.rows[0].reason,'test gate');
   assert.equal(page.body.rows[0].snapshot.outcome,'not-executed');assert.equal(page.body.rows[0].promotion_eligible,0);
+});
+
+test('the paper fleet route needs a session and reports the own list and the entry split (decision 323)', async () => {
+  assert.equal((await fetch(base + '/api/paper/fleet')).status, 401);
+  const r = await getJson('/api/paper/fleet');
+  assert.equal(r.status, 200);
+  assert.equal(typeof r.body.own.pairs, 'number');
+  assert.equal(r.body.window.days, 14);
+  assert.equal(r.body.window.entries.total, r.body.window.entries.own + r.body.window.entries.copy + r.body.window.entries.unknown);
+  assert.ok(Array.isArray(r.body.ownCells) && Array.isArray(r.body.idle));
+  assert.equal(typeof r.body.copy.enabled, 'boolean');
+  const journal = await getJson('/api/journal?list=own');
+  assert.equal(journal.status, 200);
+  assert.equal((await getJson('/api/journal?list=mine')).status, 400);
 });
 
 test('authorisation is enforced by the server, not just hidden in the UI', async () => {

@@ -70,6 +70,8 @@ test('journal makes archive scope and simulated fills visible without changing h
             mlProbability: null,
             exitReason: 'trail',
             source: 'limit-candle-model',
+            fleetSource: archived ? 'unknown' : 'copy',
+            entrySizeScale: archived ? null : 1 / 3,
             accountingPending: false,
           },
         ],
@@ -86,12 +88,15 @@ test('journal makes archive scope and simulated fills visible without changing h
     'archived by account resets are excluded',
   )
   await expect(page.getByText('Candle model · tick/queue unverified')).toBeVisible()
+  await expect(page.getByText('Copy ⅓', { exact: true })).toBeVisible()
+  await expect(page.getByText('Copy ½', { exact: true })).toHaveCount(0)
   await expect(page.getByText(/comparing it with net R does not measure profit retained/)).toBeVisible()
   await history.selectOption('all')
   await expect(page.getByRole('note', { name: 'Journal history scope' })).toContainText(
     'totals include retained trades',
   )
   await expect(page.getByText('−18.27', { exact: true })).toBeVisible()
+  await expect(page.getByText('Origin unknown', { exact: true }).filter({ visible: true })).toBeVisible()
   expect(seen).toContain('current')
   expect(seen).toContain('all')
   expect(writes).toEqual([])

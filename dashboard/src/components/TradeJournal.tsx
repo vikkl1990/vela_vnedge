@@ -9,6 +9,7 @@ import { useClassOf } from '../lib/assetClass'
 import { DataTable, type Column } from './DataTable'
 import { JournalDetailPanel } from './JournalDetail'
 import { JournalExport } from './JournalExport'
+import { SourceTag } from './SourceTag'
 import {
   Callout,
   EmptyState,
@@ -76,10 +77,21 @@ export function TradeJournal({
   const book = params.get('book') ?? 'paper',
     status = params.get('status') ?? 'closed',
     scope = params.get('scope') ?? 'all'
+  const listParam = params.get('list')
+  const list = listParam === 'own' || listParam === 'copy' || listParam === 'unknown' ? listParam : 'all'
   const history = params.get('history') ?? 'current'
   const dateBy = params.get('dateBy') ?? 'exit',
     sort = params.get('sort') ?? 'newest'
-  const query: JournalQuery = { ...f.query, book, status, scope, history, dateBy, sort }
+  const query: JournalQuery = {
+    ...f.query,
+    book,
+    status,
+    scope,
+    history,
+    dateBy,
+    sort,
+    list: book === 'paper' ? list : 'all',
+  }
   const q = useJournal(query, !f.error),
     scanners = useScannerIndex(),
     markets = useMarkets()
@@ -127,6 +139,7 @@ export function TradeJournal({
           </b>{' '}
           <AssetChip symbol={r.symbol} withSector />
           <div className="small muted">{r.scannerName}</div>
+          <SourceTag source={r.fleetSource} scale={r.entrySizeScale} />{' '}
           <span className="small">{r.evidenceScope}</span>
         </span>
       ),
@@ -241,6 +254,7 @@ export function TradeJournal({
   const advancedActive =
     !!f.reason ||
     scope !== 'all' ||
+    list !== 'all' ||
     dateBy !== (['open', 'pending', 'all'].includes(status) ? 'entry' : 'exit')
   const filtersActive = [...params.keys()].some((k) => !['book', 'trade'].includes(k))
   const bookItems: Array<{ id: JournalBook; label: string }> = [
@@ -497,6 +511,22 @@ export function TradeJournal({
                       ))}
                     </select>
                   </label>
+                  {book === 'paper' && (
+                    <label>
+                      Source
+                      <select
+                        className="select"
+                        aria-label="Journal source"
+                        value={list}
+                        onChange={(e) => update({ list: e.target.value === 'all' ? '' : e.target.value })}
+                      >
+                        <option value="all">All entry origins</option>
+                        <option value="own">Own list only</option>
+                        <option value="copy">Copies only</option>
+                        <option value="unknown">Origin unknown</option>
+                      </select>
+                    </label>
+                  )}
                   <label>
                     Evidence
                     <select

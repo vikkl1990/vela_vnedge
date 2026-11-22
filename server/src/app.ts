@@ -2,6 +2,7 @@ import { RuntimeState } from './runtime.ts';
 import {candleReplayBlock} from './paper/basket.ts';
 import {scannerAttentionReadiness} from './scanners/attention.ts';
 import {classMap,classOf} from './markets/classes.ts';
+import { MoverStore, MOVER_WINDOWS_MIN } from './markets/movers.ts';
 import {ASSET_GROUPS,ASSET_SECTORS} from '../../shared/assetClass.ts';
 import {copyRecoveryRefusal} from './incubator/copyRecovery.ts';
 import {bindScalperConnection} from './connections/scalperOffer.ts';
@@ -69,6 +70,7 @@ import { MarkStore } from './data/marks.ts';
 import { RiskManager } from './risk/manager.ts';
 import { MlService } from './ml/service.ts';
 import { FeatureEnricher } from './ml/enrich.ts';
+import { attachEntryState, EntryStateRecorder } from './ml/entryState.ts';
 import { theCall, yardstick, type YardTrade } from './ml/yardstick.ts';
 import { OpsService } from './ops/service.ts';
 import { WorkerTracker } from './ops/workers.ts';
@@ -106,6 +108,9 @@ export class App {
   readonly ml: MlService;
   /** Decision 108: entry-time features for trades opened without them, costed once from the candle store. */
   readonly enricher: FeatureEnricher;
+  /** Decision 321: the market as it was when each position opened, kept for both books. Observation only. */
+  readonly entryState: EntryStateRecorder;
+  private entryStateTimer: ReturnType<typeof setTimeout> | null = null;
   readonly scanners: ScannerEngine;
   readonly boundExits: BoundExits;
   readonly profiles: ProfileStore;
@@ -118,6 +123,9 @@ export class App {
   private lastAdmissionAt = 0;
   private huntTimer: ReturnType<typeof setInterval> | null = null;
   readonly marks = new MarkStore();
+  /** Short price history per market for the movers strip (display only). */
+  readonly movers = new MoverStore();
+  private moverTimer: ReturnType<typeof setInterval> | null = null;
   readonly exchangeStatus = new TradingStatus();
   /** Decision 187: every paper fill set beside the real prints on the tape. */
   tapeAudit!: TapeAudit;
@@ -298,6 +306,8 @@ export class App {
     wireRealtime(this);
     // flow intelligence from public data, once an hour (decision 101)
     this.context = new ContextCollector({ db: this.db, rest: this.rest, symbols: () => [...new Set([...this.resolvedSymbols, ...this.incubator.symbols()])] });
+    this.entryState = new EntryStateRecorder({ db: this.db, enricher: this.enricher, candles: this.candles, context: () => this.context.latest().global });
+    attachEntryState([this.paper, this.shadow], this.entryState);
     this.ops = new OpsService({ cfg, onConfigChange: l => this.config.onChange(l), db: this.db, dataDir: DATA_DIR, feed: this.feed, pool: this.pool, paper: this.paper, marks: this.marks, candles: this.candles, scanners: this.scanners, workers, transport: deps.alertTransport, peakEquity: () => this.risk.peakEquity(),
       telegramTarget:()=>this.telegram?this.telegram.deliveryTarget():telegramFromEnv(cfg().alerts.telegram) });
     this.telegram=new TelegramControl({db:this.db,dataDir:DATA_DIR,actions:telegramActions(this),alerts:()=>this.ops.alerts,manageDelivery:!deps.alertTransport,
@@ -399,6 +409,11 @@ export class App {
     void refreshMarkets();
     this.marketTimer = setInterval(refreshMarkets, Math.max(1, this.config.get().risk.marketGate?.refreshMinutes ?? 60) * 60_000);
     this.marketTimer.unref?.();
+    // positions already open at a restart have no record yet: take it from the bars closed at their entry, once the series are loaded
+    this.entryStateTimer = setTimeout(() => { for (const engine of [this.paper, this.shadow]) for (const p of engine.openPositions()) this.entryState.record(engine.book, p); }, 5 * 60_000).unref?.();
+    // the movers strip needs a reading each minute whether or not a dashboard is open, so a pump is on the strip from its first minutes
+    this.moverTimer = setInterval(() => { this.markets().catch(e => log.warn(`movers sample failed: ${e?.message ?? e}`)); }, 60_000);
+    this.moverTimer.unref?.();
     // Closed trades and the clock drive evidence reviews independently of screening.
     // Reviews share one operation with manual and pair-agent calls; failed screens stay retryable.
     this.lastAdmissionAt=Date.now();
@@ -601,14 +616,24 @@ export class App {
     return { groups: ASSET_GROUPS, sectors: ASSET_SECTORS, classes: classMap([...new Set([...products.keys(), ...traded])]) };
   }
 
+  /** The biggest recent movers with their asset class, for the dashboard strip. */
+  async moversNow(limit = Infinity) {
+    await this.markets().catch(() => null); // a cold server answers from one fresh reading rather than from nothing
+    const now = Date.now();
+    return { at: now, windows: [...MOVER_WINDOWS_MIN], historyMinutes: this.movers.historyMinutes(now), rows: this.movers.movers(now, limit).map(r => ({ ...r, group: classOf(r.symbol).group, sector: classOf(r.symbol).sector })) };
+  }
+
   async markets() {
     if (this.marketCache && Date.now() - this.marketCache.at < 30_000) return this.marketCache.list;
+    const sampledAt = Date.now();
     const [tickers] = await Promise.all([this.rest.tickers(),this.rest.products()]);
+    if (this.marketCache && this.marketCache.at > sampledAt) return this.marketCache.list;
     const list = tickers.filter(t => t.contract_type === 'perpetual_futures' || !t.contract_type).map(t => ({
       symbol: t.symbol, description: t.description ?? t.symbol, tickSize: Number(t.tick_size ?? 0), contractValue: Number(t.contract_value ?? 0), group: classOf(t.symbol).group, sector: classOf(t.symbol).sector,
       markPrice: Number(t.mark_price ?? t.close), price: Number(t.close ?? t.mark_price), change24hPct: Number(t.mark_change_24h ?? 0), volume24h: Number(t.turnover_usd ?? 0),
     })).sort((a, b) => b.volume24h - a.volume24h);
-    this.marketCache = { at: Date.now(), list };
+    this.marketCache = { at: sampledAt, list };
+    this.movers.record(this.marketCache.at, list.map(m => ({ symbol: m.symbol, price: m.markPrice })));
     return list;
   }
 
@@ -852,9 +877,10 @@ export class App {
     const capacityCompatible=liveTrades.filter(t=>policyEvidence.capacityCompatibleIds.has(t.id)).length;
     const scopeCompatible=liveTrades.filter(t=>policyEvidence.scopeCompatibleIds.has(t.id)).length;
     const sizingCompatible=liveTrades.filter(t=>policyEvidence.sizingCompatibleIds.has(t.id)).length;
-    if(capacityCompatible||scopeCompatible||sizingCompatible)golive.advisories.push({
+    const executionCompatible=liveTrades.filter(t=>policyEvidence.executionCompatibleIds.has(t.id)).length;
+    if(capacityCompatible||scopeCompatible||sizingCompatible||executionCompatible)golive.advisories.push({
       key:'capacity-evidence',label:'Readiness evidence in the last 30 days',
-      value:`${liveTrades.length-capacityCompatible-scopeCompatible-sizingCompatible} exact + ${capacityCompatible} capacity-compatible${scopeCompatible?` + ${scopeCompatible} unrelated-cell settings`:''}${sizingCompatible?` + ${sizingCompatible} same-size replay`:''} trades`,
+      value:`${liveTrades.length-capacityCompatible-scopeCompatible-sizingCompatible-executionCompatible} exact + ${capacityCompatible} capacity-compatible${scopeCompatible?` + ${scopeCompatible} unrelated-cell settings`:''}${sizingCompatible?` + ${sizingCompatible} same-size replay`:''}${executionCompatible?` + ${executionCompatible} identical execution replay`:''} trades`,
       note:'Compatible history is verified against saved policies. Same-size replays must reproduce the recorded contracts, entry price and stop risk using saved orders, quotes and depth; profits are never scaled up. All other settings and evidence exclusions must match. This history does not establish performance at higher concurrency; promotion and leverage rules are unchanged.',
     });
     return { at: Date.now(), live, current, shadow: { ...shadow, windowDays: 30 }, funnel, golive };
@@ -862,7 +888,7 @@ export class App {
 
   /** The trade's entry-time features: its own when it carries them, else computed from the bars closed at its entry (decision 108). */
   private featuresOf(book: number, t: any): Record<string, number> | null {
-    return this.enricher.featuresFor({ book, id: t.id, symbol: t.symbol, tf: t.tf, side: t.side, entryAt: t.entryAt, entryPrice: t.entryPrice, sl: t.sl ?? null, tp: t.tp ?? null, levelsSource: t.levelsSource ?? null, features: t.features ?? null });
+    return this.entryState.featuresOf(t.id) ?? this.enricher.featuresFor({ book, id: t.id, symbol: t.symbol, tf: t.tf, side: t.side, entryAt: t.entryAt, entryPrice: t.entryPrice, sl: t.sl ?? null, tp: t.tp ?? null, levelsSource: t.levelsSource ?? null, features: t.features ?? null });
   }
 
   /**
@@ -1119,7 +1145,9 @@ export class App {
     this.screenQueue.stop();
     this.incubator.stop();
     this.executor?.stop();
+    if (this.entryStateTimer) { clearTimeout(this.entryStateTimer); this.entryStateTimer = null; }
     if (this.marketTimer) clearInterval(this.marketTimer);
+    if (this.moverTimer) clearInterval(this.moverTimer);
     if (this.huntTimer) clearInterval(this.huntTimer);
     this.feed.stop();
     await this.pool.stop();
