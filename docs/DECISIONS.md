@@ -8472,3 +8472,22 @@ fill, gate or threshold. It does not backfill closed history: the existing 35 da
 experiment and promotes nothing; its purpose is to let the next side or regime question be answered from recorded state.
 
 Review correction (22 Nov): entry context must have a valid timestamp at or before the entry, including restart recovery and cached records. Later context stays missing; historical closed-bar features remain available. This observes trades without changing admission, fills, risk or evidence rules.
+
+## 325. Operator tools: a parallel scanner list in paper, and starting to judge a tracked cell (21 November 2026)
+
+The re-rank of the fleet (walk-forward on 19,507 shadow trades) found that a cell's drift-adjusted excess persists only about 13% into the
+next week, so the expected gain from putting a better-looking list in the account is small (about +0.02R per trade). It is still the cheapest
+way to find out, provided the list is fixed beforehand and scored against the rest of the account. Two things were also missing from the product:
+a tracked cell could never be judged (the gate never sees it) and there was no way to allocate a set of cells at once and undo it.
+
+`ops/enable-fleet-b.ts` allocates the cells in `docs/research/fleet-b-2026-11-21/cells.json` (12 shadow cells chosen by fixed rules and
+shrunk toward zero) as explicit operator allocations, the same change the Scanners page and promotion make; `--release` undoes exactly that.
+`ops/start-judging-tracked.ts` moves chosen `tracked` cells to `shadow` (default: Nexus Fusion Engine ML on BTCUSD 15m), so their trades count
+as evidence from the move on; the incubator's event log records it with the actor `operator`. `ops/score-fleet-b.ts` compares the list with
+the rest of the account on excess R with a day-clustered interval and gives no verdict before 14 days and 60 fleet trades.
+
+Run by hand with the service stopped, dry-run by default, paper mode only, a config backup before any write, any refused cell stops the whole
+run before a byte is written. No gate, threshold, risk limit or sizing rule changes. The 12 cells are already traded as one-third copies; allocated,
+they trade at normal size. The incubator gate is not bypassed or relaxed: a cell allocated this way is judged as any live cell is.
+
+Review correction (22 Nov): fleet changes require paper mode and an offline service. Quarantine state must be available. Allocation commits once atomically, retains full reversible scanner snapshots and refuses config drift. Tracked transitions recheck stage, quarantine and existing capacity inside the writer transaction. Scoring excludes watch-only, experimental, quarantined and future outcomes, uses corrected day-cluster uncertainty and refuses a verdict without a matched shadow baseline. No fleet is enabled by deployment.
