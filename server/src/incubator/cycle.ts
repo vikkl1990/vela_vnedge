@@ -73,7 +73,7 @@ export interface ScreenTrade { entryAt: number; pnl: number; rMultiple?: number 
  * The holdout, never consulted for that judgement, must then be positive on its own: that is the only part
  * of the number that was not used to pick the cell.
  */
-export function screenVerdict(trades: ScreenTrade[], stressed: ScreenTrade[], bars: Array<{ time: number }>, inc: IncubatorConfig, now = Date.now(), entries?: number): ScreenResult {
+export function screenVerdict(trades: ScreenTrade[], stressed: ScreenTrade[], bars: Array<{ time: number }>, inc: IncubatorConfig, now = Date.now(), entries?: number | readonly number[]): ScreenResult {
   const t0 = bars[0].time, t1 = bars[bars.length - 1].time;
   const share = inc.screen.requireHoldout === false ? 0 : (inc.screen.holdoutShare ?? 0.3);
   const cut = share > 0 ? bars[Math.max(1, Math.floor(bars.length * (1 - share)))].time : t1 + 1;
@@ -97,7 +97,12 @@ export function screenVerdict(trades: ScreenTrade[], stressed: ScreenTrade[], ba
   };
   const halvesOk = inc.screen.requireBothHalves === false || (h1.length > 0 && h2.length > 0 && r.avgR1! > 0 && r.avgR2! > 0);
   r.pass = r.trades >= inc.screen.minTrades && r.profitFactor >= inc.screen.minProfitFactor && r.windowsUp >= inc.screen.minWindowsUp && r.netAtStress > 0 && halvesOk;
-  if (entries !== undefined && bars.length) { r.entryDensity = entries / bars.length; if (r.entryDensity > MAX_ENTRY_DENSITY) r.pass = false; }
+  if (entries !== undefined && bars.length) {
+    const trainBars = share > 0 ? Math.max(1, bars.filter(b => b.time < cut).length) : bars.length;
+    const entryCount = typeof entries === 'number' ? entries : entries.filter(t => t < cut).length;
+    r.entryDensity = entryCount / trainBars;
+    if (r.entryDensity > MAX_ENTRY_DENSITY) r.pass = false;
+  }
   if (share > 0) {
     const ho = stats(hold);
     r.holdoutTrades = hold.length; r.holdoutAvgR = ho.avgR; r.holdoutPf = ho.pf;
@@ -401,7 +406,7 @@ function judgePair(store: IncubatorStore, cfg: AppConfig, r: PairRow, rep: Cycle
   const dv = deliveryVerdict(r.screen, pairStats(forward.trades,forward.since,now));
   if (dv.retire && r.stage === 'shadow' && !store.rotationHolds(r)) { store.move(r, 'retired', 'gate', { stats, reasons: [dv.reason] }, dv.reason!, now); rep.retired.push(name(r)); return; }
   const overlap = overlapPct(trades.filter(t => t.entryAt >= forward.since), store.liveTradesOn(r.symbol, r.scannerId));
-  let v = gateVerdict(stats, returningGate(store, gateFor(cfg.incubator, r.tf), [r]), overlap);
+  let v = gateVerdict(stats, returningGate(store, gateFor(cfg.incubator, r.tf), [r]), overlap, store.list(['candidate', 'shadow', 'proposed']).length);
   if (restoration&&!restoration.passed) v={decision:restoration.gateDecision==='retire'?'retire':'brewing',reasons:restoration.reasons};
   if (!restoration && v.decision === 'retire' && store.policyFor && stats.trades<store.trades(r.scannerId,r.symbol,r.tf,2).filter(t=>t.entryAt>=r.since).length) v={...v,decision:'brewing',reasons:['collecting compatible policy evidence']};
   if (v.decision === 'retire' && store.rotationHolds(r)) v = {...v, decision:'brewing', reasons:['retirement deferred: account or shadow position or order still active', ...v.reasons]};
@@ -450,7 +455,7 @@ function* judgeCohorts(store: IncubatorStore, cfg: AppConfig, active: PairRow[],
       n += t.length; hit += overlapPct(t, store.liveTradesOn(m.symbol, m.row.scannerId)) / 100 * t.length;
     }
     const overlap = n ? hit / n * 100 : 0;
-    let v = cohortVerdict(stats, returningGate(store, gateFor(inc, rows[0].tf), rows), overlap);
+    let v = cohortVerdict(stats, returningGate(store, gateFor(inc, rows[0].tf), rows), overlap, store.list(['candidate', 'shadow', 'proposed']).length);
     if(v.decision==='retire'&&store.policyFor&&members.some(m=>m.trades.length<store.trades(m.row.scannerId,m.symbol,m.row.tf,2).length))v={...v,decision:'brewing',reasons:['collecting compatible policy evidence']};
     const cohort = `${rows[0].scannerId} ${rows[0].tf} across ${rows.length} market${rows.length === 1 ? '' : 's'}`;
     // decision 114: a strategy cohort carries the verdict on its own exits, advisory, beside the gate's
@@ -573,7 +578,7 @@ function promotionRefusal(store: IncubatorStore, cfg: AppConfig, r: PairRow, now
     const trades = store.qualifiedTrades(r.scannerId, r.symbol, r.tf, 2);
     const stats = pairStats(trades, r.since, now);
     const overlap = overlapPct(trades.filter(t => t.entryAt >= r.since), store.liveTradesOn(r.symbol, r.scannerId));
-    const v = gateVerdict(stats, returningGate(store, gateFor(inc, r.tf), [r]), overlap);
+    const v = gateVerdict(stats, returningGate(store, gateFor(inc, r.tf), [r]), overlap, store.list(['candidate', 'shadow', 'proposed']).length);
     return v.decision === 'propose' ? null : v.reasons.join('; ');
   }
   // Match cohort evaluation: failed-delivery shadow members no longer support the group.
@@ -586,7 +591,7 @@ function promotionRefusal(store: IncubatorStore, cfg: AppConfig, r: PairRow, now
     const t = m.trades.filter(x => x.entryAt >= m.since);
     n += t.length; hit += overlapPct(t, store.liveTradesOn(m.symbol, r.scannerId)) / 100 * t.length;
   }
-  const v = cohortVerdict(stats, returningGate(store, gateFor(inc, r.tf), rows), n ? hit / n * 100 : 0);
+  const v = cohortVerdict(stats, returningGate(store, gateFor(inc, r.tf), rows), n ? hit / n * 100 : 0, store.list(['candidate', 'shadow', 'proposed']).length);
   if (v.decision !== 'propose') return v.reasons.join('; ');
   const own = stats.perMarket.find(p => p.symbol === r.symbol);
   return own && own.trades >= inc.gate.minMarketTrades && own.avgR > 0 ? null : 'this market no longer has the required positive trade sample';

@@ -324,6 +324,18 @@ test('decision 88: a script that fires on more than a tenth of all bars cannot p
   assert.ok((dense.entryDensity ?? 0) > 0.10);
 });
 
+test('holdout bars cannot dilute a dense training sample into a screen pass', () => {
+  const cfg: AppConfig = structuredClone(DEFAULT_CONFIG);
+  const inc = { ...cfg.incubator, screen: { ...cfg.incubator.screen, minTrades: 10, minWindowsUp: 3, holdoutShare: 0.3, minHoldoutTrades: 5 } };
+  const bars = Array.from({ length: 1000 }, (_, i) => ({ time: T0 + i * 900_000 }));
+  const good = Array.from({ length: 40 }, (_, k) => ({ entryAt: T0 + (k * 24 + 5) * 900_000, pnl: k % 3 === 2 ? -10 : 15, rMultiple: (k % 3 === 2 ? -10 : 15) / 10 }));
+  const stressed = good.map(t => ({ ...t, pnl: t.pnl - 1 }));
+  const training = Array.from({ length: 75 }, (_, i) => bars[i * 8].time);
+  const diluted = screenVerdict(good, stressed, bars, inc, T0, training);
+  assert.ok((diluted.entryDensity ?? 0) > 0.10, String(diluted.entryDensity));
+  assert.equal(diluted.pass, false);
+});
+
 test('decision 90: a pair whose shadow delivery is flat or worse against a screen promise half an R higher is retired by its record', () => {
   const s = (trades: number, avgR: number): PairStats => ({ trades, days: 20, wins: 0, winRatePct: 0, netR: avgR * trades, avgR, pfR: 1, weeks: 3, positiveWeeks: 1, positiveWeeksPct: 33, tStat: 9 });
   assert.equal(deliveryVerdict({ avgR: 1.03 }, s(22, -0.21)).retire, true, 'the BTC 15m case');
