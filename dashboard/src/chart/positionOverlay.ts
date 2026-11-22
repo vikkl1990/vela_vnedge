@@ -90,13 +90,9 @@ export const positionLevelsIndicator: NativeIndicatorDescriptor = {
       let out: NativeIndicatorOutput = { priceLines: [] }
       try {
         const p = JSON.parse(payload) as PositionOverlay
-        const reader = context as NativeIndicatorContext & { bars?: () => Array<{ time?: number }> }
-        const bars = typeof reader.bars === 'function' ? reader.bars() : []
-        const cursor = Array.isArray(bars) && bars.length ? Number(bars[bars.length - 1]?.time) : NaN
-        // A live chart always shows the recorded stop. Replay shows it once the cursor reaches the fill.
-        const inTime =
-          context.live || (Number.isFinite(cursor) && Number.isFinite(p.entryAt) && cursor >= p.entryAt)
-        if (inTime && context.symbol.replace(/^delta:/, '') === p.symbol && Array.isArray(p.levels))
+        // These are today's mutable stop/peak/target states, not an as-of snapshot.
+        // Historical trade paths belong to replayOverlay; never leak live levels into replay.
+        if (context.live && context.symbol.replace(/^delta:/, '') === p.symbol && Array.isArray(p.levels))
           out = {
             priceLines: p.levels
               .filter((l) => Number.isFinite(l.price) && l.price > 0 && l.role in ROLE_COLOR)

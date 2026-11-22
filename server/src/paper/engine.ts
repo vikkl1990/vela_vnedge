@@ -8,7 +8,7 @@ import {isExecutableTrade} from '../execution/tradeFreshness.ts';
 import {quoteMakerCell,passiveMakerPrice,tradedVolume,makerTapeCell,freshMakerPrint} from './makerPricing.ts';
 import {SOL_MAKER_FILTER_OFF,solMakerRiskSource} from '../scanners/solMakerExperiment.ts';
 import {qualifiedEvidence,evidenceCoverage} from '../evidence/trades.ts';
-import {PaperExitExecution,CAUSAL_EXIT_VERSION,type ExitBook} from './exitExecution.ts';
+import {PaperExitExecution,CAUSAL_EXIT_VERSION,CAUSAL_CANDLE_VERSION,type ExitBook} from './exitExecution.ts';
 import {recordGatedSignal,type GateStage} from '../evidence/gatedSignals.ts';
 import { transientTradingBlock } from '../delta/tradingStatus.ts';
 import type { ExecutionPlanSnapshot } from './executionPlans.ts';
@@ -1070,7 +1070,8 @@ export class PaperEngine extends EventEmitter {
     // Excursions before a cost-basis change cannot be reinterpreted under the new risk distance.
     held.peakR=0;held.worstR=0;held.peakAt=fill.at;held.worstAt=fill.at;this.peakSeen.set(held.id,0);
     this.db.run("DELETE FROM positions WHERE id=? AND status='pending' AND bt=2",leg.id);
-    this.db.run('UPDATE paper_execution_positions SET market_qty=?,desired_stop=NULL,ack_at=NULL WHERE position_id=? AND book=2',qty,held.id);
+    this.db.run('UPDATE paper_execution_positions SET market_qty=?,desired_stop=NULL,ack_at=NULL,queued_stop=NULL,queued_ack_at=NULL,stop_active_at=? WHERE position_id=? AND book=2',qty,fill.at,held.id);
+    this.db.run('INSERT OR REPLACE INTO paper_stop_amendments VALUES(?,?,?)',held.id,fill.at,sl);
     this.persistFill(held,fill,context);this.recordBasketEntry(held,fill,context);this.persist(held);
     recordFillBudget(this.db,held,this.book,cfg,'basket-add');
     this.emit('order',orderOf(held,fill));this.emit('position',{type:'updated',position:held});
@@ -1563,7 +1564,7 @@ export class PaperEngine extends EventEmitter {
    */
   private causalCandle(p: Position, bar: PriceBar, at: number): void {
     const run = () => {
-      if (this.exitExecution.active(p.id)) return;
+      if (this.exitExecution.active(p.id)) { this.causalPrice(p, bar.close, at); return; }
       const ack = this.exitExecution.acknowledge(p, at);
       const activeStop = p.sl;
       const offBefore = p.trailOff;
@@ -1577,11 +1578,13 @@ export class PaperEngine extends EventEmitter {
         high: long ? Math.max(anchor, bar.close) : bar.high,
         low: long ? bar.low : Math.min(anchor, bar.close),
       };
-      const stopLevel = p.sl;
+      // Ratchets can only tighten. The stop active at minute-open was protective
+      // throughout its range; later amendments are judged against the close below.
+      const stopLevel = this.exitExecution.stopAt(p.id, bar.time);
       const stopHit = stopLevel !== null && (long ? stopBar.low <= stopLevel : stopBar.high >= stopLevel);
       if (stopHit && stopLevel !== null) {
         // A candle is not a print through a resting limit, so a target wick is not a fill.
-        this.requestExit(p, stopReason(p), p.qtyOpen, stopMarketReference(p.side, stopLevel, stopBar.open), at);
+        this.requestExit(p, stopReason({...p, sl:stopLevel}), p.qtyOpen, stopMarketReference(p.side, stopLevel, stopBar.open), at);
         if (ack) this.persist(p);
         return;
       }
@@ -1595,7 +1598,10 @@ export class PaperEngine extends EventEmitter {
       if (p.breakEven && activeStop !== p.entryPrice) p.breakEven = false;
       this.exitExecution.amend(p, desired, at, cfg.latencyMs);
       if (ack || desired !== activeStop || p.trailOff !== offBefore) this.persist(p);
-      this.recordPath(p, bar.close, at, ack ? 'stop acknowledged' : desired !== activeStop ? 'stop moved' : undefined);
+      this.recordPath(p, bar.close, at, ack ? 'stop acknowledged' : desired !== activeStop ? 'stop requested' : undefined);
+      // Keep liquidation and all close/time-based protections on the same path as fresh ticks.
+      // qty=0 cannot manufacture resting target fills or activate tick-only research rules.
+      this.causalPrice(p, bar.close, at);
     };
     if (this.decisionActive) run();
     else try { this.commitDecision(run, p); }
@@ -1659,8 +1665,9 @@ export class PaperEngine extends EventEmitter {
         if(!historical&&observedAt>=pos.entryAt&&!this.tapeActive(symbol,observedAt)){
           // The entry minute's low may have printed before the fill. Later minutes are entirely
           // after entry: a wick through the stop must fill, and the favourable extreme must trail.
-          const entryMinute = Math.floor(pos.entryAt / 60_000) * 60_000;
-          if (bar.time > entryMinute) this.causalCandle(pos, bar, observedAt);
+          const lastEntryAt = pos.fills.reduce((at,f)=>f.reason==='entry'?Math.max(at,f.at):at,pos.entryAt);
+          const entryMinute = Math.floor(lastEntryAt / 60_000) * 60_000;
+          if ((pos.executionPlan?.executionVersion ?? pos.policy?.sim ?? 0) >= CAUSAL_CANDLE_VERSION && bar.time > entryMinute) this.causalCandle(pos, bar, observedAt);
           else this.causalPrice(pos, bar.close, observedAt);
         }
         const st=this.configFor(pos).structureTrail;

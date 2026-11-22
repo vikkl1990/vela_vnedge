@@ -184,7 +184,7 @@ export const api = {
   // markets & candles
   markets: () => get<Market[]>('/markets'),
   assetClasses: () => get<import('./types').AssetClassesResponse>('/markets/classes'),
-  candles: (q: CandleQuery) => get<Candle[]>(`/candles${qs(q)}`),
+  candles: (q: CandleQuery, signal?: AbortSignal) => request<Candle[]>(`/candles${qs(q)}`, { signal }),
   ticker: (symbol: string) => get<Ticker>(`/ticker${qs({ symbol })}`),
 
   // scanners

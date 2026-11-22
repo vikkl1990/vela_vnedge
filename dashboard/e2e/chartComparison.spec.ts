@@ -1,5 +1,5 @@
 import type { Vela } from '@luxalgo/vela'
-import { test, expect, scanners } from './fixtures'
+import { test, expect, scanners, signals } from './fixtures'
 import { DELTA_TIMEFRAMES } from '../src/lib/timeframes'
 
 const M = 900000,
@@ -170,4 +170,43 @@ test('real Pine workers apply per-script timezones and compare recorded closed f
   expect(writes).toEqual([])
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
   await page.screenshot({ path: info.outputPath('chart-comparison.png'), fullPage: true })
+})
+
+test('single timeframes outside the frame preset retain journal decisions and closed fills', async ({
+  page,
+  faults,
+  writes,
+}) => {
+  void faults
+  await page.route('**/api/candles?**', (r) => r.fulfill({ json: bars }))
+  await page.route('**/api/signals?**', (r) =>
+    r.fulfill({ json: [{ ...signals[0], tf: '5m', barTime: T + 181 * M, at: T + 181 * M + 2000 }] }),
+  )
+  await page.route('**/api/journal?**', (r) =>
+    r.fulfill({
+      json: {
+        at: Date.now(),
+        book: 'paper',
+        total: 1,
+        offset: 0,
+        limit: 200,
+        rows: [{ ...row(), tf: '5m' }],
+        summary: {},
+      },
+    }),
+  )
+  await page.goto('/chart?symbol=ETHUSD&tf=5m')
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const chart = (window as unknown as { __vnChart: Vela }).__vnChart
+        const marks = chart?.marks.all() ?? []
+        return {
+          decisions: marks.filter((m) => m.group === 'bot-decisions').length,
+          fills: marks.filter((m) => m.group === 'bot-fills').length,
+        }
+      }),
+    )
+    .toEqual({ decisions: 1, fills: 3 })
+  expect(writes).toEqual([])
 })

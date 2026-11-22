@@ -72,8 +72,8 @@ test('native levels update only on actual changes, never on ticks or viewport mo
   )
   assert.equal(
     output.at(-1)?.priceLines?.some((l) => l.title === 'entry'),
-    true,
-    'replay at the fill still draws the position',
+    false,
+    'replay after the fill must not reveal the latest stop, targets or peak',
   )
   overlay.stop()
   overlay.start(

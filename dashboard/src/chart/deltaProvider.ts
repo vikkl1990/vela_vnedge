@@ -3,7 +3,7 @@ import { api } from '../api/client'
 import type { Candle, Market } from '../api/types'
 import { tfMs, velaToDeltaTf } from '../lib/timeframes'
 import { sseBus } from '../sse/bus'
-import { CandleStream } from './candleStream'
+import { CandleBackfill } from './candleBackfill'
 
 /**
  * Vela `DataProvider` backed by the VNEdge server:
@@ -121,32 +121,14 @@ export const deltaProvider: DataProvider = {
   subscribe(ticker, timeframe, onBar) {
     const tf = velaToDeltaTf(timeframe)
     const interval = tfMs(tf)
-    const stream = new CandleStream(interval, onBar)
-    let lastTime = -Infinity
     let stopped = false
-    let filling = false
-    const take = (bar: Candle, closed: boolean) => {
-      if (stopped || !Number.isFinite(bar.time)) return
-      if (lastTime >= 0 && bar.time > lastTime + interval && !filling) {
-        const from = lastTime
-        const to = bar.time
-        filling = true
-        void api
-          .candles({ symbol: ticker, tf, from, to, limit: 500 })
-          .then((rows) => {
-            if (stopped || !Array.isArray(rows)) return
-            for (const row of rows) if (row.time > from && row.time < to) stream.candle(row, true)
-          })
-          .catch(() => {
-            /* the next event still arrives */
-          })
-          .finally(() => {
-            filling = false
-          })
-      }
-      stream.candle(bar, closed)
-      if (bar.time > lastTime) lastTime = bar.time
-    }
+    const stream = new CandleBackfill(
+      interval,
+      onBar,
+      (from, to, limit, signal) => api.candles({ symbol: ticker, tf, from, to, limit }, signal),
+      (error) => console.warn('[delta-provider] candle gap could not be recovered', error),
+    )
+    const take = (bar: Candle, closed: boolean) => stream.candle(bar, closed)
     void api
       .candles({ symbol: ticker, tf, limit: 2 })
       .then((rows) => {
@@ -166,6 +148,7 @@ export const deltaProvider: DataProvider = {
     })
     return () => {
       stopped = true
+      stream.stop()
       offCandle()
       offTick()
     }

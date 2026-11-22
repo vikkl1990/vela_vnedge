@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {Db} from '../db.ts';
 import {DEFAULT_CONFIG} from '../config.ts';
 import {PaperEngine} from './engine.ts';
-import {PaperExitExecution,priceExit,type ExitBook} from './exitExecution.ts';
+import {PaperExitExecution,CAUSAL_CANDLE_VERSION,priceExit,type ExitBook} from './exitExecution.ts';
 import {TapeAudit} from '../execution/tapeAudit.ts';
 import {fillExit} from './logic.ts';
 
@@ -88,19 +88,70 @@ test('historical extremes cannot create a backdated exit or a retrospective trai
  assert.equal(x.e.pendingExits().length,0);assert.equal(x.p.sl,95);
  x.e.onTrade('BTCUSD',94,1,x.now,x.now);assert.equal(x.e.pendingExits()[0].trigger_at,x.now);
 });
-test('a tighter trail during a pending amendment replaces the stored stop but not its deadline', t => {
-  const x = setup(t, true, 'long', { trailAfterR: 0.5, trailGiveBackPct: 0, trailDistanceR: 1, floorAtR: 0 });
-  x.at(T + 300);
-  x.e.onTrade('BTCUSD', 103, 1, x.now, x.now);
-  const first = x.e.exitExecution.state(x.p.id)!;
-  assert.ok(first.desired_stop! > 95);
-  const deadline = first.ack_at;
-  x.at(T + 350);
-  x.e.onTrade('BTCUSD', 110, 1, x.now, x.now);
-  const next = x.e.exitExecution.state(x.p.id)!;
-  assert.ok(next.desired_stop! > first.desired_stop!, 'the pending stop keeps the better price');
-  assert.equal(next.ack_at, deadline, 'the acknowledgement deadline does not move earlier');
-  assert.equal(x.p.sl, 95);
+test('each tighter stop waits its own latency, survives restart, and never widens', t => {
+ for(const side of ['long','short'] as const){
+  const x=setup(t,true,side),dir=side==='long'?1:-1;
+  x.e.exitExecution.amend(x.p,100,T+300,100);
+  x.e.exitExecution.amend(x.p,100+dir*5,T+399,100);
+  x.e.exitExecution.amend(x.p,100+dir*2,T+399,100); // weaker must not replace the queue
+  assert.equal(x.e.exitExecution.state(x.p.id)!.desired_stop,100);
+  assert.equal(x.e.exitExecution.state(x.p.id)!.queued_stop,100+dir*5);
+  const p=x.restart();
+  assert.equal(x.e.exitExecution.acknowledge(p,T+400),true);
+  assert.equal(p.sl,100,'newer price must not activate after only 1 ms');
+  assert.equal(x.e.exitExecution.state(p.id)!.ack_at,T+499);
+  assert.equal(x.e.exitExecution.acknowledge(p,T+498),false);
+  assert.equal(x.e.exitExecution.acknowledge(p,T+499),true);
+  assert.equal(p.sl,100+dir*5);
+  assert.equal(x.e.exitExecution.state(p.id)!.stop_active_at,T+499);
+ }
+});
+test('queued prices can both acknowledge when both deadlines passed; version 211 keeps its original behavior',t=>{
+ for(const version of [211,CAUSAL_CANDLE_VERSION]){
+  const x=setup(t);x.db.run('UPDATE paper_execution_positions SET version=? WHERE position_id=?',version,x.p.id);
+  x.e.exitExecution.amend(x.p,100,T+300,100);
+  x.e.exitExecution.amend(x.p,105,T+399,100);
+  x.e.exitExecution.acknowledge(x.p,T+500);
+  assert.equal(x.p.sl,version===211?100:105);
+  assert.equal(x.e.exitExecution.state(x.p.id)!.desired_stop,null);
+  assert.equal(x.e.exitExecution.state(x.p.id)!.queued_stop,null);
+  assert.equal(x.e.exitExecution.view(x.p.id)!.version,version);
+ }
+});
+test('candle fallback keeps close/time protections without fills at the candle price',t=>{
+ const cases=[
+  {reason:'plan_time',over:{},plan:true},
+  {reason:'cut',over:{earlyCut:{r:-.1,minutes:10}}},
+  {reason:'stale',over:{staleBars:.05,staleMinR:1}},
+  {reason:'stalled',over:{earlyStall:{minR:.1,maxR:.4,minutes:1}},peak:true},
+  {reason:'trend',over:{trendExit:{enabled:true,emaLen:20,minR:0}}},
+ ];
+ for(const c of cases){
+  const x=setup(t,true,'long',c.over);x.e.trendFor=()=>-1;
+  if(c.plan)x.p.executionPlan={executionVersion:CAUSAL_CANDLE_VERSION,maxHoldMinutes:1} as any;
+  if(c.peak)x.e.onTrade('BTCUSD',101,1,T+300,T+300);
+  x.at(T+120000);x.e.onBar('BTCUSD',{time:T+60000,open:100,high:100,low:98,close:99},x.now);
+  assert.equal(x.e.pendingExits()[0]?.reason,c.reason,c.reason);
+  assert.equal(x.p.status,'open');assert.equal(x.p.fills.length,1);
+  assert.equal(x.e.settleExits('BTCUSD',book(x.now+99),x.now+99),0);
+  x.e.settleExits('BTCUSD',book(x.now+100,98,99),x.now+100);
+  assert.equal(x.p.exitPrice,98,'only fresh executable depth can fill');
+ }
+});
+test('a mid-minute amendment cannot stop on a wick that may predate activation',t=>{
+ const x=setup(t);x.e.exitExecution.amend(x.p,99,T+61000,100);
+ x.at(T+120000);x.e.onBar('BTCUSD',{time:T+60000,open:100,high:100,low:98,close:100},x.now);
+ assert.equal(x.p.sl,99);assert.equal(x.e.pendingExits().length,0);
+ x.at(T+180000);x.e.onBar('BTCUSD',{time:T+120000,open:100,high:100,low:98,close:100},x.now);
+ assert.equal(x.e.pendingExits()[0]?.reason,'sl','the next complete minute may trigger the active stop');
+});
+test('version 211 held positions retain close-only fallback instead of silently adopting 212 wicks',t=>{
+ const x=setup(t);x.p.policy!.sim=211;
+ x.at(T+120000);x.e.onBar('BTCUSD',{time:T+60000,open:100,high:100,low:94,close:100},x.now);
+ assert.equal(x.e.pendingExits().length,0);
+ x.e.onTrade('BTCUSD',94,1,x.now+1,x.now+1);
+ assert.equal(x.e.pendingExits()[0]?.reason,'sl','old causal trades must not fall back to optimistic fills');
+ assert.equal(x.p.status,'open');
 });
 test('desired trail becomes active only after its acknowledgement, including restart',t=>{
  const x=setup(t,true,'long',{trailAfterR:.5,trailGiveBackPct:10,floorAtR:0});
@@ -161,4 +212,18 @@ test('a failed scoped exit restores its position and leaves another held positio
  x.at(T+300);x.e.onTrade('BTCUSD',94,1,x.now,x.now);
  x.db.db.exec("CREATE TRIGGER fail_scoped BEFORE INSERT ON paper_exit_reports BEGIN SELECT RAISE(ABORT,'scoped failure'); END");
  assert.equal(x.e.settleExits('BTCUSD',book(T+400),T+400),0);assert.equal(x.p.qtyOpen,2);assert.equal(x.e.openPositions().length,2);assert.equal(x.e.position(other.id),other);assert.equal(other.qtyOpen,2);
+});
+
+
+test('a mid-minute ratchet preserves the prior stop protection across restart',t=>{
+ const x=setup(t);
+ x.e.exitExecution.amend(x.p,97,T+300,100);
+ x.e.onTrade('BTCUSD',100,1,T+400,T+400);
+ x.e.exitExecution.amend(x.p,99,T+61000,100);
+ const p=x.restart();x.at(T+120000);
+ x.e.onBar('BTCUSD',{time:T+60000,open:100,high:100,low:96,close:100},x.now);
+ assert.equal(x.e.exitExecution.stopAt(p.id,T+60000),97);
+ assert.equal(x.e.pendingExits()[0]?.reason,'sl');
+ assert.equal(x.e.pendingExits()[0]?.reference,97);
+ assert.equal(p.status,'open');
 });

@@ -291,8 +291,8 @@ export function ChartPage() {
       ...(showClosed ? botTradeMarks(tradeRows.filter((r) => r.tf === frame)) : []),
       ...(showAuthors ? authorTradeMarks(shownLedgers.filter((l) => l.tf === frame)) : []),
     ]
-    return Object.fromEntries(frames.map((frame) => [frame, build(frame)]))
-  }, [signals.data, allSignalFrames, showClosed, tradeRows, showAuthors, shownLedgers, frames])
+    return Object.fromEntries([...new Set([tf, ...frames])].map((frame) => [frame, build(frame)]))
+  }, [signals.data, allSignalFrames, showClosed, tradeRows, showAuthors, shownLedgers, frames, tf])
   const marks = marksByFrame[tf] ?? []
 
   const positionBadge =
