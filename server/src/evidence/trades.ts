@@ -1,3 +1,4 @@
+import {shadowExecutionEvidence} from './shadowExecution.ts';
 import {restorationAssessment} from './restoration.ts';
 import {fullFeeCompatible,paidFullCommissions} from './compatibility.ts';
 import type { Db } from '../db.ts';
@@ -5,7 +6,7 @@ import type { TradePolicy } from '../paper/tradePolicy.ts';
 import type { TradeR } from '../incubator/gate.ts';
 
 export interface EvidenceCell { scannerId: string; symbol: string; tf: string }
-export interface EvidenceTrade extends TradeR { positionId: number; basis?:'exact'|'full-fee' }
+export interface EvidenceTrade extends TradeR { positionId: number; basis?:'exact'|'full-fee'|'execution-replay' }
 
 // Only executed account/shadow outcomes qualify. Tracker membership is frozen at entry;
 // moving a tracker to shadow must not turn its earlier observations into evidence.
@@ -26,16 +27,20 @@ export function readEvidence(db: Db, cell: EvidenceCell, policy: TradePolicy | u
   if (limit !== undefined && (!Number.isInteger(limit) || limit <= 0)) return [];
   const atrOnly = policy.paper.skipScriptStops && policy.reading.entryProtection !== 'native';
   const conservative=compatibility==='full-fee';
-  const rows = db.all<any>(`SELECT ${conservative?'p.*,t.strategy_id,t.snapshot,':''}p.id,p.entry_at,p.exit_at,p.side,p.peak_r,(p.realized_pnl-p.fees)/p.risk_amount r
+  const replayIds=book===2?shadowExecutionEvidence(db,policy,at):new Set<number>();
+  const filterAfter=conservative||replayIds.size>0;
+  const rows = db.all<any>(`SELECT ${filterAfter?'p.*,t.strategy_id,t.snapshot,':''}p.id,p.entry_at,p.exit_at,p.side,p.peak_r,(p.realized_pnl-p.fees)/p.risk_amount r
     FROM positions p JOIN trade_policies t ON t.id=p.policy_id
     WHERE p.bt=? AND p.status='closed' AND p.scanner_id=? AND p.symbol=? AND p.tf=?
-    AND p.exit_at<=? ${conservative?'':'AND t.strategy_id=?'} AND ${eligibleEvidence}
+    AND p.exit_at<=? ${conservative?'':replayIds.size?`AND (t.strategy_id=? OR p.id IN (${[...replayIds].map(()=>'?').join(',')}))`:'AND t.strategy_id=?'} AND ${eligibleEvidence}
     ${atrOnly ? "AND p.levels_source='atr-fallback'" : ''}
-    ORDER BY p.exit_at DESC,p.id DESC ${limit !== undefined && !conservative ? 'LIMIT ?' : ''}`,
-    book,cell.scannerId,cell.symbol,cell.tf,at,...(conservative?[]:[policy.strategyId]),...(limit !== undefined&&!conservative ? [limit] : []));
+    ORDER BY p.exit_at DESC,p.id DESC ${limit !== undefined && !filterAfter ? 'LIMIT ?' : ''}`,
+    book,cell.scannerId,cell.symbol,cell.tf,at,...(conservative?[]:[policy.strategyId,...replayIds]),...(limit !== undefined&&!filterAfter ? [limit] : []));
   const policies=new Map<string,{policy:TradePolicy;compatible:boolean}>();
-  const selected=conservative?rows.filter(r=>{
+  const selected=filterAfter?rows.filter(r=>{
     if(r.strategy_id===policy.strategyId){r.basis='exact';return true;}
+    if(replayIds.has(r.id)){r.basis='execution-replay';return true;}
+    if(!conservative)return false;
     try{
       let candidate=policies.get(r.policy_id);
       if(!candidate){const p=JSON.parse(r.snapshot) as TradePolicy;candidate={policy:p,compatible:fullFeeCompatible(p,policy,at)};policies.set(r.policy_id,candidate);}
@@ -43,7 +48,7 @@ export function readEvidence(db: Db, cell: EvidenceCell, policy: TradePolicy | u
     }catch{/* Invalid provenance cannot establish compatible evidence. */}
     return false;
   }).slice(0,limit):rows;
-  return selected.reverse().map(r => ({positionId:r.id,entryAt:r.entry_at,exitAt:r.exit_at,r:r.r,side:r.side,peakR:r.peak_r??undefined,...(conservative?{basis:r.basis}:{})}));
+  return selected.reverse().map(r => ({positionId:r.id,entryAt:r.entry_at,exitAt:r.exit_at,r:r.r,side:r.side,peakR:r.peak_r??undefined,...(filterAfter?{basis:r.basis}:{})}));
 }
 
 /** Runtime boundary: compatible history is research-only until its enrolled forward test passes.
@@ -62,13 +67,14 @@ export interface EvidenceCoverage { total:number; matching:number; changed:numbe
 export function evidenceCoverage(db:Db,cell:EvidenceCell,book:number,policy:TradePolicy|string,at=Date.now()):EvidenceCoverage {
   const strategyId=typeof policy==='string'?policy:policy.strategyId;
   const atrOnly=typeof policy!=='string'&&policy.paper.skipScriptStops&&policy.reading.entryProtection!=='native';
-  const rows=db.all<{strategy_id:string|null;source_hash:string|null;adopted:number|null;quarantined:number;eligible:number}>(
-    `SELECT t.strategy_id,t.source_hash,p.policy_adopted_at adopted,
+  const replayIds=book===2&&typeof policy!=='string'?shadowExecutionEvidence(db,policy,at):new Set<number>();
+  const rows=db.all<{id:number;strategy_id:string|null;source_hash:string|null;adopted:number|null;quarantined:number;eligible:number}>(
+    `SELECT p.id,t.strategy_id,t.source_hash,p.policy_adopted_at adopted,
     EXISTS(SELECT 1 FROM evidence_flags f WHERE f.position_id=p.id AND f.entry_at=p.entry_at AND f.status='quarantined') quarantined,
     (${eligibleEvidence} ${atrOnly?"AND p.levels_source='atr-fallback'":''}) eligible
     FROM positions p LEFT JOIN trade_policies t ON t.id=p.policy_id
     WHERE p.bt=? AND p.status='closed' AND p.risk_amount>0 AND p.scanner_id=? AND p.symbol=? AND p.tf=? AND p.exit_at<=?`,book,cell.scannerId,cell.symbol,cell.tf,at);
   const result:EvidenceCoverage={total:rows.length,matching:0,changed:0,legacy:0,quarantined:0,excluded:0};
-  for(const r of rows)result[r.quarantined?'quarantined':!r.strategy_id||!r.source_hash||r.adopted!=null?'legacy':!r.eligible?'excluded':r.strategy_id===strategyId?'matching':'changed']++;
+  for(const r of rows)result[r.quarantined?'quarantined':!r.strategy_id||!r.source_hash||r.adopted!=null?'legacy':!r.eligible?'excluded':r.strategy_id===strategyId||replayIds.has(r.id)?'matching':'changed']++;
   return result;
 }

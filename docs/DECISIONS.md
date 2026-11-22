@@ -8500,6 +8500,16 @@ The journal and open-position API read these receipts. A retained legacy `copy_p
 
 The journal filters `list=own|copy|unknown` before paging, totals and export. The dashboard shows recorded source/scale in positions, journal and detail; unknown origins are visible. The fleet panel separates current allocation and copy settings from historical entry counts. No trade, size, gate, risk setting or evidence rule changes, and historical rows are not rewritten.
 
+## 327. Restore shadow execution evidence only by complete-cohort replay (22 November 2026)
+
+The 211 → 212 execution correction changed every strategy identity, so ordinary shadow copying lost its historical sample. Account-readiness replay receipts cannot establish shadow qualification: they use a different policy boundary and execution book.
+
+Add an offline shadow replay using actual book-2 candle callbacks, recorded tick/mark arrival order, original realistic contract quantity, depth exit receipts and verified funding. Both engines must reproduce the original trigger, arrival, quantity, exit price, commission and net outcome. The strategy terms must otherwise match exactly; readiness-only capacity/sizing exceptions do not apply. Missing capture, changed executions, partial/basket/script-driven exits and incomplete provenance remain excluded.
+
+For qualification, the covered time window is fixed from retained archive coverage before evaluating outcomes. Every eligible-scope old-policy close within that cell/window must replay identically. An unverified or changed loss cannot be dropped to leave a winning sample. Import only complete cohorts with a reviewed checksum during stopped-service maintenance. Preserve historical trades, policy IDs, P&L and entry origins. Runtime revalidates cohort membership and ledger hashes; corrections, quarantine or changed strategy terms revoke it. As-of reads cannot use a cohort before its window ends.
+
+The shared evidence reader exposes this basis as `execution-replay` to copying, promotion and sizing, and the coverage UI counts verified matches. Existing minimum samples, positive-return requirements, prospective fee-restoration evaluations, risk controls and paper mode are unchanged. Importing evidence never opens or backdates a position; a future qualifying signal must still pass ordinary admission and execution checks. Existing version-2 account-readiness receipts retain their format and identity.
+
 ## 330. Step through journal trades with j and k (16 November 2026)
 
 Reviewing why trades stopped out meant clicking a row, reading its detail, scrolling back up and clicking the next one. With a

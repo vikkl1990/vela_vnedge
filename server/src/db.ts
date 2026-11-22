@@ -81,6 +81,10 @@ CREATE TABLE IF NOT EXISTS readiness_execution_replays (
  position_id INTEGER NOT NULL,entry_at INTEGER NOT NULL,policy_id TEXT NOT NULL,
  recorded_at INTEGER NOT NULL,result TEXT NOT NULL,PRIMARY KEY(position_id,entry_at,policy_id)
 );
+-- Shadow equivalence is a complete, fixed-window cohort, never selected winners.
+CREATE TABLE IF NOT EXISTS shadow_execution_cohorts (
+ strategy_id TEXT PRIMARY KEY, recorded_at INTEGER NOT NULL, proof TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS signals (
   id INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, bar_time INTEGER NOT NULL, scanner_id TEXT NOT NULL, scanner_name TEXT NOT NULL,
   symbol TEXT NOT NULL, tf TEXT NOT NULL, kind TEXT NOT NULL, side TEXT, price REAL, sl REAL, tp TEXT NOT NULL DEFAULT '[]', score REAL,

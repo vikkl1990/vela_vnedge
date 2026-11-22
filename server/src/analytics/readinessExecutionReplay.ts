@@ -1,5 +1,5 @@
-/** Readiness-only, per-trade execution equivalence. Never rewrites the original ledger,
- * promotes a scanner, changes sizing, or treats missing inputs as an empty market. */
+/** Per-trade execution equivalence with separate readiness and shadow policy boundaries.
+ * Never rewrites the ledger, changes sizing, or treats missing inputs as an empty market. */
 import {createHash} from 'node:crypto';
 import {Db} from '../db.ts';
 import {DEFAULT_CONFIG} from '../config.ts';
@@ -49,7 +49,7 @@ export function executionReplaySubject(db:Db,id:number){
  if(needsFunding)try{settlements=db.all('SELECT symbol,at,rate,rate_at,mark,mark_at,status,source FROM funding_settlements WHERE symbol=? AND at>=? AND at<? ORDER BY at',position.symbol,position.entry_at,position.exit_at);}catch{/* no journal is not proof */}
  return {position,intents,reports,state,orders,...(needsFunding?{settlements}:{})};
 }
-function subjectHash(subject:ReturnType<typeof executionReplaySubject>){
+export function executionSubjectHash(subject:ReturnType<typeof executionReplaySubject>){
  const r=subject.position;if(!r)return hash(subject);
  let meta:any;try{meta=JSON.parse(r.fills);}catch{return hash(subject);}
  if(!meta||typeof meta!=='object')return hash(subject);
@@ -61,7 +61,7 @@ function subjectHash(subject:ReturnType<typeof executionReplaySubject>){
  position.fills=Object.fromEntries(['fills','legs','leverage','marginLeverage','liqPrice','maintenanceMarginPct','openedAt','basket','executionPlan'].map(k=>[k,meta[k]??null]));
  return hash({...subject,position});
 }
-export const executionReplayLedgerHash=(db:Db,id:number)=>subjectHash(executionReplaySubject(db,id));
+export const executionReplayLedgerHash=(db:Db,id:number)=>executionSubjectHash(executionReplaySubject(db,id));
 
 function fundingProven(subject:ReturnType<typeof executionReplaySubject>):boolean {
  const {position:r,orders,settlements}=subject,fs=JSON.parse(r.fills).fills.filter((f:any)=>f.reason==='funding');
@@ -74,7 +74,7 @@ function fundingProven(subject:ReturnType<typeof executionReplaySubject>):boolea
    !Number.isFinite(s.rate_at)||s.rate_at>s.at||s.at-s.rate_at>120000||!Number.isFinite(s.mark_at)||Math.abs(s.mark_at-s.at)>10000||
    f.at<r.entry_at||f.at>=r.exit_at||f.qty!==0||f.fee!==0||!near(f.price,s.mark)||
    !near(f.pnl,-(s.rate/100)*(s.mark*r.qty*r.contract_value)*(r.side==='long'?1:-1))||
-   !o||o.bt!==0||o.at!==f.at||o.qty!==0||o.fee!==0||!near(o.price,f.price))return false;
+   !o||o.bt!==r.bt||o.at!==f.at||o.qty!==0||o.fee!==0||!near(o.price,f.price))return false;
  }
  // No applied settlement may be omitted from a funding-enabled trade.
  return settlements!.filter(s=>s.status==='applied').length===fs.length;
@@ -90,7 +90,7 @@ function run(subject:ReturnType<typeof executionReplaySubject>,policy:TradePolic
    fills:JSON.stringify({...meta,fills:[entry],lastPriceBar:undefined,peakR:0,trailOff:undefined,trailArmedAt:undefined,trailPeakR:undefined,trailPeakAt:undefined})};
   const columns=Object.keys(row);db.run(`INSERT INTO positions (${columns.join(',')}) VALUES (${columns.map(()=>'?').join(',')})`,...columns.map(k=>row[k]??null));
   const cfg=structuredClone(DEFAULT_CONFIG);cfg.execution.mode='paper';
-  const engine=new PaperEngine(db,()=>cfg,{now:()=>now});engine.causalExits=true;
+  const engine=new PaperEngine(db,()=>cfg,{book:r.bt,now:()=>now});engine.causalExits=true;
   const held=engine.openPositions()[0];engine.exitExecution.register(held,state.market_qty);
   for(const e of events){
    now=e.receivedAt;if(now>r.exit_at)continue;
@@ -107,11 +107,11 @@ function run(subject:ReturnType<typeof executionReplaySubject>,policy:TradePolic
     engine.onMarkPrice(r.symbol,e.payload.markPrice,e.payload.timeMs);held.entryAt=r.entry_at;
    }
    if(now<r.entry_at||now===r.entry_at&&e.archiveSequence<entryBoundary)continue;
-   if(e.kind==='paper_bar'&&e.source==='paper-input'&&e.payload.book===0)engine.onBar(r.symbol,e.payload.bar,now,{historical:e.payload.historical});
+   if(e.kind==='paper_bar'&&e.source==='paper-input'&&e.payload.book===r.bt)engine.onBar(r.symbol,e.payload.bar,now,{historical:e.payload.historical});
   }
   for(const report of reports){
    now=report.at;const depth=JSON.parse(report.depth);
-   if(depth.consumedQty)db.run('INSERT INTO paper_exit_liquidity VALUES(?,?,?,?,?,?)','0',r.symbol,r.side,report.book_key,depth.consumedQty,now);
+   if(depth.consumedQty)db.run('INSERT INTO paper_exit_liquidity VALUES(?,?,?,?,?,?)',r.bt===2?`2:${r.id}`:'0',r.symbol,r.side,report.book_key,depth.consumedQty,now);
    engine.settleExits(r.symbol,depth,now);
   }
   // Supported SL/trail rules use price and original stop risk, not funding P&L.
@@ -129,13 +129,19 @@ function run(subject:ReturnType<typeof executionReplaySubject>,policy:TradePolic
  * Script amendments, partial fills,
  * baskets, restart gaps and external context-dependent exits need dedicated replayers. */
 export function replayReadinessExecution(db:Db,id:number,previous:TradePolicy,current:TradePolicy,events:ExecutionReplayEvent[],coverage:ExecutionReplayCoverage):ExecutionReplayResult {
+ return replayExecution(db,id,previous,current,events,coverage,0,executionPolicyCompatible(db,id,previous,current));
+}
+
+/** Book-explicit kernel. Callers supply their own policy boundary; account readiness
+ * exceptions are never inherited by shadow qualification. */
+export function replayExecution(db:Db,id:number,previous:TradePolicy,current:TradePolicy,events:ExecutionReplayEvent[],coverage:ExecutionReplayCoverage,book:0|2,compatible:boolean):ExecutionReplayResult {
  const subject=executionReplaySubject(db,id),r=subject.position;
- const result:ExecutionReplayResult={version:2,positionId:id,entryAt:r?.entry_at??0,previousId:previous.id,currentId:current.id,ledgerHash:subjectHash(subject),
+ const result:ExecutionReplayResult={version:2,positionId:id,entryAt:r?.entry_at??0,previousId:previous.id,currentId:current.id,ledgerHash:executionSubjectHash(subject),
   outcome:'unverified',reason:'unsupported-lifecycle',inputHash:hash({coverage,events}),events:events.length};
  const refuse=(reason:string)=>({...result,reason});
  try{
-  if(!executionPolicyCompatible(db,id,previous,current))return refuse('other-policy-differences');
-  if(!r||r.bt!==0||r.evidence_scope!=='account'||r.policy_adopted_at!=null||r.policy_id!==previous.id||r.status!=='closed'||
+  if(!compatible)return refuse('other-policy-differences');
+  if(!r||r.bt!==book||!(book===0?r.evidence_scope==='account':['shadow','legacy-shadow'].includes(r.evidence_scope))||r.policy_adopted_at!=null||r.policy_id!==previous.id||r.status!=='closed'||
    r.symbol!==previous.symbol||r.tf!==previous.tf||r.scanner_id!==previous.scannerId||!Number.isFinite(r.risk_amount)||r.risk_amount<=0)return result;
   if(db.get("SELECT 1 FROM evidence_flags WHERE position_id=? AND entry_at=? AND status='quarantined'",id,r.entry_at))return refuse('quarantined');
   const meta=JSON.parse(r.fills),pc=previous.paper,fs=meta.fills.filter((f:any)=>f.reason!=='funding');
@@ -148,7 +154,7 @@ export function replayReadinessExecution(db:Db,id:number,previous:TradePolicy,cu
    result.extensions={funding:1};
   }
   const intent=subject.intents[0],report=subject.reports[0];
-  if(intent.status!=='filled'||intent.book!==0||intent.qty!==r.qty||intent.filled_qty!==r.qty||intent.market_filled!==intent.market_qty||
+  if(intent.status!=='filled'||intent.book!==book||intent.qty!==r.qty||intent.filled_qty!==r.qty||intent.market_filled!==intent.market_qty||
    report.qty!==r.qty||report.at!==r.exit_at||report.price!==r.exit_price||fs[1].at!==r.exit_at||fs[1].reason!==r.exit_reason)return result;
   if(!coverage.verified||!Number.isSafeInteger(coverage.segments)||coverage.segments<1||! /^[a-f0-9]{64}$/.test(coverage.sha256)||coverage.from>r.entry_at-60000||coverage.to<r.exit_at)return refuse('archive-coverage');
   const selected=coverage.selectionWindow;
@@ -159,13 +165,13 @@ export function replayReadinessExecution(db:Db,id:number,previous:TradePolicy,cu
    if(e.version!==1||!Number.isSafeInteger(e.archiveSequence)||e.archiveSequence<=sequence||!Number.isFinite(e.receivedAt)||e.receivedAt<lastAt||
     ![r.symbol,'*'].includes(e.symbol)||e.receivedAt<r.entry_at-60000||e.receivedAt>r.exit_at)return refuse('input-order');
    sequence=e.archiveSequence;lastAt=e.receivedAt;
-   if(e.kind==='gap'&&e.source==='archive')return refuse('archive-gap');
+   if(e.kind==='gap'&&(e.source==='archive'||book===2&&e.source==='execution-feed'))return refuse('archive-gap');
    if(e.kind==='selection'&&(e.payload.added?.includes(r.symbol)||e.payload.removed?.includes(r.symbol))&&e.receivedAt>r.entry_at-60000)return refuse('selection-gap');
    if(e.symbol!==r.symbol)continue;
    if(e.kind==='trade'&&e.source==='execution-feed'&&isExecutableTrade(e.payload,e.receivedAt)&&e.payload.timeMs>=maxExchange){
     maxExchange=e.payload.timeMs;activeUntil=e.receivedAt+(pc.tapeFallbackMs??5000);if(e.receivedAt<r.entry_at)seeded=true;
    }
-   if(e.kind==='paper_bar'&&e.payload.book===0&&e.source==='paper-input'&&e.receivedAt>=r.entry_at&&!e.payload.historical&&e.receivedAt>activeUntil)fallbackObserved=true;
+   if(e.kind==='paper_bar'&&e.payload.book===book&&e.source==='paper-input'&&e.receivedAt>=r.entry_at&&!e.payload.historical&&e.receivedAt>activeUntil)fallbackObserved=true;
   }
   if(!seeded){
    // A complete quiet interval can establish an inactive tape without inventing
@@ -180,7 +186,7 @@ export function replayReadinessExecution(db:Db,id:number,previous:TradePolicy,cu
   }
   if(events.filter(e=>e.kind==='trade'&&e.source==='execution-feed'&&e.receivedAt===r.entry_at).length>1)return refuse('entry-order-ambiguity');
   // Require actual candle callbacks, even when none ultimately triggered an exit.
-  if(!events.some(e=>e.kind==='paper_bar'&&e.source==='paper-input'&&e.payload.book===0&&e.receivedAt>=r.entry_at))return refuse('missing-candle-inputs');
+  if(!events.some(e=>e.kind==='paper_bar'&&e.source==='paper-input'&&e.payload.book===book&&e.receivedAt>=r.entry_at))return refuse('missing-candle-inputs');
   const input=events.filter(e=>e.symbol===r.symbol);
   const baseline=run(subject,previous,input),candidate=run(subject,current,input);
   const observed={intent:subject.intents.map(({reason,trigger_at,ready_at,reference,qty,market_qty})=>({reason,trigger_at,ready_at,reference,qty,market_qty})),
@@ -215,11 +221,18 @@ export function executionReplayEvidence(db:Db,id:number,previous:TradePolicy,cur
   if(!row)return null;
   const proof=JSON.parse(row.result) as ExecutionReplayResult,subject=executionReplaySubject(db,id),r=subject.position;
   if(!r||row.entry_at!==r.entry_at||proof.entryAt!==r.entry_at||proof.positionId!==id||proof.version!==EXECUTION_REPLAY_VERSION||
-   proof.previousId!==previous.id||proof.currentId!==current.id||proof.ledgerHash!==subjectHash(subject)||! /^[a-f0-9]{64}$/.test(proof.inputHash)||
+   proof.previousId!==previous.id||proof.currentId!==current.id||proof.ledgerHash!==executionSubjectHash(subject)||! /^[a-f0-9]{64}$/.test(proof.inputHash)||
    !executionPolicyCompatible(db,id,previous,current))return null;
   if(proof.outcome==='changed'||proof.outcome==='unverified')return proof.outcome;
+  return validIdenticalExecution(proof,subject)?'identical':null;
+ }catch{return null;}
+}
+
+/** Shared receipt integrity, always bound to the immutable original ledger. */
+export function validIdenticalExecution(proof:ExecutionReplayResult,subject:ReturnType<typeof executionReplaySubject>):boolean {
+ const r=subject.position;
+ if(!r)return false;
   const observed={intent:subject.intents.map(({reason,trigger_at,ready_at,reference,qty,market_qty})=>({reason,trigger_at,ready_at,reference,qty,market_qty})),
    trade:[{exitAt:r.exit_at,exitPrice:r.exit_price,exitReason:r.exit_reason,net:r.realized_pnl-r.fees,fees:r.fees,qty:r.qty}],open:[]};
-  return proof.outcome==='identical'&&proof.reason==='same-execution'&&proof.events>0&&near(proof.baseline,observed)&&near(proof.candidate,observed)?'identical':null;
- }catch{return null;}
+  return proof.outcome==='identical'&&proof.reason==='same-execution'&&proof.events>0&&near(proof.baseline,observed)&&near(proof.candidate,observed);
 }
