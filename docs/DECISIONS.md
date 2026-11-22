@@ -8094,20 +8094,6 @@ No capital, risk, evidence, scanner-reading, fee or admission threshold changes.
 The audit is in `docs/research/paper-copy-fills-2026-11-16/`. Regression tests cover the cancelled-order defect, causal recovery,
 expiry, restart, unchanged economics/policy, pilot disablement and executor isolation. No profit uplift is claimed from a data-gap fix.
 
-## 292. Step through journal trades with j and k (16 November 2026)
-
-Reviewing why trades stopped out meant clicking a row, reading its detail, scrolling back up and clicking the next one. With a
-trade open in the journal, `j` now opens the next trade on the page and `k` the previous one, and the detail panel shows
-"2 of 50 on this page" with Previous and Next buttons that do the same. Stepping stops at the ends of the page instead of
-wrapping, because a page is a slice of a longer list and wrapping would skip the rest. A trade that is not on the page (a link,
-or another page of results) starts from the top.
-
-The app already binds `g j` (Lab) and `g k` (Gates). Single-key shortcuts registered by different components could not see each
-other's chords, so `g k` would have opened Gates and stepped the list at once. The hotkey hook now shares the last key and every
-registered chord prefix, and a single key pressed within the chord window after a prefix belongs to the chord.
-
-Display only. Nothing here changes a trade.
-
 ## 293. Validated REST depth supplies a paper quote when the stream is quiet (16 November 2026)
 
 The entry path fetched fresh depth but could still reject for a missing executable bid/ask because that quote lived in a
@@ -8513,3 +8499,17 @@ Current own-list allocations and historical entry origins are different facts. T
 The journal and open-position API read these receipts. A retained legacy `copy_pilot=1` positively identifies a copy; missing provenance is `unknown`, never inferred from today's allocation. Copy scale is read from the admission record when available, never from today's pilot settings. A copied position promoted later stays a copy. An own-list position whose scanner is removed stays own-list. Plans and shadow trades have no paper-origin label.
 
 The journal filters `list=own|copy|unknown` before paging, totals and export. The dashboard shows recorded source/scale in positions, journal and detail; unknown origins are visible. The fleet panel separates current allocation and copy settings from historical entry counts. No trade, size, gate, risk setting or evidence rule changes, and historical rows are not rewritten.
+
+## 330. Step through journal trades with j and k (16 November 2026)
+
+Reviewing why trades stopped out meant clicking a row, reading its detail, scrolling back up and clicking the next one. With a
+trade open in the journal, `j` now opens the next trade on the page and `k` the previous one, and the detail panel shows
+"2 of 50 on this page" with Previous and Next buttons that do the same. Stepping stops at the ends of the page instead of
+wrapping, because a page is a slice of a longer list and wrapping would skip the rest. A trade that is not on the page (a link,
+or another page of results) starts from the top.
+
+The app already binds `g j` (Lab) and `g k` (Gates). Single-key shortcuts registered by different components could not see each
+other's chords, so `g k` would have opened Gates and stepped the list at once. The hotkey hook now shares the last key and every
+registered chord prefix, and a single key pressed within the chord window after a prefix belongs to the chord.
+
+Display only. Nothing here changes a trade.
