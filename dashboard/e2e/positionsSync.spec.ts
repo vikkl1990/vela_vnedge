@@ -89,23 +89,36 @@ test('a live stop update keeps the saved copy origin and historical size visible
   writes,
 }) => {
   void faults
-  await page.route('**/api/positions', (route) =>
-    route.fulfill({ json: [{ ...position, fleetSource: 'copy', entrySizeScale: 1 / 3 }] }),
-  )
+  let holdRefresh = false
+  let release!: () => void
+  const refresh = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  await page.route('**/api/positions', async (route) => {
+    if (holdRefresh) await refresh
+    await route.fulfill({ json: [{ ...position, fleetSource: 'copy', entrySizeScale: 1 / 3 }] })
+  })
   await page.goto('/')
   const label = page.getByText('Copy ⅓', { exact: true }).filter({ visible: true })
   await expect(label).toBeVisible()
-  await page.evaluate(
-    (p) =>
-      window.dispatchEvent(
-        new CustomEvent('fixture-sse', {
-          detail: { name: 'position', data: { type: 'updated', position: { ...p, sl: 1800 } } },
-        }),
-      ),
-    position,
-  )
-  await expect(page.getByText('1,800.00', { exact: true }).filter({ visible: true }).first()).toBeVisible()
-  await expect(label).toBeVisible()
-  await expect(page.getByText('Copy ½', { exact: true })).toHaveCount(0)
-  expect(writes).toEqual([])
+  // The stream-open resync can arrive after first render. Hold subsequent HTTP
+  // responses so this assertion exercises the delta, not a stale fixture snapshot.
+  holdRefresh = true
+  try {
+    await page.evaluate(
+      (p) =>
+        window.dispatchEvent(
+          new CustomEvent('fixture-sse', {
+            detail: { name: 'position', data: { type: 'updated', position: { ...p, sl: 1800 } } },
+          }),
+        ),
+      position,
+    )
+    await expect(page.getByText('1,800.00', { exact: true }).filter({ visible: true }).first()).toBeVisible()
+    await expect(label).toBeVisible()
+    await expect(page.getByText('Copy ½', { exact: true })).toHaveCount(0)
+    expect(writes).toEqual([])
+  } finally {
+    release()
+  }
 })
