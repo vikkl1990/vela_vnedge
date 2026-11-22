@@ -8510,6 +8510,16 @@ For qualification, the covered time window is fixed from retained archive covera
 
 The shared evidence reader exposes this basis as `execution-replay` to copying, promotion and sizing, and the coverage UI counts verified matches. Existing minimum samples, positive-return requirements, prospective fee-restoration evaluations, risk controls and paper mode are unchanged. Importing evidence never opens or backdates a position; a future qualifying signal must still pass ordinary admission and execution checks. Existing version-2 account-readiness receipts retain their format and identity.
 
+## 328. Show the sample that actually qualifies a shadow cell (23 November 2026)
+
+Restoring execution-compatible history is not promotion. The 22 November replay restored 149 closed trades across 90 complete cohorts. At the subsequent audit, 45 cells had one qualifying close, 27 had two, 12 had three and two had four. Two remained in their existing forward evaluation; two passed the unchanged paper-copy checks. No additional admission restriction explains that distribution.
+
+The incubator previously displayed stage-wide journal statistics beside compatibility-filtered copy decisions. It also exposed scan collection status only for forward-restoration enrollments. The read-only view now shows the exact qualified sample, current/replay/fee-compatible counts, held forward evidence, and existing scan receipts for ordinary shadow cells. Raw journal results remain available and explicitly labelled; the last promotion review remains separate from current copy eligibility.
+
+This changes diagnostics only. Current scanner readings, scheduling, minimum closes/net return, market checks, forward evaluation, policy/replay validation, paper mode, risk and held positions are unchanged. Four restored XRP 4h cells had a pre-restoration expired scan; a stale scan is neither rerun for a past entry nor counted as a trade. New scans must collect new evidence under the existing deadlines.
+
+The parity audit also exposed redundant work: `qualifiedEvidence` re-read and revalidated the entire exact sample after already obtaining it for the forward-hold check. Reuse that validated synchronous result (preserving latest-trade limit semantics); passing fee-restoration assessments still perform their separate compatible read. The incubator response yields between bounded chunks so building diagnostics does not monopolize feed/exit timers. Neither optimization caches evidence across calls or omits validation.
+
 ## 330. Step through journal trades with j and k (16 November 2026)
 
 Reviewing why trades stopped out meant clicking a row, reading its detail, scrolling back up and clicking the next one. With a

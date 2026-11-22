@@ -1,3 +1,4 @@
+import {mapForView} from './api/cooperativeView.ts';
 import { RuntimeState } from './runtime.ts';
 import {candleReplayBlock} from './paper/basket.ts';
 import {scannerAttentionReadiness} from './scanners/attention.ts';
@@ -1032,7 +1033,7 @@ export class App {
     return null; // Hidden library rows may still be intentionally allocated to research.
   }
 
-  incubatorView() {
+  async incubatorView() {
     const cfg = this.config.get();
     const now = Date.now();
     const openShadow = new Map<string, number>();
@@ -1042,19 +1043,19 @@ export class App {
     const since14 = now - 14 * 86400_000;
     const proposedAt = proposalTimes(this.db);
     const rotation = this.incubatorStore.rotationState();
-    const pairs = this.incubatorStore.list().map(r => {
+    const pairs = await mapForView(this.incubatorStore.list(),r => {
       const book = r.stage === 'live' || r.stage === 'demote_proposed' ? 0 : 2;
       const judged = r.stage !== 'candidate' && r.stage !== 'retired';
       const key = `${r.scannerId}|${r.symbol}|${r.tf}`;
       const trades = judged ? this.incubatorStore.trades(r.scannerId, r.symbol, r.tf, book) : [];
       const restoration=this.incubatorStore.restoration(r,now);
-      const copyReason = r.stage === 'shadow' || r.stage === 'proposed'
-        ? this.incubatorStore.copyRefusal(r,cfg.incubator.mirror,markets.get(r.symbol)?.turnoverUsd??null,now,{readOnly:true}) : undefined;
+      const paperCopy = r.stage === 'shadow' || r.stage === 'proposed'
+        ? this.incubatorStore.copyReadiness(r,cfg.incubator.mirror,markets.get(r.symbol)?.turnoverUsd??null,now) : null;
       return {
         ...r, rotationUntil: r.stage === 'candidate' ? rotation.paused[r.id]?.until ?? null : null, proposedAt: proposedAt.get(r.id) ?? null, scannerName: names.get(r.scannerId) ?? r.scannerId,
         restoration,
-        paperCopy: copyReason === undefined ? null : {eligible:copyReason===null,reason:copyReason},
-        collection: restoration?.startedAt ? this.incubator.collectionOf(r,restoration.startedAt,now) : null,
+        paperCopy,
+        collection: book===2&&judged ? this.incubator.collectionOf(r,restoration?.startedAt??since14,now) : null,
         admissionEvidence: r.screen ? admissionEvidence(r,cfg.incubator) : null,
         stats: judged ? pairStats(trades, r.since, now) : null,
         openShadow: openShadow.get(key) ?? 0,

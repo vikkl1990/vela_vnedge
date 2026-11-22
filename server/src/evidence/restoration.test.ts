@@ -265,3 +265,20 @@ test('quote-relative pricing requires a fresh prospective window and cannot reus
  assert.equal(f.db.get<any>('SELECT requirements FROM evidence_restorations ORDER BY started_at DESC LIMIT 1').requirements,requirements);
  assert.match(f.store.copyRefusal(cell,f.cfg.incubator.mirror,1e8,T+15*DAY)!,/forward shadow evaluation/);
 });
+
+test('copy display separates held forward evidence, restored fees and incompatible journal history without enrolling',t=>{
+ const f=setup(t),at=T+15*DAY,mirror=f.cfg.incubator.mirror;
+ const initial=f.store.copyReadiness(cell,mirror,1e8,T).evidence;
+ assert.equal(initial.stats.trades,0);assert.equal(initial.available,0);
+ assert.equal(f.db.get<any>('SELECT count(*) n FROM evidence_restorations').n,0);
+ f.enroll();f.forward(5);
+ const held=f.store.copyReadiness(cell,mirror,1e8,at).evidence;
+ assert.equal(held.stats.trades,0);assert.equal(held.available,5);assert.equal(held.exact,0);
+ f.forward(25);const frozen=f.db.all('SELECT * FROM positions');
+ const passed=f.store.copyReadiness(cell,mirror,1e8,at).evidence;
+ assert.equal(passed.stats.trades,35);assert.equal(passed.exact,30);assert.equal(passed.feeCompatible,5);
+ assert.equal(passed.stats.netR,17.5);assert.equal(f.store.copyRefusal(cell,mirror,1e8,at,{readOnly:true}),null);
+ assert.deepEqual(f.db.all('SELECT * FROM positions'),frozen);
+ f.setPolicy(resolveTradePolicy(f.cfg,cell,'changed source'));
+ assert.equal(f.store.copyReadiness(cell,mirror,1e8,at).evidence.stats.trades,0);
+});

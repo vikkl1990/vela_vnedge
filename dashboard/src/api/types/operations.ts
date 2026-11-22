@@ -135,7 +135,21 @@ export interface RestorationView {
   invalidFills?: number
 }
 export interface IncubatorPair {
-  paperCopy?: { eligible: boolean; reason: string | null } | null
+  paperCopy?: {
+    eligible: boolean
+    reason: string | null
+    evidence?: {
+      at: number
+      minTrades: number
+      minNetR: number | null
+      stats: IncubatorStats
+      exact: number
+      replayed: number
+      feeCompatible: number
+      available: number
+      availableReplayed: number
+    }
+  } | null
   restoration?: RestorationView | null
   collection?: {
     status: string
