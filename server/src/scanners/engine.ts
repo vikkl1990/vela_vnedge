@@ -41,6 +41,7 @@ import { ScriptHealth } from './health.ts';
 import { BarWatermark, MAX_CATCHUP_BARS } from './watermark.ts';
 import { backtestPolicy } from '../paper/policy.ts';
 import { readingOf } from './reading.ts';
+import { variantSupersedes } from './variantFamily.ts';
 
 const log = logger.scoped('scanner');
 
@@ -115,7 +116,7 @@ export class ScannerEngine extends EventEmitter {
    * newest request is now held here and dispatched when the running job finishes. Only the
    * newest is kept: older bars are already superseded by the time we get to them.
    */
-  private deferred = new Map<string, { s: LoadedScanner; symbol: string; tf: string; mode: { backtest: boolean; live: boolean } }>();
+  private deferred = new Map<string, { s: LoadedScanner; symbol: string; tf: string; mode: { backtest: boolean; live: boolean; exitsOnly?: boolean } }>();
   private backtests = new Map<string, BacktestResult>();
   private warmed = new Set<string>();
   private seenLabels = new Map<string, Set<string>>();
@@ -255,7 +256,7 @@ export class ScannerEngine extends EventEmitter {
    */
   autoTune(opts: { minTrades?: number; minProfitFactor?: number; oos?: OosTuneConfig | null; tuneTimeframes?: boolean; reason?: string } = {}): AutoTuneReport[] {
     const apply=!this.cfgRef().incubator?.enabled;
-    const minTrades = opts.minTrades ?? 3, minPf = opts.minProfitFactor ?? 1;
+    const minTrades = opts.minTrades ?? 30, minPf = opts.minProfitFactor ?? 1.2;
     const oos = opts.oos && opts.oos.enabled ? opts.oos : null;
     const byTf = Boolean(opts.tuneTimeframes);
     const report: AutoTuneReport[] = [];
@@ -419,9 +420,10 @@ export class ScannerEngine extends EventEmitter {
     if (!active.length) return;
     // backpressure: if the worker queue is already deep (warm-up or an earlier bar still running), skip this bar for this symbol
     // only live work counts here: background jobs queue behind live ones and cannot delay them
-    if (this.pool.stats.queuedLive > 500) { for (const s of active) this.logRun(s.id, symbol, tf, bar.time, null, 'skipped', `live queue ${this.pool.stats.queuedLive} deep`); log.warn(`bar closed ${symbol} ${tf}: ${this.pool.stats.queuedLive} live runs already queued — skipping live runs for this bar (reduce scanners × symbols)`); return; }
-    log.info(`bar closed ${symbol} ${tf} @ ${new Date(bar.time).toISOString().slice(11, 16)} → running ${active.length} scanners`);
-    for (const s of active) this.runOnce(s, symbol, tf, { backtest: false, live: true }).catch(e => log.error(`run ${s.id} ${symbol} ${tf} failed: ${e?.message ?? e}`));
+    const exitsOnly = this.pool.stats.queuedLive > 500;
+    if (exitsOnly) { for (const s of active) this.logRun(s.id, symbol, tf, bar.time, null, 'skipped', `live queue ${this.pool.stats.queuedLive} deep: entries skipped`); log.warn(`bar closed ${symbol} ${tf}: ${this.pool.stats.queuedLive} live runs already queued — exits only, new entries skipped`); }
+    else log.info(`bar closed ${symbol} ${tf} @ ${new Date(bar.time).toISOString().slice(11, 16)} → running ${active.length} scanners`);
+    for (const s of active) this.runOnce(s, symbol, tf, { backtest: false, live: true, exitsOnly }).catch(e => log.error(`run ${s.id} ${symbol} ${tf} failed: ${e?.message ?? e}`));
   }
 
   readonly recovery = new ScanRecovery();
@@ -459,12 +461,12 @@ export class ScannerEngine extends EventEmitter {
 
   // ---- the core run ----
 
-  private async runOnce(s: LoadedScanner, symbol: string, tf: string, mode: { backtest: boolean; live: boolean }): Promise<void> {
+  private async runOnce(s: LoadedScanner, symbol: string, tf: string, mode: { backtest: boolean; live: boolean; exitsOnly?: boolean }): Promise<void> {
     const key = `${s.id}:${symbol}:${tf}`;
     if (this.inFlight.has(key)) {
       const prev = this.deferred.get(key);
       // keep the newest request, but never lose a live run behind a backtest-only one
-      this.deferred.set(key, { s, symbol, tf, mode: { backtest: mode.backtest || (prev?.mode.backtest ?? false), live: mode.live || (prev?.mode.live ?? false) } });
+      this.deferred.set(key, { s, symbol, tf, mode: { backtest: mode.backtest || (prev?.mode.backtest ?? false), live: mode.live || (prev?.mode.live ?? false), exitsOnly: (mode.exitsOnly ?? false) && (prev?.mode.exitsOnly ?? true) } });
       log.debug(`defer ${key}: already running`);
       return;
     }
@@ -572,7 +574,10 @@ export class ScannerEngine extends EventEmitter {
           .filter(ev => { if (ev.kind === 'entry' && ev.barTime < lastBar.time) { drops['entry: superseded bar'] = (drops['entry: superseded bar'] ?? 0) + 1; return false; } return true; });
         recordChartReceipt(this.db,s.id,symbol,tf,s.patched,cfg.scanners[s.id],bars,liveRes,events);
         if (since < lastBar.time && events.some(ev => ev.barTime < lastBar.time)) log.info(`${key}: ${events.filter(ev => ev.barTime < lastBar.time).length} event(s) from a superseded bar read on this run`);
-        for (const ev of [...events].sort((a,b)=>Number(b.kind==='exit')-Number(a.kind==='exit'))) await this.handleLiveEvent(s, symbol, tf, ev, bars, market, exitMode, lastBar);
+        for (const ev of [...events].sort((a,b)=>Number(b.kind==='exit')-Number(a.kind==='exit'))) {
+          if (mode.exitsOnly && ev.kind !== 'exit') { drops['entry: queue overload'] = (drops['entry: queue overload'] ?? 0) + (ev.kind === 'entry' ? 1 : 0); continue; }
+          await this.handleLiveEvent(s, symbol, tf, ev, bars, market, exitMode, lastBar);
+        }
         this.marks.advance(key, lastBar.time);
         const acts = this.db.all<{ action: string }>('SELECT action FROM signals WHERE scanner_id=? AND symbol=? AND tf=? AND bar_time=?', s.id, symbol, tf, lastBar.time).map(r => r.action);
         this.recordFunnel(s.id, symbol, tf, info, liveRes, { entries: events.filter(e => e.kind === 'entry').length, exits: events.filter(e => e.kind === 'exit').length, info: events.filter(e => e.kind === 'info').length }, drops, acts);
@@ -659,7 +664,12 @@ export class ScannerEngine extends EventEmitter {
       if(delivery.version!==1)throw new Error('unsupported signal receipt version');
       this.inbox.attempt(row);
       // Exchange command recovery needs its own reconciliation; never replay a paper receipt into it.
-      if(recovery&&this.cfgRef().execution.mode!=='paper')throw new Error('signal recovery paused outside paper mode; reconciliation required');
+      if(recovery&&this.cfgRef().execution.mode!=='paper'){
+        const action=delivery.ev.kind==='entry'?'rejected:recovery requires reconciliation':'ignored:recovery requires reconciliation';
+        this.inbox.complete(row,action,null);
+        const sig=this.db.signalById(row.signal_id);if(sig)this.emit('signal',sig);
+        return;
+      }
       const loaded=this.registry.get?.(delivery.scannerId)??this.registry.all().find(s=>s.id===delivery.scannerId);
       const scanner=loaded??({id:delivery.scannerId,name:delivery.scannerName} as LoadedScanner);
       const invalidEntry=()=>{
@@ -752,8 +762,11 @@ export class ScannerEngine extends EventEmitter {
       const pilotDay = Math.floor(now / 86400_000);
       const pilotState = pilotUsage(this.db.kvGet<PilotUsage>('incubator.copyPilot'), pilotDay);
       const pilotBlock = copied && (!configNow.incubator.mirror?.enabled || (pilotRequested && !pilot)) ? 'copy pilot disabled' : pilot ? configNow.execution.mode !== 'paper' || !configNow.incubator.mirror?.enabled ? 'copy pilot disabled' : pilotCapacityRefusal(pilot, tf, [...this.paper.openPositions(), ...this.paper.pendingEntries()], pilotState) : null;
+      const variantBlock = this.registry.all().find(o => o.id !== s.id && this.isActive(o) && this.runsOn(o.id, symbol, tf) && variantSupersedes(s.id, o.id));
       if (pilotBlock) {
         action = `rejected:${pilotBlock}`;
+      } else if (variantBlock) {
+        action = `rejected:variant already scheduled (${variantBlock.id})`;
       } else if (trendBlock) {
         action = `rejected:${trendBlock}`;
       } else if (gate && !gate.ok) {
@@ -767,7 +780,7 @@ export class ScannerEngine extends EventEmitter {
         positionId = d.position?.id ?? d.pendingId ?? null;
         if(['opened','reversed','pending'].includes(d.action))this.ml?.bindPrediction(predictionId,this.paper.book,positionId,d.position?.policy?.id??this.paper.pendingEntries().find(p=>p.id===d.pendingId)?.policy?.id);
       }
-      if(pilotBlock||trendBlock||(gate&&!gate.ok)||(mlCfg.minProb>0&&mlProb!==null&&mlProb<mlCfg.minProb))
+      if(pilotBlock||variantBlock||trendBlock||(gate&&!gate.ok)||(mlCfg.minProb>0&&mlProb!==null&&mlProb<mlCfg.minProb))
         this.paper.recordGatedEntry(ev,{scannerId:s.id,scannerName:s.name,symbol,tf,market,signalBar:lastBar,atr,refPrice,at:now,
           signalId:sigId,exitMode,features,mlProb,sizeScale:pilot?.sizeScale},action,'admission');
       if (mlProb !== null) this.db.run('UPDATE signals SET ml_prob=? WHERE id=?', mlProb, sigId);

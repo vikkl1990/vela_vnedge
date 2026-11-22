@@ -176,3 +176,20 @@ test('funding debits already paid consume add-on capacity; credits never expand 
  const credit=structuredClone(p);credit.realizedPnl=15;
  assert.equal(sizeBasketEntry(98.4,sl,inputs,credit).qty,base.qty);
 });
+
+
+test('basket basis changes clear queued amendments and record the new bracket activation',t=>{
+ const x=fixture(t);x.enter(100);x.fill(100);const p=x.e.openPositions()[0];
+ x.at(T+H);x.enter(98.4,T);
+ x.e.exitExecution.amend(p,97.2,T+H+90,100);
+ x.e.exitExecution.amend(p,97.4,T+H+95,100);
+ x.fill(98.4,T+H+100);
+ assert.equal(p.basket!.entries,2);
+ const state=x.e.exitExecution.state(p.id)!;
+ assert.equal(state.desired_stop,null);assert.equal(state.queued_stop,null);assert.equal(state.ack_at,null);assert.equal(state.queued_ack_at,null);
+ assert.equal(x.e.exitExecution.stopAt(p.id,T+H+100),p.sl);
+ x.restart();const held=x.e.openPositions()[0];
+ x.at(T+H+60000);x.e.onBar('ETHUSD',{time:T+H,open:100,high:100,low:90,close:98.4},x.getNow());
+ assert.equal(x.e.pendingExits().length,0,'an add-on minute cannot charge the whole new basket for an earlier wick');
+ assert.equal(held.status,'open');
+});

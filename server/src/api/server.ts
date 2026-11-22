@@ -48,6 +48,7 @@ class HttpError extends Error { status: number; constructor(status: number, msg:
 export class ApiServer {
   private routes: Route[] = [];
   private sse = new Set<http.ServerResponse>();
+  private background: Array<ReturnType<typeof setInterval>> = [];
   /** Users, passwords and sessions; shares the application database. */
   readonly auth: AuthStore;
   private authCtx: ReturnType<typeof createAuth>;
@@ -63,7 +64,6 @@ export class ApiServer {
     authRoutes((m, r, h) => this.add(m, r, h), this.authCtx, req => this.userFor(req));
     deltaConnectionRoutes((m, r, h) => this.add(m, r, h), app.deltaConnection);
     telegramRoutes((m,r,h)=>this.add(m,r,h),app.telegram,req=>this.userFor(req));
-    setInterval(() => { try { this.auth.sweep(); } catch { /* ignore */ } }, 3600_000).unref?.();
     this.defineRoutes();
     for (const ext of EXTENSIONS) ext((method, route, handler) => this.add(method, route, (_r, _s, params, url, body) => handler(params, url, body)), app);
     this.wireEvents();
@@ -72,11 +72,26 @@ export class ApiServer {
   listen(port: number, host = '127.0.0.1'): Promise<void> {
     return new Promise((resolve, reject) => {
       this.server.once('error', reject);
-      this.server.listen(port, host, () => { this.server.off('error', reject); log.info(`listening on http://${host}:${port}`); resolve(); });
+      this.server.listen(port, host, () => { this.server.off('error', reject); this.startBackground(); log.info(`listening on http://${host}:${port}`); resolve(); });
     });
   }
 
-  close() { for (const r of this.sse) r.end(); this.server.close(); }
+  close() {
+    for (const timer of this.background) clearInterval(timer);
+    this.background = [];
+    for (const r of this.sse) r.end();
+    this.server.close();
+  }
+
+  /** Broadcast and session sweep start only after the socket is bound. */
+  private startBackground() {
+    if (this.background.length) return;
+    const sweep = setInterval(() => { try { this.auth.sweep(); } catch { /* ignore */ } }, 3600_000);
+    const stats = setInterval(() => this.broadcast('stats', this.app.paper.stats()), 5_000);
+    const health = setInterval(() => this.broadcast('health', this.app.health()), 10_000);
+    for (const timer of [sweep, stats, health]) timer.unref?.();
+    this.background.push(sweep, stats, health);
+  }
 
   /** The signed-in user for a request, or null. Reads the session cookie only. */
   userFor(req: http.IncomingMessage): User | null {
@@ -92,6 +107,8 @@ export class ApiServer {
   }
 
   private async dispatch(req: http.IncomingMessage, res: http.ServerResponse) {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Content-Security-Policy', "frame-ancestors 'none'");
     const url = new URL(req.url ?? '/', 'http://localhost');
     // The Prometheus alias goes through exactly the same session/role checks as the API.
     if (/^\/metrics\/?$/.test(url.pathname)) url.pathname = '/api/metrics';
@@ -214,8 +231,6 @@ export class ApiServer {
     a.paper.on('accounting', (e: any) => this.broadcast('accounting', e));
     a.paper.on('stats', (s: any) => this.broadcast('stats', s));
     logger.on('entry', (e: any) => { if (e.level !== 'debug') this.broadcast('log', e); });
-    setInterval(() => this.broadcast('stats', a.paper.stats()), 5_000).unref();
-    setInterval(() => this.broadcast('health', a.health()), 10_000).unref();
   }
 
   // ---- routes ----

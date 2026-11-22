@@ -7,7 +7,22 @@ import {PaperEngine} from '../paper/engine.ts';
 import {MonitorRuntime} from './monitorRuntime.ts';
 import type {App} from '../app.ts';
 import {DeltaFeed} from '../delta/ws.ts';
+import {crc32} from '../execution/depthRecorder.ts';
 const T=1800000000000;
+test('UI depth freshness uses response time after awaited market discovery, without changing execution',async t=>{
+ const x=setup(t),cfg=JSON.stringify(x.cfg),position=JSON.stringify(x.p);
+ Object.assign(x.app.replayArchive!,{status:()=>({ready:true})});
+ x.runtime.setSymbols(['BLESSUSD']);
+ x.app.markets=async()=>{
+  t.mock.timers.setTime(T+2000);
+  x.runtime.depth.recorder.onDepth({sy:'BLESSUSD',action:'snapshot',seq:1,ts:(T+2000)*1000,
+   a:[['101','2']],b:[['100','3']],cs:crc32('101:2|100:3')},T+2000);
+  return [] as any;
+ };
+ const view=await x.runtime.view();
+ assert.equal(view.generatedAt,T+2000);assert.equal(view.pairs.find(p=>p.symbol==='BLESSUSD')!.depthFresh,true);
+ assert.equal(JSON.stringify(x.cfg),cfg);assert.equal(JSON.stringify(x.p),position);
+});
 function setup(t:any){
  t.mock.timers.enable({apis:['Date'],now:T});
  const db=new Db(':memory:'),cfg=structuredClone(DEFAULT_CONFIG);t.after(()=>db.db.close());let now=T;

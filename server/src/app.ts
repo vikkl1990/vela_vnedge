@@ -114,6 +114,9 @@ export class App {
   readonly profiles: ProfileStore;
   readonly marketGate: MarketGate;
   private marketTimer: ReturnType<typeof setInterval> | null = null;
+  /** Periodic execution work registered during construction and armed only from {@link start}. */
+  readonly executionLoops: Array<() => ReturnType<typeof setInterval>> = [];
+  private executionLoopsStarted = false;
   readonly evidenceReview: EvidenceReview<{synced: ReturnType<typeof incubatorSyncLive>; report: ReturnType<typeof incubatorEvaluate>; promoted: string[]; blocked: string[]}>;
   private lastAdmissionAt = 0;
   private huntTimer: ReturnType<typeof setInterval> | null = null;
@@ -234,6 +237,7 @@ export class App {
       timelyResearch: () => timelyTrackerKeys(listTrackers(this.db)),
       compare: input=>this.planComparisons.observe(input),
       compareScan: input=>this.planComparisons.observeScan(input),
+      compareSourceScan: input=>this.planComparisons.observeSourceScan(input),
       store: this.incubatorStore, cfgRef: cfg, candles: this.candles, pool: this.pool, registry: this.registry, paper: this.shadow, marketInfo: s => this.scanners.marketInfo(s), ml: this.ml,
       marketVerdict: s => { const v = this.marketGate?.verdict(s); return v ? { allowed: v.allowed, reasons: v.reasons } : null; },
       mirror: (s, symbol, tf, ev, bars, market, exitMode, lastBar) => this.scanners.ingestEvent(s, symbol, tf, ev, bars, market, exitMode, lastBar),
@@ -294,11 +298,9 @@ export class App {
     this.paper.risk = this.risk;
     this.executor = createExecutor(this.paper, cfg);
     this.tapeAudit = new TapeAudit(this.db, [{ engine: this.paper, book: 0 }, { engine: this.shadow, book: 2 }]);
-    this.tapeAudit.start();
     wireRealtime(this);
     // flow intelligence from public data, once an hour (decision 101)
     this.context = new ContextCollector({ db: this.db, rest: this.rest, symbols: () => [...new Set([...this.resolvedSymbols, ...this.incubator.symbols()])] });
-    this.context.start();
     this.entryState = new EntryStateRecorder({ db: this.db, enricher: this.enricher, candles: this.candles, context: () => this.context.latest().global });
     attachEntryState([this.paper, this.shadow], this.entryState);
     this.ops = new OpsService({ cfg, onConfigChange: l => this.config.onChange(l), db: this.db, dataDir: DATA_DIR, feed: this.feed, pool: this.pool, paper: this.paper, marks: this.marks, candles: this.candles, scanners: this.scanners, workers, transport: deps.alertTransport, peakEquity: () => this.risk.peakEquity(),
@@ -371,7 +373,17 @@ export class App {
     return out;
   }
 
+  startExecutionLoops(): void {
+    if (this.executionLoopsStarted) return;
+    this.executionLoopsStarted = true;
+    for (const start of this.executionLoops) start();
+    this.tradeMonitor?.start();
+  }
+
   async start(): Promise<void> {
+    this.startExecutionLoops();
+    this.tapeAudit.start();
+    this.context.start();
     this.accountObserver.start();
     this.feed.start();
     // positions of removed scanners keep running to their levels (the engine manages exits regardless of scanner state)
@@ -1104,6 +1116,8 @@ export class App {
   }
 
   async stop() {
+    this.tapeAudit.stop();
+    this.context.stop();
     await this.telegram.stop();
     this.pairAgents.stop();
     this.scanners.stop();this.boundExits.stop();

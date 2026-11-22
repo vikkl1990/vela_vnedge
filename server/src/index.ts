@@ -24,6 +24,8 @@ supervisor.install();
 try {
   app = new App();
   api = new ApiServer(app);
+  // Bind failures use the same bounded supervisor as all other startup failures.
+  // Awaiting cleanup here would leave a stalled stop outside its watchdog.
   await api.listen(Number(process.env.PORT ?? 8787), process.env.HOST ?? '127.0.0.1');
   await app.start();
   log.info(`VNEdge ready — ${app.registry.runnable().length} runnable scanners, symbols ${app.config.get().symbols.join(',')} tf ${app.config.get().timeframes.join(',')}`);

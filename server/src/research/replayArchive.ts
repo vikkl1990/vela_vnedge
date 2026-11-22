@@ -42,7 +42,7 @@ export class ReplayArchive {
   this.queue.push(line);this.queueBytes+=bytes;
  }
  setSymbols(symbols:string[],at=this.cfg.now()){
-  const next=new Set(symbols.filter(s=>/^[A-Z0-9]{2,24}USD$/.test(s)));
+  const next=new Set(symbols.filter(s=>/^[A-Z0-9]{1,24}USD$/.test(s)));
   const added=[...next].filter(s=>!this.selected.has(s)),removed=[...this.selected].filter(s=>!next.has(s));
   this.selected=next;
   if(added.length||removed.length)this.enqueue({version:1,receivedAt:at,symbol:'*',kind:'selection',source:'archive',payload:{added,removed}});

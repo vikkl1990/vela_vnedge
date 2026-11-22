@@ -212,9 +212,12 @@ export function auditScript(source: string, reading: Reading = {}, opts: AuditOp
   for (const c of callsOf(source, 'request\\.security')) {
     if (!c.args.some(a => /lookahead\s*=\s*barmerge\.lookahead_on/.test(a))) continue;
     const expr = arg(c.args, 'expression', 2) ?? '';
-    if (/\[\s*[1-9]\d*\s*\]/.test(expr)) continue;
-    // a plain series is certain to look ahead; a function or tuple may apply its own offset inside
-    corrections.push({ code: 'lookahead', severity: /^[\w.]+$/.test(expr) ? 'high' : 'review', line: c.line, finding: `request.security reads "${expr.slice(0, 60)}" with lookahead on and no history offset: on a closed bar it can see the unfinished higher-timeframe bar.`,
+    const timeframe = arg(c.args, 'timeframe', 1);
+    // Current chart series and the requested bar's open do not reveal its future close.
+    if (timeframe === 'timeframe.period' || literal(timeframe) === '' || expr === 'open') continue;
+    if (/^(?:[\w.]+)\s*\[\s*[1-9]\d*\s*\]$/.test(expr)) continue;
+    // Only direct evolving OHLCV series are high confidence; aliases/functions need review.
+    corrections.push({ code: 'lookahead', severity: /^(high|low|close|volume|hl2|hlc3|ohlc4)$/.test(expr) ? 'high' : 'review', line: c.line, finding: `request.security reads "${expr.slice(0, 60)}" with lookahead on: if its requested timeframe is higher, this may reveal unfinished-bar values.`,
       proposal: 'Do not trade signals that depend on it until a prefix-stability check passes.' });
   }
   // 8. nothing the bot can read as an entry

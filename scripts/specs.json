@@ -2741,5 +2741,28 @@
     "inputs": {
       "TrendFilter": false
     }
+  },
+  "half-trend-channel-maker-reversals": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [
+      "label"
+    ],
+    "labels": [
+      "▲",
+      "▼"
+    ],
+    "labelStyles": {
+      "▲": {
+        "style_label_up": "long"
+      },
+      "▼": {
+        "style_label_down": "short"
+      }
+    },
+    "sides": {
+      "x": "none"
+    },
+    "exitMode": "both"
   }
 }

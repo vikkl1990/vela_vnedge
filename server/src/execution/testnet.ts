@@ -89,6 +89,7 @@ export class ExchangeExecutor {
     this.accounting = new ExecutionAccounting(paper.store, scope, this.now);
     if (paper.book !== 0) throw new Error('exchange execution requires the account book');
     // Install before start(): fills can arrive while products and recovery are loading.
+    paper.fillMode = 'mirrored';
     paper.executionIntent = (id, o) => {
       if(o.reason==='funding')return;
       if (!this.adopting.has(o.positionId)) {this.outbox.record(id, o);this.accounting.register(id);}

@@ -13,6 +13,7 @@ import { planSnapshot, planScannerId, planEvents, takeProfitLabel, type Executio
 
 type Observation={scannerId:string;scannerName:string;symbol:string;tf:string;event:ScanEvent;bars:Bar[];market:MarketInfo;at:number;refPrice:number;refusal?:string|null};
 export type ComparisonScan=Omit<Observation,'event'|'refusal'> & {result:WorkerResult;patched:string;variantOf?:string;since:number;newLabelKeys:Set<string>;refusal:(event:ScanEvent)=>string|null|undefined};
+export type SourceScan=Omit<Observation,'event'|'refusal'> & {events:ScanEvent[];drops:Record<string,number>};
 
 /** Reporting only: these titles are the same Pine condition on different output channels.
  * Preserve the stored marker and admission identity. Never pair unrelated flips just because
@@ -87,6 +88,18 @@ export class PlanComparisons {
     }
   }
 
+  /** Maker arms use the existing source reading. Record even a successful silent run,
+   * without extracting twice, preparing depth or admitting an entry from diagnostics. */
+  observeSourceScan(input:SourceScan){
+    for(const d of this.cfg().executionPlans??[]){
+      if(!d.enabled||d.comparison?.kind!=='maker-fill'||d.scannerId!==input.scannerId||d.symbol!==input.symbol||d.tf!==input.tf)continue;
+      const p=planSnapshot(this.cfg(),d,this.sourceHash(d.scannerId),input.market.productFees??this.paper.marketFeesFor?.(input.symbol));
+      this.remember(input,p);
+      this.db.run('INSERT OR IGNORE INTO execution_plan_scans VALUES(?,?,?,?,?,?)',planScannerId(p),input.bars.at(-1)!.time,input.at,
+        input.events.filter(e=>e.kind==='entry').length,input.events.filter(e=>e.kind==='exit').length,JSON.stringify(input.drops));
+    }
+  }
+
   /** Read both arms from the same raw run, before the control can discard a marker. */
   observeScan(input:ComparisonScan){
     const snapshots=new Map<string,{p:ExecutionPlanSnapshot;enabled:boolean}>();
@@ -118,7 +131,7 @@ export class PlanComparisons {
     }
   }
 
-  private remember(input:Observation|ComparisonScan,p:ExecutionPlanSnapshot){
+  private remember(input:{at:number},p:ExecutionPlanSnapshot){
     this.db.run('INSERT OR IGNORE INTO execution_plan_cohorts VALUES(?,?,?,?,?,?,?,?)',planScannerId(p),p.id,p.revision,p.signature,p.symbol,p.tf,input.at,JSON.stringify(p));
   }
   private execute(input:Observation,p:ExecutionPlanSnapshot){
@@ -200,7 +213,7 @@ export class PlanComparisons {
       const unresolved=(e:any)=>e.status!=='closed'&&(e.status==='open'||e.status==='pending'||['pending','processing','error','interrupted'].includes(e.action));
       const controlNet=cohorts.find(c=>c.id===control.id&&c.signature===control.signature)?.net??0;
       const candidateNet=cohorts.find(c=>c.id===candidate.id&&c.signature===candidate.signature)?.net??0;
-      comparisons.push({kind:['two-bar','profit-floor'].includes(control.comparison?.kind??'')?control.comparison!.kind:control.comparison?.kind==='exit-policy'?'exit':control.readingOverride?'reading':'exit',group,symbol:control.symbol,tf:control.tf,enabled:control.enabled&&candidate.enabled,
+      comparisons.push({kind:['two-bar','profit-floor','maker-fill'].includes(control.comparison?.kind??'')?control.comparison!.kind:control.comparison?.kind==='exit-policy'?'exit':control.readingOverride?'reading':'exit',group,symbol:control.symbol,tf:control.tf,enabled:control.enabled&&candidate.enabled,
         controlId:control.id,candidateId:candidate.id,controlLabel:control.label??control.id,candidateLabel:candidate.label??candidate.id,
         controlSignature:control.signature,candidateSignature:candidate.signature,controlNet,candidateNet,
         sharedSignals:shared.length,controlOnly:cm.size-shared.length,candidateOnly:vm.size-shared.length,
