@@ -9,15 +9,16 @@ import {strategyIdFor} from '../paper/strategyIdentity.ts';
 import {plotLifecycle} from '../scanners/plotLifecycle.ts';
 import {validReadinessPolicy,capacityExpansionCompatible,additionalReadinessCompatibility} from './readinessCompatibility.ts';
 import {proveSameReadinessSize} from './readinessSizing.ts';
-import {isExecutableTrade} from '../execution/tradeFreshness.ts';
+import {isExecutableTrade,MAX_TRADE_ARRIVAL_MS} from '../execution/tradeFreshness.ts';
 
 export const EXECUTION_REPLAY_VERSION=2;
 export interface ExecutionReplayEvent {version:1;receivedAt:number;archiveSequence:number;symbol:string;kind:string;source:string;payload:any}
-export interface ExecutionReplayCoverage {from:number;to:number;sha256:string;segments:number;verified:boolean;gaps?:Array<{from:number;to:number}>}
+export interface ExecutionReplayCoverage {from:number;to:number;sha256:string;segments:number;verified:boolean;gaps?:Array<{from:number;to:number}>;selectionWindow?:{symbol:string;from:number;to:number}}
 export interface ExecutionReplayResult {
  version:2;positionId:number;entryAt:number;previousId:string;currentId:string;ledgerHash:string;
  outcome:'identical'|'changed'|'unverified';reason:string;inputHash:string;events:number;
  baseline?:unknown;candidate?:unknown;
+ extensions?:{funding?:1;quietTape?:1};
 }
 const hash=(v:unknown)=>createHash('sha256').update(stablePolicy(v)).digest('hex');
 const near=(a:any,b:any):boolean=>typeof a==='number'&&typeof b==='number'
@@ -41,7 +42,12 @@ export function executionReplaySubject(db:Db,id:number){
  const reports=db.all<any>('SELECT * FROM paper_exit_reports WHERE intent_id IN (SELECT id FROM paper_exit_intents WHERE position_id=?) ORDER BY at,id',id);
  const state=db.get<any>('SELECT * FROM paper_execution_positions WHERE position_id=?',id);
  const orders=db.all<any>('SELECT * FROM orders WHERE position_id=? ORDER BY id',id);
- return {position,intents,reports,state,orders};
+ // Keep existing no-funding receipts byte compatible. Funding provenance is an
+ // additional immutable input only for trades that actually contain settlements.
+ let needsFunding=false;try{needsFunding=JSON.parse(position?.fills??'{}').fills?.some((f:any)=>f.reason==='funding');}catch{/* invalid subject is rejected below */}
+ let settlements:any[]=[];
+ if(needsFunding)try{settlements=db.all('SELECT symbol,at,rate,rate_at,mark,mark_at,status,source FROM funding_settlements WHERE symbol=? AND at>=? AND at<? ORDER BY at',position.symbol,position.entry_at,position.exit_at);}catch{/* no journal is not proof */}
+ return {position,intents,reports,state,orders,...(needsFunding?{settlements}:{})};
 }
 function subjectHash(subject:ReturnType<typeof executionReplaySubject>){
  const r=subject.position;if(!r)return hash(subject);
@@ -56,6 +62,23 @@ function subjectHash(subject:ReturnType<typeof executionReplaySubject>){
  return hash({...subject,position});
 }
 export const executionReplayLedgerHash=(db:Db,id:number)=>subjectHash(executionReplaySubject(db,id));
+
+function fundingProven(subject:ReturnType<typeof executionReplaySubject>):boolean {
+ const {position:r,orders,settlements}=subject,fs=JSON.parse(r.fills).fills.filter((f:any)=>f.reason==='funding');
+ if(!fs.length)return true;
+ const meta=JSON.parse(r.fills);
+ if(meta.basket||!settlements||settlements.some(s=>s.status!=='applied')||new Set(fs.map((f:any)=>f.at)).size!==fs.length)return false;
+ for(const f of fs){
+  const s=settlements?.find(s=>s.at===f.at),o=orders.find(o=>o.id===f.orderId&&o.reason==='funding');
+  if(!s||s.status!=='applied'||s.source!=='observed-websocket'||!Number.isFinite(s.rate)||!(s.mark>0)||
+   !Number.isFinite(s.rate_at)||s.rate_at>s.at||s.at-s.rate_at>120000||!Number.isFinite(s.mark_at)||Math.abs(s.mark_at-s.at)>10000||
+   f.at<r.entry_at||f.at>=r.exit_at||f.qty!==0||f.fee!==0||!near(f.price,s.mark)||
+   !near(f.pnl,-(s.rate/100)*(s.mark*r.qty*r.contract_value)*(r.side==='long'?1:-1))||
+   !o||o.bt!==0||o.at!==f.at||o.qty!==0||o.fee!==0||!near(o.price,f.price))return false;
+ }
+ // No applied settlement may be omitted from a funding-enabled trade.
+ return settlements!.filter(s=>s.status==='applied').length===fs.length;
+}
 
 function run(subject:ReturnType<typeof executionReplaySubject>,policy:TradePolicy,events:ExecutionReplayEvent[],entryBoundary=Infinity){
  const {position:r,reports,state}=subject,meta=JSON.parse(r.fills),entry=meta.fills[0];
@@ -91,6 +114,10 @@ function run(subject:ReturnType<typeof executionReplaySubject>,policy:TradePolic
    if(depth.consumedQty)db.run('INSERT INTO paper_exit_liquidity VALUES(?,?,?,?,?,?)','0',r.symbol,r.side,report.book_key,depth.consumedQty,now);
    engine.settleExits(r.symbol,depth,now);
   }
+  // Supported SL/trail rules use price and original stop risk, not funding P&L.
+  // Reconcile the independently verified settlements after price replay. A
+  // different close changes exposure to the settlement and therefore net P&L.
+  for(const s of subject.settlements??[])if(s.status==='applied')engine.reconcileFunding(r.symbol,s.rate,s.mark,s.at);
   return {intent:db.all('SELECT reason,trigger_at,ready_at,reference,qty,market_qty FROM paper_exit_intents ORDER BY id'),
    trade:engine.trades({limit:1}).map(t=>({exitAt:t.exitAt,exitPrice:t.exitPrice,exitReason:t.exitReason,net:t.pnl,fees:t.fees,qty:t.qty})),
    open:engine.openPositions().map(p=>({sl:p.sl,qty:p.qtyOpen}))};
@@ -98,7 +125,8 @@ function run(subject:ReturnType<typeof executionReplaySubject>,policy:TradePolic
 }
 
 /** Input must come from checksum-verified, consecutive sealed segments in archive order.
- * Single-entry, single depth exit only. Script amendments, funding, partial fills,
+ * Single-entry, single depth exit, with independently verified funding only.
+ * Script amendments, partial fills,
  * baskets, restart gaps and external context-dependent exits need dedicated replayers. */
 export function replayReadinessExecution(db:Db,id:number,previous:TradePolicy,current:TradePolicy,events:ExecutionReplayEvent[],coverage:ExecutionReplayCoverage):ExecutionReplayResult {
  const subject=executionReplaySubject(db,id),r=subject.position;
@@ -110,15 +138,21 @@ export function replayReadinessExecution(db:Db,id:number,previous:TradePolicy,cu
   if(!r||r.bt!==0||r.evidence_scope!=='account'||r.policy_adopted_at!=null||r.policy_id!==previous.id||r.status!=='closed'||
    r.symbol!==previous.symbol||r.tf!==previous.tf||r.scanner_id!==previous.scannerId||!Number.isFinite(r.risk_amount)||r.risk_amount<=0)return result;
   if(db.get("SELECT 1 FROM evidence_flags WHERE position_id=? AND entry_at=? AND status='quarantined'",id,r.entry_at))return refuse('quarantined');
-  const meta=JSON.parse(r.fills),pc=previous.paper,fs=meta.fills;
+  const meta=JSON.parse(r.fills),pc=previous.paper,fs=meta.fills.filter((f:any)=>f.reason!=='funding');
   if(meta.basket||meta.executionPlan||fs.length!==2||fs[0].reason!=='entry'||fs[0].qty!==r.qty||fs[0].at!==r.entry_at||fs[0].price!==r.entry_price||
    fs[1].qty!==r.qty||!['sl','trail'].includes(r.exit_reason)||subject.intents.length!==1||subject.reports.length!==1||!subject.state||subject.state.version!==211||
    !Number.isSafeInteger(r.qty)||r.qty<=0||!(r.sl_original>0)||pc.trailAtrMult||pc.structureTrail?.enabled||pc.trendExit?.enabled||pc.earlyCut||pc.earlyStall||
    (previous.reading.reader??1)>=3||plotLifecycle(previous.scannerId))return result;
+  if(meta.fills.length!==fs.length){
+   if(pc.fundingCharges===false||!fundingProven(subject))return refuse('funding-unverified');
+   result.extensions={funding:1};
+  }
   const intent=subject.intents[0],report=subject.reports[0];
   if(intent.status!=='filled'||intent.book!==0||intent.qty!==r.qty||intent.filled_qty!==r.qty||intent.market_filled!==intent.market_qty||
    report.qty!==r.qty||report.at!==r.exit_at||report.price!==r.exit_price||fs[1].at!==r.exit_at||fs[1].reason!==r.exit_reason)return result;
   if(!coverage.verified||!Number.isSafeInteger(coverage.segments)||coverage.segments<1||! /^[a-f0-9]{64}$/.test(coverage.sha256)||coverage.from>r.entry_at-60000||coverage.to<r.exit_at)return refuse('archive-coverage');
+  const selected=coverage.selectionWindow;
+  if(selected&&(selected.symbol!==r.symbol||!Number.isFinite(selected.from)||!Number.isFinite(selected.to)||selected.from>r.entry_at-60000||selected.to<r.exit_at))return refuse('archive-coverage');
   if(coverage.gaps?.some(g=>!Number.isFinite(g.from)||!Number.isFinite(g.to)||g.from>g.to||g.from<=r.exit_at&&g.to>=r.entry_at-60000))return refuse('archive-gap');
   let sequence=-1;let lastAt=-Infinity;let seeded=false;let maxExchange=-Infinity;let activeUntil=-Infinity;let fallbackObserved=false;
   for(const e of events){
@@ -133,7 +167,17 @@ export function replayReadinessExecution(db:Db,id:number,previous:TradePolicy,cu
    }
    if(e.kind==='paper_bar'&&e.payload.book===0&&e.source==='paper-input'&&e.receivedAt>=r.entry_at&&!e.payload.historical&&e.receivedAt>activeUntil)fallbackObserved=true;
   }
-  if(!seeded)return refuse('missing-tape-preroll');
+  if(!seeded){
+   // A complete quiet interval can establish an inactive tape without inventing
+   // a seed print. A prior mark proves capture was selected for this symbol.
+   // The interval also exceeds the accepted 5s-old / 2s-future trade clocks, so
+   // an unseen older print cannot reorder a valid post-entry print.
+   const w=coverage.selectionWindow,quietMs=Math.max(pc.tapeFallbackMs??5000,MAX_TRADE_ARRIVAL_MS+2000)+1;
+   const witness=events.some(e=>e.symbol===r.symbol&&e.kind==='mark'&&e.source==='execution-feed'&&
+    e.receivedAt<=r.entry_at-quietMs&&e.payload.markPrice>0&&Number.isFinite(e.payload.timeMs));
+   if(!w||w.symbol!==r.symbol||w.from>r.entry_at-60000||w.to<r.exit_at||!witness)return refuse('missing-tape-preroll');
+   result.extensions={...result.extensions,quietTape:1};
+  }
   if(events.filter(e=>e.kind==='trade'&&e.source==='execution-feed'&&e.receivedAt===r.entry_at).length>1)return refuse('entry-order-ambiguity');
   // Require actual candle callbacks, even when none ultimately triggered an exit.
   if(!events.some(e=>e.kind==='paper_bar'&&e.source==='paper-input'&&e.payload.book===0&&e.receivedAt>=r.entry_at))return refuse('missing-candle-inputs');
