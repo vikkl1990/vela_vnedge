@@ -1,3 +1,4 @@
+import {mapForView} from './api/cooperativeView.ts';
 import { RuntimeState } from './runtime.ts';
 import {candleReplayBlock} from './paper/basket.ts';
 import {scannerAttentionReadiness} from './scanners/attention.ts';
@@ -1032,7 +1033,7 @@ export class App {
     return null; // Hidden library rows may still be intentionally allocated to research.
   }
 
-  incubatorView() {
+  async incubatorView() {
     const cfg = this.config.get();
     const now = Date.now();
     const openShadow = new Map<string, number>();
@@ -1042,7 +1043,7 @@ export class App {
     const since14 = now - 14 * 86400_000;
     const proposedAt = proposalTimes(this.db);
     const rotation = this.incubatorStore.rotationState();
-    const pairs = this.incubatorStore.list().map(r => {
+    const pairs = await mapForView(this.incubatorStore.list(),r => {
       const book = r.stage === 'live' || r.stage === 'demote_proposed' ? 0 : 2;
       const judged = r.stage !== 'candidate' && r.stage !== 'retired';
       const key = `${r.scannerId}|${r.symbol}|${r.tf}`;

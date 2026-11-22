@@ -104,3 +104,15 @@ test('copy display counts restored trades without treating one restored cell as 
  const quarantined=store.copyReadiness(x.cell,mirror,1e8,T+200000).evidence;
  assert.equal(quarantined.stats.trades,0);assert.equal(quarantined.replayed,0);
 });
+
+test('qualification validates exact replay evidence once and preserves limit semantics',t=>{
+ const x=shadow(t,'winner');x.install();
+ const get=x.db.get.bind(x.db);let proofs=0;
+ x.db.get=((query:string,...args:any[])=>{if(query.includes('FROM shadow_execution_cohorts'))proofs++;return get(query,...args);}) as typeof x.db.get;
+ for(const limit of [undefined,0,-1,.5,1,2,Infinity]){
+  proofs=0;
+  const actual=qualifiedEvidence(x.db,x.cell,x.current,{at:T+200000,limit});
+  assert.equal(proofs,1,'no duplicate complete-cohort validation in one synchronous qualification');
+  assert.deepEqual(actual,readEvidence(x.db,x.cell,x.current,{at:T+200000,limit}));
+ }
+});
