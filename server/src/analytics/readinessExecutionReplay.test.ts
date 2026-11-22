@@ -1,0 +1,115 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {Db} from '../db.ts';
+import {DEFAULT_CONFIG} from '../config.ts';
+import {PaperEngine} from '../paper/engine.ts';
+import {saveTradePolicy,tradePolicyIdFor} from '../paper/tradePolicy.ts';
+import {strategyIdFor} from '../paper/strategyIdentity.ts';
+import {currentPolicyEvidence} from './policyHealth.ts';
+import {executionReplayEvidence,executionPolicyCompatible,replayReadinessExecution,recordExecutionReplay,type ExecutionReplayEvent} from './readinessExecutionReplay.ts';
+
+const T=1800000060000;
+function fixture(t:any,kind:'loss'|'winner'|'changed'|'candle'='loss',side:'long'|'short'='long'){
+ const db=new Db(':memory:');t.after(()=>db.db.close());const cfg=structuredClone(DEFAULT_CONFIG);
+ Object.assign(cfg.paper,{sizingMode:'margin',marginPerTrade:150,maxStopLossPct:3,minRiskFeeRatio:0,maxSignalAgeSec:0,minSizeShare:0,
+  slippageBps:0,quotedSlippageBps:0,depthUsdPerBp:0,feeRatePct:.05,makerFeeRatePct:.02,feeTaxPct:18,useSpread:false,requireQuote:false,
+  liquidation:false,fillSource:'candles',latencyMs:1500,skipScriptStops:false,allowReversal:true,
+  trailAfterR:.5,floorAtR:0,trailGiveBackPct:20,trailSteps:[],trailStall:undefined,trailAtrMult:0,staleBars:0,earlyCut:undefined,earlyStall:undefined,
+  tpSplit:[0,0,1],limitEntry:{enabled:false,tfs:[],atr:0,bars:2,books:[]}});
+ let now=T-2000;const engine=new PaperEngine(db,()=>cfg,{now:()=>now});engine.sourceHashFor=()=> 'source';engine.causalExits=true;
+ engine.onEntry({kind:'entry',side,price:100,sl:side==='long'?98:102,tp:side==='long'?[104,108,112]:[96,92,88],source:'alert',label:side,message:'',barTime:T-900000,barIndex:0},
+  {scannerId:'audit',scannerName:'audit',symbol:'BTCUSD',tf:'15m',market:{contractValue:1,tickSize:.01},atr:1,refPrice:100,at:now,signalId:null,exitMode:'both'});
+ const events:ExecutionReplayEvent[]=[];let sequence=0;
+ const tick=(at:number,price:number)=>{now=at;price=side==='long'?price:200-price;const payload={price,qty:1000,timeMs:at,id:String(at)};events.push({version:1,receivedAt:at,archiveSequence:++sequence,symbol:'BTCUSD',kind:'trade',source:'execution-feed',payload});engine.onTrade('BTCUSD',price,1000,at,at,String(at));};
+ tick(T-1000,100);now=T;engine.onBar('BTCUSD',{time:T,close:100,low:100,high:100,volume:100},now);
+ const p=engine.openPositions()[0];assert.ok(p,'fixture entered');
+ const current=structuredClone(p.policy!),previous=structuredClone(current);previous.sim=211;previous.strategyId=strategyIdFor(previous);previous.id=tradePolicyIdFor(previous);
+ saveTradePolicy(db,previous);p.policy=previous;db.run('UPDATE positions SET policy_id=? WHERE id=?',previous.id,p.id);db.run('UPDATE paper_execution_positions SET version=211 WHERE position_id=?',p.id);
+ now=T+100;const bar={time:T,close:100,low:100,high:100,volume:100};events.push({version:1,receivedAt:now,archiveSequence:++sequence,symbol:p.symbol,kind:'paper_bar',source:'paper-input',payload:{book:0,bar,historical:false}});engine.onBar(p.symbol,bar,now);
+ if(kind==='candle'){
+  now=T+120000;const candle={time:T+60000,open:100,high:100,low:97,close:100,volume:100};
+  events.push({version:1,receivedAt:now,archiveSequence:++sequence,symbol:p.symbol,kind:'paper_bar',source:'paper-input',payload:{book:0,bar:candle,historical:false}});
+  engine.onBar(p.symbol,candle,now);assert.equal(p.status,'open');tick(T+121000,97.9);
+ }else if(kind==='loss')tick(T+3000,97.9);
+ else{
+  tick(T+1000,101.2);
+  if(kind==='changed')tick(T+1200,101.8);
+  tick(T+3000,kind==='changed'?101.2:100.9);
+  if(kind==='changed')tick(T+4000,100.9);
+ }
+ now=kind==='candle'?T+124000:T+6000;const bid=['loss','candle'].includes(kind)?97.8:100.8,ask=bid+.1;
+ engine.settleExits(p.symbol,{receivedAt:now,exchangeAt:now-10,bids:[{price:side==='long'?bid:200-ask,size:10000}],asks:[{price:side==='long'?ask:200-bid,size:10000}]},now);
+ assert.equal(p.status,'closed');
+ const coverage={from:T-60000,to:now,segments:1,verified:true,sha256:'a'.repeat(64)};
+ return {db,engine,p,previous,current,events,coverage,run:()=>replayReadinessExecution(db,p.id,previous,current,events,coverage)};
+}
+for(const side of ['long','short'] as const)for(const kind of ['loss','winner'] as const)test(`verified identical ${side} ${kind} counts without rewriting history`,t=>{
+ const x=fixture(t,kind,side),before=JSON.stringify({p:x.db.all('SELECT * FROM positions'),o:x.db.all('SELECT * FROM orders'),policies:x.db.all('SELECT * FROM trade_policies')});
+ const result=x.run();assert.equal(result.outcome,'identical',JSON.stringify(result));
+ assert.equal(currentPolicyEvidence(x.db,x.engine).ids.size,0);
+ recordExecutionReplay(x.db,result);assert.equal(executionReplayEvidence(x.db,x.p.id,x.previous,x.current),'identical');
+ const evidence=currentPolicyEvidence(x.db,x.engine);assert.ok(evidence.executionCompatibleIds.has(x.p.id));assert.equal(evidence.exactIds.size,0);
+ assert.equal(JSON.stringify({p:x.db.all('SELECT * FROM positions'),o:x.db.all('SELECT * FROM orders'),policies:x.db.all('SELECT * FROM trade_policies')}),before);
+ recordExecutionReplay(x.db,result);assert.equal(x.db.get<any>('SELECT count(*) n FROM readiness_execution_replays').n,1);
+});
+test('tighter queued amendment changes execution and must not count',t=>{
+ const x=fixture(t,'changed'),result=x.run();assert.equal(result.outcome,'changed',JSON.stringify(result));recordExecutionReplay(x.db,result);
+ assert.equal(currentPolicyEvidence(x.db,x.engine).ids.size,0);
+ assert.equal(currentPolicyEvidence(x.db,x.engine).excludedReasons.get(x.p.id),'execution-replay-changed');
+});
+test('observed quiet-tape wick changes 212 and is not silently restored',t=>{
+ const x=fixture(t,'candle'),result=x.run();assert.equal(result.outcome,'changed',JSON.stringify(result));
+ assert.equal(result.reason,'candle-or-amendment-changed');
+});
+test('missing candles, coverage, pre-roll and process gaps cannot become equivalence',t=>{
+ const x=fixture(t);
+ for(const [name,events,coverage] of [
+  ['candles',x.events.filter(e=>e.kind!=='paper_bar'),x.coverage],
+  ['preroll',x.events.filter(e=>e.receivedAt>=T),x.coverage],
+  ['coverage',x.events,{...x.coverage,from:T}],
+  ['verification',x.events,{...x.coverage,verified:false}],
+  ['order',[...x.events].reverse(),x.coverage],
+  ['gap',x.events.map((e,i)=>i===1?{...e,symbol:'*',kind:'gap',source:'archive',payload:{reason:'process start'}}:e),x.coverage],
+ ] as const){const result=replayReadinessExecution(x.db,x.p.id,x.previous,x.current,[...events],coverage);assert.equal(result.outcome,'unverified',name);}
+});
+test('baseline mismatch fails even if both replay arms agree',t=>{
+ const x=fixture(t);x.events[x.events.length-1].payload.price=97.5;
+ const result=x.run();assert.equal(result.reason,'baseline-mismatch');assert.equal(result.outcome,'unverified');
+});
+test('one millisecond trigger drift is a mismatch, not a floating point tolerance',t=>{
+ const x=fixture(t);const tick=x.events.at(-1)!;tick.receivedAt++;tick.payload.timeMs++;
+ assert.equal(x.run().reason,'baseline-mismatch');
+});
+test('capture loss reported after closure invalidates its retained prefix',t=>{
+ const x=fixture(t);x.coverage=Object.assign(x.coverage,{gaps:[{from:T+2000,to:T+10000}]});
+ assert.equal(x.run().reason,'archive-gap');
+});
+test('receipt fails after journal correction, policy change or receipt tampering',t=>{
+ const x=fixture(t),proof=x.run();recordExecutionReplay(x.db,proof);
+ x.db.run('UPDATE positions SET fees=fees+1 WHERE id=?',x.p.id);
+ assert.equal(executionReplayEvidence(x.db,x.p.id,x.previous,x.current),null);
+ assert.throws(()=>recordExecutionReplay(x.db,proof),/subject changed/);
+ x.db.run('UPDATE positions SET fees=fees-1 WHERE id=?',x.p.id);
+ x.db.run("UPDATE readiness_execution_replays SET result='{}'");assert.equal(executionReplayEvidence(x.db,x.p.id,x.previous,x.current),null);
+});
+test('later advisory feature enrichment does not erase verified execution history',t=>{
+ const x=fixture(t),proof=x.run();recordExecutionReplay(x.db,proof);
+ x.db.run("UPDATE positions SET fills=json_set(fills,'$.features.new_context',123,'$.mlProb',0.75),scanner_name='Renamed display' WHERE id=?",x.p.id);
+ assert.equal(executionReplayEvidence(x.db,x.p.id,x.previous,x.current),'identical');
+});
+test('risk, fees, source, reader and 210 history cannot bypass evidence requirements',t=>{
+ const x=fixture(t);
+ for(const change of [(p:any)=>p.paper.maxStopLossPct++, (p:any)=>p.paper.feeRatePct++, (p:any)=>p.sourceHash='new', (p:any)=>p.reading.reader=2,(p:any)=>p.risk.maxDailyLossPct++]){
+  const current=structuredClone(x.current);change(current);current.strategyId=strategyIdFor(current);current.id=tradePolicyIdFor(current);
+  assert.equal(executionPolicyCompatible(x.db,x.p.id,x.previous,current),false);
+ }
+ const old=structuredClone(x.previous);old.sim=210;old.strategyId=strategyIdFor(old);old.id=tradePolicyIdFor(old);
+ assert.equal(executionPolicyCompatible(x.db,x.p.id,old,x.current),false);
+});
+test('quarantined or research trades never count, even with an earlier valid receipt',t=>{
+ const x=fixture(t),proof=x.run();recordExecutionReplay(x.db,proof);
+ x.db.run("INSERT INTO evidence_flags VALUES(?,?,'quarantined','test','test',?)",x.p.id,x.p.entryAt,T);
+ assert.equal(x.run().reason,'quarantined');assert.equal(currentPolicyEvidence(x.db,x.engine).ids.size,0);
+ x.db.run('DELETE FROM evidence_flags');x.db.run("UPDATE positions SET evidence_scope='experiment' WHERE id=?",x.p.id);
+ assert.equal(x.run().outcome,'unverified');assert.equal(currentPolicyEvidence(x.db,x.engine).ids.size,0);
+});

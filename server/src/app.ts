@@ -852,9 +852,10 @@ export class App {
     const capacityCompatible=liveTrades.filter(t=>policyEvidence.capacityCompatibleIds.has(t.id)).length;
     const scopeCompatible=liveTrades.filter(t=>policyEvidence.scopeCompatibleIds.has(t.id)).length;
     const sizingCompatible=liveTrades.filter(t=>policyEvidence.sizingCompatibleIds.has(t.id)).length;
-    if(capacityCompatible||scopeCompatible||sizingCompatible)golive.advisories.push({
+    const executionCompatible=liveTrades.filter(t=>policyEvidence.executionCompatibleIds.has(t.id)).length;
+    if(capacityCompatible||scopeCompatible||sizingCompatible||executionCompatible)golive.advisories.push({
       key:'capacity-evidence',label:'Readiness evidence in the last 30 days',
-      value:`${liveTrades.length-capacityCompatible-scopeCompatible-sizingCompatible} exact + ${capacityCompatible} capacity-compatible${scopeCompatible?` + ${scopeCompatible} unrelated-cell settings`:''}${sizingCompatible?` + ${sizingCompatible} same-size replay`:''} trades`,
+      value:`${liveTrades.length-capacityCompatible-scopeCompatible-sizingCompatible-executionCompatible} exact + ${capacityCompatible} capacity-compatible${scopeCompatible?` + ${scopeCompatible} unrelated-cell settings`:''}${sizingCompatible?` + ${sizingCompatible} same-size replay`:''}${executionCompatible?` + ${executionCompatible} identical execution replay`:''} trades`,
       note:'Compatible history is verified against saved policies. Same-size replays must reproduce the recorded contracts, entry price and stop risk using saved orders, quotes and depth; profits are never scaled up. All other settings and evidence exclusions must match. This history does not establish performance at higher concurrency; promotion and leverage rules are unchanged.',
     });
     return { at: Date.now(), live, current, shadow: { ...shadow, windowDays: 30 }, funnel, golive };
