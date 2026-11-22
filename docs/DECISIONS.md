@@ -8499,3 +8499,11 @@ Current own-list allocations and historical entry origins are different facts. T
 The journal and open-position API read these receipts. A retained legacy `copy_pilot=1` positively identifies a copy; missing provenance is `unknown`, never inferred from today's allocation. Copy scale is read from the admission record when available, never from today's pilot settings. A copied position promoted later stays a copy. An own-list position whose scanner is removed stays own-list. Plans and shadow trades have no paper-origin label.
 
 The journal filters `list=own|copy|unknown` before paging, totals and export. The dashboard shows recorded source/scale in positions, journal and detail; unknown origins are visible. The fleet panel separates current allocation and copy settings from historical entry counts. No trade, size, gate, risk setting or evidence rule changes, and historical rows are not rewritten.
+
+## 327. Move the chart library to Vela 0.10.14 (22 November 2026)
+
+The dashboard chart moves from `@luxalgo/vela` 0.10.13 to 0.10.14, the release of 20 November. Only the chart package changes. `@luxalgo/vela-pinets` stays at 0.3.4, whose peer range already admits 0.10.x, and `pinets` stays at 0.13.1 on both the server and the dashboard, so the chart still runs scripts on the same engine as the scanners. The lockfile changes in four lines: the version, the tarball address and its hash.
+
+The upstream release notes were not read before this change. What was checked: the type check, lint, format check, the 104 dashboard unit tests and the production build pass, and the package imports with all 132 exports, including `registerNativeIndicator`, which the position-levels overlay uses. The browser chart-comparison and performance specs run in CI only, because Playwright is not installed on the machine that prepared this. They are the check that matters for a chart upgrade, so this should not merge until they pass.
+
+This does not change a scanner, a setting, a paper trade or the VM. Roll back by restoring 0.10.13 in `dashboard/package.json` and the lockfile.
