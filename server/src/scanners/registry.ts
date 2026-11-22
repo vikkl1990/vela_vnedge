@@ -7,6 +7,7 @@ import { familyFor, originOf } from '../library/families.ts';
 import { variantCompatibleSource } from './variantCompat.ts';
 import { markitTickSourceError } from './markitTick.ts';
 import {lifecycleSources} from './plotLifecycle.ts';
+import { auditScript } from './scriptAudit.ts';
 
 /** `removed`: retired from the library for good (decision 127); the row stays in the manifest so the library sync never re-imports it, the source file is gone, and the registry never loads it. */
 export type ScannerStatus = 'ok' | 'incompatible' | 'unavailable' | 'removed';
@@ -131,6 +132,10 @@ export class ScannerRegistry {
       try { patched = pineLibraries().pin(compatible); pineLibraries().resolver(patched); }
       catch (error) { status = 'incompatible'; reason = reason ?? `Pine dependencies: ${(error as Error).message}`; }
       if (!source.trim() || source.trim().length < 100) { status = 'unavailable'; reason = reason ?? 'source not published'; }
+      else if (status === 'ok' && auditScript(source).corrections.some(c => c.code === 'lookahead' && c.severity === 'high')) {
+        status = 'incompatible';
+        reason = 'lookahead: request.security with lookahead_on and no history offset';
+      }
       this.map.set(m.id, {
         id: m.id, name: m.name, author: m.author ?? 'WillyAlgoTrader', file: m.file, url: m.url, pub: m.pub ?? null, access: m.access ?? null,
         pineVersion: m.pineVersion ?? null, lines: m.lines ?? null, updated: m.updated ?? null,
