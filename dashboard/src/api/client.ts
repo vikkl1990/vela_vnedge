@@ -420,6 +420,7 @@ export const api = {
         capacityCompatible?: number
         scopeCompatible?: number
         sizingCompatible?: number
+        executionCompatible?: number
         totalClosed?: number
         outsideWindow?: number
         exclusions?: Array<{ reason: string; label: string; trades: number }>

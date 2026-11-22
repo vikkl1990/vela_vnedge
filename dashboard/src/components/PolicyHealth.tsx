@@ -97,6 +97,9 @@ export function PolicyHealthPanel() {
                       {!!b.sizingCompatible && (
                         <div className="small muted">{b.sizingCompatible} same-size replay</div>
                       )}
+                      {!!b.executionCompatible && (
+                        <div className="small muted">{b.executionCompatible} identical execution replay</div>
+                      )}
                     </td>
                     <td>{b.changed}</td>
                     <td>{b.legacy}</td>
@@ -139,6 +142,7 @@ function PaperReadinessHistory({ book: b, windowDays }: { book: PolicyBook; wind
   const capacity = b.capacityCompatible ?? 0
   const scope = b.scopeCompatible ?? 0
   const sizing = b.sizingCompatible ?? 0
+  const execution = b.executionCompatible ?? 0
   return (
     <div className="stack" aria-label="Paper readiness exclusions">
       <h3>Why other paper trades do not count</h3>
@@ -155,8 +159,15 @@ function PaperReadinessHistory({ book: b, windowDays }: { book: PolicyBook; wind
         )}
       </p>
       <p className="small">
-        Included: {b.matching - capacity - scope - sizing} exact matches + {capacity} capacity-compatible +{' '}
-        {scope} unrelated-cell settings + {sizing} same-size replay.
+        Included: {b.matching - capacity - scope - sizing - execution} exact matches + {capacity}{' '}
+        capacity-compatible + {scope} unrelated-cell settings + {sizing} same-size replay + {execution}{' '}
+        identical execution replay.
+      </p>
+      <p className="small muted">
+        An execution-model change can reduce the compatible count without deleting trades. An older trade
+        counts through execution replay only when recorded inputs reproduce its original exit and the new
+        model gives the same timing, size, price, fees and net result. Changed or unverifiable outcomes remain
+        excluded; the replay subset alone does not establish performance for the whole new policy.
       </p>
       {b.exclusions ? (
         b.exclusions.length ? (
