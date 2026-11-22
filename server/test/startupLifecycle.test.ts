@@ -82,7 +82,10 @@ test('App.stop cancels every wired execution timer, including funding and housek
       app.startExecutionLoops(); const count = scheduled.size;
       assert.ok(count >= 6, 'all execution tasks were armed');
       app.startExecutionLoops(); assert.equal(scheduled.size, count, 'start is idempotent');
+      const recovery = setTimeout(() => { throw new Error('entry recovery after shutdown'); }, 300000);
+      recovery.unref(); app.entryStateTimer = recovery;
       await app.stop();
+      assert.equal(recovery._destroyed, true, 'restart recovery must not run against a stopped database');
       assert.equal(remaining.size, 0, 'execution timers survived App.stop');
       console.log('all-execution-timers-stopped');
     } finally {
