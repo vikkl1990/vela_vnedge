@@ -1,5 +1,5 @@
 /** Shared UI refresh rates; these never control engine timing. */
-export const REFRESH = { live: 10_000, normal: 30_000, slow: 60_000 } as const
+export const REFRESH = { positionQuote: 2_000, live: 10_000, normal: 30_000, slow: 60_000 } as const
 
 /** Polling stays as a recovery fallback. A healthy event stream keeps these caches current. */
 export function streamFallback(query: { state: { dataUpdatedAt: number } }): number {

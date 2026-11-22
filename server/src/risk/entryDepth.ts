@@ -44,10 +44,10 @@ export class EntryDepthGate {
  private now(){return this.deps.now?.()??Date.now();}
  enabled(symbol?:string){const m=this.deps.cfg().risk.marketGate;return !!(m?.enabled&&m.freshDepth&&(m.maxBookCostPct??0)>0&&(!symbol||!m.exempt?.includes(symbol)));}
  get stats(){return {enabled:this.enabled(),...this.counts,inFlight:this.active,queued:this.queue.length,last:this.last};}
- async prepare(symbol:string,urgent=false):Promise<void>{
+ async prepare(symbol:string,urgent=false,notBefore=0):Promise<void>{
   if(!this.enabled(symbol))return;
   const old=this.cache.get(symbol),now=this.now();
-  if(old&&now-old.receivedAt<Math.min(2000,this.deps.cfg().paper.quoteMaxAgeMs)&&now-old.exchangeAt<Math.min(2000,this.deps.cfg().paper.quoteMaxAgeMs)&&old.exchangeAt<=now+2000)return;
+  if(old&&old.receivedAt>=Math.min(notBefore,now)&&now-old.receivedAt<Math.min(2000,this.deps.cfg().paper.quoteMaxAgeMs)&&now-old.exchangeAt<Math.min(2000,this.deps.cfg().paper.quoteMaxAgeMs)&&old.exchangeAt<=now+2000)return;
   const existing=this.pending.get(symbol);if(existing){if(urgent){const job=this.queue.find(j=>j.symbol===symbol);if(job)job.urgent=true;}return existing;}
   if(this.queue.length>=(urgent?120:100)){this.cache.delete(symbol);this.counts.errors++;return;}
   const task=new Promise<void>(resolve=>{const job={symbol,urgent,run:()=>{
@@ -73,17 +73,18 @@ export class EntryDepthGate {
   this.pending.set(symbol,task);this.drain();return task;
  }
  private drain(){while(this.active<4&&this.queue.length){let i=this.queue.findIndex(j=>j.urgent);if(i<0){if(this.background>=2)break;i=0;}this.queue.splice(i,1)[0].run();}}
- executionPrice(symbol:string,side:'long'|'short',qty:number):{price?:number;reject?:string;depth?:EntryDepthSnapshot}{
+ executionPrice(symbol:string,side:'long'|'short',qty:number,notBefore=0,consumed=0):{price?:number;reject?:string;depth?:EntryDepthSnapshot}{
   const snapshot=this.cache.get(symbol),now=this.now(),maxAge=this.deps.cfg().paper.quoteMaxAgeMs;
-  if(!snapshot||!(maxAge>0)||[snapshot.receivedAt,snapshot.exchangeAt].some(t=>!Number.isFinite(t)||t<=0||t>now+2000||now-t>maxAge))return {reject:'fresh execution depth unavailable'};
+  if(!snapshot||!(maxAge>0)||[snapshot.receivedAt,snapshot.exchangeAt].some(t=>!Number.isFinite(t)||t<=0||t>now||now-t>maxAge))return {reject:'fresh execution depth unavailable'};
+  if(snapshot.receivedAt<notBefore)return {reject:'depth predates entry arrival'};
   const b=snapshot.book;
   if(!b.buy.length||!b.sell.length||[...b.buy,...b.sell].some(l=>!Number.isFinite(Number(l.price))||Number(l.price)<=0||!Number.isFinite(Number(l.size))||Number(l.size)<=0))return {reject:'malformed execution depth'};
   if(Math.max(...b.buy.map(l=>Number(l.price)))>Math.min(...b.sell.map(l=>Number(l.price))))return {reject:'crossed execution depth'};
-  const f=depthFill(side==='long'?b.sell:b.buy,qty,side);
-  if(f.coverage<1||f.vwap===null)return {reject:'insufficient execution depth'};
+  const f=depthFill(side==='long'?b.sell:b.buy,qty,side,consumed);
+  if(f.coverage<1||f.vwap===null)return {reject:consumed>0?'observed entry depth already consumed':'insufficient execution depth'};
   const levels=(ls:RawBook['buy'])=>ls.map(l=>({price:Number(l.price),size:Number(l.size)}));
   return {price:f.vwap,depth:{source:'l2-rest',receivedAt:snapshot.receivedAt,exchangeAt:snapshot.exchangeAt,evaluatedAt:now,
-    side,requestedQty:qty,vwap:f.vwap,bids:levels(b.buy),asks:levels(b.sell)}};
+    side,requestedQty:qty,vwap:f.vwap,...(consumed?{consumedQty:consumed}:{}),bids:levels(b.buy),asks:levels(b.sell)}};
  }
  check(req:EntryDepthRequest):{reject?:string;crossingPct?:number;admissionDepth?:EntryAdmissionDepth}{
   if(!this.enabled(req.symbol))return {};
@@ -101,10 +102,11 @@ export class EntryDepthGate {
 import type {PaperEngine} from '../paper/engine.ts';
 /** Shadow dollars are synthetic. Test depth at a deployable account-equivalent quantity, never its research purse. */
 export function wireEntryDepth(account:PaperEngine,shadow:PaperEngine,gate:EntryDepthGate){
- account.prepareEntryDepth=symbol=>gate.prepare(symbol,true);
- shadow.prepareEntryDepth=symbol=>gate.prepare(symbol);
+ account.prepareEntryDepth=symbol=>gate.prepare(symbol,true,Math.max(0,...account.pendingEntries().filter(p=>p.symbol===symbol&&!p.limit).map(p=>p.dueAt)));
+ shadow.prepareEntryDepth=symbol=>gate.prepare(symbol,false,Math.max(0,...shadow.pendingEntries().filter(p=>p.symbol===symbol&&!p.limit).map(p=>p.dueAt)));
  account.entryDepthGate=req=>gate.check({...req,book:0});
- account.marketDepthPrice=(symbol,side,qty)=>gate.enabled(symbol)?gate.executionPrice(symbol,side,qty):undefined;
+ account.marketDepthPrice=(symbol,side,qty,notBefore,consumed)=>gate.enabled(symbol)?gate.executionPrice(symbol,side,qty,notBefore,consumed):undefined;
+ shadow.entryMarketQuantity=req=>account.previewDepthQuantity(req);
  shadow.entryDepthGate=req=>gate.check({...req,qty:req.executionPlan?req.qty:account.previewDepthQuantity(req),virtualQty:req.qty,book:2});
- shadow.marketDepthPrice=(symbol,side,qty)=>gate.enabled(symbol)?gate.executionPrice(symbol,side,qty):undefined;
+ shadow.marketDepthPrice=(symbol,side,qty,notBefore)=>gate.enabled(symbol)?gate.executionPrice(symbol,side,qty,notBefore):undefined;
 }

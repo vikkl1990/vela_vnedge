@@ -2,14 +2,15 @@
 export class ShadowDispatch<T> {
  private pending=new Map<string,{value:T;deadline:number;at:number}>();
  private busy=new Set<string>();
+ private computing=new Set<string>();
  private served=new Map<string,number>();
  private stopped=false;
  private serial=0;
  readonly counts={offered:0,replaced:0,expired:0,removed:0,started:0,finished:0,failed:0,maxPending:0,lastWaitMs:0,maxWaitMs:0,evidenceTurns:0,fairTurns:0,timelyTurns:0};
- private opts:{limit:()=>number;ready:()=>boolean;run:(v:T)=>Promise<void>;now?:()=>number;error?:(e:unknown,v:T)=>void;priority?:(v:T)=>number;timely?:(v:T)=>boolean;dropped?:(v:T,reason:'expired'|'removed')=>void};
+ private opts:{limit:()=>number;maxInFlight?:()=>number;ready:()=>boolean;run:(v:T,releaseCompute:()=>void)=>Promise<void>;now?:()=>number;error?:(e:unknown,v:T)=>void;priority?:(v:T)=>number;timely?:(v:T)=>boolean;dropped?:(v:T,reason:'expired'|'removed')=>void};
  constructor(opts:ShadowDispatch<T>['opts']){this.opts=opts;}
  private now(){return this.opts.now?.()??Date.now();}
- get stats(){return {...this.counts,pending:this.pending.size,inFlight:this.busy.size};}
+ get stats(){return {...this.counts,pending:this.pending.size,inFlight:this.busy.size,computing:this.computing.size,settling:this.busy.size-this.computing.size};}
  enqueue(key:string,value:T,deadline:number){
   if(this.stopped)return;
   this.counts.offered++;
@@ -23,7 +24,8 @@ export class ShadowDispatch<T> {
   const now=this.now();
   for(const [key,p]of this.pending)if(p.deadline<=now){this.pending.delete(key);this.counts.expired++;this.opts.dropped?.(p.value,'expired');}
   const limit=Math.max(1,this.opts.limit());
-  while(this.pending.size>0&&this.busy.size<limit&&this.opts.ready()){
+  const maxInFlight=Math.max(limit,this.opts.maxInFlight?.()??limit);
+  while(this.pending.size>0&&this.computing.size<limit&&this.busy.size<maxInFlight&&this.opts.ready()){
    // One of four starts can serve watched research or an enrolled forward test. Two retain
    // evidence priority; the fourth remains unconditional exploration. Unused turns
    // fall back to the original policy. This changes order, never admission/evidence.
@@ -39,10 +41,14 @@ export class ShadowDispatch<T> {
     if(score>best || (score===best && r<rank)){chosen=key;rank=r;best=score;}
    }
    if(chosen===undefined)break;
-   const p=this.pending.get(chosen)!;this.pending.delete(chosen);this.busy.add(chosen);this.served.set(chosen,++this.serial);this.counts.started++;if(timelyTurn)this.counts.timelyTurns++;else if(evidenceTurn)this.counts.evidenceTurns++;else this.counts.fairTurns++;
+   const p=this.pending.get(chosen)!;this.pending.delete(chosen);this.busy.add(chosen);this.computing.add(chosen);this.served.set(chosen,++this.serial);this.counts.started++;if(timelyTurn)this.counts.timelyTurns++;else if(evidenceTurn)this.counts.evidenceTurns++;else this.counts.fairTurns++;
    this.counts.lastWaitMs=now-p.at;this.counts.maxWaitMs=Math.max(this.counts.maxWaitMs,now-p.at);
    const key=chosen;
-   void Promise.resolve().then(()=>this.opts.run(p.value)).then(()=>this.counts.finished++,e=>{this.counts.failed++;this.opts.error?.(e,p.value);}).finally(()=>{this.busy.delete(key);this.drain();});
+   // Releasing CPU capacity never releases ownership of the cell. Its pricing,
+   // evidence checks and durable receipt must finish before it can run again.
+   let released=false;
+   const releaseCompute=()=>{if(released)return;released=true;if(this.computing.delete(key))this.drain();};
+   void Promise.resolve().then(()=>this.opts.run(p.value,releaseCompute)).then(()=>this.counts.finished++,e=>{this.counts.failed++;this.opts.error?.(e,p.value);}).finally(()=>{released=true;this.computing.delete(key);this.busy.delete(key);this.drain();});
   }
  }
  stop(){this.stopped=true;this.pending.clear();}

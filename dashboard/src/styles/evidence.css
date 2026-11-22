@@ -1,0 +1,26 @@
+/* ---------- evidence badge: what an average R rests on ---------- */
+.evidence {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 3px;
+  margin-left: 6px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 10.5px;
+  line-height: 16px;
+  white-space: nowrap;
+  color: var(--text-muted, inherit);
+  cursor: help;
+}
+.evidence-n {
+  opacity: 0.75;
+}
+.evidence[data-verdict='edge'] {
+  border-color: var(--gain);
+  color: var(--gain);
+}
+.evidence[data-verdict='negative'] {
+  border-color: var(--loss);
+  color: var(--loss);
+}

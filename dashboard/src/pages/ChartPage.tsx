@@ -1,17 +1,11 @@
+import type { ChartObservation } from '../../../shared/chartVerification'
+import { SignalChecks } from '../chart/SignalChecks'
 import type { ScriptRun } from '@luxalgo/vela'
 import { useInfiniteQuery, useQueries } from '@tanstack/react-query'
 import { useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { api } from '../api/client'
-import {
-  qk,
-  useConfig,
-  useMarkets,
-  usePositionPath,
-  usePositions,
-  useScannerIndex,
-  useSignals,
-} from '../api/queries'
+import { qk, useConfig, useMarkets, usePositions, useScannerIndex, useSignals } from '../api/queries'
 import { ChartFrames, FramePicker } from '../chart/ChartFrames'
 import { activeChartKeys, retainChartRecord } from '../chart/activeRecords'
 import { CryptoComparison } from '../chart/CryptoComparison'
@@ -100,6 +94,7 @@ export function ChartPage() {
   }
   const [showPosition, setShowPosition] = useState(true)
   const [scriptErrors, setScriptErrors] = useState<Record<string, string>>({})
+  const [signalChecks, setSignalChecks] = useState<Record<string, ChartObservation>>({})
   const [runs, setRuns] = useState<Record<string, ScriptSnapshot>>({})
   const [readoutOpen, setReadoutOpen] = useState(false)
   const [showClosed, setShowClosed] = useState(true)
@@ -170,6 +165,16 @@ export function ChartPage() {
     return ids
   }, [enabledScanners, shownSelection, addedScanners, heldScanner])
 
+  const recordSignalCheck = (o: ChartObservation) =>
+    setSignalChecks((prev) =>
+      retainChartRecord(
+        prev,
+        `${o.symbol}:${o.tf}:${o.scannerId}`,
+        o,
+        activeChartKeys(symbol, view === 'frames' ? frames : [tf], selectedIds),
+      ),
+    )
+
   const recordLedger = (ledger: AuthorLedger) =>
     setLedgers((prev) =>
       retainChartRecord(
@@ -217,15 +222,11 @@ export function ChartPage() {
     return out
   }, [selectedIds, sources, scanners.data])
 
-  const path = usePositionPath(showPosition && position ? position.id : null)
-  const peakR = useMemo(() => {
-    const rows = path.data?.path ?? []
-    return rows.length ? Math.max(...rows.map((r) => r.r)) : null
-  }, [path.data])
+  const peakR = position?.peakR ?? null
 
-  const allScripts = useMemo<ChartScript[]>(
-    () => (showPosition && position ? [...scripts, positionOverlay(position, peakR)] : scripts),
-    [scripts, showPosition, position, peakR],
+  const positionLevels = useMemo(
+    () => (showPosition && position ? positionOverlay(position, peakR) : null),
+    [showPosition, position, peakR],
   )
 
   const [allSignalFrames, setAllSignalFrames] = useState(false)
@@ -273,19 +274,26 @@ export function ChartPage() {
     ],
     [closedTrades.data],
   )
-  const shownLedgers = Object.values(ledgers).filter(
-    (l) =>
-      l.symbol === symbol &&
-      (view === 'frames' ? frames.includes(l.tf) : l.tf === tf) &&
-      !scriptErrors[l.id] &&
-      scripts.some((s) => s.id === l.id && scriptContextKey(s) === l.contextKey),
+  const shownLedgers = useMemo(
+    () =>
+      Object.values(ledgers).filter(
+        (l) =>
+          l.symbol === symbol &&
+          (view === 'frames' ? frames.includes(l.tf) : l.tf === tf) &&
+          !scriptErrors[l.id] &&
+          scripts.some((s) => s.id === l.id && scriptContextKey(s) === l.contextKey),
+      ),
+    [ledgers, symbol, view, frames, tf, scriptErrors, scripts],
   )
-  const marksFor = (frame: string) => [
-    ...decisionMarks((signals.data ?? []).filter((s) => allSignalFrames || s.tf === frame)),
-    ...(showClosed ? botTradeMarks(tradeRows.filter((r) => r.tf === frame)) : []),
-    ...(showAuthors ? authorTradeMarks(shownLedgers.filter((l) => l.tf === frame)) : []),
-  ]
-  const marks = marksFor(tf)
+  const marksByFrame = useMemo(() => {
+    const build = (frame: string) => [
+      ...decisionMarks((signals.data ?? []).filter((s) => allSignalFrames || s.tf === frame)),
+      ...(showClosed ? botTradeMarks(tradeRows.filter((r) => r.tf === frame)) : []),
+      ...(showAuthors ? authorTradeMarks(shownLedgers.filter((l) => l.tf === frame)) : []),
+    ]
+    return Object.fromEntries([...new Set([tf, ...frames])].map((frame) => [frame, build(frame)]))
+  }, [signals.data, allSignalFrames, showClosed, tradeRows, showAuthors, shownLedgers, frames, tf])
+  const marks = marksByFrame[tf] ?? []
 
   const positionBadge =
     showPosition && position ? (
@@ -613,18 +621,24 @@ export function ChartPage() {
         )}
       </Section>
       {positionBadge}
+      <p className="muted small">
+        Scanner plots are a browser preview of the Pine script in this tab. Marks, fills and position lines
+        come from the bot journal.
+      </p>
       <div className={`chart-layout ${view === 'frames' ? 'chart-layout-frames' : ''}`}>
         <div className="chart-main" style={{ position: 'relative' }}>
           {symbol && view === 'frames' ? (
             <ChartFrames
-              key={`${symbol}:${frames.join(',')}`}
+              key={symbol}
               onScriptRun={recordRun}
-              marksByFrame={Object.fromEntries(frames.map((frame) => [frame, marksFor(frame)]))}
+              marksByFrame={marksByFrame}
+              onSignalCheck={recordSignalCheck}
               captureLedger={showAuthors}
               onAuthorLedger={recordLedger}
               symbol={symbol}
               tfs={frames}
-              scripts={allScripts}
+              scripts={scripts}
+              positionOverlay={positionLevels}
               tickSize={market?.tickSize}
               onScriptError={(id, err) => setScriptErrors((e) => ({ ...e, [id]: err.message }))}
               onScriptReady={(id) =>
@@ -638,7 +652,7 @@ export function ChartPage() {
             />
           ) : symbol ? (
             <VelaChart
-              key={`${symbol}:${tf}`}
+              onSignalCheck={recordSignalCheck}
               captureLedger={showAuthors}
               onAuthorLedger={recordLedger}
               onScriptRun={(r) => recordRun(tf, r)}
@@ -646,7 +660,8 @@ export function ChartPage() {
               symbol={symbol}
               tf={tf}
               height="100%"
-              scripts={allScripts}
+              scripts={scripts}
+              positionOverlay={positionLevels}
               tickSize={market?.tickSize}
               onScriptError={(id, err) => setScriptErrors((e) => ({ ...e, [id]: err.message }))}
               onScriptReady={(id) =>
@@ -710,6 +725,14 @@ export function ChartPage() {
           error={closedTrades.error?.message}
         />
       )}
+      <SignalChecks
+        observations={Object.values(signalChecks).filter(
+          (o) =>
+            o.symbol === symbol &&
+            (view === 'frames' ? frames.includes(o.tf) : o.tf === tf) &&
+            selectedIds.includes(o.scannerId),
+        )}
+      />
       <ScriptReadout
         open={readoutOpen}
         onOpenChange={setReadoutOpen}

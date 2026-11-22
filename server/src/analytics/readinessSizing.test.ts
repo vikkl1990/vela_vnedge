@@ -46,6 +46,15 @@ test('reduced margin cannot qualify when current settings would request more con
  const f=fixture(t,99);assert.deepEqual(proveSameReadinessSize(f.db,1,f.old,f.current),{ok:false,reason:'different-size'});
  assert.equal(currentPolicyEvidence(f.db,f.engine).ids.size,0);
 });
+test('removing a market count limit preserves existing same-size proofs without accepting larger contracts',t=>{
+ for(const stop of [90,99]){
+  const f=fixture(t,stop);f.cfg.risk.maxPositionsPerSymbol=0;
+  const current=f.engine.policyForCell({scannerId:'s',symbol:'BTCUSD',tf:'15m'});
+  assert.equal(additionalReadinessCompatibility(f.old,current),'sizing-proof');
+  const ids=currentPolicyEvidence(f.db,f.engine).ids;
+  assert.equal(ids.has(1),stop===90);
+ }
+});
 test('saved pilot fraction participates in replay instead of assuming a full allocation',t=>{
  const f=fixture(t,90,.5);assert.equal(proveSameReadinessSize(f.db,1,f.old,f.current).ok,true);
  f.admission.sizeScale=1;f.db.run("UPDATE decision_trace SET snapshot=? WHERE stage='pending'",JSON.stringify(f.admission));

@@ -2572,5 +2572,197 @@
         "factor": 1
       }
     }
+  },
+  "adaptive-volatility-trend-v2-native": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [
+      "derived"
+    ],
+    "exitMode": "both",
+    "entryProtection": "native",
+    "entryExecution": "market",
+    "inputs": {},
+    "exit": {
+      "scriptTargets": "use",
+      "tpSplit": [
+        0,
+        0,
+        1
+      ],
+      "floorAtR": 0,
+      "trailAfterR": 0,
+      "staleBars": 0,
+      "earlyCut": {
+        "minutes": 0,
+        "r": -1
+      },
+      "earlyStall": {
+        "minutes": 0,
+        "minR": 0,
+        "maxR": 1
+      },
+      "breakEvenAfterTp1": false,
+      "trendExit": {
+        "enabled": false,
+        "emaLen": 20,
+        "minR": 1
+      },
+      "structureTrail": {
+        "enabled": false,
+        "pivot": 2,
+        "incrPct": 0,
+        "books": []
+      },
+      "trailSteps": [],
+      "trailStall": {
+        "minutes": 0,
+        "factor": 1
+      }
+    }
+  },
+  "kalman-supertrend-sentinel-v1-native": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [
+      "derived"
+    ],
+    "exitMode": "both",
+    "entryProtection": "native",
+    "entryExecution": "market",
+    "inputs": {},
+    "exit": {
+      "scriptTargets": "use",
+      "tpSplit": [
+        0,
+        0,
+        1
+      ],
+      "floorAtR": 0,
+      "trailAfterR": 0,
+      "staleBars": 0,
+      "earlyCut": {
+        "minutes": 0,
+        "r": -1
+      },
+      "earlyStall": {
+        "minutes": 0,
+        "minR": 0,
+        "maxR": 1
+      },
+      "breakEvenAfterTp1": false,
+      "trendExit": {
+        "enabled": false,
+        "emaLen": 20,
+        "minR": 1
+      },
+      "structureTrail": {
+        "enabled": false,
+        "pivot": 2,
+        "incrPct": 0,
+        "books": []
+      },
+      "trailSteps": [],
+      "trailStall": {
+        "minutes": 0,
+        "factor": 1
+      }
+    }
+  },
+  "bar-size-balance-exit-v1-native": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [
+      "derived"
+    ],
+    "exitMode": "both",
+    "entryProtection": "native",
+    "entryExecution": "market",
+    "inputs": {},
+    "exit": {
+      "scriptTargets": "use",
+      "tpSplit": [
+        0,
+        0,
+        1
+      ],
+      "floorAtR": 0,
+      "trailAfterR": 0,
+      "staleBars": 0,
+      "earlyCut": {
+        "minutes": 0,
+        "r": -1
+      },
+      "earlyStall": {
+        "minutes": 0,
+        "minR": 0,
+        "maxR": 1
+      },
+      "breakEvenAfterTp1": false,
+      "trendExit": {
+        "enabled": false,
+        "emaLen": 20,
+        "minR": 1
+      },
+      "structureTrail": {
+        "enabled": false,
+        "pivot": 2,
+        "incrPct": 0,
+        "books": []
+      },
+      "trailSteps": [],
+      "trailStall": {
+        "minutes": 0,
+        "factor": 1
+      }
+    }
+  },
+  "trend-impulse-channels-zeiierman-maker-filter-off": {
+    "sources": [
+      "shape"
+    ],
+    "labels": [
+      "Upper Retest",
+      "Lower Retest"
+    ],
+    "sides": {
+      "upper retest": "long",
+      "lower retest": "short"
+    },
+    "entryLimit": {
+      "tfs": [
+        "15m"
+      ],
+      "atr": 0.1,
+      "minutes": 5
+    },
+    "exitMode": "both",
+    "enabled": false,
+    "inputs": {
+      "TrendFilter": false
+    }
+  },
+  "half-trend-channel-maker-reversals": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [
+      "label"
+    ],
+    "labels": [
+      "▲",
+      "▼"
+    ],
+    "labelStyles": {
+      "▲": {
+        "style_label_up": "long"
+      },
+      "▼": {
+        "style_label_down": "short"
+      }
+    },
+    "sides": {
+      "x": "none"
+    },
+    "exitMode": "both"
   }
 }

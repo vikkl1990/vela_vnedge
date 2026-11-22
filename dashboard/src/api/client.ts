@@ -1,3 +1,4 @@
+import type { SignalReceipt, FillComparison } from '../../../shared/chartVerification'
 import type { ScannerContractDetail, ScannerReadiness } from '../../../shared/scannerContracts'
 import { fetchJournalCsv } from '../lib/journalExport'
 import type { ContributionDetail, Contributions } from './contributions'
@@ -139,6 +140,9 @@ const put = <T>(path: string, body: unknown) =>
 const del = <T>(path: string) => request<T>(path, { method: 'DELETE' })
 
 export const api = {
+  chartReceipt: (id: string, symbol: string, tf: string) =>
+    get<SignalReceipt | null>(`/scanners/${encodeURIComponent(id)}/chart-receipt${qs({ symbol, tf })}`),
+  fillComparison: (id: number) => get<FillComparison>(`/positions/${id}/fill-comparison`),
   tradeMonitor: () => get<TradeMonitorView>('/trade-monitor'),
   deltaConnection: () => get<DeltaConnectionStatus>('/connections/delta'),
   telegramConnection: () => get<TelegramStatus>('/connections/telegram'),
@@ -171,6 +175,7 @@ export const api = {
       shadowFilled: number
     }>('/signals/activity'),
   executionQuality: () => get<import('./types').ExecutionQuality>('/execution-quality'),
+  paperFleet: () => get<import('./paperFleet').PaperFleet>('/paper/fleet'),
   // health / config
   health: () => get<Health>('/health'),
   config: () => get<Config>('/config'),
@@ -179,8 +184,9 @@ export const api = {
 
   // markets & candles
   markets: () => get<Market[]>('/markets'),
+  movers: () => get<import('./types').MoversResponse>('/markets/movers'),
   assetClasses: () => get<import('./types').AssetClassesResponse>('/markets/classes'),
-  candles: (q: CandleQuery) => get<Candle[]>(`/candles${qs(q)}`),
+  candles: (q: CandleQuery, signal?: AbortSignal) => request<Candle[]>(`/candles${qs(q)}`, { signal }),
   ticker: (symbol: string) => get<Ticker>(`/ticker${qs({ symbol })}`),
 
   // scanners
@@ -279,6 +285,7 @@ export const api = {
   // signals / positions / trades
   signals: (q: SignalQuery = {}) => get<Signal[]>(`/signals${qs(q)}`),
   positions: () => get<Position[]>('/positions'),
+  positionsHealth: () => get<import('../../../shared/positionHealth').PositionsHealth>('/positions/health'),
   closePosition: (id: number) => post<Position>(`/positions/${id}/close`),
   closeAll: () => post<{ requested: number; closed: number; pending: number }>('/paper/close-all'),
   trades: (q: TradeQuery = {}) => get<Trade[]>(`/trades${qs(q)}`),
@@ -415,6 +422,7 @@ export const api = {
         capacityCompatible?: number
         scopeCompatible?: number
         sizingCompatible?: number
+        executionCompatible?: number
         totalClosed?: number
         outsideWindow?: number
         exclusions?: Array<{ reason: string; label: string; trades: number }>

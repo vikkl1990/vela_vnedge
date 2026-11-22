@@ -1,3 +1,4 @@
+import type { ChartObservation } from '../../../shared/chartVerification'
 import type { IndicatorHandle, ScriptRun, TimelineMark, Vela as VelaType } from '@luxalgo/vela'
 import { useEffect, useRef, useState } from 'react'
 import { api } from '../api/client'
@@ -11,6 +12,7 @@ import { scriptInputs } from './scriptInputs'
 import { withScriptTimezones } from './scriptTimezone'
 import { scriptContextKey, settledTrades, type AuthorLedger } from './tradeComparison'
 import { venueSymbol, type ChartVenue } from './venues'
+import { POSITION_LEVELS, positionLevelsIndicator, type PositionOverlay } from './positionOverlay'
 
 export interface ChartScript {
   /** Stable id, e.g. scanner id. */
@@ -31,6 +33,7 @@ interface Props {
   tf: string
   height?: number | string
   scripts?: ChartScript[]
+  positionOverlay?: PositionOverlay | null
   /** Called when a script fails to compile/run (also toasts). */
   onScriptError?: (id: string, err: Error) => void
   onScriptReady?: (id: string) => void
@@ -41,26 +44,25 @@ interface Props {
   onChartReady?: (chart: VelaType | null) => void
   onScriptRun?: (run: ScriptRun) => void
   captureLedger?: boolean
+  onSignalCheck?: (observation: ChartObservation) => void
   onAuthorLedger?: (ledger: AuthorLedger) => void
 }
 
 type VelaModule = typeof import('@luxalgo/vela')
 type PineModule = typeof import('@luxalgo/vela-pinets')
 
-let libsPromise: Promise<{ vela: VelaModule; pine: PineModule }> | null = null
-function loadLibs() {
-  if (!libsPromise) {
-    libsPromise = Promise.all([import('@luxalgo/vela'), import('@luxalgo/vela-pinets')]).then(
-      ([vela, pine]) => ({
-        vela,
-        pine,
-      }),
-    )
-    libsPromise.catch(() => {
-      libsPromise = null
+let velaPromise: Promise<VelaModule> | null = null
+function loadVela() {
+  if (!velaPromise) {
+    velaPromise = import('@luxalgo/vela').then((vela) => {
+      vela.registerNativeIndicator(positionLevelsIndicator)
+      return vela
+    })
+    velaPromise.catch(() => {
+      velaPromise = null
     })
   }
-  return libsPromise
+  return velaPromise
 }
 
 /**
@@ -73,6 +75,7 @@ export function VelaChart({
   venue = 'delta',
   height = 520,
   scripts = [],
+  positionOverlay,
   onScriptError,
   onScriptReady,
   tickSize,
@@ -80,6 +83,7 @@ export function VelaChart({
   onScriptRun,
   captureLedger = false,
   onAuthorLedger,
+  onSignalCheck,
   marks,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
@@ -92,6 +96,9 @@ export function VelaChart({
   )
   const [failed, setFailed] = useState<string | null>(null)
   const [ready, setReady] = useState(false)
+  const [pineReady, setPineReady] = useState(false)
+  const ensurePineRef = useRef<(() => Promise<void>) | null>(null)
+  const positionHandleRef = useRef<{ handle: IndicatorHandle; payload: string } | null>(null)
   const [loading, setLoading] = useState(true)
   const { theme } = useTheme()
   const marketRef = useRef({ symbol, tf })
@@ -110,10 +117,19 @@ export function VelaChart({
     onChartReady,
     onScriptRun,
     onAuthorLedger,
+    onSignalCheck,
     captureLedger,
   })
   useEffect(() => {
-    cbRef.current = { onScriptError, onScriptReady, onChartReady, onScriptRun, onAuthorLedger, captureLedger }
+    cbRef.current = {
+      onScriptError,
+      onScriptReady,
+      onChartReady,
+      onScriptRun,
+      onAuthorLedger,
+      onSignalCheck,
+      captureLedger,
+    }
   })
   useEffect(() => {
     cbRef.current.onChartReady?.(ready ? chartRef.current : null)
@@ -132,10 +148,12 @@ export function VelaChart({
     let chart: VelaType | null = null
     let pineEngine: InstanceType<PineModule['PineWorkerEngine']> | null = null
     let firstBar: (id: string) => number | null = () => null
+    let history: ReturnType<typeof withScriptTimezones>['history'] = () => null
     let generation = 0
     const latestRuns = new Map<string, { run: ScriptRun; contextKey: string }>()
     const requests = new Map<string, { key: string; serial: number }>()
     let serial = 0
+    const signalRequests = new Map<string, number>()
     const collect = (run: ScriptRun) => {
       if (!cbRef.current.captureLedger || cancelled) return
       const script = scriptsRef.current.find((s) => `vn:${s.id}` === run.id)
@@ -215,8 +233,8 @@ export function VelaChart({
         if (script && scriptContextKey(script) === contextKey) collect(run)
       })
 
-    loadLibs()
-      .then(async ({ vela, pine }) => {
+    loadVela()
+      .then(async (vela) => {
         const provider =
           venue === 'binance'
             ? new (await import('@luxalgo/vela/providers/binance')).BinanceProvider()
@@ -235,29 +253,42 @@ export function VelaChart({
             height,
             volume: true,
             animations: { intro: false, liveBar: false },
+            drawings: { clearOnSymbolChange: true },
           })
           try {
             chart.data.registerProvider(venue, provider)
           } catch (e) {
             throw new Error(`registerProvider failed: ${(e as Error).message}`)
           }
-          try {
-            pineEngine = new pine.PineWorkerEngine({
-              props: 'none',
-              importResolver: createLibraryResolver(() => librarySourcesRef.current, api.pineLibrary),
-              footprints:
-                venue === 'delta' ? (s, timeframe, range) => api.footprints(s, timeframe, range) : undefined,
-            })
-            const adapter = withScriptTimezones(
-              pineEngine,
-              (id) => scriptsRef.current.find((s) => `vn:${s.id}` === id)?.timezone,
-            )
-            firstBar = adapter.firstBar
-            chart.registerEngine('pine', adapter.engine)
-          } catch (e) {
-            console.warn('[vela] registerEngine failed', e)
-            toastExternal('warn', 'Pine engine unavailable', (e as Error).message)
-          }
+          // Candles do not wait for the Pine addon or spawn a worker unless a
+          // scanner is selected. One in-flight load belongs to this chart only.
+          let pineLoading: Promise<void> | null = null
+          ensurePineRef.current = () =>
+            (pineLoading ??= import('@luxalgo/vela-pinets')
+              .then((pine) => {
+                if (cancelled || !chart) return
+                pineEngine = new pine.PineWorkerEngine({
+                  props: 'none',
+                  importResolver: createLibraryResolver(() => librarySourcesRef.current, api.pineLibrary),
+                  footprints:
+                    venue === 'delta'
+                      ? (s, timeframe, range) => api.footprints(s, timeframe, range)
+                      : undefined,
+                })
+                const adapter = withScriptTimezones(
+                  pineEngine,
+                  (id) => scriptsRef.current.find((s) => `vn:${s.id}` === id)?.timezone,
+                )
+                firstBar = adapter.firstBar
+                history = adapter.history
+                chart.registerEngine('pine', adapter.engine)
+                setPineReady(true)
+              })
+              .catch((e: unknown) => {
+                if (cancelled) return
+                console.warn('[vela] registerEngine failed', e)
+                toastExternal('warn', 'Pine engine unavailable', (e as Error).message)
+              }))
           chartRef.current = chart
           if (import.meta.env.DEV) (window as unknown as { __vnChart?: VelaType }).__vnChart = chart
           const offStart = chart.on('load:start', () => {
@@ -271,6 +302,81 @@ export function VelaChart({
             const script = scriptsRef.current.find((s) => `vn:${s.id}` === run.id)
             if (script) latestRuns.set(run.id, { run, contextKey: scriptContextKey(script) })
             cbRef.current.onScriptRun?.(run)
+            if (
+              script &&
+              venue === 'delta' &&
+              cbRef.current.onSignalCheck &&
+              run.complete &&
+              run.cause !== 'tick' &&
+              !chart?.replay.state.active
+            ) {
+              const ticket = ++serial
+              signalRequests.set(run.id, ticket)
+              const epoch = generation,
+                market = { ...marketRef.current },
+                context = scriptContextKey(script)
+              const time = run.forming ? run.time - tfMs(market.tf) : run.time
+              const inputHistory = history(run.id, time)
+              const handle = handlesRef.current.get(script.id)?.handle
+              const expected = handle ? scriptInputs(handle.inputs, script.inputs) : {}
+              const actual = handle?.inputValues() ?? {}
+              const inputsChanged =
+                !handle ||
+                Object.entries(expected).some(
+                  ([key, value]) => JSON.stringify(actual[key]) !== JSON.stringify(value),
+                )
+              // One selected context transfer per closed bar, rather than one full
+              // worker transfer per series. Raw plot values also retain boolean shapes.
+              void handle
+                ?.context(['plots'])
+                .then(async (snapshot) => {
+                  const digest = inputHistory
+                    ? await crypto.subtle.digest('SHA-256', new TextEncoder().encode(inputHistory.text))
+                    : null
+                  if (
+                    cancelled ||
+                    !snapshot ||
+                    epoch !== generation ||
+                    signalRequests.get(run.id) !== ticket ||
+                    !scriptsRef.current.some((s) => s.id === script.id && scriptContextKey(s) === context) ||
+                    JSON.stringify(handle.inputValues()) !== JSON.stringify(actual)
+                  )
+                    return
+                  const rawValues = Object.entries(snapshot.plots).filter(([key]) => !key.startsWith('__'))
+                  const values = rawValues.slice(0, 512).map(([key, points]) => {
+                    const value = points.findLast((p) => p.time === time)?.value
+                    return [
+                      key,
+                      typeof value === 'boolean'
+                        ? Number(value)
+                        : typeof value === 'number' && Number.isFinite(value)
+                          ? value
+                          : null,
+                    ] as const
+                  })
+                  cbRef.current.onSignalCheck?.({
+                    scannerId: script.id,
+                    symbol: market.symbol,
+                    tf: market.tf,
+                    barTime: time,
+                    sourceHash: script.sourceHash ?? null,
+                    historyFrom: firstBar(run.id),
+                    historyHash: digest
+                      ? Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join('')
+                      : undefined,
+                    historyBars: inputHistory?.count,
+                    inputs: script.inputs ?? {},
+                    inputsChanged,
+                    timezone: script.timezone ?? 'UTC',
+                    complete: run.complete,
+                    valuesTruncated: rawValues.length > 512,
+                    values: Object.fromEntries(values),
+                  })
+                })
+                .catch(() => {
+                  /* Missing chart observations are never converted to a successful comparison. */
+                })
+            }
             collect(run)
           })
           chart.renderer.set('scalePriceOnly', true)
@@ -312,6 +418,8 @@ export function VelaChart({
       cancelled = true
       generation++
       collectRef.current = null
+      ensurePineRef.current = null
+      positionHandleRef.current = null
       cbRef.current.onChartReady?.(null)
       const c = chartRef.current ?? chart
       chartRef.current = null
@@ -368,10 +476,38 @@ export function VelaChart({
     }
   }, [theme, ready])
 
-  // ---- scripts diff -------------------------------------------------------------
+  // Only scanner charts need a Pine worker. Native position levels never do.
+  useEffect(() => {
+    if (ready && scripts.length) void ensurePineRef.current?.()
+  }, [ready, scripts.length])
+
   useEffect(() => {
     const chart = chartRef.current
     if (!chart || !ready) return
+    const old = positionHandleRef.current
+    if (!positionOverlay) {
+      old?.handle.remove()
+      positionHandleRef.current = null
+      return
+    }
+    const payload = JSON.stringify(positionOverlay)
+    if (old) {
+      if (old.payload !== payload) {
+        old.handle.setInputs({ levels: payload })
+        old.payload = payload
+      }
+    } else {
+      const handle = chart.addNativeIndicator(POSITION_LEVELS, {
+        inputs: { levels: payload },
+      })
+      positionHandleRef.current = { handle, payload }
+    }
+  }, [ready, positionOverlay])
+
+  // ---- scripts diff -------------------------------------------------------------
+  useEffect(() => {
+    const chart = chartRef.current
+    if (!chart || !ready || !pineReady) return
     const want = new Map(scripts.map((s) => [s.id, s]))
     const have = handlesRef.current
 
@@ -489,7 +625,7 @@ export function VelaChart({
         cbRef.current.onScriptError?.(s.id, err)
       }
     }
-  }, [scripts, ready])
+  }, [scripts, ready, pineReady])
 
   // A measured footprint arrives after the candle closes. The Pine live session
   // refreshes only its forming tail, so replay these indicators after settlement
@@ -518,6 +654,7 @@ export function VelaChart({
   useEffect(() => {
     if (!ready || !chartRef.current) return
     chartRef.current.marks.defineGroup({ id: 'bot-decisions', label: 'Bot journal decisions' })
+    chartRef.current.marks.defineGroup({ id: 'fill-evidence', label: 'Tick and depth comparisons' })
     chartRef.current.marks.defineGroup({ id: 'bot-fills', label: 'Recorded bot fills' })
     chartRef.current.marks.defineGroup({
       id: 'author-simulation',

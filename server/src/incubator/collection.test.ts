@@ -21,6 +21,25 @@ function fixture(t:any) {
 }
 const flush=()=>new Promise<void>(r=>setImmediate(r));
 
+test('maker comparisons use bounded timely turns and still yield to paper, mirrored exits and memory pressure',async t=>{
+ const f=fixture(t),pool=f.runner.deps.pool;
+ f.cfg.executionPlans=[{id:'m-control',revision:1,enabled:true,scannerId:'maker',symbol:'BTCUSD',tf:'15m',variant:'current',referenceEquity:1000,
+  comparison:{kind:'maker-fill',role:'control',group:'m'}},
+  {id:'m-candidate',revision:1,enabled:true,scannerId:'maker',symbol:'BTCUSD',tf:'15m',variant:'current',referenceEquity:1000,
+  comparison:{kind:'maker-fill',role:'candidate',group:'m'},makerFill:'tick-depth-v2'}];
+ const before=JSON.stringify(f.cfg);
+ pool.stats.queuedLive=1;await f.runner.sync();await flush();assert.equal(f.runner.dispatchStats.started,0);
+ const source=f.runner.active.find((r:any)=>r.scannerId==='maker');
+ assert.equal(f.runner.active.filter((r:any)=>r.scannerId==='maker').length,1);
+ assert.equal(f.runner.dispatch.opts.timely({r:source}),true);
+ pool.stats.queuedLive=0;pool.stats.queuedMirror=1;f.runner.dispatch.drain();await flush();assert.equal(f.runner.dispatchStats.started,0);
+ pool.stats.queuedMirror=0;pool.rssReader=()=>.86;f.runner.dispatch.drain();await flush();assert.equal(f.runner.dispatchStats.started,0);
+ pool.rssReader=()=>.84;f.runner.dispatch.drain();await flush();assert.equal(f.runner.dispatchStats.timelyTurns,1);
+ assert.equal(f.runner.deps.pool.reserved,2);assert.equal(JSON.stringify(f.cfg),before);
+ assert.equal(f.db.get('SELECT count(*) n FROM positions')!.n,0);
+});
+
+
 test('startup recovers a fresh close once, deduplicates a concurrent WS event and repeated syncs',async t=>{
  const f=fixture(t);await Promise.all([f.runner.sync(),f.runner.sync()]);
  assert.equal(f.store.shadowScanActivity(f.pair)?.status,'scheduled');
@@ -112,4 +131,31 @@ test('a refresh requested as the previous pass settles is not lost',async t=>{
  };
  await f.runner.sync();await late;
  assert.equal(passes,2);
+});
+
+for(const id of ['sol-maker-half-stop-reference','sol-maker-tick-depth-reference','sol-filter-v1-on-candle','sol-filter-v1-off-tick'])test(id+' gets bounded timely turns without taking account reservations',async t=>{
+ const f=fixture(t),pool=f.runner.deps.pool;
+ f.cfg.executionPlans=[{id,revision:1,enabled:true,scannerId:'trend-impulse-channels-zeiierman-maker'+(id.includes('-off-')?'-filter-off':''),symbol:'SOLUSD',tf:'15m',variant:'current',referenceEquity:1000}];
+ pool.stats.queuedLive=1;await f.runner.sync();await flush();assert.equal(f.runner.dispatchStats.started,0);
+ pool.stats.queuedLive=0;pool.stats.queuedMirror=1;f.runner.dispatch.drain();await flush();assert.equal(f.runner.dispatchStats.started,0);
+ pool.stats.queuedMirror=0;f.runner.dispatch.drain();await flush();assert.equal(f.runner.dispatchStats.timelyTurns,1);
+ assert.equal(f.cfg.paper.maxSignalAgeSec,300);assert.equal(f.runner.deps.pool.reserved,2);
+});
+test('large close-time qualification yields to timers and still checks every cell before scheduling',async t=>{
+ const f=fixture(t);f.cfg.incubator.mirror!.enabled=true;f.runner.deps.mirror=()=>{};
+ for(let i=0;i<80;i++)f.store.move({scannerId:`extra-${i}`,symbol:'BTCUSD',tf:'15m'},'shadow','test');
+ let checked=0;f.store.copyRefusal=()=>{checked++;const until=performance.now()+.5;while(performance.now()<until){}return 'insufficient evidence';};
+ let turns=0,done=false;const pulse=()=>{turns++;if(!done)setImmediate(pulse);};setImmediate(pulse);
+ await f.runner.sync();
+ for(let i=0;i<100&&checked<81;i++)await flush();done=true;
+ assert.equal(checked,81);assert.ok(turns>1);assert.equal(f.runner.dispatchStats.offered,81);
+ assert.equal(f.runner.stats.mirrored,0);
+});
+
+test('stopping during cooperative qualification releases work without launching scans',async t=>{
+ const f=fixture(t);f.cfg.incubator.mirror!.enabled=true;f.runner.deps.mirror=()=>{};
+ for(let i=0;i<40;i++)f.store.move({scannerId:`extra-${i}`,symbol:'BTCUSD',tf:'15m'},'shadow','test');
+ f.store.copyRefusal=()=>{const until=performance.now()+1;while(performance.now()<until){}return 'insufficient evidence';};
+ setImmediate(()=>f.runner.stop());await f.runner.sync();await flush();await flush();
+ assert.equal(f.runner.scheduledBars.size,0);assert.equal(f.runner.dispatchStats.started,0);assert.deepEqual(f.seen,[]);
 });

@@ -4,6 +4,7 @@ import { Db } from '../db.ts';
 import { DEFAULT_CONFIG } from '../config.ts';
 import { PaperEngine } from '../paper/engine.ts';
 import { ExchangeExecutor } from './testnet.ts';
+import { ExecutionOutbox } from './outbox.ts';
 import type { ExchangeOrder, OrderPayload } from './client.ts';
 
 class Exchange {
@@ -119,4 +120,12 @@ test('flatten cancels unsent entries so catalog recovery cannot reopen the accou
   const {fake,executor,open}=fixture(t);fake.missing=true;const ex=executor();await ex.start();open();await ex.flush();
   assert.equal(ex.outbox.status().pending,1);await ex.closeAll({confirm:true});fake.missing=false;
   await ex.sweepNow();await ex.flush();assert.equal(fake.posts.length,0);assert.equal(ex.outbox.status().cancelled,1);
+});
+test('a repeated paper fill keeps one client order id', () => {
+  const db = new Db(':memory:');
+  const outbox = new ExecutionOutbox(db, 'testnet', () => 1);
+  const order = { positionId: 7, symbol: 'BTCUSD', side: 'sell', qty: 1, reason: 'sl' };
+  db.transaction(() => { outbox.record(41, order); outbox.record(41, order); });
+  assert.deepEqual(db.all<any>('SELECT client_order_id FROM execution_commands').map(r => r.client_order_id), ['vnedge-so-41']);
+  db.db.close();
 });

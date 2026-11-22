@@ -1,0 +1,9 @@
+# Notices
+
+This repository mixes project code with third-party Pine scripts. It does not have one license that covers every file. The owner decides what the project code itself is released under.
+
+- Server, dashboard, and ops code are the project's own work. `scripts/licenses/vnedge-MIT.txt` is an MIT text for that code and does not license the Pine sources.
+- `scripts/pine/` is a catalogue of published TradingView scripts. Headers in those files name CC BY-NC-SA, MPL, or no license. Each file keeps the terms written in it.
+- `scripts/libraries/` is imported Pine library code, commonly under MPL, and stays under the license that library publishes.
+
+A script with no header is not free to reuse.

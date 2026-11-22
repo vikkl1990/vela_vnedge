@@ -212,3 +212,39 @@ test('decision 201: funding is not audited against the tape, and old funding row
   db.run("INSERT INTO tape_audit(at, book, symbol, kind) VALUES (?, 0, 'XUSD', 'market exit (funding)')", t0);
   assert.equal(audit.summary(0).fills.length, 0);
 });
+
+test('later maker partials stay out of market-fill benchmarks, including after restart', t => {
+  const db=new Db(':memory:');t.after(()=>db.db.close());
+  const eng=fakeEngine(),audit=new TapeAudit(db,[{engine:eng,book:2}]),at=1_800_000_000_000;
+  eng.emit('pending',{type:'placed',entry:{id:91,symbol:'XRPUSD',tf:'1h',side:'long',at,market:{tickSize:.0001},limit:{price:.9325,expiresAt:at+7200000}}});
+  const fill=(engine:any,stamp:number,qty:number,source:string)=>{
+    db.run("INSERT INTO orders(at,position_id,scanner_id,symbol,side,qty,price,fee,reason,bt,price_source) VALUES(?,91,'maker','XRPUSD','buy',?,.9325,0,'entry',2,?)",stamp,qty,source);
+    engine.emit('order',{at:stamp,positionId:91,symbol:'XRPUSD',side:'buy',qty,price:.9325,reason:'entry'});
+  };
+  audit.onTrade(trade('XRPUSD',.9323,230,at+5000));
+  fill(eng,at+5500,230,'limit-tick-depth-model');
+  fill(eng,at+5534,574,'limit-tick-depth-model');
+  (audit as any).tick(at+200000);
+  assert.deepEqual(db.all<any>('SELECT kind FROM tape_audit').map(r=>r.kind),['resting limit']);
+  const restored=fakeEngine(),second=new TapeAudit(db,[{engine:restored,book:2}]);
+  fill(restored,at+210000,1,'limit-tick-depth-model');
+  (second as any).tick(at+400000);
+  assert.equal(db.get<any>('SELECT count(*) n FROM tape_audit').n,1);
+  fill(restored,at+410000,1,'depth');
+  (second as any).tick(at+600000);
+  assert.equal(db.get<any>("SELECT count(*) n FROM tape_audit WHERE kind='market entry'").n,1,'real market orders remain audited');
+});
+
+test('legacy maker partial audit rows are relabelled on read without changing the ledger or market averages', t => {
+  const db=new Db(':memory:');t.after(()=>db.db.close());const audit=new TapeAudit(db,[]),at=1_800_000_000_000;
+  for(const [id,source] of [[91,'limit-tick-depth-model'],[92,'depth']] as const){
+    db.run("INSERT INTO orders(at,position_id,scanner_id,symbol,side,qty,price,fee,reason,bt,price_source) VALUES(?,?,'s','XRPUSD','buy',1,1,0,'entry',2,?)",at,id,source);
+    db.run("INSERT INTO tape_audit(at,book,position_id,symbol,kind,side,paper_price,tape_price,prints,slip_bps) VALUES(?,2,?,'XRPUSD','market entry','buy',1,1.01,2,100)",at,id);
+  }
+  const before=db.get<any>('SELECT total_changes() n').n,view=audit.summary(0);
+  assert.equal(view.fills.length,1);assert.equal(view.fills[0].n,1);assert.equal(view.fills[0].meanBps,100);
+  const maker=view.recent.find(r=>r.position_id===91)!;
+  assert.equal(maker.kind,'resting maker partial');assert.equal(maker.slip_bps,null);assert.equal(maker.tape_price,null);
+  assert.equal(db.get<any>('SELECT total_changes() n').n,before);
+  assert.equal(db.get<any>("SELECT count(*) n FROM tape_audit WHERE kind='market entry'").n,2,'historical rows remain intact');
+});

@@ -4,6 +4,7 @@ import { Link } from 'react-router-dom'
 import { useJournalDetail } from '../api/queries'
 import { fmtR, fmtRecordedMoney as money, fmtRecordedPrice as price } from '../lib/format'
 import { Callout, Pill, Pnl, QueryState, Section, Time } from './kit'
+import { SourceTag } from './SourceTag'
 
 export function JournalDetailPanel({
   book,
@@ -81,6 +82,7 @@ export function JournalDetailPanel({
                     {r.symbol} · {r.tf} · {r.side ?? 'Direction unknown'}
                   </b>{' '}
                   <Pill>{r.status}</Pill> {r.archived && <Pill tone="warn">Before account reset</Pill>}{' '}
+                  <SourceTag source={r.fleetSource} scale={r.entrySizeScale} />{' '}
                   <Link to={`/scanners/${encodeURIComponent(r.scannerId)}`}>{r.scannerName}</Link>
                 </p>
                 {r.missingPosition && (
@@ -374,6 +376,7 @@ export function JournalDetailPanel({
                         features: d.features,
                         entryExecution: d.entryExecution,
                         entryFillEvidence: d.entryFillEvidence,
+                        makerFillReports: d.makerFillReports,
                         basketEntries: d.basketEntries,
                       },
                       null,

@@ -1,0 +1,30 @@
+@media (max-width: 640px) {
+  .evidence-table,
+  .evidence-table tbody,
+  .evidence-table tr,
+  .evidence-table td {
+    display: block;
+    width: 100%;
+    min-width: 0;
+  }
+  .evidence-table thead {
+    display: none;
+  }
+  .evidence-table tr + tr {
+    border-top: 1px solid var(--border);
+  }
+  .evidence-table td {
+    box-sizing: border-box;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    padding: 8px 0;
+  }
+  .evidence-table td::before {
+    content: attr(data-label);
+    display: block;
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+}

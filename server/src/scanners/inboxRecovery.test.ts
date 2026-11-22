@@ -101,14 +101,14 @@ test('pending entries cannot reopen the account after an operator reset',async t
  assert.match(x.db.signals({})[0].action,/account reset/);
 });
 
-test('recovery pauses outside paper mode without dispatching an exit',async t=>{
+test('recovery outside paper mode rejects the receipt and does not dispatch the exit',async t=>{
  const x=inboxFixture();t.after(()=>x.db.db.close());await x.submit();
  const pos=x.paper.openPositions()[0],qty=pos.qtyOpen,complete=x.engine.inbox.complete.bind(x.engine.inbox);
  x.engine.inbox.complete=()=>{throw Error('interrupted exit');};await assert.rejects(x.submit(x.exit));x.engine.inbox.complete=complete;
  x.cfg.execution.mode='testnet';x.paper.setMark('BTCUSD',100);await x.engine.recoverSignals();
- assert.equal(pos.qtyOpen,qty);assert.equal(x.engine.inbox.status().pending,1);
- assert.match(x.engine.inbox.status().recent[0].last_error,/outside paper mode/);
- x.cfg.execution.mode='paper';await x.engine.recoverSignals();assert.ok(pos.qtyOpen<qty);
+ assert.equal(pos.qtyOpen,qty);assert.equal(x.engine.inbox.status().pending,0);
+ assert.match(x.db.signals({}).find(s=>s.kind==='exit')!.action,/recovery requires reconciliation/);
+ x.cfg.execution.mode='paper';await x.engine.recoverSignals();assert.equal(pos.qtyOpen,qty);
 });
 
 test('recovery freshness stays bounded when the ordinary quote age limit is disabled',t=>{

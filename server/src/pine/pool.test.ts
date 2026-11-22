@@ -126,6 +126,37 @@ test('a live job that waited past its deadline is dropped, not run late', async 
   assert.equal(pool.stats.expiredLive, 1);
 });
 
+test('mirror ranking serves account exits and eligible copies before shadow positions across symbols', async t => {
+  const { pool, workers } = setup(); t.after(() => pool.stop());
+  const jobs: Array<[string, 'live' | 'mirror' | 'shadow' | 'background', number?]> = [
+    ['research', 'background'], ['shadow-scan', 'shadow'], ['shadow-held-a', 'mirror', 1],
+    ['copy-a', 'mirror', 2], ['shadow-held-b', 'mirror', 1], ['copy-b', 'mirror', 2],
+    ['account-exit', 'mirror', 3], ['account-direct', 'live'],
+  ];
+  const pending = jobs.map(([id, priority, rank]) => pool.run(
+    { ...job, scannerId: id, symbol: id.toUpperCase() }, { priority, rank }));
+  workers[0].ready();
+  for (const _ of jobs) workers[0].finish();
+  assert.deepEqual(workers[0].jobs.map(j => j.scannerId), [
+    'account-direct', 'account-exit', 'copy-a', 'copy-b',
+    'shadow-held-a', 'shadow-held-b', 'shadow-scan', 'research',
+  ]);
+  assert.ok((await Promise.all(pending)).every(r => r.ok), 'all shadow exits still run');
+});
+
+test('a ranked mirror job cannot survive its original freshness deadline', async t => {
+  t.mock.timers.enable({ apis: ['Date', 'setInterval'], now: 1_000 });
+  const { pool, workers } = setup(); t.after(() => pool.stop());
+  const stale = pool.run({ ...job, scannerId: 'old-copy' }, { priority: 'mirror', rank: 3, deadlineMs: 1_000 });
+  t.mock.timers.tick(2_000);
+  const fresh = pool.run({ ...job, scannerId: 'fresh-held' }, { priority: 'mirror', rank: 1, deadlineMs: 1_000 });
+  workers[0].ready(); workers[0].finish();
+  assert.equal((await stale).ok, false);
+  assert.equal((await fresh).ok, true);
+  assert.deepEqual(workers[0].jobs.map(j => j.scannerId), ['fresh-held']);
+  assert.equal(pool.stats.expiredMirror, 1);
+});
+
 test('background work never takes the reserved workers', async t => {
   const workers: FakeWorker[] = [];
   const pool = new PinePool(4, 100, () => { const w = new FakeWorker(); workers.push(w); return w; });

@@ -10,6 +10,7 @@ import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import path from 'node:path';
 import { logger } from '../log.ts';
+import { workerEnv } from '../pine/pool.ts';
 import type { Db } from '../db.ts';
 import { parseResearchCells, type ResearchCell } from './researchFit.ts';
 
@@ -154,7 +155,7 @@ export class ScreenQueue extends EventEmitter {
     const idsFile = path.join(this.deps.diagDir, `screen-${job.id}.ids`);
     fs.writeFileSync(idsFile, job.ids.join('\n') + '\n');
     const logFile = path.join(this.deps.diagDir, `screen-${job.id}.log`);
-    const env: NodeJS.ProcessEnv = { ...process.env, IDS: idsFile, TF: job.tf, WORKERS: process.env.SCREEN_WORKERS || '2', NODE_ENV: process.env.NODE_ENV ?? 'production' };
+    const env: NodeJS.ProcessEnv = workerEnv({ IDS: idsFile, TF: job.tf, WORKERS: process.env.SCREEN_WORKERS || '2', NODE_ENV: process.env.NODE_ENV ?? 'production' });
     // A background agent must not inherit CLI-only modes from the service environment.
     if(job.actor==='pair-agents')for(const key of ['SLICE','RESCREEN_SHADOW','RESCREEN_STAGES','DRY','ADD','LIMIT','OUT'])delete env[key];
     if (job.markets?.length) env.MARKETS = job.markets.join(',');

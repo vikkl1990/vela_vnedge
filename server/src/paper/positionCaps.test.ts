@@ -9,6 +9,7 @@ import {PaperEngine} from './engine.ts';
 import {RiskManager} from '../risk/manager.ts';
 import {resolveTradePolicy,saveTradePolicy} from './tradePolicy.ts';
 import {removeAccountPositionCaps} from '../../../ops/remove-account-position-caps.ts';
+import {removeMarketPositionCap} from '../../../ops/remove-market-position-cap.ts';
 const T=1800000000000;
 function fixture(t:{after:(fn:()=>void)=>void},margin=50){
  const cfg=structuredClone(DEFAULT_CONFIG),db=new Db(':memory:');t.after(()=>db.db.close());let now=T;
@@ -40,6 +41,54 @@ test('count-free admission still reserves pending margin and refuses an unfunded
  const reserved=f.engine().pendingEntries().reduce((s,p)=>s+(p.reservation?.margin??0),0);assert.ok(reserved<=1000);
  for(let i=0;i<accepted;i++)f.fill(i);f.restart();
  assert.ok(f.engine().openPositions().reduce((s,p)=>s+p.qtyOpen*p.entryPrice*p.contractValue/p.marginLeverage!,0)<=1000);
+});
+
+test('zero market ceiling admits distinct scanners on one pair, fills and survives restart without lifting other checks',t=>{
+ const f=fixture(t);f.cfg.risk.maxPositionsPerSymbol=0;
+ assert.equal(f.queue(0).action,'pending');
+ assert.equal(f.queue(4,{symbol:'PAIR0USD',scannerId:'s1'}).action,'pending');
+ assert.equal(f.queue(4,{symbol:'PAIR0USD',scannerId:'s1'}).action,'ignored','same-cell duplicates remain deduplicated');
+ assert.equal(f.risk().state().positions.maxPerSymbol,null);
+ f.fill(0);f.restart();
+ assert.equal(f.engine().openPositions().filter(p=>p.symbol==='PAIR0USD').length,2);
+ assert.ok(f.engine().openPositions().every(p=>p.riskAmount<=30));
+ assert.equal(f.queue(8,{symbol:'PAIR0USD',scannerId:'s2'}).action,'pending');
+ f.cfg.risk.maxPositionsPerSymbol=1;f.fill(0);
+ assert.equal(f.engine().openPositions().length,2,'restored finite ceiling is checked at fill without closing held positions');
+ f.cfg.risk.maxPositionsPerSymbol=0;f.cfg.risk.perScannerMaxPositions=1;
+ assert.match(f.queue(4,{symbol:'PAIR0USD',scannerId:'s1',tf:'4h'}).reason!,/scanner at its 1-position budget/);
+ f.risk().kill('test halt',false);assert.match(f.queue(8,{symbol:'PAIR0USD',scannerId:'s2'}).reason!,/manual halt/);
+});
+
+test('unlimited market count does not double-spend reserved margin on the same pair',t=>{
+ const f=fixture(t,150);f.cfg.risk.maxPositionsPerSymbol=0;let accepted=0,reason='';
+ for(let i=0;i<30;i++){
+  const d=f.queue(i,{symbol:'PAIR0USD',scannerId:`s${i}`});
+  if(d.action==='pending')accepted++;else{reason=d.reason??'';break;}
+ }
+ assert.ok(accepted>1&&accepted<9);assert.match(reason,/margin|size|leverage/i);
+ assert.doesNotMatch(reason,/max.*positions/);
+ const reserved=f.engine().pendingEntries().reduce((n,p)=>n+(p.reservation?.margin??0),0);
+ assert.ok(reserved<=1000);f.fill(0);f.restart();assert.equal(f.engine().openPositions().length,accepted);
+ assert.ok(f.engine().openPositions().reduce((n,p)=>n+p.qtyOpen*p.entryPrice*p.contractValue/p.marginLeverage!,0)<=1000);
+});
+
+test('market cap migration changes one setting only, is idempotent and rejects invalid settings or live execution',t=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'market-cap-'));t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
+ const file=path.join(dir,'config.json'),cfg=structuredClone(DEFAULT_CONFIG);cfg.risk.maxPositionsPerSymbol=1;
+ fs.writeFileSync(file,JSON.stringify(cfg),{mode:0o600});const before=fs.readFileSync(file,'utf8');
+ removeMarketPositionCap(file,true);assert.equal(fs.readFileSync(file,'utf8'),before);
+ const result=removeMarketPositionCap(file);assert.equal(result.changed,true);
+ const next=JSON.parse(fs.readFileSync(file,'utf8')),expected=structuredClone(cfg);expected.risk.maxPositionsPerSymbol=0;
+ assert.deepEqual(next,expected);assert.equal(fs.statSync(file).mode&0o777,0o600);
+ const files=fs.readdirSync(dir),saved=fs.readFileSync(file,'utf8');
+ assert.equal(removeMarketPositionCap(file).changed,false);assert.equal(fs.readFileSync(file,'utf8'),saved);assert.deepEqual(fs.readdirSync(dir),files);
+ assert.deepEqual(validateConfig(next),[]);
+ for(const value of [-1,.5,NaN,Infinity]){const bad=structuredClone(next);bad.risk.maxPositionsPerSymbol=value;assert.ok(validateConfig(bad).some(e=>e.includes('maxPositionsPerSymbol')));}
+ for(const change of [(c:typeof cfg)=>{c.risk.maxPositionsPerSymbol=2;},(c:typeof cfg)=>{c.execution.allowProduction=true;}]){
+  const bad=structuredClone(cfg);change(bad);fs.writeFileSync(file,JSON.stringify(bad));
+  assert.throws(()=>removeMarketPositionCap(file));assert.deepEqual(JSON.parse(fs.readFileSync(file,'utf8')),bad);
+ }
 });
 
 test('finite engine ceilings still count reservations; older pending orders obey current capacity at fill',t=>{

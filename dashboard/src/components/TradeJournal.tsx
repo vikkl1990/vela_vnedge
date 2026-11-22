@@ -11,6 +11,7 @@ import { useClassOf } from '../lib/assetClass'
 import { DataTable, type Column } from './DataTable'
 import { JournalDetailPanel } from './JournalDetail'
 import { JournalExport } from './JournalExport'
+import { SourceTag } from './SourceTag'
 import {
   Callout,
   EmptyState,
@@ -39,6 +40,29 @@ import { useNow } from '../lib/useNow'
 
 type JournalBook = Extract<import('../lib/books').Book, 'paper' | 'shadow'>
 
+function entryModel(source: string | null) {
+  switch (source) {
+    case 'limit-candle-model':
+    case 'candle-model':
+      return 'Candle model · tick/queue unverified'
+    case 'limit-tick-depth-model':
+      return 'Tick/depth model · queue unverified'
+    case 'limit-tape-model':
+    case 'tape-limit-model':
+      return 'Tape model · queue unverified'
+    case 'depth':
+      return 'Depth model'
+    case 'quote':
+      return 'Quote model'
+    case 'slippage':
+      return 'Slippage model'
+    case 'exchange':
+      return 'Exchange receipt'
+    default:
+      return source ? `Recorded source: ${source}` : 'Fill source unknown'
+  }
+}
+
 /** The journal: a book switch, filters, the totals for every match, and the rows. `exportOpen` is owned by the page so its header can open it. */
 export function TradeJournal({
   exportOpen = false,
@@ -55,10 +79,21 @@ export function TradeJournal({
   const book = params.get('book') ?? 'paper',
     status = params.get('status') ?? 'closed',
     scope = params.get('scope') ?? 'all'
+  const listParam = params.get('list')
+  const list = listParam === 'own' || listParam === 'copy' || listParam === 'unknown' ? listParam : 'all'
   const history = params.get('history') ?? 'current'
   const dateBy = params.get('dateBy') ?? 'exit',
     sort = params.get('sort') ?? 'newest'
-  const query: JournalQuery = { ...f.query, book, status, scope, history, dateBy, sort }
+  const query: JournalQuery = {
+    ...f.query,
+    book,
+    status,
+    scope,
+    history,
+    dateBy,
+    sort,
+    list: book === 'paper' ? list : 'all',
+  }
   const q = useJournal(query, !f.error),
     scanners = useScannerIndex(),
     markets = useMarkets()
@@ -128,6 +163,7 @@ export function TradeJournal({
           </b>{' '}
           <AssetChip symbol={r.symbol} withSector />
           <div className="small muted">{r.scannerName}</div>
+          <SourceTag source={r.fleetSource} scale={r.entrySizeScale} />{' '}
           <span className="small">{r.evidenceScope}</span>
         </span>
       ),
@@ -153,6 +189,7 @@ export function TradeJournal({
           <span>
             <Time t={r.entryAt} mode="datetime" />
             <div>{price(r.entryPrice)}</div>
+            {r.qty !== null && r.qty > 0 && <div className="small muted">{entryModel(r.source)}</div>}
           </span>
         ),
     },
@@ -216,7 +253,7 @@ export function TradeJournal({
     },
     {
       key: 'r',
-      header: 'Net R / peak R',
+      header: 'Net R / recorded peak R',
       numeric: true,
       render: (r) => (
         <span>
@@ -239,9 +276,9 @@ export function TradeJournal({
     },
   ]
   const advancedActive =
-    history !== 'current' ||
     !!f.reason ||
     scope !== 'all' ||
+    list !== 'all' ||
     dateBy !== (['open', 'pending', 'all'].includes(status) ? 'entry' : 'exit')
   const filtersActive = [...params.keys()].some((k) => !['book', 'trade'].includes(k))
   const bookItems: Array<{ id: JournalBook; label: string }> = [
@@ -291,6 +328,19 @@ export function TradeJournal({
           >
             <div className="jf">
               <Toolbar>
+                <label>
+                  History scope
+                  <select
+                    className="select"
+                    aria-label="Journal history"
+                    value={history}
+                    onChange={(e) => update({ history: e.target.value })}
+                  >
+                    <option value="current">Current account period</option>
+                    <option value="archived">Before account resets</option>
+                    <option value="all">Current + archived</option>
+                  </select>
+                </label>
                 <label>
                   Status
                   <select
@@ -456,19 +506,6 @@ export function TradeJournal({
                 <summary>More filters{advancedActive ? ' (in use)' : ''}</summary>
                 <Toolbar>
                   <label>
-                    History
-                    <select
-                      className="select"
-                      aria-label="Journal history"
-                      value={history}
-                      onChange={(e) => update({ history: e.target.value })}
-                    >
-                      <option value="current">Current account period</option>
-                      <option value="archived">Before account resets</option>
-                      <option value="all">Current + archived</option>
-                    </select>
-                  </label>
-                  <label>
                     Exit reason
                     <select
                       className="select"
@@ -498,6 +535,22 @@ export function TradeJournal({
                       ))}
                     </select>
                   </label>
+                  {book === 'paper' && (
+                    <label>
+                      Source
+                      <select
+                        className="select"
+                        aria-label="Journal source"
+                        value={list}
+                        onChange={(e) => update({ list: e.target.value === 'all' ? '' : e.target.value })}
+                      >
+                        <option value="all">All entry origins</option>
+                        <option value="own">Own list only</option>
+                        <option value="copy">Copies only</option>
+                        <option value="unknown">Origin unknown</option>
+                      </select>
+                    </label>
+                  )}
                   <label>
                     Evidence
                     <select
@@ -541,6 +594,14 @@ export function TradeJournal({
                   return (
                     <>
                       <div className="jf-pad">
+                        <p role="note" aria-label="Journal history scope">
+                          {history === 'all'
+                            ? 'Current + archived: totals include retained trades from before account resets.'
+                            : history === 'archived'
+                              ? 'Archived only: these records belong to earlier account periods, not current exposure.'
+                              : 'Current account period only: trades archived by account resets are excluded.'}{' '}
+                          All dates means every date within this history scope.
+                        </p>
                         <StatGrid min={190}>
                           <Stat
                             label="Matching records"
@@ -564,6 +625,12 @@ export function TradeJournal({
                           />
                         </StatGrid>
                       </div>
+                      <p className="jf-pad small muted">
+                        Paper and shadow fills are simulations. Their recorded source is shown at entry;
+                        candle touches and public trades do not prove exchange queue fills. Recorded peak R
+                        can combine a price-only trail peak with marked P&amp;L samples. It is not a net
+                        close-now return, and comparing it with net R does not measure profit retained.
+                      </p>
                       <details className="jf-notes jf-pad">
                         <summary>How these totals are counted</summary>
                         <p className="small muted">

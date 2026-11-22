@@ -6,6 +6,14 @@ import {AdvisoryDepthPool} from './depthPool.ts';
 import {OrderFlowStore} from '../orderflow/store.ts';
 import {crc32} from '../execution/depthRecorder.ts';
 const T=1_800_000_000_000,M=60000;
+test('one-character Delta bases receive verified depth; malformed symbols remain excluded',t=>{
+ const db=new Db(':memory:');t.after(()=>db.db.close());const feeds:Feed[]=[];
+ const pool=new AdvisoryDepthPool(db,()=>{const f=new Feed();feeds.push(f);return f;});t.after(()=>pool.stop());
+ pool.setSymbols(['MUSD','SUSD','MUSD','USD','../MUSD','MUSDT','mUSD','A'.repeat(25)+'USD']);
+ assert.deepEqual(pool.recorder.symbols,['MUSD','SUSD']);
+ feeds[0].emit('depth',{sy:'MUSD',action:'snapshot',seq:1,ts:Date.now()*1000,a:[['1.01','2']],b:[['1','3']],cs:crc32('1.01:2|1:3')});
+ assert.ok(pool.recorder.bookAt('MUSD',Date.now()));assert.equal(feeds[0].subscriptions.size,2);
+});
 class Feed extends EventEmitter {subscriptions=new Set<string>();stopped=false;start(){this.emit('status',{connected:true});}stop(){this.stopped=true;this.emit('status',{connected:false});}subscribe(_c:string,symbols:string[]){symbols.forEach(s=>this.subscriptions.add(s));assert.ok(this.subscriptions.size<=100);}unsubscribe(_c:string,symbols:string[]){symbols.forEach(s=>this.subscriptions.delete(s));}}
 test('all active depth pairs are sharded below Delta limit, without touching the raw execution tape',t=>{
  const db=new Db(':memory:');t.after(()=>db.db.close());const feeds:Feed[]=[];
@@ -40,4 +48,18 @@ test('late prints invalidate compact summaries and reconnects require fresh cove
  f.onTrade({symbol:'INITUSD',timeMs:T+10,price:1,qty:10,aggressor:'buy'},T+M+11000);
  assert.equal(db.get<any>("SELECT covered FROM advisory_flow_minutes WHERE symbol='INITUSD'")!.covered,0);
  f.connection(false,T+M+12000);assert.equal(f.summary('INITUSD',T+M+12000).covered,false);
+});
+
+test('alphabetic additions and removals preserve retained socket ownership and verified books',t=>{
+ const db=new Db(':memory:');t.after(()=>db.db.close());const feeds:Feed[]=[];
+ const pool=new AdvisoryDepthPool(db,()=>{const f=new Feed();feeds.push(f);return f;});t.after(()=>pool.stop());
+ const symbols=Array.from({length:200},(_,i)=>`X${String(i).padStart(3,'0')}USD`);pool.setSymbols(symbols);
+ const symbol='X099USD',owner=feeds.find(f=>f.subscriptions.has(symbol))!,other=feeds.find(f=>f!==owner)!;
+ const at=Date.now(),snap={sy:symbol,action:'snapshot',seq:1,ts:at*1000,a:[['101','2']],b:[['100','3']],cs:crc32('101:2|100:3')};
+ owner.emit('depth',snap);assert.ok(pool.recorder.bookAt(symbol,Date.now()));
+ pool.setSymbols(['AAAUSD',...symbols]);assert.ok(owner.subscriptions.has(symbol));assert.ok(pool.recorder.bookAt(symbol,Date.now()));
+ other.emit('status',{connected:false});assert.ok(pool.recorder.bookAt(symbol,Date.now()),'an unrelated disconnect cannot invalidate retained book');
+ pool.setSymbols([symbol]);assert.equal(pool.summary().connections,1);assert.ok(pool.recorder.bookAt(symbol,Date.now()));
+ pool.setSymbols(['AAAUSD']);assert.equal(pool.recorder.bookAt(symbol,Date.now()),null);
+ owner.emit('depth',snap);assert.equal(pool.recorder.bookAt(symbol,Date.now()),null,'removed subscriptions cannot revive a book');
 });

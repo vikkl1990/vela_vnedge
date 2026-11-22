@@ -1,3 +1,4 @@
+import {upstreamLifecycle,upstreamSources} from './upstreamLifecycle.ts';
 /** Source-pinned, observation-only lifecycle adapters. Never inferred from drawing positions. */
 import type {RuleContext} from './rules.ts';
 import type {ScanEvent, Side} from './extractor.ts';
@@ -5,18 +6,19 @@ export const BREAKOUT_NATIVE='smart-money-breakout-signals-author-native-v1';
 export const ML_RSI_NATIVE='machine-learning-rsi-ai-classification-ranking-zeiierman-author-native-v1';
 export const STEALTH_NATIVE='stealthtrail-supertrend-author-native-v1';
 export const TREND_CONTINUATION='vnedge-trend-continuation-v1';
-export const plotLifecycle=(id:string|undefined)=>id===BREAKOUT_NATIVE||id===ML_RSI_NATIVE||id===STEALTH_NATIVE||id===TREND_CONTINUATION;
+export const plotLifecycle=(id:string|undefined)=>id===BREAKOUT_NATIVE||id===ML_RSI_NATIVE||id===STEALTH_NATIVE||id===TREND_CONTINUATION||upstreamLifecycle(id);
 export const plotPrefix='VNEDGE lifecycle v1 ';
 /** A native setup cannot acquire a different stop or fewer milestones after price moves. */
 export function nativeGeometryError(id:string|undefined,side:Side,price:number,sl:number|undefined,tp:number[]):string|null {
  if(!plotLifecycle(id))return null;
  const dir=side==='long'?1:-1;
  if(!(price>0&&Number.isFinite(price))||!(sl!==undefined&&sl>0&&Number.isFinite(sl)&&dir*(price-sl)>0))return 'native stop crossed or unavailable';
- if((id===BREAKOUT_NATIVE||id===STEALTH_NATIVE||id===TREND_CONTINUATION)&&(tp.length!==(id===TREND_CONTINUATION?1:3)||tp.some((v,i)=>!(Number.isFinite(v)&&v>0&&dir*(v-(i===0?price:tp[i-1]))>0))))return 'native target crossed or unavailable';
+ if((id===BREAKOUT_NATIVE||id===STEALTH_NATIVE||id===TREND_CONTINUATION||upstreamLifecycle(id))&&(tp.length!==(id===TREND_CONTINUATION?1:3)||tp.some((v,i)=>!(Number.isFinite(v)&&v>0&&dir*(v-(i===0?price:tp[i-1]))>0))))return 'native target crossed or unavailable';
  if(id===ML_RSI_NATIVE&&tp.length)return 'native ML RSI has no fixed target';
  return null;
 }
 export const lifecycleSources:Record<string,{hash:string;exports:string[]}>={
+ ...upstreamSources,
  [TREND_CONTINUATION]:{hash:'25c75b0320b34efc287dd923d5ffa3edb4c3e1035d25614d657aa34d486aed65',exports:[]},
  [STEALTH_NATIVE]:{hash:'81fcc87d1c10ab60fd2049d679f8e7122f23c5675402fd04b5ae6a5d84aab6b6',exports:[
   'plot(openLong ? 1 : openShort ? -1 : 0, title="VNEDGE lifecycle v1 entry", display=display.none)',
@@ -46,7 +48,7 @@ export const lifecycleSources:Record<string,{hash:string;exports:string[]}>={
 };
 
 export function readPlotLifecycle(ctx:RuleContext):ScanEvent[]{
- const ml=ctx.scannerId===ML_RSI_NATIVE,stealth=ctx.scannerId===STEALTH_NATIVE,trend=ctx.scannerId===TREND_CONTINUATION,out:ScanEvent[]=[];
+ const ml=ctx.scannerId===ML_RSI_NATIVE,stealth=ctx.scannerId===STEALTH_NATIVE||upstreamLifecycle(ctx.scannerId),trend=ctx.scannerId===TREND_CONTINUATION,out:ScanEvent[]=[];
  const targetNames=trend?['tp1']:['tp1','tp2','tp3'];
  const names=ml?['entry','stop','direction','flip']:['entry','stop',...targetNames,...(stealth?['exitSide','close','hit1','hit2','amend']:[])];
  const maps=new Map(names.map(name=>{
@@ -64,12 +66,12 @@ export function readPlotLifecycle(ctx:RuleContext):ScanEvent[]{
     const side=old===1?'long':'short';
     // The old position closes before a same-bar reversal opens. Prices are observations,
     // never retrospective fills; the causal execution engine handles the instruction.
-    const exitType=closed===1?'sl':closed===2?'be':closed===3?'tp3':closed===4?'flip':undefined;
-    if(exitType)emit('exit',side,'Stealth native '+exitType,{exitType});
+    const exitType=closed===1?'sl':closed===2?'be':closed===3?'tp3':closed===4?'flip':closed===5&&upstreamLifecycle(ctx.scannerId)?'close':undefined;
+    if(exitType)emit('exit',side,(upstreamLifecycle(ctx.scannerId)?'Author native ':'Stealth native ')+exitType,{exitType});
     else{
-     if(value('hit1',t)===1)emit('exit',side,'Stealth TP1 milestone',{exitType:'tp1'});
-     if(value('hit2',t)===1)emit('exit',side,'Stealth TP2 milestone',{exitType:'tp2'});
-     if(amend!==undefined&&amend>0)emit('exit',side,'Stealth break-even amendment',{exitType:'stop_update',price:amend});
+     if(value('hit1',t)===1)emit('exit',side,upstreamLifecycle(ctx.scannerId)?'Native TP1 milestone':'Stealth TP1 milestone',{exitType:'tp1'});
+     if(value('hit2',t)===1)emit('exit',side,upstreamLifecycle(ctx.scannerId)?'Native TP2 milestone':'Stealth TP2 milestone',{exitType:'tp2'});
+     if(amend!==undefined&&amend>0)emit('exit',side,upstreamLifecycle(ctx.scannerId)?'Native stop amendment':'Stealth break-even amendment',{exitType:'stop_update',price:amend});
     }
    }
   }
@@ -88,7 +90,7 @@ export function readPlotLifecycle(ctx:RuleContext):ScanEvent[]{
    out.push({kind:'info',side,label:'Native geometry unavailable',message:'No entry: native stop/targets invalid at confirmed close',source:'derived',tp:[],barTime:t,barIndex:i});
    continue;
   }
-  emit('entry',side,ml?'ML classifier confirmed':stealth?'Stealth confirmed':trend?'VNEDGE trend continuation confirmed':'Structure breakout confirmed',{price:b.close,sl:stop,tp:tp as number[]});
+  emit('entry',side,ml?'ML classifier confirmed':stealth?(upstreamLifecycle(ctx.scannerId)?'Native confirmed':'Stealth confirmed'):trend?'VNEDGE trend continuation confirmed':'Structure breakout confirmed',{price:b.close,sl:stop,tp:tp as number[]});
  }
  return out;
 }

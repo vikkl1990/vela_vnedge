@@ -189,3 +189,29 @@ test('a recovered account scan emits its signal once and logs both attempts',asy
  assert.equal(db.get<any>('SELECT count(*) n FROM signals')!.n,1);
  assert.deepEqual(db.all<any>('SELECT outcome FROM scanner_run_log').map(r=>r.outcome),['failed','ok']);
 });
+
+test('a deep live queue still runs the scan and skips only new entries', async t => {
+  const db = new Db(':memory:');
+  t.after(() => db.db.close());
+  const cfg = structuredClone(DEFAULT_CONFIG);
+  cfg.symbols = ['BTCUSD']; cfg.timeframes = ['1m']; cfg.paper.latencyMs = 0;
+  cfg.scanners.s = { enabled: true, symbols: null, timeframes: null, exitMode: 'both', pairs: [{ symbol: 'BTCUSD', tf: '1m' }] };
+  const close = Math.floor(Date.now() / 60_000) * 60_000;
+  const bars = Array.from({ length: 60 }, (_, i) => ({ time: close - (60 - i) * 60_000, open: 100, high: 101, low: 99, close: 100, volume: 100 }));
+  const candles = Object.assign(new EventEmitter(), { get: () => bars });
+  let ran = 0;
+  const pool = { stats: { queued: 0, queuedLive: 501 }, run: async () => {
+    ran++;
+    return { id: 1, ok: true, ms: 1, bars: 60, lastBarTime: bars.at(-1)!.time, warnings: 0, plots: [], shapes: [], labels: [], alerts: [{ type: 'alert', barIndex: 59, time: bars.at(-1)!.time, message: 'LONG | Entry: 100 | SL: 95 | TP1: 105 | TP2: 110 | TP3: 115' }] };
+  } };
+  const scanner = { id: 's', name: 'Test', status: 'ok', patched: '' };
+  const paper = new PaperEngine(db, () => cfg);
+  const engine = new ScannerEngine({ db, cfgRef: () => cfg, paper, candles: candles as any, pool: pool as any, registry: { all: () => [scanner] } as any, rest: { product: async () => ({ tick_size: '.25', contract_value: '1' }) } as any });
+  const done = once(engine, 'scanner');
+  candles.emit('closed', { symbol: 'BTCUSD', tf: '1m', bar: bars.at(-1)! });
+  await done;
+  assert.equal(ran, 1, 'exits still need the scan');
+  assert.equal(paper.openPositions().length, 0);
+  const funnel = JSON.parse(db.get<any>('SELECT funnel FROM scanner_runs')!.funnel);
+  assert.equal(funnel.drops['entry: queue overload'], 1);
+});

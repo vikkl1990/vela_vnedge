@@ -3,6 +3,7 @@ import path from 'node:path';
 import {createHash,randomUUID} from 'node:crypto';
 import {gzip,gunzip} from 'node:zlib';
 import {promisify} from 'node:util';
+import type {ReplayCoverage} from '../../../shared/positionHealth.ts';
 
 const compress=promisify(gzip),decompress=promisify(gunzip);
 const DAY=86400000,GiB=1024**3;
@@ -41,7 +42,7 @@ export class ReplayArchive {
   this.queue.push(line);this.queueBytes+=bytes;
  }
  setSymbols(symbols:string[],at=this.cfg.now()){
-  const next=new Set(symbols.filter(s=>/^[A-Z0-9]{2,24}USD$/.test(s)));
+  const next=new Set(symbols.filter(s=>/^[A-Z0-9]{1,24}USD$/.test(s)));
   const added=[...next].filter(s=>!this.selected.has(s)),removed=[...this.selected].filter(s=>!next.has(s));
   this.selected=next;
   if(added.length||removed.length)this.enqueue({version:1,receivedAt:at,symbol:'*',kind:'selection',source:'archive',payload:{added,removed}});
@@ -155,6 +156,14 @@ export class ReplayArchive {
   try{await this.closeSegment();}catch(e){this.failure(e);if(this.active){await this.active.handle.close().catch(()=>{});this.active=null;}}
   if(this.hasLock){try{const file=path.join(this.dir,'writer.lock'),owner=JSON.parse(await fs.readFile(file,'utf8'));if(owner.nonce===this.lockNonce)await fs.unlink(file);}catch(e){this.failure(e);}this.hasLock=false;}
   this.closed=true;
+ }
+ /** Manifest inventory only: it cannot certify per-symbol continuity or executable replay. */
+ coverage(symbol:string,from:number,to:number):ReplayCoverage{
+  const xs=this.segments.filter(s=>s.to>=from&&s.from<=to&&s.symbols.includes(symbol));
+  return {capturing:this.initialized&&!this.stopping&&this.selected.has(symbol),segments:xs.length,
+   from:xs.length?Math.min(...xs.map(s=>s.from)):null,to:xs.length?Math.max(...xs.map(s=>s.to)):null,
+   checkpoints:xs.reduce((n,s)=>n+(s.checkpoints[symbol]??0),0),segmentsWithGaps:xs.filter(s=>s.gaps>0).length,
+   failures:this.failures,dropped:this.dropped};
  }
  status(){
   const ordered=[...this.segments].sort((a,b)=>a.from-b.from);

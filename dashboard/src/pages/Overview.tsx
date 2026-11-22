@@ -35,7 +35,7 @@ import {
 } from '../components/kit'
 import { PaperPositions } from '../components/PaperPositions'
 import { ScannerPnlBoard, type ScannerPnlRow } from '../components/ScannerPnlBoard'
-import { TickerTape } from '../components/TickerTape'
+import { MoversStrip } from '../components/MoversStrip'
 
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../api/client'
@@ -49,6 +49,7 @@ import {
 import { AssetClassBreakdown } from '../components/AssetClassBreakdown'
 import { classRows } from '../lib/assetClass'
 import { RunHealthPanel } from '../components/RunHealthPanel'
+import { PaperFleetPanel } from '../components/home/PaperFleetPanel'
 import { fmtInt, fmtMoney, fmtPct, fmtPnl, fmtProfitFactor, fmtR, pnlClass } from '../lib/format'
 import { useNow } from '../lib/useNow'
 import '../styles/pages/home.css'
@@ -159,7 +160,7 @@ export function Overview() {
           </Link>
         }
       />
-      <TickerTape />
+      <MoversStrip />
       <LiveStatusStrip />
       <BookCards />
       <div className="home-split">
@@ -361,7 +362,10 @@ export function Overview() {
               <ScannerPnlBoard rows={pnlRows} />
             )}
           </Section>
-          <FleetPanel />
+          <div className="stack">
+            <PaperFleetPanel />
+            <FleetPanel />
+          </div>
         </div>
       </TabPanel>
       <TabPanel idPrefix="ov" id="system" value={tab}>

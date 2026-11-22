@@ -50,3 +50,14 @@ test('decision 177: the thin-market refusal', () => {
   assert.equal(thinMarketRefusal(5e6, 6e6), null);
   assert.match(thinMarketRefusal(5e6, 1.35e6)!, /\$1\.35M 24h turnover < \$5\.0M/);
 });
+
+test('Bonferroni promotion stays off unless configured, then scales with the cells judged', () => {
+  const since = 0;
+  const trades = mk([...Array(22).fill(0.3), ...Array(18).fill(-0.1)], since);
+  const stats = pairStats(trades, since, since + 40 * 6 * H);
+  const gate = { ...DEFAULT_CONFIG.incubator.gate, minT: 0, minWeeks: 0, minPositiveWeeksPct: 0, minDays: 0 };
+  assert.equal(gateVerdict(stats, gate, 0, 1000).decision, 'propose');
+  const guarded = gateVerdict(stats, { ...gate, multipleTesting: { enabled: true, alpha: 0.05 } }, 0, 1000);
+  assert.equal(guarded.decision, 'brewing');
+  assert.match(guarded.reasons.join(' '), /multiple testing/);
+});

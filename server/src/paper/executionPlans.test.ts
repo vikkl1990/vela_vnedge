@@ -364,3 +364,17 @@ test('own-exits plan keeps the script\'s own stop and targets even when the scan
  assert.deepEqual(planEvents([partial,whole],[],planSnapshot(c,own)).map(x=>x.partial??false),[false],'own exits: only the whole closure remains');
  assert.equal(planEvents([partial],[],planSnapshot(c,plain)).length,1,'other plans keep the exit they always had');
 });
+
+test('exit comparisons expose winners cut and all losses, and reject different entries for the two-bar study',t=>{
+ const {db,c,e,service,ctx}=setup(t);payoffPair(c);
+ // This fixture exercises the reporting axis independently of candidate execution.
+ for(const p of c.executionPlans!)p.comparison!.kind='two-bar';
+ service.observe(ctx);e.onTrade('ETHUSD',100,10,T+1,T+1);
+ const control=e.openPositions().find(p=>p.executionPlan?.id==='control')!,candidate=e.openPositions().find(p=>p.executionPlan?.id==='candidate')!;
+ e.onTrade('ETHUSD',101.2,10,T+1000,T+1000);e.onTrade('ETHUSD',100.9,10,T+2000,T+2000);
+ e.onTrade('ETHUSD',97,10,T+3000,T+3000);
+ let v=service.view().comparisons[0];assert.equal(v.matchedClosed,1);assert.equal(v.kind,'two-bar');assert.equal(v.matchedWinnersCut,1);assert.equal(v.matchedControlLosses,0);assert.equal(v.matchedCandidateLosses,1);assert.equal(v.matchedCandidateStops,1);assert.equal(v.promotionEligible,false);
+ db.run('UPDATE positions SET entry_price=entry_price+.1 WHERE id=?',candidate.id);
+ v=service.view().comparisons[0];assert.equal(v.matchedEntryMismatch,1);assert.equal(v.matchedClosed,0);assert.equal(v.matchedDeltaNet,null);
+ assert.ok(control.id!==candidate.id);
+});
