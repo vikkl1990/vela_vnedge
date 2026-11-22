@@ -5,8 +5,8 @@
  * Each hash carries its own random salt and the parameters it was made with, so the cost can be
  * raised later without invalidating existing passwords. Comparison is constant time.
  *
- * Sessions are opaque random tokens stored server side. The cookie carries only the token, so a
- * stolen database row cannot be replayed as a password and a session can be revoked instantly.
+ * Sessions are opaque random tokens. The cookie carries the token and the database stores only its
+ * SHA-256, the same way share links do, so a copied database cannot be replayed as a session.
  */
 import crypto from 'node:crypto';
 import type { Db } from '../db.ts';
@@ -122,9 +122,26 @@ function rowToUser(r: any): User {
   return { id: r.id, username: r.username, displayName: r.display_name ?? '', role: isRole(r.role) ? r.role : 'viewer', createdAt: r.created_at, lastLoginAt: r.last_login_at ?? null, disabled: Boolean(r.disabled) };
 }
 
+/** What the sessions table stores. The cookie keeps the raw token. */
+export function sessionKey(token: string): string {
+  return crypto.createHash('sha256').update(token).digest('hex');
+}
+
 export class AuthStore {
   private db: Db;
-  constructor(db: Db) { this.db = db; this.db.db.exec(SCHEMA); }
+  constructor(db: Db) {
+    this.db = db;
+    this.db.db.exec(SCHEMA);
+    this.hashLegacySessions();
+  }
+
+  /** One-time: rows written before hashing stored the cookie itself. Replace the key so the cookie still works. */
+  private hashLegacySessions(): void {
+    for (const row of this.db.all<{ token: string }>('SELECT token FROM sessions')) {
+      if (/^[0-9a-f]{64}$/.test(row.token)) continue;
+      this.db.run('UPDATE sessions SET token=? WHERE token=?', sessionKey(row.token), row.token);
+    }
+  }
 
   countUsers(): number { return this.db.get<{ n: number }>('SELECT COUNT(*) n FROM users')?.n ?? 0; }
   listUsers(): User[] { return this.db.all<any>('SELECT * FROM users ORDER BY username').map(rowToUser); }
@@ -191,14 +208,14 @@ export class AuthStore {
   startSession(userId: number, at = Date.now(), expiresAt?: number): Session {
     const token = crypto.randomBytes(32).toString('base64url');
     const s: Session = { token, userId, createdAt: at, expiresAt: Math.min(at + SESSION_TTL_MS, expiresAt ?? Infinity) };
-    this.db.run('INSERT INTO sessions(token, user_id, created_at, expires_at) VALUES (?,?,?,?)', s.token, s.userId, s.createdAt, s.expiresAt);
+    this.db.run('INSERT INTO sessions(token, user_id, created_at, expires_at) VALUES (?,?,?,?)', sessionKey(s.token), s.userId, s.createdAt, s.expiresAt);
     return s;
   }
 
   /** The user behind a session token, or null when it is unknown, expired or disabled. */
   resolve(token: string | null | undefined, at = Date.now()): User | null {
     if (!token) return null;
-    const r = this.db.get<any>('SELECT * FROM sessions WHERE token=?', token);
+    const r = this.db.get<any>('SELECT * FROM sessions WHERE token=?', sessionKey(token));
     if (!r) return null;
     if (r.expires_at <= at) { this.revoke(token); return null; }
     const user = this.getUser(r.user_id);
@@ -206,7 +223,7 @@ export class AuthStore {
     return user;
   }
 
-  revoke(token: string): void { this.db.run('DELETE FROM sessions WHERE token=?', token); }
+  revoke(token: string): void { this.db.run('DELETE FROM sessions WHERE token=?', sessionKey(token)); }
 
   // ---- share links (decision 117) ----
 

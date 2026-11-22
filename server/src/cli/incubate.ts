@@ -1,5 +1,5 @@
 import {candleReplayBlock} from '../paper/basket.ts';
-import {admissionCostPct} from '../paper/costs.ts';
+import {admissionCostPct, stressedSlippage} from '../paper/costs.ts';
 import {resolveTradePolicy} from '../paper/tradePolicy.ts';
 /**
  * The incubator's daily job: screen one slice of the script library on every liquid market, then
@@ -33,7 +33,7 @@ import { PaperEngine } from '../paper/engine.ts';
 import { ConfigStore, TF_SECONDS } from '../config.ts';
 import type { Bar } from '../data/candleStore.ts';
 import { IncubatorStore } from '../incubator/store.ts';
-import { tooQuietForTf, evaluate, recordScreen, screenTf, screenVerdict, syncLive, type ScreenResult } from '../incubator/cycle.ts';
+import { tooQuietForTf, evaluate, recordScreen, screenTf, screenVerdict, screenSignals, syncLive, type ScreenResult } from '../incubator/cycle.ts';
 import { compareRepaint, repaintReason, REPAINT_CUT } from '../scanners/repaint.ts';
 import { sliceOf } from '../incubator/gate.ts';
 import {productFees,withProductFees} from '../paper/productFees.ts';
@@ -328,8 +328,8 @@ while (sliceArg !== 'none') {
         const policy = backtestPolicy(cfg, s.id, TF, 'shadow', {productFees:d.market.productFees});
         const base = { scannerId: s.id, scannerName: s.name, symbol, tf: TF, bars: d.bars, events, ...policy, contractValue: d.market.contractValue, tickSize: d.market.tickSize, maintenanceMarginPct: d.market.maintenanceMarginPct, maxLeverage: d.market.maxLeverage, subBars: d.m1, spreadPct: crossing.get(symbol) } as const;
         const bt = runBacktest(base);
-        const stressed = runBacktest({ ...base, cfg: { ...policy.cfg, slippageBps: inc.screen.stressBps, quotedSlippageBps: inc.screen.stressBps } });
-        const r = screenVerdict(bt.trades as any[], stressed.trades as any[], d.bars, inc, Date.now(), events.filter(e => e.kind === 'entry').length);
+        const stressed = runBacktest({ ...base, cfg: { ...policy.cfg, ...stressedSlippage(policy.cfg, inc.screen.stressBps) } });
+        const r = screenSignals(bt.trades as any[], stressed.trades as any[], d.bars, inc, events);
         // decision 114: a strategy is also screened on its own exits, so the gate can say which exit mode its evidence prefers
         if (s.scriptType === 'strategy') {
           const asScript = backtestPolicy({ ...cfg, scanners: { ...cfg.scanners, [s.id]: { ...(cfg.scanners[s.id] ?? { enabled: false, symbols: null, timeframes: null }), exitMode: 'script' } as any } }, s.id, TF, 'shadow', {productFees:d.market.productFees});

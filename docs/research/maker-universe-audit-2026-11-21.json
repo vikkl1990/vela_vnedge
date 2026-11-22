@@ -1,0 +1,3056 @@
+{
+  "date": "2026-11-21",
+  "asOf": 1795264894669,
+  "from": 1794660094669,
+  "repositoryBaseline": "893e8845b0e404233b60318ed4cf0e77750e2110",
+  "deployed": false,
+  "configUnchanged": "0bcd42268381676384297207e239b49f0e20af184b1b0962d42fa51312c586fc",
+  "paperMode": "paper",
+  "productionAllowed": false,
+  "validation": {
+    "serverTests": 1818,
+    "serverPassed": 1818,
+    "serverTypecheck": "pass",
+    "focusedExecutionAndAuditTests": 41,
+    "focusedPassed": 41,
+    "runtime": "Node 24"
+  },
+  "summary": {
+    "scheduledPairs": 85,
+    "observedMakerPairs": 55,
+    "paperMakerPairs": 24,
+    "makerFillRecords": 2416,
+    "paperMakerFillRecords": 148,
+    "zeroVolumeFillRecords": 59,
+    "zeroVolumePaperFillRecords": 4
+  },
+  "findings": [
+    "Paper maker receipts remain candle-modeled across all 24 observed account pairs.",
+    "The existing tick-depth-v1 plan allow-list is a SOL Trend Impulse study, not general maker support.",
+    "Fresh reordered prints can be discarded by the monotonic price guard; V2 separates maker matching from mark/trail updates.",
+    "59 candle-triggered receipts report zero volume. This is a verification flag, not proof that all 59 fills were fictitious.",
+    "ZEC #21176 has fresh crossing prints after placement before its later zero-volume candle fill; BNB/DOGE predate retained tape and M lacks recorded prints in the checked window."
+  ],
+  "candidate": {
+    "model": "tick-depth-v2",
+    "status": "implemented and tested locally; no plans activated",
+    "scope": "Any configured resting maker setup, including majors, alts and memes; full fees in prospective plans",
+    "dataSource": "Existing sharded research depth sockets; no new Pine scan or socket for already observed pairs",
+    "isolation": "Separate execution-plan signature and book 2; no promotion evidence; V1/account monotonic behavior retained",
+    "rules": [
+      "Fresh prints <=1 second old, after observed arrival and restart boundary, before expiry",
+      "Fresh sequence/checksum-verified depth for arrival and each fill",
+      "Print-volume ceiling, deduplication, durable partial quantities and fees",
+      "No rewind of marks, trailing peaks, stops or tape liveness",
+      "Existing risk, sizing, source reading, exit and evidence controls retained"
+    ]
+  },
+  "solComparisons": [
+    {
+      "id": 19907,
+      "mode": "candle",
+      "status": "closed",
+      "qty": 10,
+      "actualQty": 10,
+      "entryAt": 1794838562993,
+      "entryDeltaMs": 0,
+      "exitAt": 1794839572034,
+      "reason": "trail",
+      "net": 3.398749976000042,
+      "actualNet": 3.398749976000042,
+      "fees": 0.5922500239999999,
+      "risk": 7.527271665637874,
+      "actualReason": "trail",
+      "gaps": 380,
+      "events": 20090,
+      "cancelled": [],
+      "reports": []
+    },
+    {
+      "id": 19907,
+      "mode": "tape",
+      "status": "closed",
+      "qty": 10,
+      "actualQty": 10,
+      "entryAt": 1794838509338,
+      "entryDeltaMs": -53655,
+      "exitAt": 1794839572034,
+      "reason": "trail",
+      "net": 3.398749976000042,
+      "actualNet": 3.398749976000042,
+      "fees": 0.5922500239999999,
+      "risk": 7.527271665637874,
+      "actualReason": "trail",
+      "gaps": 380,
+      "events": 20090,
+      "cancelled": [],
+      "reports": [
+        {
+          "at": 1794838509338,
+          "qty": 7,
+          "market_qty": 7
+        },
+        {
+          "at": 1794838509404,
+          "qty": 1,
+          "market_qty": 1
+        },
+        {
+          "at": 1794838510100,
+          "qty": 2,
+          "market_qty": 2
+        }
+      ]
+    },
+    {
+      "id": 19907,
+      "mode": "strict-exact",
+      "status": "unfilled",
+      "actualQty": 10,
+      "entryDeltaMs": null,
+      "net": null,
+      "actualNet": 3.398749976000042,
+      "actualReason": "trail",
+      "gaps": 380,
+      "events": 20090,
+      "cancelled": [
+        {
+          "type": "cancelled",
+          "id": 19907,
+          "reason": "no fill: price did not come back to 71.4159 within 0.3333333333333333 15m bars"
+        }
+      ],
+      "reports": []
+    },
+    {
+      "id": 19907,
+      "mode": "strict-proxy",
+      "status": "unfilled",
+      "actualQty": 10,
+      "entryDeltaMs": null,
+      "net": null,
+      "actualNet": 3.398749976000042,
+      "actualReason": "trail",
+      "gaps": 380,
+      "events": 20090,
+      "cancelled": [
+        {
+          "type": "cancelled",
+          "id": 19907,
+          "reason": "post-only maker would cross at observed arrival"
+        }
+      ],
+      "reports": []
+    },
+    {
+      "id": 19907,
+      "mode": "strict-v2-exact",
+      "status": "unfilled",
+      "actualQty": 10,
+      "entryDeltaMs": null,
+      "net": null,
+      "actualNet": 3.398749976000042,
+      "actualReason": "trail",
+      "gaps": 380,
+      "events": 20090,
+      "cancelled": [
+        {
+          "type": "cancelled",
+          "id": 19907,
+          "reason": "no fill: price did not come back to 71.4159 within 0.3333333333333333 15m bars"
+        }
+      ],
+      "reports": []
+    },
+    {
+      "id": 19907,
+      "mode": "strict-v2-proxy",
+      "status": "unfilled",
+      "actualQty": 10,
+      "entryDeltaMs": null,
+      "net": null,
+      "actualNet": 3.398749976000042,
+      "actualReason": "trail",
+      "gaps": 380,
+      "events": 20090,
+      "cancelled": [
+        {
+          "type": "cancelled",
+          "id": 19907,
+          "reason": "post-only maker would cross at observed arrival"
+        }
+      ],
+      "reports": []
+    },
+    {
+      "id": 22614,
+      "mode": "candle",
+      "status": "closed",
+      "qty": 10,
+      "actualQty": 10,
+      "entryAt": 1795107663586,
+      "entryDeltaMs": 0,
+      "exitAt": 1795107786084,
+      "reason": "trail",
+      "net": 3.3040245080000323,
+      "actualNet": 3.3040245080000323,
+      "fees": 0.17297549200000004,
+      "risk": 7.905737873209916,
+      "actualReason": "trail",
+      "gaps": 87,
+      "events": 5569,
+      "cancelled": [],
+      "reports": []
+    },
+    {
+      "id": 22614,
+      "mode": "tape",
+      "status": "closed",
+      "qty": 7,
+      "actualQty": 10,
+      "entryAt": 1795107663551,
+      "entryDeltaMs": -35,
+      "exitAt": 1795107786084,
+      "reason": "trail",
+      "net": 2.3128171556000225,
+      "actualNet": 3.3040245080000323,
+      "fees": 0.1210828444,
+      "risk": 5.534016511246941,
+      "actualReason": "trail",
+      "gaps": 87,
+      "events": 5569,
+      "cancelled": [
+        {
+          "type": "cancelled",
+          "id": 22614,
+          "reason": "exit requested: cancel maker remainder"
+        }
+      ],
+      "reports": [
+        {
+          "at": 1795107663551,
+          "qty": 7,
+          "market_qty": 7
+        }
+      ]
+    },
+    {
+      "id": 22614,
+      "mode": "strict-exact",
+      "status": "pending",
+      "qty": 0,
+      "actualQty": 10,
+      "entryAt": 1795107614754,
+      "entryDeltaMs": -48832,
+      "exitAt": null,
+      "reason": null,
+      "net": null,
+      "actualNet": 3.3040245080000323,
+      "fees": 0,
+      "risk": 7.905737873209916,
+      "actualReason": "trail",
+      "gaps": 87,
+      "events": 5569,
+      "cancelled": [],
+      "reports": []
+    },
+    {
+      "id": 22614,
+      "mode": "strict-proxy",
+      "status": "closed",
+      "qty": 7,
+      "actualQty": 10,
+      "entryAt": 1795107663551,
+      "entryDeltaMs": -35,
+      "exitAt": 1795107786084,
+      "reason": "trail",
+      "net": 2.3128171556000225,
+      "actualNet": 3.3040245080000323,
+      "fees": 0.1210828444,
+      "risk": 5.534016511246941,
+      "actualReason": "trail",
+      "gaps": 87,
+      "events": 5569,
+      "cancelled": [
+        {
+          "type": "cancelled",
+          "id": 22614,
+          "reason": "exit requested: cancel maker remainder"
+        }
+      ],
+      "reports": [
+        {
+          "at": 1795107663551,
+          "qty": 7,
+          "market_qty": 7
+        }
+      ]
+    },
+    {
+      "id": 22614,
+      "mode": "strict-v2-exact",
+      "status": "pending",
+      "qty": 0,
+      "actualQty": 10,
+      "entryAt": 1795107614754,
+      "entryDeltaMs": -48832,
+      "exitAt": null,
+      "reason": null,
+      "net": null,
+      "actualNet": 3.3040245080000323,
+      "fees": 0,
+      "risk": 7.905737873209916,
+      "actualReason": "trail",
+      "gaps": 87,
+      "events": 5569,
+      "cancelled": [],
+      "reports": []
+    },
+    {
+      "id": 22614,
+      "mode": "strict-v2-proxy",
+      "status": "closed",
+      "qty": 10,
+      "actualQty": 10,
+      "entryAt": 1795107663551,
+      "entryDeltaMs": -35,
+      "exitAt": 1795107786084,
+      "reason": "trail",
+      "net": 3.3040245080000323,
+      "actualNet": 3.3040245080000323,
+      "fees": 0.172975492,
+      "risk": 7.905737873209916,
+      "actualReason": "trail",
+      "gaps": 87,
+      "events": 5569,
+      "cancelled": [],
+      "reports": [
+        {
+          "at": 1795107663551,
+          "qty": 7,
+          "market_qty": 7
+        },
+        {
+          "at": 1795107663562,
+          "qty": 3,
+          "market_qty": 3
+        }
+      ]
+    },
+    {
+      "id": 24680,
+      "mode": "candle",
+      "status": "closed",
+      "qty": 10,
+      "actualQty": 10,
+      "entryAt": 1795263384598,
+      "entryDeltaMs": 0,
+      "exitAt": 1795264549847,
+      "reason": "trail",
+      "net": 6.212589856000029,
+      "actualNet": 6.212589856000029,
+      "fees": 0.573410144,
+      "risk": 7.9784478889139345,
+      "actualReason": "trail",
+      "gaps": 336,
+      "events": 33275,
+      "cancelled": [],
+      "reports": []
+    },
+    {
+      "id": 24680,
+      "mode": "tape",
+      "status": "closed",
+      "qty": 10,
+      "actualQty": 10,
+      "entryAt": 1795263384550,
+      "entryDeltaMs": -48,
+      "exitAt": 1795264549847,
+      "reason": "trail",
+      "net": 6.212589856000029,
+      "actualNet": 6.212589856000029,
+      "fees": 0.573410144,
+      "risk": 7.978447888913935,
+      "actualReason": "trail",
+      "gaps": 336,
+      "events": 33275,
+      "cancelled": [],
+      "reports": [
+        {
+          "at": 1795263384550,
+          "qty": 10,
+          "market_qty": 10
+        }
+      ]
+    },
+    {
+      "id": 24680,
+      "mode": "strict-exact",
+      "status": "closed",
+      "qty": 10,
+      "actualQty": 10,
+      "entryAt": 1795263384550,
+      "entryDeltaMs": -48,
+      "exitAt": 1795264549847,
+      "reason": "trail",
+      "net": 6.212589856000029,
+      "actualNet": 6.212589856000029,
+      "fees": 0.573410144,
+      "risk": 7.978447888913935,
+      "actualReason": "trail",
+      "gaps": 336,
+      "events": 33275,
+      "cancelled": [],
+      "reports": [
+        {
+          "at": 1795263384550,
+          "qty": 10,
+          "market_qty": 10
+        }
+      ]
+    },
+    {
+      "id": 24680,
+      "mode": "strict-proxy",
+      "status": "closed",
+      "qty": 10,
+      "actualQty": 10,
+      "entryAt": 1795263384550,
+      "entryDeltaMs": -48,
+      "exitAt": 1795264549847,
+      "reason": "trail",
+      "net": 6.212589856000029,
+      "actualNet": 6.212589856000029,
+      "fees": 0.573410144,
+      "risk": 7.978447888913935,
+      "actualReason": "trail",
+      "gaps": 336,
+      "events": 33275,
+      "cancelled": [],
+      "reports": [
+        {
+          "at": 1795263384550,
+          "qty": 10,
+          "market_qty": 10
+        }
+      ]
+    },
+    {
+      "id": 24680,
+      "mode": "strict-v2-exact",
+      "status": "closed",
+      "qty": 10,
+      "actualQty": 10,
+      "entryAt": 1795263384550,
+      "entryDeltaMs": -48,
+      "exitAt": 1795264549847,
+      "reason": "trail",
+      "net": 6.212589856000029,
+      "actualNet": 6.212589856000029,
+      "fees": 0.573410144,
+      "risk": 7.978447888913935,
+      "actualReason": "trail",
+      "gaps": 336,
+      "events": 33275,
+      "cancelled": [],
+      "reports": [
+        {
+          "at": 1795263384550,
+          "qty": 10,
+          "market_qty": 10
+        }
+      ]
+    },
+    {
+      "id": 24680,
+      "mode": "strict-v2-proxy",
+      "status": "closed",
+      "qty": 10,
+      "actualQty": 10,
+      "entryAt": 1795263384550,
+      "entryDeltaMs": -48,
+      "exitAt": 1795264549847,
+      "reason": "trail",
+      "net": 6.212589856000029,
+      "actualNet": 6.212589856000029,
+      "fees": 0.573410144,
+      "risk": 7.978447888913935,
+      "actualReason": "trail",
+      "gaps": 336,
+      "events": 33275,
+      "cancelled": [],
+      "reports": [
+        {
+          "at": 1795263384550,
+          "qty": 10,
+          "market_qty": 10
+        }
+      ]
+    }
+  ],
+  "zeroVolumePaper": [
+    {
+      "id": 18848,
+      "symbol": "BNBUSD",
+      "placedAt": 1794729671508,
+      "fillAt": 1794729780180,
+      "limit": 585.879,
+      "side": "long",
+      "expiresAt": 1794758471508,
+      "net": 3.5366234624000072,
+      "recordedTicks": 0,
+      "firstFreshCross": null,
+      "lastPrintBeforeFill": null,
+      "crossesBeforeFill": 0
+    },
+    {
+      "id": 19440,
+      "symbol": "DOGEUSD",
+      "placedAt": 1794787210252,
+      "fillAt": 1794787320262,
+      "limit": 0.059835,
+      "side": "long",
+      "expiresAt": 1794794410252,
+      "net": -14.671999500000013,
+      "recordedTicks": 0,
+      "firstFreshCross": null,
+      "lastPrintBeforeFill": null,
+      "crossesBeforeFill": 0
+    },
+    {
+      "id": 20343,
+      "symbol": "MUSD",
+      "placedAt": 1794884428172,
+      "fillAt": 1794884580620,
+      "limit": 0.8671,
+      "side": "short",
+      "expiresAt": 1794891628172,
+      "net": -3.314167646448621,
+      "recordedTicks": 0,
+      "firstFreshCross": null,
+      "lastPrintBeforeFill": null,
+      "crossesBeforeFill": 0
+    },
+    {
+      "id": 21176,
+      "symbol": "ZECUSD",
+      "placedAt": 1794960072255,
+      "fillAt": 1794960240046,
+      "limit": 966.38,
+      "side": "long",
+      "expiresAt": 1794967272255,
+      "net": -6.2711494845606035,
+      "recordedTicks": 282,
+      "firstFreshCross": {
+        "version": 1,
+        "receivedAt": 1794960096540,
+        "symbol": "ZECUSD",
+        "kind": "trade",
+        "source": "execution-feed",
+        "payload": {
+          "symbol": "ZECUSD",
+          "price": 966.04,
+          "qty": 1,
+          "timeMs": 1794960096138,
+          "aggressor": "buy"
+        }
+      },
+      "lastPrintBeforeFill": {
+        "version": 1,
+        "receivedAt": 1794960164555,
+        "symbol": "ZECUSD",
+        "kind": "trade",
+        "source": "execution-feed",
+        "payload": {
+          "symbol": "ZECUSD",
+          "price": 963.65,
+          "qty": 20,
+          "timeMs": 1794960164225,
+          "aggressor": "sell"
+        }
+      },
+      "crossesBeforeFill": 4
+    }
+  ],
+  "deploymentDecision": "Not deployed. Latest exact-depth SOL trade matches net profit with a 48 ms earlier fill. An older partial-fill diagnostic improves, but older arrival coverage is incomplete and a proxy arm misses a profitable trade. No representative all-pair proof of non-degrading net profit exists.",
+  "limitations": [
+    "Universe is the current bot scheduled/observed markets, not all markets Delta could ever list.",
+    "Asset classes use the repository fallback taxonomy; live Delta product tags were not imported.",
+    "Context sample coverage is not uninterrupted executable tick/depth coverage.",
+    "Shadow virtual dollar P&L is intentionally not aggregated or compared with account dollars.",
+    "Replay is conditional on accepted orders; it does not establish portfolio opportunity cost for rejected/expired orders.",
+    "All entry arms use identical recorded exit opportunities; stream-source switching cannot be claimed as an entry profit gain.",
+    "Public data cannot prove exchange queue priority. Missing coverage is unknown, never a zero-loss or unfilled win."
+  ],
+  "inputs": [
+    {
+      "file": "all-pairs.json",
+      "sha256": "d7727c0cdf0149c66e8fe013233272762aecf5a40a66dc4c7b13ca7395ad96ba"
+    },
+    {
+      "file": "export-latest.json",
+      "sha256": "56634e24717af8920adb805a70dd6d96a05cefe00ac0e4171c61e0e335ef11b5"
+    },
+    {
+      "file": "combined-events.ndjson.gz",
+      "sha256": "f6fdc44f339b082c5a770bef60c2501e8620c28aa568b5e285e7602bc1d00ae2"
+    },
+    {
+      "file": "replay-results-latest.json",
+      "sha256": "2027be4ddd83afd17e221ab5c45a8c81778e0e1b242bb1e1d014191a1a7ba3c4"
+    },
+    {
+      "file": "zero-volume-tape-check.json",
+      "sha256": "c749857c98f1125b55e640d4277e7c0c04a366482cb7b851f9ad5705871f55c9"
+    }
+  ],
+  "pairs": [
+    {
+      "symbol": "1000PEPEUSD",
+      "classification": {
+        "group": "meme",
+        "sector": "meme",
+        "tags": [
+          "meme"
+        ]
+      },
+      "scheduledTimeframes": [
+        "15m",
+        "1h"
+      ],
+      "paperMakerTrades": 0,
+      "shadowMakerTrades": 0,
+      "paperNet": 0,
+      "candleMakerFills": 0,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 0,
+      "entrySignals": 48,
+      "topRecordedBlock": [
+        "rejected:risk market: dead: $0.05M 24h turnover < $0.05M",
+        4
+      ],
+      "contextSamples24h": 1411,
+      "depthSampleShare": 0.966690290574061,
+      "flowSampleShare": 0.81218993621545,
+      "assessment": "No maker fills in this window; not a failed execution test"
+    },
+    {
+      "symbol": "AAVEUSD",
+      "classification": {
+        "group": "large_alts",
+        "sector": "other",
+        "tags": [
+          "other"
+        ]
+      },
+      "scheduledTimeframes": [
+        "15m",
+        "1h",
+        "4h"
+      ],
+      "paperMakerTrades": 5,
+      "shadowMakerTrades": 29,
+      "paperNet": 11.695189919334982,
+      "candleMakerFills": 34,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 2,
+      "entrySignals": 51,
+      "topRecordedBlock": [
+        "rejected:risk burst: a short entry was already taken in the last 120s; one at a time",
+        10
+      ],
+      "contextSamples24h": 1411,
+      "depthSampleShare": 0.966690290574061,
+      "flowSampleShare": 0.8221119773210489,
+      "assessment": "Maker timing needs paired prospective tick/depth evaluation"
+    },
+    {
+      "symbol": "ADAUSD",
+      "classification": {
+        "group": "large_alts",
+        "sector": "other",
+        "tags": [
+          "other"
+        ]
+      },
+      "scheduledTimeframes": [
+        "15m",
+        "1h",
+        "4h"
+      ],
+      "paperMakerTrades": 0,
+      "shadowMakerTrades": 23,
+      "paperNet": 0,
+      "candleMakerFills": 23,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 1,
+      "entrySignals": 0,
+      "topRecordedBlock": null,
+      "contextSamples24h": 1409,
+      "depthSampleShare": 0.9666430092264017,
+      "flowSampleShare": 0.8388928317955997,
+      "assessment": "Maker timing needs paired prospective tick/depth evaluation"
+    },
+    {
+      "symbol": "AINUSD",
+      "classification": {
+        "group": "alts",
+        "sector": "other",
+        "tags": [
+          "other"
+        ]
+      },
+      "scheduledTimeframes": [
+        "15m",
+        "1h",
+        "4h"
+      ],
+      "paperMakerTrades": 4,
+      "shadowMakerTrades": 84,
+      "paperNet": 35.72624462999996,
+      "candleMakerFills": 88,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 4,
+      "entrySignals": 59,
+      "topRecordedBlock": [
+        "rejected:entry alignment 1h EMA21: short requires bearish context",
+        9
+      ],
+      "contextSamples24h": 1411,
+      "depthSampleShare": 0.966690290574061,
+      "flowSampleShare": 0.8454996456413891,
+      "assessment": "Maker timing needs paired prospective tick/depth evaluation"
+    },
+    {
+      "symbol": "AIOTUSD",
+      "classification": {
+        "group": "alts",
+        "sector": "other",
+        "tags": [
+          "other"
+        ]
+      },
+      "scheduledTimeframes": [
+        "15m",
+        "1h",
+        "4h"
+      ],
+      "paperMakerTrades": 0,
+      "shadowMakerTrades": 58,
+      "paperNet": 0,
+      "candleMakerFills": 58,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 4,
+      "entrySignals": 132,
+      "topRecordedBlock": [
+        "rejected:risk burst: a long entry was already taken in the last 120s; one at a time",
+        6
+      ],
+      "contextSamples24h": 1411,
+      "depthSampleShare": 0.9659815733522324,
+      "flowSampleShare": 0.8029766123316796,
+      "assessment": "Maker timing needs paired prospective tick/depth evaluation"
+    },
+    {
+      "symbol": "AIOUSD",
+      "classification": {
+        "group": "alts",
+        "sector": "other",
+        "tags": [
+          "other"
+        ]
+      },
+      "scheduledTimeframes": [
+        "4h"
+      ],
+      "paperMakerTrades": 0,
+      "shadowMakerTrades": 3,
+      "paperNet": 0,
+      "candleMakerFills": 3,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 0,
+      "entrySignals": 0,
+      "topRecordedBlock": null,
+      "contextSamples24h": 1407,
+      "depthSampleShare": 0.9694385216773277,
+      "flowSampleShare": 0.6716417910447762,
+      "assessment": "Maker timing needs paired prospective tick/depth evaluation"
+    },
+    {
+      "symbol": "AKEUSD",
+      "classification": {
+        "group": "alts",
+        "sector": "other",
+        "tags": [
+          "other"
+        ]
+      },
+      "scheduledTimeframes": [
+        "15m"
+      ],
+      "paperMakerTrades": 0,
+      "shadowMakerTrades": 0,
+      "paperNet": 0,
+      "candleMakerFills": 0,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 0,
+      "entrySignals": 69,
+      "topRecordedBlock": [
+        "rejected:risk regime: choppy (efficiency 0.04 < 0.1)",
+        6
+      ],
+      "contextSamples24h": 1411,
+      "depthSampleShare": 0.9659815733522324,
+      "flowSampleShare": 0.7795889440113395,
+      "assessment": "No maker fills in this window; not a failed execution test"
+    },
+    {
+      "symbol": "ALTUSD",
+      "classification": {
+        "group": "alts",
+        "sector": "other",
+        "tags": [
+          "other"
+        ]
+      },
+      "scheduledTimeframes": [
+        "1h"
+      ],
+      "paperMakerTrades": 0,
+      "shadowMakerTrades": 0,
+      "paperNet": 0,
+      "candleMakerFills": 0,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 0,
+      "entrySignals": 0,
+      "topRecordedBlock": null,
+      "contextSamples24h": 1407,
+      "depthSampleShare": 0.968727789623312,
+      "flowSampleShare": 0.759772565742715,
+      "assessment": "No maker fills in this window; not a failed execution test"
+    },
+    {
+      "symbol": "API3USD",
+      "classification": {
+        "group": "alts",
+        "sector": "other",
+        "tags": [
+          "other"
+        ]
+      },
+      "scheduledTimeframes": [
+        "1h"
+      ],
+      "paperMakerTrades": 0,
+      "shadowMakerTrades": 0,
+      "paperNet": 0,
+      "candleMakerFills": 0,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 0,
+      "entrySignals": 0,
+      "topRecordedBlock": null,
+      "contextSamples24h": 0,
+      "depthSampleShare": null,
+      "flowSampleShare": null,
+      "assessment": "No maker fills in this window; not a failed execution test"
+    },
+    {
+      "symbol": "APTUSD",
+      "classification": {
+        "group": "large_alts",
+        "sector": "other",
+        "tags": [
+          "other"
+        ]
+      },
+      "scheduledTimeframes": [
+        "15m",
+        "1h"
+      ],
+      "paperMakerTrades": 0,
+      "shadowMakerTrades": 2,
+      "paperNet": 0,
+      "candleMakerFills": 2,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 0,
+      "entrySignals": 0,
+      "topRecordedBlock": null,
+      "contextSamples24h": 1407,
+      "depthSampleShare": 0.9694385216773277,
+      "flowSampleShare": 0.7434257285003554,
+      "assessment": "Maker timing needs paired prospective tick/depth evaluation"
+    },
+    {
+      "symbol": "ARBUSD",
+      "classification": {
+        "group": "large_alts",
+        "sector": "other",
+        "tags": [
+          "other"
+        ]
+      },
+      "scheduledTimeframes": [
+        "15m",
+        "1h"
+      ],
+      "paperMakerTrades": 0,
+      "shadowMakerTrades": 0,
+      "paperNet": 0,
+      "candleMakerFills": 0,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 0,
+      "entrySignals": 0,
+      "topRecordedBlock": null,
+      "contextSamples24h": 743,
+      "depthSampleShare": 0.971736204576043,
+      "flowSampleShare": 0.6958277254374159,
+      "assessment": "No maker fills in this window; not a failed execution test"
+    },
+    {
+      "symbol": "ARCUSD",
+      "classification": {
+        "group": "alts",
+        "sector": "other",
+        "tags": [
+          "other"
+        ]
+      },
+      "scheduledTimeframes": [
+        "1h"
+      ],
+      "paperMakerTrades": 0,
+      "shadowMakerTrades": 9,
+      "paperNet": 0,
+      "candleMakerFills": 9,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 2,
+      "entrySignals": 0,
+      "topRecordedBlock": null,
+      "contextSamples24h": 1407,
+      "depthSampleShare": 0.9694385216773277,
+      "flowSampleShare": 0.8294243070362474,
+      "assessment": "Maker timing needs paired prospective tick/depth evaluation"
+    },
+    {
+      "symbol": "ARIAUSD",
+      "classification": {
+        "group": "alts",
+        "sector": "other",
+        "tags": [
+          "other"
+        ]
+      },
+      "scheduledTimeframes": [
+        "15m",
+        "1h"
+      ],
+      "paperMakerTrades": 4,
+      "shadowMakerTrades": 48,
+      "paperNet": -14.01227737292557,
+      "candleMakerFills": 52,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 0,
+      "entrySignals": 76,
+      "topRecordedBlock": [
+        "rejected:risk burst: a long entry was already taken in the last 120s; one at a time",
+        9
+      ],
+      "contextSamples24h": 1411,
+      "depthSampleShare": 0.9673990077958894,
+      "flowSampleShare": 0.8128986534372785,
+      "assessment": "Maker timing needs paired prospective tick/depth evaluation"
+    },
+    {
+      "symbol": "AVAAIUSD",
+      "classification": {
+        "group": "alts",
+        "sector": "other",
+        "tags": [
+          "other"
+        ]
+      },
+      "scheduledTimeframes": [
+        "1h"
+      ],
+      "paperMakerTrades": 0,
+      "shadowMakerTrades": 3,
+      "paperNet": 0,
+      "candleMakerFills": 3,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 0,
+      "entrySignals": 0,
+      "topRecordedBlock": null,
+      "contextSamples24h": 1407,
+      "depthSampleShare": 0.968727789623312,
+      "flowSampleShare": 0.7320540156361052,
+      "assessment": "Maker timing needs paired prospective tick/depth evaluation"
+    },
+    {
+      "symbol": "AVAXUSD",
+      "classification": {
+        "group": "large_alts",
+        "sector": "other",
+        "tags": [
+          "other"
+        ]
+      },
+      "scheduledTimeframes": [
+        "15m",
+        "1h",
+        "4h"
+      ],
+      "paperMakerTrades": 4,
+      "shadowMakerTrades": 43,
+      "paperNet": 10.06802439384301,
+      "candleMakerFills": 47,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 1,
+      "entrySignals": 32,
+      "topRecordedBlock": [
+        "rejected:risk burst: a short entry was already taken in the last 120s; one at a time",
+        15
+      ],
+      "contextSamples24h": 1410,
+      "depthSampleShare": 0.9673758865248226,
+      "flowSampleShare": 0.8468085106382979,
+      "assessment": "Maker timing needs paired prospective tick/depth evaluation"
+    },
+    {
+      "symbol": "BASEDUSD",
+      "classification": {
+        "group": "alts",
+        "sector": "other",
+        "tags": [
+          "other"
+        ]
+      },
+      "scheduledTimeframes": [
+        "15m",
+        "1h"
+      ],
+      "paperMakerTrades": 0,
+      "shadowMakerTrades": 0,
+      "paperNet": 0,
+      "candleMakerFills": 0,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 0,
+      "entrySignals": 0,
+      "topRecordedBlock": null,
+      "contextSamples24h": 1407,
+      "depthSampleShare": 0.968727789623312,
+      "flowSampleShare": 0.5174129353233831,
+      "assessment": "No maker fills in this window; not a failed execution test"
+    },
+    {
+      "symbol": "BCHUSD",
+      "classification": {
+        "group": "large_alts",
+        "sector": "other",
+        "tags": [
+          "other"
+        ]
+      },
+      "scheduledTimeframes": [
+        "15m",
+        "1h",
+        "4h"
+      ],
+      "paperMakerTrades": 2,
+      "shadowMakerTrades": 27,
+      "paperNet": 8.449268537670527,
+      "candleMakerFills": 29,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 2,
+      "entrySignals": 31,
+      "topRecordedBlock": [
+        "rejected:risk burst: a short entry was already taken in the last 120s; one at a time",
+        19
+      ],
+      "contextSamples24h": 1410,
+      "depthSampleShare": 0.9673758865248226,
+      "flowSampleShare": 0.8319148936170213,
+      "assessment": "Maker timing needs paired prospective tick/depth evaluation"
+    },
+    {
+      "symbol": "BEATUSD",
+      "classification": {
+        "group": "alts",
+        "sector": "other",
+        "tags": [
+          "other"
+        ]
+      },
+      "scheduledTimeframes": [
+        "1h",
+        "4h"
+      ],
+      "paperMakerTrades": 3,
+      "shadowMakerTrades": 15,
+      "paperNet": 5.558202432951652,
+      "candleMakerFills": 18,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 1,
+      "entrySignals": 13,
+      "topRecordedBlock": [
+        "rejected:risk burst: a long entry was already taken in the last 120s; one at a time",
+        6
+      ],
+      "contextSamples24h": 1411,
+      "depthSampleShare": 0.966690290574061,
+      "flowSampleShare": 0.8440822111977321,
+      "assessment": "Maker timing needs paired prospective tick/depth evaluation"
+    },
+    {
+      "symbol": "BLESSUSD",
+      "classification": {
+        "group": "alts",
+        "sector": "other",
+        "tags": [
+          "other"
+        ]
+      },
+      "scheduledTimeframes": [
+        "15m",
+        "1h",
+        "4h"
+      ],
+      "paperMakerTrades": 3,
+      "shadowMakerTrades": 69,
+      "paperNet": -43.23124948840001,
+      "candleMakerFills": 72,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 0,
+      "entrySignals": 36,
+      "topRecordedBlock": [
+        "rejected:risk burst: a short entry was already taken in the last 120s; one at a time",
+        8
+      ],
+      "contextSamples24h": 1411,
+      "depthSampleShare": 0.966690290574061,
+      "flowSampleShare": 0.7781715095676824,
+      "assessment": "Maker timing needs paired prospective tick/depth evaluation"
+    },
+    {
+      "symbol": "BNBUSD",
+      "classification": {
+        "group": "large_alts",
+        "sector": "other",
+        "tags": [
+          "other"
+        ]
+      },
+      "scheduledTimeframes": [
+        "15m",
+        "1h",
+        "4h"
+      ],
+      "paperMakerTrades": 8,
+      "shadowMakerTrades": 46,
+      "paperNet": 14.915122091543335,
+      "candleMakerFills": 54,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 1,
+      "zeroVolumeShadow": 0,
+      "entrySignals": 40,
+      "topRecordedBlock": [
+        "rejected:risk burst: a short entry was already taken in the last 120s; one at a time",
+        12
+      ],
+      "contextSamples24h": 1411,
+      "depthSampleShare": 0.966690290574061,
+      "flowSampleShare": 0.8377037562012757,
+      "assessment": "Maker timing needs paired prospective tick/depth evaluation"
+    },
+    {
+      "symbol": "BRUSD",
+      "classification": {
+        "group": "alts",
+        "sector": "other",
+        "tags": [
+          "other"
+        ]
+      },
+      "scheduledTimeframes": [
+        "15m"
+      ],
+      "paperMakerTrades": 0,
+      "shadowMakerTrades": 0,
+      "paperNet": 0,
+      "candleMakerFills": 0,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 0,
+      "entrySignals": 0,
+      "topRecordedBlock": null,
+      "contextSamples24h": 1407,
+      "depthSampleShare": 0.9680170575692963,
+      "flowSampleShare": 0.7313432835820896,
+      "assessment": "No maker fills in this window; not a failed execution test"
+    },
+    {
+      "symbol": "BTCUSD",
+      "classification": {
+        "group": "majors",
+        "sector": "store_of_value",
+        "tags": [
+          "store_of_value"
+        ]
+      },
+      "scheduledTimeframes": [
+        "15m",
+        "1h",
+        "4h"
+      ],
+      "paperMakerTrades": 7,
+      "shadowMakerTrades": 123,
+      "paperNet": 3.2515167477211633,
+      "candleMakerFills": 130,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 0,
+      "entrySignals": 24,
+      "topRecordedBlock": [
+        "rejected:risk regime: choppy (efficiency 0.01 < 0.1)",
+        3
+      ],
+      "contextSamples24h": 1411,
+      "depthSampleShare": 0.966690290574061,
+      "flowSampleShare": 0.7434443656980865,
+      "assessment": "Maker timing needs paired prospective tick/depth evaluation"
+    },
+    {
+      "symbol": "BTWUSD",
+      "classification": {
+        "group": "alts",
+        "sector": "other",
+        "tags": [
+          "other"
+        ]
+      },
+      "scheduledTimeframes": [
+        "15m"
+      ],
+      "paperMakerTrades": 1,
+      "shadowMakerTrades": 14,
+      "paperNet": -10.819721983999996,
+      "candleMakerFills": 15,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 0,
+      "entrySignals": 482,
+      "topRecordedBlock": [
+        "rejected:risk burst: a short entry was already taken in the last 120s; one at a time",
+        115
+      ],
+      "contextSamples24h": 1411,
+      "depthSampleShare": 0.966690290574061,
+      "flowSampleShare": 0.8320340184266478,
+      "assessment": "Maker timing needs paired prospective tick/depth evaluation"
+    },
+    {
+      "symbol": "CAPUSD",
+      "classification": {
+        "group": "alts",
+        "sector": "other",
+        "tags": [
+          "other"
+        ]
+      },
+      "scheduledTimeframes": [
+        "15m"
+      ],
+      "paperMakerTrades": 0,
+      "shadowMakerTrades": 0,
+      "paperNet": 0,
+      "candleMakerFills": 0,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 0,
+      "entrySignals": 0,
+      "topRecordedBlock": null,
+      "contextSamples24h": 1407,
+      "depthSampleShare": 0.9673063255152807,
+      "flowSampleShare": 0.6808813077469794,
+      "assessment": "No maker fills in this window; not a failed execution test"
+    },
+    {
+      "symbol": "CHIPUSD",
+      "classification": {
+        "group": "alts",
+        "sector": "other",
+        "tags": [
+          "other"
+        ]
+      },
+      "scheduledTimeframes": [
+        "15m",
+        "1h",
+        "4h"
+      ],
+      "paperMakerTrades": 0,
+      "shadowMakerTrades": 2,
+      "paperNet": 0,
+      "candleMakerFills": 2,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 0,
+      "entrySignals": 0,
+      "topRecordedBlock": null,
+      "contextSamples24h": 1408,
+      "depthSampleShare": 0.9680397727272727,
+      "flowSampleShare": 0.6811079545454546,
+      "assessment": "Maker timing needs paired prospective tick/depth evaluation"
+    },
+    {
+      "symbol": "CROSSUSD",
+      "classification": {
+        "group": "alts",
+        "sector": "other",
+        "tags": [
+          "other"
+        ]
+      },
+      "scheduledTimeframes": [
+        "1h"
+      ],
+      "paperMakerTrades": 0,
+      "shadowMakerTrades": 5,
+      "paperNet": 0,
+      "candleMakerFills": 5,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 1,
+      "entrySignals": 0,
+      "topRecordedBlock": null,
+      "contextSamples24h": 1407,
+      "depthSampleShare": 0.9694385216773277,
+      "flowSampleShare": 0.7896233120113717,
+      "assessment": "Maker timing needs paired prospective tick/depth evaluation"
+    },
+    {
+      "symbol": "DASHUSD",
+      "classification": {
+        "group": "alts",
+        "sector": "other",
+        "tags": [
+          "other"
+        ]
+      },
+      "scheduledTimeframes": [
+        "1h",
+        "4h"
+      ],
+      "paperMakerTrades": 0,
+      "shadowMakerTrades": 0,
+      "paperNet": 0,
+      "candleMakerFills": 0,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 0,
+      "entrySignals": 0,
+      "topRecordedBlock": null,
+      "contextSamples24h": 1407,
+      "depthSampleShare": 0.9701492537313433,
+      "flowSampleShare": 0.7761194029850746,
+      "assessment": "No maker fills in this window; not a failed execution test"
+    },
+    {
+      "symbol": "DOGEUSD",
+      "classification": {
+        "group": "meme",
+        "sector": "meme",
+        "tags": [
+          "meme"
+        ]
+      },
+      "scheduledTimeframes": [
+        "15m",
+        "1h",
+        "4h"
+      ],
+      "paperMakerTrades": 7,
+      "shadowMakerTrades": 46,
+      "paperNet": -30.86149057119986,
+      "candleMakerFills": 53,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 1,
+      "zeroVolumeShadow": 0,
+      "entrySignals": 25,
+      "topRecordedBlock": [
+        "rejected:risk burst: a short entry was already taken in the last 120s; one at a time",
+        4
+      ],
+      "contextSamples24h": 1411,
+      "depthSampleShare": 0.966690290574061,
+      "flowSampleShare": 0.8235294117647058,
+      "assessment": "Maker timing needs paired prospective tick/depth evaluation"
+    },
+    {
+      "symbol": "DOODUSD",
+      "classification": {
+        "group": "alts",
+        "sector": "other",
+        "tags": [
+          "other"
+        ]
+      },
+      "scheduledTimeframes": [
+        "15m",
+        "1h",
+        "4h"
+      ],
+      "paperMakerTrades": 0,
+      "shadowMakerTrades": 0,
+      "paperNet": 0,
+      "candleMakerFills": 0,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 0,
+      "entrySignals": 0,
+      "topRecordedBlock": null,
+      "contextSamples24h": 1407,
+      "depthSampleShare": 0.9538024164889837,
+      "flowSampleShare": 0.67590618336887,
+      "assessment": "No maker fills in this window; not a failed execution test"
+    },
+    {
+      "symbol": "DOTUSD",
+      "classification": {
+        "group": "large_alts",
+        "sector": "other",
+        "tags": [
+          "other"
+        ]
+      },
+      "scheduledTimeframes": [
+        "1h"
+      ],
+      "paperMakerTrades": 0,
+      "shadowMakerTrades": 3,
+      "paperNet": 0,
+      "candleMakerFills": 3,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 0,
+      "entrySignals": 0,
+      "topRecordedBlock": null,
+      "contextSamples24h": 1409,
+      "depthSampleShare": 0.9680624556422995,
+      "flowSampleShare": 0.8353442157558553,
+      "assessment": "Maker timing needs paired prospective tick/depth evaluation"
+    },
+    {
+      "symbol": "DUSKUSD",
+      "classification": {
+        "group": "alts",
+        "sector": "other",
+        "tags": [
+          "other"
+        ]
+      },
+      "scheduledTimeframes": [
+        "15m",
+        "1h"
+      ],
+      "paperMakerTrades": 0,
+      "shadowMakerTrades": 0,
+      "paperNet": 0,
+      "candleMakerFills": 0,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 0,
+      "entrySignals": 0,
+      "topRecordedBlock": null,
+      "contextSamples24h": 1407,
+      "depthSampleShare": 0.968727789623312,
+      "flowSampleShare": 0.5479744136460555,
+      "assessment": "No maker fills in this window; not a failed execution test"
+    },
+    {
+      "symbol": "EDENUSD",
+      "classification": {
+        "group": "alts",
+        "sector": "other",
+        "tags": [
+          "other"
+        ]
+      },
+      "scheduledTimeframes": [
+        "15m",
+        "1h"
+      ],
+      "paperMakerTrades": 0,
+      "shadowMakerTrades": 0,
+      "paperNet": 0,
+      "candleMakerFills": 0,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 0,
+      "entrySignals": 0,
+      "topRecordedBlock": null,
+      "contextSamples24h": 1407,
+      "depthSampleShare": 0.9701492537313433,
+      "flowSampleShare": 0.4989339019189765,
+      "assessment": "No maker fills in this window; not a failed execution test"
+    },
+    {
+      "symbol": "EIGENUSD",
+      "classification": {
+        "group": "alts",
+        "sector": "other",
+        "tags": [
+          "other"
+        ]
+      },
+      "scheduledTimeframes": [
+        "1h"
+      ],
+      "paperMakerTrades": 0,
+      "shadowMakerTrades": 0,
+      "paperNet": 0,
+      "candleMakerFills": 0,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 0,
+      "entrySignals": 0,
+      "topRecordedBlock": null,
+      "contextSamples24h": 1407,
+      "depthSampleShare": 0.9680170575692963,
+      "flowSampleShare": 0.6645344705046198,
+      "assessment": "No maker fills in this window; not a failed execution test"
+    },
+    {
+      "symbol": "ENAUSD",
+      "classification": {
+        "group": "large_alts",
+        "sector": "other",
+        "tags": [
+          "other"
+        ]
+      },
+      "scheduledTimeframes": [
+        "15m",
+        "1h"
+      ],
+      "paperMakerTrades": 0,
+      "shadowMakerTrades": 26,
+      "paperNet": 0,
+      "candleMakerFills": 26,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 2,
+      "entrySignals": 4,
+      "topRecordedBlock": [
+        "rejected:risk burst: a short entry was already taken in the last 120s; one at a time",
+        2
+      ],
+      "contextSamples24h": 1409,
+      "depthSampleShare": 0.9680624556422995,
+      "flowSampleShare": 0.7806955287437899,
+      "assessment": "Maker timing needs paired prospective tick/depth evaluation"
+    },
+    {
+      "symbol": "ETCUSD",
+      "classification": {
+        "group": "large_alts",
+        "sector": "other",
+        "tags": [
+          "other"
+        ]
+      },
+      "scheduledTimeframes": [
+        "15m"
+      ],
+      "paperMakerTrades": 0,
+      "shadowMakerTrades": 0,
+      "paperNet": 0,
+      "candleMakerFills": 0,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 0,
+      "entrySignals": 0,
+      "topRecordedBlock": null,
+      "contextSamples24h": 0,
+      "depthSampleShare": null,
+      "flowSampleShare": null,
+      "assessment": "No maker fills in this window; not a failed execution test"
+    },
+    {
+      "symbol": "ETHFIUSD",
+      "classification": {
+        "group": "alts",
+        "sector": "other",
+        "tags": [
+          "other"
+        ]
+      },
+      "scheduledTimeframes": [
+        "15m",
+        "1h"
+      ],
+      "paperMakerTrades": 0,
+      "shadowMakerTrades": 5,
+      "paperNet": 0,
+      "candleMakerFills": 5,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 0,
+      "entrySignals": 0,
+      "topRecordedBlock": null,
+      "contextSamples24h": 1410,
+      "depthSampleShare": 0.9666666666666667,
+      "flowSampleShare": 0.7226950354609929,
+      "assessment": "Maker timing needs paired prospective tick/depth evaluation"
+    },
+    {
+      "symbol": "ETHUSD",
+      "classification": {
+        "group": "majors",
+        "sector": "layer_1",
+        "tags": [
+          "layer_1"
+        ]
+      },
+      "scheduledTimeframes": [
+        "15m",
+        "1h",
+        "4h"
+      ],
+      "paperMakerTrades": 22,
+      "shadowMakerTrades": 189,
+      "paperNet": 6.206621043865379,
+      "candleMakerFills": 211,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 0,
+      "entrySignals": 95,
+      "topRecordedBlock": [
+        "rejected:risk max 1 positions on ETHUSD",
+        33
+      ],
+      "contextSamples24h": 1411,
+      "depthSampleShare": 0.966690290574061,
+      "flowSampleShare": 0.7469879518072289,
+      "assessment": "Maker timing needs paired prospective tick/depth evaluation"
+    },
+    {
+      "symbol": "EVAAUSD",
+      "classification": {
+        "group": "alts",
+        "sector": "other",
+        "tags": [
+          "other"
+        ]
+      },
+      "scheduledTimeframes": [
+        "15m",
+        "1h",
+        "4h"
+      ],
+      "paperMakerTrades": 8,
+      "shadowMakerTrades": 134,
+      "paperNet": -19.299081341232267,
+      "candleMakerFills": 142,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 0,
+      "entrySignals": 46,
+      "topRecordedBlock": [
+        "rejected:risk burst: a long entry was already taken in the last 120s; one at a time",
+        5
+      ],
+      "contextSamples24h": 1411,
+      "depthSampleShare": 0.966690290574061,
+      "flowSampleShare": 0.7462792345854005,
+      "assessment": "Maker timing needs paired prospective tick/depth evaluation"
+    },
+    {
+      "symbol": "FARTCOINUSD",
+      "classification": {
+        "group": "meme",
+        "sector": "meme",
+        "tags": [
+          "meme"
+        ]
+      },
+      "scheduledTimeframes": [
+        "4h"
+      ],
+      "paperMakerTrades": 0,
+      "shadowMakerTrades": 0,
+      "paperNet": 0,
+      "candleMakerFills": 0,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 0,
+      "entrySignals": 0,
+      "topRecordedBlock": null,
+      "contextSamples24h": 1407,
+      "depthSampleShare": 0.9637526652452025,
+      "flowSampleShare": 0.820184790334044,
+      "assessment": "No maker fills in this window; not a failed execution test"
+    },
+    {
+      "symbol": "FFUSD",
+      "classification": {
+        "group": "alts",
+        "sector": "other",
+        "tags": [
+          "other"
+        ]
+      },
+      "scheduledTimeframes": [
+        "15m",
+        "1h"
+      ],
+      "paperMakerTrades": 0,
+      "shadowMakerTrades": 6,
+      "paperNet": 0,
+      "candleMakerFills": 6,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 1,
+      "entrySignals": 0,
+      "topRecordedBlock": null,
+      "contextSamples24h": 1408,
+      "depthSampleShare": 0.96875,
+      "flowSampleShare": 0.7982954545454546,
+      "assessment": "Maker timing needs paired prospective tick/depth evaluation"
+    },
+    {
+      "symbol": "FILUSD",
+      "classification": {
+        "group": "large_alts",
+        "sector": "other",
+        "tags": [
+          "other"
+        ]
+      },
+      "scheduledTimeframes": [
+        "15m",
+        "1h"
+      ],
+      "paperMakerTrades": 0,
+      "shadowMakerTrades": 2,
+      "paperNet": 0,
+      "candleMakerFills": 2,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 1,
+      "entrySignals": 0,
+      "topRecordedBlock": null,
+      "contextSamples24h": 1408,
+      "depthSampleShare": 0.9680397727272727,
+      "flowSampleShare": 0.7869318181818182,
+      "assessment": "Maker timing needs paired prospective tick/depth evaluation"
+    },
+    {
+      "symbol": "GRIFFAINUSD",
+      "classification": {
+        "group": "alts",
+        "sector": "other",
+        "tags": [
+          "other"
+        ]
+      },
+      "scheduledTimeframes": [
+        "15m",
+        "1h"
+      ],
+      "paperMakerTrades": 2,
+      "shadowMakerTrades": 9,
+      "paperNet": 4.972802943680054,
+      "candleMakerFills": 11,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 1,
+      "entrySignals": 9,
+      "topRecordedBlock": [
+        "rejected:risk burst: a short entry was already taken in the last 120s; one at a time",
+        4
+      ],
+      "contextSamples24h": 1410,
+      "depthSampleShare": 0.9680851063829787,
+      "flowSampleShare": 0.8191489361702128,
+      "assessment": "Maker timing needs paired prospective tick/depth evaluation"
+    },
+    {
+      "symbol": "GTCUSD",
+      "classification": {
+        "group": "alts",
+        "sector": "other",
+        "tags": [
+          "other"
+        ]
+      },
+      "scheduledTimeframes": [
+        "15m"
+      ],
+      "paperMakerTrades": 0,
+      "shadowMakerTrades": 0,
+      "paperNet": 0,
+      "candleMakerFills": 0,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 0,
+      "entrySignals": 0,
+      "topRecordedBlock": null,
+      "contextSamples24h": 1407,
+      "depthSampleShare": 0.9694385216773277,
+      "flowSampleShare": 0.5856432125088842,
+      "assessment": "No maker fills in this window; not a failed execution test"
+    },
+    {
+      "symbol": "HBARUSD",
+      "classification": {
+        "group": "large_alts",
+        "sector": "other",
+        "tags": [
+          "other"
+        ]
+      },
+      "scheduledTimeframes": [
+        "15m"
+      ],
+      "paperMakerTrades": 0,
+      "shadowMakerTrades": 0,
+      "paperNet": 0,
+      "candleMakerFills": 0,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 0,
+      "entrySignals": 0,
+      "topRecordedBlock": null,
+      "contextSamples24h": 0,
+      "depthSampleShare": null,
+      "flowSampleShare": null,
+      "assessment": "No maker fills in this window; not a failed execution test"
+    },
+    {
+      "symbol": "HUSD",
+      "classification": {
+        "group": "alts",
+        "sector": "other",
+        "tags": [
+          "other"
+        ]
+      },
+      "scheduledTimeframes": [
+        "15m",
+        "1h",
+        "4h"
+      ],
+      "paperMakerTrades": 0,
+      "shadowMakerTrades": 101,
+      "paperNet": 0,
+      "candleMakerFills": 101,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 7,
+      "entrySignals": 1,
+      "topRecordedBlock": [
+        "rejected:risk burst: a long entry was already taken in the last 120s; one at a time",
+        1
+      ],
+      "contextSamples24h": 1411,
+      "depthSampleShare": 0,
+      "flowSampleShare": 0.8320340184266478,
+      "assessment": "Maker timing needs paired prospective tick/depth evaluation"
+    },
+    {
+      "symbol": "HYPEUSD",
+      "classification": {
+        "group": "large_alts",
+        "sector": "other",
+        "tags": [
+          "other"
+        ]
+      },
+      "scheduledTimeframes": [
+        "1h",
+        "4h"
+      ],
+      "paperMakerTrades": 0,
+      "shadowMakerTrades": 27,
+      "paperNet": 0,
+      "candleMakerFills": 27,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 2,
+      "entrySignals": 0,
+      "topRecordedBlock": null,
+      "contextSamples24h": 1409,
+      "depthSampleShare": 0.9680624556422995,
+      "flowSampleShare": 0.8239886444286728,
+      "assessment": "Maker timing needs paired prospective tick/depth evaluation"
+    },
+    {
+      "symbol": "INITUSD",
+      "classification": {
+        "group": "alts",
+        "sector": "other",
+        "tags": [
+          "other"
+        ]
+      },
+      "scheduledTimeframes": [
+        "15m",
+        "4h"
+      ],
+      "paperMakerTrades": 0,
+      "shadowMakerTrades": 1,
+      "paperNet": 0,
+      "candleMakerFills": 1,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 0,
+      "entrySignals": 107,
+      "topRecordedBlock": [
+        "rejected:risk max 1 positions on INITUSD",
+        25
+      ],
+      "contextSamples24h": 1411,
+      "depthSampleShare": 0.966690290574061,
+      "flowSampleShare": 0.8320340184266478,
+      "assessment": "Maker timing needs paired prospective tick/depth evaluation"
+    },
+    {
+      "symbol": "INJUSD",
+      "classification": {
+        "group": "large_alts",
+        "sector": "other",
+        "tags": [
+          "other"
+        ]
+      },
+      "scheduledTimeframes": [
+        "1h"
+      ],
+      "paperMakerTrades": 1,
+      "shadowMakerTrades": 25,
+      "paperNet": -5.94650826000002,
+      "candleMakerFills": 26,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 2,
+      "entrySignals": 1,
+      "topRecordedBlock": null,
+      "contextSamples24h": 1409,
+      "depthSampleShare": 0.9680624556422995,
+      "flowSampleShare": 0.829666430092264,
+      "assessment": "Maker timing needs paired prospective tick/depth evaluation"
+    },
+    {
+      "symbol": "JCTUSD",
+      "classification": {
+        "group": "alts",
+        "sector": "other",
+        "tags": [
+          "other"
+        ]
+      },
+      "scheduledTimeframes": [
+        "15m",
+        "1h",
+        "4h"
+      ],
+      "paperMakerTrades": 0,
+      "shadowMakerTrades": 15,
+      "paperNet": 0,
+      "candleMakerFills": 15,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 0,
+      "entrySignals": 2,
+      "topRecordedBlock": [
+        "rejected:risk burst: a long entry was already taken in the last 120s; one at a time",
+        1
+      ],
+      "contextSamples24h": 1411,
+      "depthSampleShare": 0.9659815733522324,
+      "flowSampleShare": 0.8277817150956768,
+      "assessment": "Maker timing needs paired prospective tick/depth evaluation"
+    },
+    {
+      "symbol": "JTOUSD",
+      "classification": {
+        "group": "alts",
+        "sector": "other",
+        "tags": [
+          "other"
+        ]
+      },
+      "scheduledTimeframes": [
+        "15m",
+        "1h"
+      ],
+      "paperMakerTrades": 0,
+      "shadowMakerTrades": 1,
+      "paperNet": 0,
+      "candleMakerFills": 1,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 0,
+      "entrySignals": 0,
+      "topRecordedBlock": null,
+      "contextSamples24h": 1407,
+      "depthSampleShare": 0.9701492537313433,
+      "flowSampleShare": 0.6439232409381663,
+      "assessment": "Maker timing needs paired prospective tick/depth evaluation"
+    },
+    {
+      "symbol": "LABUSD",
+      "classification": {
+        "group": "alts",
+        "sector": "other",
+        "tags": [
+          "other"
+        ]
+      },
+      "scheduledTimeframes": [
+        "15m",
+        "1h"
+      ],
+      "paperMakerTrades": 2,
+      "shadowMakerTrades": 141,
+      "paperNet": 7.192215035430406,
+      "candleMakerFills": 143,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 1,
+      "entrySignals": 25,
+      "topRecordedBlock": [
+        "rejected:risk burst: a long entry was already taken in the last 120s; one at a time",
+        9
+      ],
+      "contextSamples24h": 1411,
+      "depthSampleShare": 0.966690290574061,
+      "flowSampleShare": 0.8447909284195606,
+      "assessment": "Maker timing needs paired prospective tick/depth evaluation"
+    },
+    {
+      "symbol": "LINKUSD",
+      "classification": {
+        "group": "large_alts",
+        "sector": "other",
+        "tags": [
+          "other"
+        ]
+      },
+      "scheduledTimeframes": [
+        "15m",
+        "1h",
+        "4h"
+      ],
+      "paperMakerTrades": 4,
+      "shadowMakerTrades": 37,
+      "paperNet": -16.975808210657107,
+      "candleMakerFills": 41,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 1,
+      "entrySignals": 58,
+      "topRecordedBlock": [
+        "rejected:risk burst: a short entry was already taken in the last 120s; one at a time",
+        25
+      ],
+      "contextSamples24h": 1411,
+      "depthSampleShare": 0.966690290574061,
+      "flowSampleShare": 0.8320340184266478,
+      "assessment": "Maker timing needs paired prospective tick/depth evaluation"
+    },
+    {
+      "symbol": "LITUSD",
+      "classification": {
+        "group": "alts",
+        "sector": "other",
+        "tags": [
+          "other"
+        ]
+      },
+      "scheduledTimeframes": [
+        "15m",
+        "1h"
+      ],
+      "paperMakerTrades": 0,
+      "shadowMakerTrades": 31,
+      "paperNet": 0,
+      "candleMakerFills": 31,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 3,
+      "entrySignals": 1,
+      "topRecordedBlock": [
+        "rejected:risk burst: a long entry was already taken in the last 120s; one at a time",
+        1
+      ],
+      "contextSamples24h": 1410,
+      "depthSampleShare": 0.9666666666666667,
+      "flowSampleShare": 0.7666666666666667,
+      "assessment": "Maker timing needs paired prospective tick/depth evaluation"
+    },
+    {
+      "symbol": "LTCUSD",
+      "classification": {
+        "group": "large_alts",
+        "sector": "other",
+        "tags": [
+          "other"
+        ]
+      },
+      "scheduledTimeframes": [],
+      "paperMakerTrades": 0,
+      "shadowMakerTrades": 0,
+      "paperNet": 0,
+      "candleMakerFills": 0,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 0,
+      "entrySignals": 0,
+      "topRecordedBlock": null,
+      "contextSamples24h": 1411,
+      "depthSampleShare": 0.9673990077958894,
+      "flowSampleShare": 0.8377037562012757,
+      "assessment": "No maker fills in this window; not a failed execution test"
+    },
+    {
+      "symbol": "MUBARAKUSD",
+      "classification": {
+        "group": "meme",
+        "sector": "meme",
+        "tags": [
+          "meme"
+        ]
+      },
+      "scheduledTimeframes": [
+        "15m",
+        "1h",
+        "4h"
+      ],
+      "paperMakerTrades": 0,
+      "shadowMakerTrades": 3,
+      "paperNet": 0,
+      "candleMakerFills": 3,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 0,
+      "entrySignals": 0,
+      "topRecordedBlock": null,
+      "contextSamples24h": 1411,
+      "depthSampleShare": 0.9659815733522324,
+      "flowSampleShare": 0.8348688873139617,
+      "assessment": "Maker timing needs paired prospective tick/depth evaluation"
+    },
+    {
+      "symbol": "MUSD",
+      "classification": {
+        "group": "alts",
+        "sector": "other",
+        "tags": [
+          "other"
+        ]
+      },
+      "scheduledTimeframes": [
+        "15m",
+        "1h"
+      ],
+      "paperMakerTrades": 2,
+      "shadowMakerTrades": 16,
+      "paperNet": -7.812397080849526,
+      "candleMakerFills": 18,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 1,
+      "zeroVolumeShadow": 1,
+      "entrySignals": 25,
+      "topRecordedBlock": [
+        "rejected:risk burst: a short entry was already taken in the last 120s; one at a time",
+        3
+      ],
+      "contextSamples24h": 1408,
+      "depthSampleShare": 0,
+      "flowSampleShare": 0.7833806818181818,
+      "assessment": "Maker timing needs paired prospective tick/depth evaluation"
+    },
+    {
+      "symbol": "NEARUSD",
+      "classification": {
+        "group": "large_alts",
+        "sector": "other",
+        "tags": [
+          "other"
+        ]
+      },
+      "scheduledTimeframes": [
+        "1h",
+        "4h"
+      ],
+      "paperMakerTrades": 0,
+      "shadowMakerTrades": 8,
+      "paperNet": 0,
+      "candleMakerFills": 8,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 0,
+      "entrySignals": 0,
+      "topRecordedBlock": null,
+      "contextSamples24h": 1407,
+      "depthSampleShare": 0.9694385216773277,
+      "flowSampleShare": 0.8471926083866382,
+      "assessment": "Maker timing needs paired prospective tick/depth evaluation"
+    },
+    {
+      "symbol": "OILUSD",
+      "classification": {
+        "group": "tradfi",
+        "sector": "energy",
+        "tags": [
+          "energy"
+        ]
+      },
+      "scheduledTimeframes": [
+        "1h"
+      ],
+      "paperMakerTrades": 0,
+      "shadowMakerTrades": 1,
+      "paperNet": 0,
+      "candleMakerFills": 1,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 1,
+      "entrySignals": 0,
+      "topRecordedBlock": null,
+      "contextSamples24h": 1407,
+      "depthSampleShare": 0.9665955934612651,
+      "flowSampleShare": 0.837953091684435,
+      "assessment": "Maker timing needs paired prospective tick/depth evaluation"
+    },
+    {
+      "symbol": "ONDOUSD",
+      "classification": {
+        "group": "large_alts",
+        "sector": "other",
+        "tags": [
+          "other"
+        ]
+      },
+      "scheduledTimeframes": [
+        "15m",
+        "1h"
+      ],
+      "paperMakerTrades": 0,
+      "shadowMakerTrades": 2,
+      "paperNet": 0,
+      "candleMakerFills": 2,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 0,
+      "entrySignals": 0,
+      "topRecordedBlock": null,
+      "contextSamples24h": 1409,
+      "depthSampleShare": 0.9680624556422995,
+      "flowSampleShare": 0.7842441447835344,
+      "assessment": "Maker timing needs paired prospective tick/depth evaluation"
+    },
+    {
+      "symbol": "OPNUSD",
+      "classification": {
+        "group": "alts",
+        "sector": "other",
+        "tags": [
+          "other"
+        ]
+      },
+      "scheduledTimeframes": [
+        "15m",
+        "1h"
+      ],
+      "paperMakerTrades": 0,
+      "shadowMakerTrades": 0,
+      "paperNet": 0,
+      "candleMakerFills": 0,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 0,
+      "entrySignals": 0,
+      "topRecordedBlock": null,
+      "contextSamples24h": 0,
+      "depthSampleShare": null,
+      "flowSampleShare": null,
+      "assessment": "No maker fills in this window; not a failed execution test"
+    },
+    {
+      "symbol": "PARTIUSD",
+      "classification": {
+        "group": "alts",
+        "sector": "other",
+        "tags": [
+          "other"
+        ]
+      },
+      "scheduledTimeframes": [
+        "1h"
+      ],
+      "paperMakerTrades": 0,
+      "shadowMakerTrades": 0,
+      "paperNet": 0,
+      "candleMakerFills": 0,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 0,
+      "entrySignals": 1,
+      "topRecordedBlock": [
+        "rejected:risk burst: a long entry was already taken in the last 120s; one at a time",
+        1
+      ],
+      "contextSamples24h": 1411,
+      "depthSampleShare": 0.9659815733522324,
+      "flowSampleShare": 0.5166548547129696,
+      "assessment": "No maker fills in this window; not a failed execution test"
+    },
+    {
+      "symbol": "PENDLEUSD",
+      "classification": {
+        "group": "alts",
+        "sector": "other",
+        "tags": [
+          "other"
+        ]
+      },
+      "scheduledTimeframes": [
+        "1h"
+      ],
+      "paperMakerTrades": 0,
+      "shadowMakerTrades": 1,
+      "paperNet": 0,
+      "candleMakerFills": 1,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 1,
+      "entrySignals": 0,
+      "topRecordedBlock": null,
+      "contextSamples24h": 1408,
+      "depthSampleShare": 0.96875,
+      "flowSampleShare": 0.6086647727272727,
+      "assessment": "Maker timing needs paired prospective tick/depth evaluation"
+    },
+    {
+      "symbol": "PIEVERSEUSD",
+      "classification": {
+        "group": "alts",
+        "sector": "other",
+        "tags": [
+          "other"
+        ]
+      },
+      "scheduledTimeframes": [
+        "4h"
+      ],
+      "paperMakerTrades": 0,
+      "shadowMakerTrades": 4,
+      "paperNet": 0,
+      "candleMakerFills": 4,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 0,
+      "entrySignals": 0,
+      "topRecordedBlock": null,
+      "contextSamples24h": 1407,
+      "depthSampleShare": 0.968727789623312,
+      "flowSampleShare": 0.8422174840085288,
+      "assessment": "Maker timing needs paired prospective tick/depth evaluation"
+    },
+    {
+      "symbol": "PUMPUSD",
+      "classification": {
+        "group": "alts",
+        "sector": "other",
+        "tags": [
+          "other"
+        ]
+      },
+      "scheduledTimeframes": [
+        "15m",
+        "1h"
+      ],
+      "paperMakerTrades": 0,
+      "shadowMakerTrades": 0,
+      "paperNet": 0,
+      "candleMakerFills": 0,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 0,
+      "entrySignals": 0,
+      "topRecordedBlock": null,
+      "contextSamples24h": 1407,
+      "depthSampleShare": 0.968727789623312,
+      "flowSampleShare": 0.8194740582800284,
+      "assessment": "No maker fills in this window; not a failed execution test"
+    },
+    {
+      "symbol": "QNTUSD",
+      "classification": {
+        "group": "alts",
+        "sector": "other",
+        "tags": [
+          "other"
+        ]
+      },
+      "scheduledTimeframes": [
+        "15m"
+      ],
+      "paperMakerTrades": 0,
+      "shadowMakerTrades": 0,
+      "paperNet": 0,
+      "candleMakerFills": 0,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 0,
+      "entrySignals": 0,
+      "topRecordedBlock": null,
+      "contextSamples24h": 1407,
+      "depthSampleShare": 0.9694385216773277,
+      "flowSampleShare": 0.5607675906183369,
+      "assessment": "No maker fills in this window; not a failed execution test"
+    },
+    {
+      "symbol": "RLCUSD",
+      "classification": {
+        "group": "alts",
+        "sector": "other",
+        "tags": [
+          "other"
+        ]
+      },
+      "scheduledTimeframes": [
+        "15m"
+      ],
+      "paperMakerTrades": 0,
+      "shadowMakerTrades": 0,
+      "paperNet": 0,
+      "candleMakerFills": 0,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 0,
+      "entrySignals": 0,
+      "topRecordedBlock": null,
+      "contextSamples24h": 0,
+      "depthSampleShare": null,
+      "flowSampleShare": null,
+      "assessment": "No maker fills in this window; not a failed execution test"
+    },
+    {
+      "symbol": "SAGAUSD",
+      "classification": {
+        "group": "alts",
+        "sector": "other",
+        "tags": [
+          "other"
+        ]
+      },
+      "scheduledTimeframes": [],
+      "paperMakerTrades": 0,
+      "shadowMakerTrades": 0,
+      "paperNet": 0,
+      "candleMakerFills": 0,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 0,
+      "entrySignals": 0,
+      "topRecordedBlock": null,
+      "contextSamples24h": 1407,
+      "depthSampleShare": 0.9665955934612651,
+      "flowSampleShare": 0.7874911158493249,
+      "assessment": "No maker fills in this window; not a failed execution test"
+    },
+    {
+      "symbol": "SKYAIUSD",
+      "classification": {
+        "group": "alts",
+        "sector": "other",
+        "tags": [
+          "other"
+        ]
+      },
+      "scheduledTimeframes": [
+        "1h",
+        "4h"
+      ],
+      "paperMakerTrades": 4,
+      "shadowMakerTrades": 61,
+      "paperNet": 18.635477500833414,
+      "candleMakerFills": 65,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 4,
+      "entrySignals": 8,
+      "topRecordedBlock": [
+        "rejected:risk burst: a short entry was already taken in the last 120s; one at a time",
+        3
+      ],
+      "contextSamples24h": 1410,
+      "depthSampleShare": 0.9673758865248226,
+      "flowSampleShare": 0.8304964539007093,
+      "assessment": "Maker timing needs paired prospective tick/depth evaluation"
+    },
+    {
+      "symbol": "SOLUSD",
+      "classification": {
+        "group": "majors",
+        "sector": "layer_1",
+        "tags": [
+          "layer_1"
+        ]
+      },
+      "scheduledTimeframes": [
+        "15m",
+        "1h",
+        "4h"
+      ],
+      "paperMakerTrades": 21,
+      "shadowMakerTrades": 186,
+      "paperNet": 6.489086731999982,
+      "candleMakerFills": 203,
+      "tickDepthMakerFills": 4,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 0,
+      "entrySignals": 57,
+      "topRecordedBlock": [
+        "rejected:risk burst: a short entry was already taken in the last 120s; one at a time",
+        6
+      ],
+      "contextSamples24h": 1411,
+      "depthSampleShare": 0.966690290574061,
+      "flowSampleShare": 0.7547838412473423,
+      "assessment": "Maker timing needs paired prospective tick/depth evaluation"
+    },
+    {
+      "symbol": "SOLVUSD",
+      "classification": {
+        "group": "alts",
+        "sector": "other",
+        "tags": [
+          "other"
+        ]
+      },
+      "scheduledTimeframes": [
+        "15m",
+        "1h"
+      ],
+      "paperMakerTrades": 0,
+      "shadowMakerTrades": 4,
+      "paperNet": 0,
+      "candleMakerFills": 4,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 1,
+      "entrySignals": 19,
+      "topRecordedBlock": [
+        "rejected:stop too tight for fees (0.27% stop vs 0.16% round-trip cost; need ≥ 6×)",
+        2
+      ],
+      "contextSamples24h": 1409,
+      "depthSampleShare": 0.9638041163946061,
+      "flowSampleShare": 0.7501774308019872,
+      "assessment": "Maker timing needs paired prospective tick/depth evaluation"
+    },
+    {
+      "symbol": "SOPHUSD",
+      "classification": {
+        "group": "alts",
+        "sector": "other",
+        "tags": [
+          "other"
+        ]
+      },
+      "scheduledTimeframes": [
+        "15m"
+      ],
+      "paperMakerTrades": 0,
+      "shadowMakerTrades": 0,
+      "paperNet": 0,
+      "candleMakerFills": 0,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 0,
+      "entrySignals": 94,
+      "topRecordedBlock": [
+        "rejected:risk burst: a long entry was already taken in the last 120s; one at a time",
+        8
+      ],
+      "contextSamples24h": 1407,
+      "depthSampleShare": 0.9637526652452025,
+      "flowSampleShare": 0.835820895522388,
+      "assessment": "No maker fills in this window; not a failed execution test"
+    },
+    {
+      "symbol": "STBLUSD",
+      "classification": {
+        "group": "alts",
+        "sector": "other",
+        "tags": [
+          "other"
+        ]
+      },
+      "scheduledTimeframes": [
+        "15m",
+        "1h"
+      ],
+      "paperMakerTrades": 0,
+      "shadowMakerTrades": 0,
+      "paperNet": 0,
+      "candleMakerFills": 0,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 0,
+      "entrySignals": 0,
+      "topRecordedBlock": null,
+      "contextSamples24h": 1407,
+      "depthSampleShare": 0.968727789623312,
+      "flowSampleShare": 0.689410092395167,
+      "assessment": "No maker fills in this window; not a failed execution test"
+    },
+    {
+      "symbol": "STRKUSD",
+      "classification": {
+        "group": "alts",
+        "sector": "other",
+        "tags": [
+          "other"
+        ]
+      },
+      "scheduledTimeframes": [
+        "15m",
+        "1h"
+      ],
+      "paperMakerTrades": 0,
+      "shadowMakerTrades": 0,
+      "paperNet": 0,
+      "candleMakerFills": 0,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 0,
+      "entrySignals": 0,
+      "topRecordedBlock": null,
+      "contextSamples24h": 1407,
+      "depthSampleShare": 0.9694385216773277,
+      "flowSampleShare": 0.7711442786069652,
+      "assessment": "No maker fills in this window; not a failed execution test"
+    },
+    {
+      "symbol": "STXUSD",
+      "classification": {
+        "group": "alts",
+        "sector": "other",
+        "tags": [
+          "other"
+        ]
+      },
+      "scheduledTimeframes": [
+        "15m"
+      ],
+      "paperMakerTrades": 0,
+      "shadowMakerTrades": 0,
+      "paperNet": 0,
+      "candleMakerFills": 0,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 0,
+      "entrySignals": 0,
+      "topRecordedBlock": null,
+      "contextSamples24h": 1407,
+      "depthSampleShare": 0.9552238805970149,
+      "flowSampleShare": 0.7043354655294953,
+      "assessment": "No maker fills in this window; not a failed execution test"
+    },
+    {
+      "symbol": "SUIUSD",
+      "classification": {
+        "group": "large_alts",
+        "sector": "other",
+        "tags": [
+          "other"
+        ]
+      },
+      "scheduledTimeframes": [
+        "15m",
+        "1h",
+        "4h"
+      ],
+      "paperMakerTrades": 0,
+      "shadowMakerTrades": 18,
+      "paperNet": 0,
+      "candleMakerFills": 18,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 0,
+      "entrySignals": 0,
+      "topRecordedBlock": null,
+      "contextSamples24h": 1410,
+      "depthSampleShare": 0.9673758865248226,
+      "flowSampleShare": 0.8354609929078014,
+      "assessment": "Maker timing needs paired prospective tick/depth evaluation"
+    },
+    {
+      "symbol": "TAOUSD",
+      "classification": {
+        "group": "large_alts",
+        "sector": "other",
+        "tags": [
+          "other"
+        ]
+      },
+      "scheduledTimeframes": [
+        "15m",
+        "1h",
+        "4h"
+      ],
+      "paperMakerTrades": 0,
+      "shadowMakerTrades": 34,
+      "paperNet": 0,
+      "candleMakerFills": 34,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 3,
+      "entrySignals": 0,
+      "topRecordedBlock": null,
+      "contextSamples24h": 1409,
+      "depthSampleShare": 0.9673527324343506,
+      "flowSampleShare": 0.7608232789212207,
+      "assessment": "Maker timing needs paired prospective tick/depth evaluation"
+    },
+    {
+      "symbol": "TIAUSD",
+      "classification": {
+        "group": "alts",
+        "sector": "other",
+        "tags": [
+          "other"
+        ]
+      },
+      "scheduledTimeframes": [
+        "15m",
+        "1h"
+      ],
+      "paperMakerTrades": 0,
+      "shadowMakerTrades": 0,
+      "paperNet": 0,
+      "candleMakerFills": 0,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 0,
+      "entrySignals": 2,
+      "topRecordedBlock": [
+        "rejected:stop too tight for fees (0.40% stop vs 0.18% round-trip cost; need ≥ 6×)",
+        1
+      ],
+      "contextSamples24h": 1407,
+      "depthSampleShare": 0.9694385216773277,
+      "flowSampleShare": 0.7164179104477612,
+      "assessment": "No maker fills in this window; not a failed execution test"
+    },
+    {
+      "symbol": "UNIUSD",
+      "classification": {
+        "group": "large_alts",
+        "sector": "other",
+        "tags": [
+          "other"
+        ]
+      },
+      "scheduledTimeframes": [
+        "15m",
+        "1h",
+        "4h"
+      ],
+      "paperMakerTrades": 13,
+      "shadowMakerTrades": 69,
+      "paperNet": 11.895114925327817,
+      "candleMakerFills": 82,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 1,
+      "entrySignals": 72,
+      "topRecordedBlock": [
+        "rejected:risk burst: a short entry was already taken in the last 120s; one at a time",
+        16
+      ],
+      "contextSamples24h": 1411,
+      "depthSampleShare": 0.9673990077958894,
+      "flowSampleShare": 0.8171509567682494,
+      "assessment": "Maker timing needs paired prospective tick/depth evaluation"
+    },
+    {
+      "symbol": "VVVUSD",
+      "classification": {
+        "group": "alts",
+        "sector": "other",
+        "tags": [
+          "other"
+        ]
+      },
+      "scheduledTimeframes": [
+        "15m",
+        "1h",
+        "4h"
+      ],
+      "paperMakerTrades": 4,
+      "shadowMakerTrades": 62,
+      "paperNet": 42.733252983306656,
+      "candleMakerFills": 66,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 2,
+      "entrySignals": 19,
+      "topRecordedBlock": [
+        "rejected:risk burst: a long entry was already taken in the last 120s; one at a time",
+        3
+      ],
+      "contextSamples24h": 1411,
+      "depthSampleShare": 0.966690290574061,
+      "flowSampleShare": 0.8426647767540751,
+      "assessment": "Maker timing needs paired prospective tick/depth evaluation"
+    },
+    {
+      "symbol": "WIFUSD",
+      "classification": {
+        "group": "meme",
+        "sector": "meme",
+        "tags": [
+          "meme"
+        ]
+      },
+      "scheduledTimeframes": [
+        "4h"
+      ],
+      "paperMakerTrades": 0,
+      "shadowMakerTrades": 0,
+      "paperNet": 0,
+      "candleMakerFills": 0,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 0,
+      "entrySignals": 0,
+      "topRecordedBlock": null,
+      "contextSamples24h": 664,
+      "depthSampleShare": 0.9668674698795181,
+      "flowSampleShare": 0.7876506024096386,
+      "assessment": "No maker fills in this window; not a failed execution test"
+    },
+    {
+      "symbol": "WLDUSD",
+      "classification": {
+        "group": "alts",
+        "sector": "other",
+        "tags": [
+          "other"
+        ]
+      },
+      "scheduledTimeframes": [
+        "15m",
+        "1h"
+      ],
+      "paperMakerTrades": 0,
+      "shadowMakerTrades": 2,
+      "paperNet": 0,
+      "candleMakerFills": 2,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 0,
+      "entrySignals": 0,
+      "topRecordedBlock": null,
+      "contextSamples24h": 1407,
+      "depthSampleShare": 0.968727789623312,
+      "flowSampleShare": 0.8038379530916845,
+      "assessment": "Maker timing needs paired prospective tick/depth evaluation"
+    },
+    {
+      "symbol": "XMRUSD",
+      "classification": {
+        "group": "large_alts",
+        "sector": "other",
+        "tags": [
+          "other"
+        ]
+      },
+      "scheduledTimeframes": [
+        "1h"
+      ],
+      "paperMakerTrades": 0,
+      "shadowMakerTrades": 6,
+      "paperNet": 0,
+      "candleMakerFills": 6,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 0,
+      "entrySignals": 0,
+      "topRecordedBlock": null,
+      "contextSamples24h": 1407,
+      "depthSampleShare": 0.9694385216773277,
+      "flowSampleShare": 0.8031272210376688,
+      "assessment": "Maker timing needs paired prospective tick/depth evaluation"
+    },
+    {
+      "symbol": "XRPUSD",
+      "classification": {
+        "group": "majors",
+        "sector": "payments",
+        "tags": [
+          "payments"
+        ]
+      },
+      "scheduledTimeframes": [
+        "15m",
+        "1h",
+        "4h"
+      ],
+      "paperMakerTrades": 2,
+      "shadowMakerTrades": 170,
+      "paperNet": -5.793328160399919,
+      "candleMakerFills": 172,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 0,
+      "entrySignals": 10,
+      "topRecordedBlock": [
+        "rejected:risk burst: a short entry was already taken in the last 120s; one at a time",
+        2
+      ],
+      "contextSamples24h": 1411,
+      "depthSampleShare": 0.966690290574061,
+      "flowSampleShare": 0.771793054571226,
+      "assessment": "Maker timing needs paired prospective tick/depth evaluation"
+    },
+    {
+      "symbol": "ZECUSD",
+      "classification": {
+        "group": "alts",
+        "sector": "other",
+        "tags": [
+          "other"
+        ]
+      },
+      "scheduledTimeframes": [
+        "15m",
+        "1h",
+        "4h"
+      ],
+      "paperMakerTrades": 15,
+      "shadowMakerTrades": 209,
+      "paperNet": 33.59929685506645,
+      "candleMakerFills": 224,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 1,
+      "zeroVolumeShadow": 2,
+      "entrySignals": 65,
+      "topRecordedBlock": [
+        "rejected:the scanner's own stop: the account takes only the ATR stop (decision 146)",
+        16
+      ],
+      "contextSamples24h": 1411,
+      "depthSampleShare": 0.966690290574061,
+      "flowSampleShare": 0.8022678951098512,
+      "assessment": "Maker timing needs paired prospective tick/depth evaluation"
+    },
+    {
+      "symbol": "ZKUSD",
+      "classification": {
+        "group": "alts",
+        "sector": "other",
+        "tags": [
+          "other"
+        ]
+      },
+      "scheduledTimeframes": [
+        "15m"
+      ],
+      "paperMakerTrades": 0,
+      "shadowMakerTrades": 0,
+      "paperNet": 0,
+      "candleMakerFills": 0,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 0,
+      "entrySignals": 0,
+      "topRecordedBlock": null,
+      "contextSamples24h": 0,
+      "depthSampleShare": null,
+      "flowSampleShare": null,
+      "assessment": "No maker fills in this window; not a failed execution test"
+    },
+    {
+      "symbol": "ZORAUSD",
+      "classification": {
+        "group": "alts",
+        "sector": "other",
+        "tags": [
+          "other"
+        ]
+      },
+      "scheduledTimeframes": [
+        "15m"
+      ],
+      "paperMakerTrades": 0,
+      "shadowMakerTrades": 0,
+      "paperNet": 0,
+      "candleMakerFills": 0,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 0,
+      "entrySignals": 0,
+      "topRecordedBlock": null,
+      "contextSamples24h": 0,
+      "depthSampleShare": null,
+      "flowSampleShare": null,
+      "assessment": "No maker fills in this window; not a failed execution test"
+    },
+    {
+      "symbol": "ZROUSD",
+      "classification": {
+        "group": "alts",
+        "sector": "other",
+        "tags": [
+          "other"
+        ]
+      },
+      "scheduledTimeframes": [
+        "15m",
+        "1h"
+      ],
+      "paperMakerTrades": 0,
+      "shadowMakerTrades": 10,
+      "paperNet": 0,
+      "candleMakerFills": 10,
+      "tickDepthMakerFills": 0,
+      "zeroVolumePaper": 0,
+      "zeroVolumeShadow": 0,
+      "entrySignals": 102,
+      "topRecordedBlock": [
+        "rejected:risk max 1 positions on ZROUSD",
+        5
+      ],
+      "contextSamples24h": 1409,
+      "depthSampleShare": 0.9673527324343506,
+      "flowSampleShare": 0.7750177430801988,
+      "assessment": "Maker timing needs paired prospective tick/depth evaluation"
+    }
+  ]
+}

@@ -545,7 +545,7 @@ export function modelTrail(pos: Position, bar: { close: number }, m: TrailModel)
 }
 
 /** A stop-market cannot fill at its trigger when the first known price is already worse. */
-function stopMarketReference(side: Side, stop: number, open?: number): number {
+export function stopMarketReference(side: Side, stop: number, open?: number): number {
   if (open === undefined || !Number.isFinite(open) || open <= 0) return stop;
   return side === 'long' ? Math.min(stop, open) : Math.max(stop, open);
 }

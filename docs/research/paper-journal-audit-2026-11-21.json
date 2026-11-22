@@ -1,0 +1,104 @@
+{
+  "asOf": 1795268091124,
+  "summaries": {
+    "0": {
+      "closed": 1424,
+      "net": 116.25269627812466,
+      "commission": 731.7130085719178,
+      "wins": 907,
+      "losses": 517,
+      "winRate": 63.6938202247191,
+      "profitFactor": 1.0169896977519788,
+      "sumR": -27.2849341981008
+    },
+    "-1": {
+      "closed": 80,
+      "net": -134.52189323335065,
+      "commission": 177.83083695635372,
+      "wins": 50,
+      "losses": 30,
+      "winRate": 62.5,
+      "profitFactor": 0.7897615068182311,
+      "sumR": -8.77689703939042
+    }
+  },
+  "issueCounts": {},
+  "entrySources": {
+    "-1:quote": 77,
+    "-1:slippage": 3,
+    "0:quote": 644,
+    "0:depth": 613,
+    "0:limit-candle-model": 173
+  },
+  "dailyUtc": [
+    {
+      "day": "2026-11-21",
+      "closed": 37,
+      "net": -7.645205764545487,
+      "commission": 13.652626951200002
+    },
+    {
+      "day": "2026-11-20",
+      "closed": 65,
+      "net": -20.270817543300367,
+      "commission": 20.781112997799994
+    },
+    {
+      "day": "2026-11-19",
+      "closed": 64,
+      "net": -58.290031154252915,
+      "commission": 19.763492743519997
+    },
+    {
+      "day": "2026-11-18",
+      "closed": 60,
+      "net": 25.19588975572042,
+      "commission": 19.0986251136
+    },
+    {
+      "day": "2026-11-17",
+      "closed": 64,
+      "net": 105.94073366307053,
+      "commission": 18.412885093799993
+    },
+    {
+      "day": "2026-11-16",
+      "closed": 32,
+      "net": -31.375657342210523,
+      "commission": 8.350834983999999
+    },
+    {
+      "day": "2026-11-15",
+      "closed": 43,
+      "net": 131.89099810827398,
+      "commission": 12.526369496599997
+    }
+  ],
+  "asOfUtc": "2026-11-21T13:34:51.124Z",
+  "method": "Read-only SQLite snapshot; all current and archived account positions reconciled with order and embedded fill ledgers. API summaries use the same exclusive cutoff. No trades modified.",
+  "allClosed": 1504,
+  "allClosedNet": -18.26919695522573,
+  "accountingChecks": [
+    "entry/exit quantities",
+    "remaining quantity",
+    "commissions",
+    "realized P&L and funding",
+    "entry VWAP",
+    "order and position book",
+    "entry and exit timestamps",
+    "signal availability and bar close"
+  ],
+  "limitations": [
+    "Internal consistency is not execution proof.",
+    "173 current-period positions (closed and open) have candle-model maker entry receipts; these are not verified exchange fills.",
+    "Stored peak R combines price-only trailing peaks and marked P&L samples. It cannot establish net executable peak profit or retained-profit percentage.",
+    "Reset archives are excluded from current-period totals; including them is a historical aggregate, not current account equity.",
+    "The four zero-volume candle receipts require per-trade tape analysis; one ZEC example has earlier fresh crossing prints, so zero volume alone does not prove a fabricated fill."
+  ],
+  "uiCorrections": [
+    "Visible current/archived history selector and scope note",
+    "All history period renamed All dates",
+    "Each filled row identifies the recorded entry model",
+    "Net R and recorded peak R labeled separately, with the mixed-basis limitation"
+  ]
+}

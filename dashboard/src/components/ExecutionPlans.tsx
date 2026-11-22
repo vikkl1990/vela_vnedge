@@ -24,42 +24,70 @@ export function ExecutionPlans() {
         {(d) => (
           <>
             {d.configured.length === 0 && <p>No comparison plans configured.</p>}
-            {(d.comparisons ?? []).map((c) => (
-              <div key={c.group} style={{ marginBottom: 20 }}>
-                <strong>
-                  {c.symbol} {c.tf} ·{' '}
-                  {c.kind === 'reading'
-                    ? 'Scanner reading comparison'
-                    : c.kind === 'two-bar'
-                      ? 'Two-bar exit comparison'
-                      : c.kind === 'profit-floor'
-                        ? 'Early profit-floor comparison'
-                        : 'Profit-capture comparison'}
-                </strong>{' '}
-                <Pill>{c.enabled ? 'Forward shadow test' : 'Disabled'}</Pill>
-                <p className="small">
-                  {c.controlLabel}: {money(c.controlNet)} · {c.candidateLabel}: {money(c.candidateNet)}{' '}
-                  <span className="muted">closed net, current policy versions</span>
-                </p>
-                <p className="small">
-                  {c.sharedSignals} shared source signals · {c.unresolvedSignals} awaiting outcomes ·{' '}
-                  {c.differentAdmissions} with different fill status · {c.controlOnly + c.candidateOnly} seen
-                  by only one policy.
-                </p>
-                <p className="small">
-                  Both trades closed on {c.matchedClosed} matched signals · candidate difference{' '}
-                  {money(c.matchedDeltaNet)}. Matched net: {money(c.matchedControlNet)} →{' '}
-                  {money(c.matchedCandidateNet)}. SL exits: {c.matchedControlStops} →{' '}
-                  {c.matchedCandidateStops}. All losing trades: {c.matchedControlLosses} →{' '}
-                  {c.matchedCandidateLosses}. Winners cut short: {c.matchedWinnersCut}. Entry mismatches
-                  excluded: {c.matchedEntryMismatch}. Research only; excluded from promotion evidence.
-                </p>
-                <p className="small muted">
-                  The matched subset excludes unfilled and unfinished trades. Assess it alongside each plan’s
-                  full net result, missed entries and drawdown. A historical improvement is not forward proof.
-                </p>
-              </div>
-            ))}
+            {(d.comparisons ?? []).map((c) => {
+              const control = d.cohorts.find(
+                (p) => p.id === c.controlId && p.signature === c.controlSignature,
+              )
+              const candidate = d.cohorts.find(
+                (p) => p.id === c.candidateId && p.signature === c.candidateSignature,
+              )
+              return (
+                <div key={c.group} style={{ marginBottom: 20 }}>
+                  <strong>
+                    {c.symbol} {c.tf} ·{' '}
+                    {c.kind === 'reading'
+                      ? 'Scanner reading comparison'
+                      : c.kind === 'maker-fill'
+                        ? 'Maker fill model comparison'
+                        : c.kind === 'two-bar'
+                          ? 'Two-bar exit comparison'
+                          : c.kind === 'profit-floor'
+                            ? 'Early profit-floor comparison'
+                            : 'Profit-capture comparison'}
+                  </strong>{' '}
+                  <Pill>{c.enabled ? 'Forward shadow test' : 'Disabled'}</Pill>
+                  <p className="small">
+                    {c.controlLabel}: {money(control?.closed ? c.controlNet : null)} · {c.candidateLabel}:{' '}
+                    {money(candidate?.closed ? c.candidateNet : null)}{' '}
+                    <span className="muted">closed net, current policy versions</span>
+                  </p>
+                  <p className="small">
+                    Source scans: {control?.scans ?? 0} control · {candidate?.scans ?? 0} candidate.
+                    {control?.lastScanAt && (
+                      <>
+                        {' '}
+                        Last control scan <Time t={control.lastScanAt} />.
+                      </>
+                    )}
+                  </p>
+                  <p className="small">
+                    {c.sharedSignals} shared source signals · {c.unresolvedSignals} awaiting outcomes ·{' '}
+                    {c.differentAdmissions} with different fill status · {c.controlOnly + c.candidateOnly}{' '}
+                    seen by only one policy.
+                  </p>
+                  {c.matchedClosed === 0 ? (
+                    <p className="small muted">
+                      No closed matched trades yet. Fill accuracy, net profit and SL improvement remain
+                      unproven.
+                    </p>
+                  ) : (
+                    <p className="small">
+                      Both trades closed on {c.matchedClosed} matched signals · candidate difference{' '}
+                      {money(c.matchedDeltaNet)}. Matched net: {money(c.matchedControlNet)} →{' '}
+                      {money(c.matchedCandidateNet)}. SL exits: {c.matchedControlStops} →{' '}
+                      {c.matchedCandidateStops}. All losing trades: {c.matchedControlLosses} →{' '}
+                      {c.matchedCandidateLosses}. Winners cut short: {c.matchedWinnersCut}. Entry mismatches
+                      excluded: {c.matchedEntryMismatch}. Research only; excluded from promotion evidence.
+                    </p>
+                  )}
+                  <p className="small muted">
+                    The matched subset excludes unfilled and unfinished trades. Assess it alongside each
+                    plan’s full net result, missed entries and drawdown. A historical improvement is not
+                    forward proof.
+                  </p>
+                </div>
+              )
+            })}
             <div className="table-wrap">
               <table className="table table-dense">
                 <thead>
@@ -147,7 +175,7 @@ export function ExecutionPlans() {
                         {c.open} / {c.pending}
                       </td>
                       <td className={c.net < 0 ? 'neg' : c.net > 0 ? 'pos' : ''}>
-                        {money(c.net)} / {money(c.fees)}
+                        {money(c.closed ? c.net : null)} / {money(c.closed ? c.fees : null)}
                       </td>
                       <td>
                         {money(c.avgWin)} / {money(c.avgLoss)}
@@ -161,9 +189,9 @@ export function ExecutionPlans() {
                         {pct(c.winRate)} / {pct(c.breakEvenWinRate)}
                       </td>
                       <td>
-                        {c.avgR == null ? '—' : `${c.avgR.toFixed(2)}R`} / {c.stops}
+                        {c.avgR == null ? '—' : `${c.avgR.toFixed(2)}R`} / {c.closed ? c.stops : '—'}
                       </td>
-                      <td>{money(c.drawdown)}</td>
+                      <td>{money(c.closed ? c.drawdown : null)}</td>
                       <td className="small">
                         <div>
                           {money(c.margin)} target margin · {c.leverage}× base · {money(c.referenceEquity)}{' '}
@@ -187,7 +215,12 @@ export function ExecutionPlans() {
                             </>
                           )}
                         </div>
-                        <div>Collecting evidence · no automatic promotion</div>
+                        <div>
+                          {(c.scans ?? 0) > 0 && c.signals === 0
+                            ? 'Source scanned; no fresh entry signal'
+                            : 'Collecting evidence'}{' '}
+                          · no automatic promotion
+                        </div>
                         <details>
                           <summary>
                             {Object.values(c.reasons).reduce((n, v) => n + v, 0)} recorded decision reasons

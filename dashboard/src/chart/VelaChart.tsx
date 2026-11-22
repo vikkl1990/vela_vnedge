@@ -253,6 +253,7 @@ export function VelaChart({
             height,
             volume: true,
             animations: { intro: false, liveBar: false },
+            drawings: { clearOnSymbolChange: true },
           })
           try {
             chart.data.registerProvider(venue, provider)

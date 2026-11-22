@@ -27,6 +27,16 @@ async function fixture(t:any,opts:Record<string,unknown>={}){
  return {dir,archive,advance:(ms:number)=>{now+=ms;},now:()=>now};
 }
 async function rows(dir:string){const out:ReplayEvent[]=[];for await(const r of readReplay(dir))out.push(r);return out;}
+test('one-character bases retain prospective replay events without accepting malformed paths',async t=>{
+ const {dir,archive}=await fixture(t);archive.setSymbols(['MUSD','SUSD','USD','../MUSD','MUSDT']);
+ assert.deepEqual(archive.status().symbols,['MUSD','SUSD']);
+ archive.record('MUSD','trade',{price:.8,qty:3},T,'execution-feed');
+ archive.record('SUSD','checkpoint',{observed:true},T,'advisory-depth');
+ archive.record('../MUSD','trade',{price:.8},T);await archive.close();
+ const events=await rows(dir);assert.equal(events.filter(r=>r.symbol==='MUSD'&&r.kind==='trade').length,1);
+ assert.equal(events.filter(r=>r.symbol==='SUSD'&&r.kind==='checkpoint').length,1);
+ assert.equal(events.filter(r=>r.symbol==='../MUSD').length,0);
+});
 test('sealed replay preserves receipt time, ignores unselected pairs and verifies manifests',async t=>{
  const {dir,archive}=await fixture(t);archive.setSymbols(['INITUSD']);
  archive.record('INITUSD','trade',{timeMs:T-20,price:1,qty:4},T,'execution-feed');

@@ -21,6 +21,25 @@ function fixture(t:any) {
 }
 const flush=()=>new Promise<void>(r=>setImmediate(r));
 
+test('maker comparisons use bounded timely turns and still yield to paper, mirrored exits and memory pressure',async t=>{
+ const f=fixture(t),pool=f.runner.deps.pool;
+ f.cfg.executionPlans=[{id:'m-control',revision:1,enabled:true,scannerId:'maker',symbol:'BTCUSD',tf:'15m',variant:'current',referenceEquity:1000,
+  comparison:{kind:'maker-fill',role:'control',group:'m'}},
+  {id:'m-candidate',revision:1,enabled:true,scannerId:'maker',symbol:'BTCUSD',tf:'15m',variant:'current',referenceEquity:1000,
+  comparison:{kind:'maker-fill',role:'candidate',group:'m'},makerFill:'tick-depth-v2'}];
+ const before=JSON.stringify(f.cfg);
+ pool.stats.queuedLive=1;await f.runner.sync();await flush();assert.equal(f.runner.dispatchStats.started,0);
+ const source=f.runner.active.find((r:any)=>r.scannerId==='maker');
+ assert.equal(f.runner.active.filter((r:any)=>r.scannerId==='maker').length,1);
+ assert.equal(f.runner.dispatch.opts.timely({r:source}),true);
+ pool.stats.queuedLive=0;pool.stats.queuedMirror=1;f.runner.dispatch.drain();await flush();assert.equal(f.runner.dispatchStats.started,0);
+ pool.stats.queuedMirror=0;pool.rssReader=()=>.86;f.runner.dispatch.drain();await flush();assert.equal(f.runner.dispatchStats.started,0);
+ pool.rssReader=()=>.84;f.runner.dispatch.drain();await flush();assert.equal(f.runner.dispatchStats.timelyTurns,1);
+ assert.equal(f.runner.deps.pool.reserved,2);assert.equal(JSON.stringify(f.cfg),before);
+ assert.equal(f.db.get('SELECT count(*) n FROM positions')!.n,0);
+});
+
+
 test('startup recovers a fresh close once, deduplicates a concurrent WS event and repeated syncs',async t=>{
  const f=fixture(t);await Promise.all([f.runner.sync(),f.runner.sync()]);
  assert.equal(f.store.shadowScanActivity(f.pair)?.status,'scheduled');

@@ -3,6 +3,11 @@ import type {Db} from '../db.ts';
 import {priceExit,type ExitBook} from './exitExecution.ts';
 import type {EntryAdmissionDepth} from './entryExecution.ts';
 
+export type TickDepthMakerModel='tick-depth-v1'|'tick-depth-v2';
+export function tickDepthMaker(model:unknown):model is TickDepthMakerModel {
+ return model==='tick-depth-v1'||model==='tick-depth-v2';
+}
+
 /** Use the exact verified WS book observed now, never a later REST reconstruction. */
 export function makerDepthEvidence(book:ExitBook|null,at:number,qty:number,contractValue:number):EntryAdmissionDepth|null {
  if(!book||!Number.isSafeInteger(qty)||qty<1||!(contractValue>0))return null;

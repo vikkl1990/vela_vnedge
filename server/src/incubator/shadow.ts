@@ -87,7 +87,7 @@ export class ShadowRunner {
   private seen = new Set<string>();
   private labels = new Map<string, Set<string>>();
   private timer: NodeJS.Timeout | null = null;
-  private deps: { timelyResearch?: () => ReadonlySet<string>; compare?: PlanComparisons['observe']; compareScan?: PlanComparisons['observeScan']; store: IncubatorStore; cfgRef: () => AppConfig; candles: CandleStore; pool: PinePool; registry: ScannerRegistry; paper: PaperEngine; marketInfo: (symbol: string) => Promise<MarketInfo>; /** Decision 116: the account takes the shadow pair's events too, under its own gates, when `incubator.mirror.enabled`. */ mirror?: (s: LoadedScanner, symbol: string, tf: string, ev: ScanEvent, bars: Bar[], market: MarketInfo, exitMode: ExitMode, lastBar: Bar) => void | Promise<void>; /** Decision 112: the market gate's verdict on a symbol today, as the account reads it. */ marketVerdict?: (symbol: string) => { allowed: boolean; reasons: string[] } | null; /** Decision 108: every shadow entry carries the model's features and probability, as a live entry does. */ ml?: Pick<MlService,'features'|'scoreEntry'|'bindPrediction'>; subscribe?: (symbols: string[]) => void; /** Decision 166: what the account can act on now, to order a wave's scans by it. */ accountFocus?: () => { held: Set<string>; full: boolean }; /** Decision 201: whether the account holds an open position on this scanner, market and timeframe — its exits must reach the account whatever the copy setting. */ accountHolds?: (scannerId: string, symbol: string, tf: string) => boolean };
+  private deps: { timelyResearch?: () => ReadonlySet<string>; compare?: PlanComparisons['observe']; compareScan?: PlanComparisons['observeScan']; compareSourceScan?: PlanComparisons['observeSourceScan']; store: IncubatorStore; cfgRef: () => AppConfig; candles: CandleStore; pool: PinePool; registry: ScannerRegistry; paper: PaperEngine; marketInfo: (symbol: string) => Promise<MarketInfo>; /** Decision 116: the account takes the shadow pair's events too, under its own gates, when `incubator.mirror.enabled`. */ mirror?: (s: LoadedScanner, symbol: string, tf: string, ev: ScanEvent, bars: Bar[], market: MarketInfo, exitMode: ExitMode, lastBar: Bar) => void | Promise<void>; /** Decision 112: the market gate's verdict on a symbol today, as the account reads it. */ marketVerdict?: (symbol: string) => { allowed: boolean; reasons: string[] } | null; /** Decision 108: every shadow entry carries the model's features and probability, as a live entry does. */ ml?: Pick<MlService,'features'|'scoreEntry'|'bindPrediction'>; subscribe?: (symbols: string[]) => void; /** Decision 166: what the account can act on now, to order a wave's scans by it. */ accountFocus?: () => { held: Set<string>; full: boolean }; /** Decision 201: whether the account holds an open position on this scanner, market and timeframe — its exits must reach the account whatever the copy setting. */ accountHolds?: (scannerId: string, symbol: string, tf: string) => boolean };
   private marketsCache: { at: number; map: Map<string, { turnoverUsd: number | null }> } | null = null;
   /** The market gate's 24h turnover for a symbol (null when unjudged), read at most once a minute. */
   private turnoverOf(symbol: string): number | null {
@@ -243,7 +243,7 @@ export class ShadowRunner {
     this.timelyCells=this.deps.timelyResearch?.()??new Set();
     this.forwardCells=this.deps.store.forwardCollectionKeys?.()??new Set();
     this.readingCells=new Set([
-      ...(cfg.executionPlans??[]).filter(p=>p.enabled&&(p.readingOverride||solFilterPlan(p)||([SOL_MAKER_REFERENCE_ID,SOL_MAKER_TICK_REFERENCE_ID].includes(p.id)&&p.revision===1&&p.scannerId===SOL_MAKER_SCANNER&&p.symbol==='SOLUSD'&&p.tf==='15m'))).map(p=>`${p.scannerId}:${p.symbol}:${p.tf}`),
+      ...(cfg.executionPlans??[]).filter(p=>p.enabled&&(p.comparison?.kind==='maker-fill'||p.readingOverride||solFilterPlan(p)||([SOL_MAKER_REFERENCE_ID,SOL_MAKER_TICK_REFERENCE_ID].includes(p.id)&&p.revision===1&&p.scannerId===SOL_MAKER_SCANNER&&p.symbol==='SOLUSD'&&p.tf==='15m'))).map(p=>`${p.scannerId}:${p.symbol}:${p.tf}`),
       ...this.deps.paper.openPositions().filter(p=>p.executionPlan?.readingOverride).map(p=>`${p.executionPlan!.sourceScannerId}:${p.symbol}:${p.tf}`),
     ]);
     if (!cfg.incubator?.enabled) { this.pairs = [];this.dispatch.prune(new Set()); return; }
@@ -436,9 +436,15 @@ export class ShadowRunner {
     const READ = readingOf(cfg.scanners[s.id], s.id, (TF_SECONDS[r.tf] ?? 0) * 1000, s.patched, s.variantOf);   // decision 195
     const derived = applyRules({ scannerId: s.id, alerts: res.alerts, shapes: res.shapes, labels: res.labels, plots: res.plots, rule: cfg.scanners[s.id]?.rule ?? null, bars, mode: 'live', newLabelKeys, ...READ.rule });
     // decision 125: read from the bar after the last one this pair acted on; entries on a superseded bar are stale and dropped
-    const events = extractEvents(res.alerts, res.shapes, { barMs: (TF_SECONDS[r.tf] ?? 0) * 1000, drawn: res.labels, scannerId: s.id, sinceBarTime: win.since, derived, ...READ.extract })
+    const drops:Record<string,number>={};
+    const events = extractEvents(res.alerts, res.shapes, { drops, barMs: (TF_SECONDS[r.tf] ?? 0) * 1000, drawn: res.labels, scannerId: s.id, sinceBarTime: win.since, derived, ...READ.extract })
       .filter(ev => !(ev.kind === 'entry' && ev.barTime < lastBar.time));
     this.deps.store.noteChartReceipt?.(s.id,r.symbol,r.tf,s.patched,cfg.scanners[s.id],bars,res,events);
+    if(this.deps.compareSourceScan && (cfg.executionPlans??[]).some(p=>p.enabled&&p.comparison?.kind==='maker-fill'&&p.scannerId===s.id&&p.symbol===r.symbol&&p.tf===r.tf)){
+      try { this.deps.compareSourceScan({scannerId:s.id,scannerName:s.name,symbol:r.symbol,tf:r.tf,events,drops,bars,market,
+        at:Date.now(),refPrice:this.deps.paper.mark(r.symbol)??lastBar.close}); }
+      catch(error){log.warn(`maker comparison scan receipt ${s.id} ${r.symbol}: ${String(error)}`);}
+    }
     // Interpretation experiments see the raw output even when today's reader found no entry.
     if(this.deps.compareScan && ((cfg.executionPlans??[]).some(p=>p.enabled&&(p.readingOverride||solFilterPlan(p))&&p.scannerId===s.id&&p.symbol===r.symbol&&p.tf===r.tf)
       ||this.deps.paper.openPositions().some(p=>p.executionPlan?.readingOverride&&p.executionPlan.sourceScannerId===s.id&&p.symbol===r.symbol&&p.tf===r.tf))){

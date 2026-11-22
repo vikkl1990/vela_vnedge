@@ -10,6 +10,14 @@ import type { WorkerJob, WorkerResult } from './worker.ts';
 import type { FlowMinute } from '../orderflow/store.ts';
 
 const log = logger.scoped('pool');
+
+/** Exchange and alert credentials stay in the parent. A Pine worker only needs the job. */
+const WORKER_SECRET_ENV = ['DELTA_API_KEY', 'DELTA_API_SECRET', 'DELTA_LIVE', 'TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_ID'];
+export function workerEnv(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env, ...extra };
+  for (const key of WORKER_SECRET_ENV) delete env[key];
+  return env;
+}
 /** Decision 184: how long a terminated worker may take to exit before its slot is replaced regardless. */
 const RETIRE_GRACE_MS = 30_000;
 const WORKER_FILE = path.join(path.dirname(fileURLToPath(import.meta.url)), 'worker.ts');
@@ -60,7 +68,7 @@ export function memoryUsedBytes(): number {
 export function processWorker(index: number, heapMb = WORKER_HEAP_MB): PoolWorker {
   const child = fork(WORKER_FILE, [], {
     execArgv: ['--no-warnings=ExperimentalWarning', `--max-old-space-size=${heapMb}`],
-    env: { ...process.env, WORKER_INDEX: String(index) },
+    env: workerEnv({ WORKER_INDEX: String(index) }),
     serialization: 'advanced', stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
   });
   return {
