@@ -90,7 +90,30 @@ export type GateVerdict = { decision: 'propose' | 'brewing' | 'retire'; reasons:
  * that has clearly failed on a full sample, or that has not proven itself in `maxDays`, frees its
  * slot for the next candidate instead of occupying it forever.
  */
-export function gateVerdict(s: PairStats, g: IncubatorConfig['gate'], overlapPct = 0): GateVerdict {
+/** One-sided upper tail of a standard normal. The promotion t-stat is used as that z. */
+export function oneSidedNormalP(t: number): number {
+  if (!Number.isFinite(t)) return t > 0 ? 0 : 1;
+  return 0.5 * erfc(t / Math.SQRT2);
+}
+function erf(x: number): number {
+  const sign = x < 0 ? -1 : 1;
+  const a = [0.254829592, -0.284496736, 1.421413741, -1.453152027, 1.061405429];
+  const t = 1 / (1 + 0.3275911 * Math.abs(x));
+  const y = 1 - (((((a[4] * t + a[3]) * t) + a[2]) * t + a[1]) * t + a[0]) * t * Math.exp(-x * x);
+  return sign * y;
+}
+function erfc(x: number): number { return 1 - erf(x); }
+
+function multipleTestingCheck(t: number, g: IncubatorConfig['gate'], trials: number): Array<[boolean, string]> {
+  const rule = g.multipleTesting;
+  if (!rule?.enabled || !(trials > 1)) return [];
+  const alpha = rule.alpha ?? 0.05;
+  const p = oneSidedNormalP(t);
+  const limit = alpha / trials;
+  return [[p <= limit, `multiple testing p ${p.toExponential(2)} (Bonferroni ${limit.toExponential(2)} over ${trials} cells)`]];
+}
+
+export function gateVerdict(s: PairStats, g: IncubatorConfig['gate'], overlapPct = 0, trials = 1): GateVerdict {
   const pf = s.pfR ?? Infinity;
   const checks: Array<[boolean, string]> = [
     [s.trades >= g.minTrades, `${s.trades}/${g.minTrades} trades`],
@@ -102,6 +125,7 @@ export function gateVerdict(s: PairStats, g: IncubatorConfig['gate'], overlapPct
     // decision 177: the standard error of a 30-trade mean is ±0.15–0.20R, so a mean alone passes the upper tail of noise;
     // the record must stand `minT` standard errors above zero before it is evidence
     [!(g.minT! > 0) || s.tStat >= g.minT!, `t ${Number.isFinite(s.tStat) ? s.tStat.toFixed(2) : s.tStat > 0 ? '∞' : '−∞'} (need ${g.minT ?? 0})`],
+    ...multipleTestingCheck(s.tStat, g, trials),
     [overlapPct <= g.maxOverlapPct, `${overlapPct.toFixed(0)}% of entries duplicate a live pair (max ${g.maxOverlapPct}%)`],
   ];
   const failing = checks.filter(c => !c[0]).map(c => c[1]);
@@ -115,8 +139,8 @@ export function gateVerdict(s: PairStats, g: IncubatorConfig['gate'], overlapPct
  * The same gate, plus breadth: a cohort carried by one lucky market is not a scanner with an edge.
  * Breadth is only asked of cohorts with at least two markets that have traded enough to judge.
  */
-export function cohortVerdict(s: CohortStats, g: IncubatorConfig['gate'], overlap = 0): GateVerdict {
-  const v = gateVerdict(s, g, overlap);
+export function cohortVerdict(s: CohortStats, g: IncubatorConfig['gate'], overlap = 0, trials = 1): GateVerdict {
+  const v = gateVerdict(s, g, overlap, trials);
   const broad = s.marketsJudged < 2 || s.positiveMarketsPct >= g.minPositiveMarketsPct;
   const breadth = `${s.positiveMarkets}/${s.marketsJudged} markets positive (need ${g.minPositiveMarketsPct}%)`;
   if (broad) return v.decision === 'propose' ? { ...v, reasons: [...v.reasons, breadth] } : v;

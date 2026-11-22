@@ -27,7 +27,7 @@ const log = logger.scoped('realtime');
 const TICK_MS = 5000;
 
 /** Coalesce refreshes, retaining one fresh pass after a reconnect or maintenance recovery. */
-export function wireTradingStatus(app: Pick<App, 'feed' | 'rest'>, status: TradingStatus): () => void {
+export function wireTradingStatus(app: Pick<App, 'feed' | 'rest' | 'executionLoops'>, status: TradingStatus): () => void {
   let running = false, requested = false, fresh = false, stopped = false;
   const refresh = async (recovery = false) => {
     if (stopped) return;
@@ -56,15 +56,24 @@ export function wireTradingStatus(app: Pick<App, 'feed' | 'rest'>, status: Tradi
   };
   const product = (m: any) => status.product(String(m.product?.symbol ?? ''), String(m.product?.trading_status ?? ''), toMs(m.timestamp ?? m.ts));
   app.feed.on('status', connection); app.feed.on('system_status', system); app.feed.on('product_updates', product);
-  const timer = setInterval(() => { if (app.feed.connected) void refresh(); }, 60_000);
-  timer.unref();
+  const stopTimer = deferLoop(app, () => { if (app.feed.connected) void refresh(); }, 60_000);
   return () => {
-    stopped = true; clearInterval(timer);
+    stopped = true; stopTimer();
     app.feed.off('status', connection); app.feed.off('system_status', system); app.feed.off('product_updates', product);
   };
 }
 
-/** Attach feed listeners and the periodic scheduler. Call once from the App constructor. */
+/** Register a timer that does not run until {@link App.startExecutionLoops}. */
+export function deferLoop(app: { executionLoops?: Array<() => ReturnType<typeof setInterval>> }, fn: () => void, ms: number): () => void {
+  let timer: ReturnType<typeof setInterval> | null = null;
+  (app.executionLoops ??= []).push(() => {
+    if (!timer) { timer = setInterval(fn, ms); timer.unref?.(); }
+    return timer;
+  });
+  return () => { if (timer) clearInterval(timer); timer = null; };
+}
+
+/** Attach feed listeners in the constructor. Periodic work starts only from {@link App.start}. */
 export function wireRealtime(app: App): void {
   // The incubator's shadow book gets exactly the same market data as the live book, so its evidence
   // describes the same fills, liquidation and funding a promoted pair would see.
@@ -93,7 +102,7 @@ export function wireRealtime(app: App): void {
       for(const b of books)b.settleExits(symbol,book,at);
     }
   });
-  const exitTimer=setInterval(()=>exitPump.tick(),100);exitTimer.unref();
+  const stopExit = deferLoop(app, () => exitPump.tick(), 100);
   const flow = app.orderFlow = new OrderFlowStore(app.db);
   app.feed.subscribe('all_trades', flow.symbols);
   app.pool.footprintLoader = async job => {
@@ -131,25 +140,24 @@ export function wireRealtime(app: App): void {
     if(symbol==='SOLUSD')app.shadow.observeMakerBook(symbol,depth.bookAt(symbol,at,1000),at,'tick-depth-v1');
   });
   let auditing=false, staging=false;
-  const auditTimer=setInterval(() => {
+  const stopAudit = deferLoop(app, () => {
     if (auditing || !app.executor) return;
     auditing=true;
     void audit.sync(app.executor.transport).catch(e=>log.warn(`account history audit: ${e.message}`)).finally(()=>{auditing=false;});
-  },60_000);
-  const historyTimer=setInterval(() => {
+  }, 60_000);
+  const stopHistory = deferLoop(app, () => {
     if(staging)return; staging=true;
     void funding.stageHistory(app.rest).catch(e=>log.warn(`funding history audit: ${e.message}`)).finally(()=>{staging=false;});
     // Periodic snapshots keep the bounded diagnostic ring replayable after pruning.
     app.feed.unsubscribe('ob_updates',depth.symbols); app.feed.subscribe('ob_updates',depth.symbols);
-  },600_000);
-  const depthTimer=setInterval(()=>{
+  }, 600_000);
+  const stopDepth = deferLoop(app, () => {
     timing.flush();
     try{depth.flush();}catch(e:any){log.warn(`depth audit: ${e.message}`);}
     try{flow.flush();}catch(e:any){log.warn(`order flow: ${e.message}`);}
     void replay.flush();
-  },5000);
-  for(const t of [auditTimer,historyTimer,depthTimer])t.unref();
-  app.stopExecutionAudit=async()=>{app.tradeMonitor.stop();exitPump.stop();clearInterval(exitTimer);app.accountObserver.stop();stopStatus();for(const t of [auditTimer,historyTimer,depthTimer,timer])clearInterval(t);depth.disconnect();try{depth.flush();flow.connection(false);}catch(e:any){log.warn(`audit shutdown flush: ${e.message}`);}timing.flush();await replay.close();};
+  }, 5000);
+  app.stopExecutionAudit=async()=>{app.tradeMonitor.stop();exitPump.stop();stopExit();app.accountObserver.stop();stopStatus();for(const stop of [stopAudit,stopHistory,stopDepth,stopScheduler])stop();depth.disconnect();try{depth.flush();flow.connection(false);}catch(e:any){log.warn(`audit shutdown flush: ${e.message}`);}timing.flush();await replay.close();};
   const status = app.exchangeStatus ?? new TradingStatus();
   const stopStatus = wireTradingStatus(app, status);
   for (const b of books) b.entryBlock = (symbol, at) => app.runtime?.entryBlock ?? status.block(symbol, at);
@@ -201,7 +209,7 @@ export function wireRealtime(app: App): void {
   });
   app.feed.on('mark', (m: WsMark) => { replay.record(m.symbol,'mark',m,Date.now(),'execution-feed');funding.mark(m); app.marks.onWsMark(m); for (const b of books) b.onMarkPrice(m.symbol, m.markPrice, m.timeMs); });
   app.feed.on('funding', (f: WsFunding) => { replay.record(f.symbol,'funding',f,Date.now(),'execution-feed');funding.observe(f); app.marks.onWsFunding(f); });
-  const timer = setInterval(() => {
+  const stopScheduler = deferLoop(app, () => {
     const now = Date.now();
     try {
       funding.settle(now,(symbol,rate,mark,at)=>{for(const b of books)b.reconcileFunding(symbol,rate,mark,at);});
@@ -217,7 +225,6 @@ export function wireRealtime(app: App): void {
       app.risk.tick(now);
     } catch (e: any) { log.warn(`scheduler step failed: ${e?.message ?? e}`); }
   }, TICK_MS);
-  timer.unref?.();
 }
 
 /** Subscribe the tape / mark / funding channels for the scanned symbols plus anything with an open position. */

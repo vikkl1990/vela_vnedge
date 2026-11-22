@@ -436,6 +436,12 @@ export interface IncubatorConfig {
     minWeeks?: number;
     /** Decision 177: the mean R must stand this many standard errors above zero (0 turns it off). At n = 30 the mean alone cannot be told from noise. */
     minT?: number;
+    /**
+     * Off unless set. When enabled, a proposal also needs a one-sided normal p-value at most
+     * `alpha / trials`, where trials is the number of incubator cells judged in that decision
+     * (candidates, shadow, and proposals). This is Bonferroni, not a claim about the whole catalogue.
+     */
+    multipleTesting?: { enabled: boolean; alpha?: number };
     /** Decision 177: no proposal for the fleet on a market under this 24h turnover (0 turns it off); a slot is not spent where the fills will not exist. */
     minTurnoverUsd?: number;
   };
@@ -644,7 +650,7 @@ export const DEFAULT_CONFIG: AppConfig = {
     gate: {
       minTrades: 30, minDays: 14, minPfR: 1.2, minPositiveWeeksPct: 60, minAvgR: 0.1, maxOverlapPct: 50, maxDays: 45, failPfR: 1.0, minT: 2, minTurnoverUsd: 5_000_000,
       pool: 'cohort', minPositiveMarketsPct: 50, minMarketTrades: 3, maxDaysByTf: { '1h': 60, '4h': 90 }, minTradesByTf: {}, minDaysByTf: {},
-      staleDays: 21, staleDaysByTf: { '1h': 30, '4h': 45 }, minWeeks: 3,
+      staleDays: 21, staleDaysByTf: { '1h': 30, '4h': 45 }, minWeeks: 3, multipleTesting: { enabled: false, alpha: 0.05 },
     },
     admit: { rotation: { enabled: false, maxPerDay: 12, idleDaysByTf: { '15m': 7, '1h': 14, '4h': 28 }, cooldownDays: 3 }, cohortMarkets: { default: 5, '1h': 8, '4h': 12 }, minCohortMarkets: 3,
       reserve: [{ tfs: ['4h'], markets: ['BTCUSD', 'ETHUSD', 'SOLUSD', 'XRPUSD'], slots: 80 }, { tfs: ['4h'], slots: 200 }] },
@@ -977,6 +983,10 @@ export function validateConfig(c: AppConfig): string[] {
     if (inc.demote?.costStarvedDays !== undefined && !(inc.demote.costStarvedDays >= 1 && inc.demote.costStarvedDays <= 60)) errs.push('incubator.demote.costStarvedDays must be 1..60');
     if (inc.demote?.marketOutDays !== undefined && !(inc.demote.marketOutDays >= 1 && inc.demote.marketOutDays <= 60)) errs.push('incubator.demote.marketOutDays must be 1..60');
     if (inc.gate?.minWeeks !== undefined && !(Number.isInteger(inc.gate.minWeeks) && inc.gate.minWeeks >= 0 && inc.gate.minWeeks <= 12)) errs.push('incubator.gate.minWeeks must be 0..12');
+    if (inc.gate?.multipleTesting !== undefined) {
+      const m = inc.gate.multipleTesting;
+      if (!m || typeof m.enabled !== 'boolean' || (m.alpha !== undefined && !(m.alpha > 0 && m.alpha < 1))) errs.push('incubator.gate.multipleTesting needs enabled boolean and alpha in (0, 1)');
+    }
     const rotation = inc.admit?.rotation;
     if (rotation && (typeof rotation.enabled !== 'boolean' || !Number.isInteger(rotation.maxPerDay) || rotation.maxPerDay < 0 || rotation.maxPerDay > 50
       || !Number.isFinite(rotation.cooldownDays) || rotation.cooldownDays < 1 || rotation.cooldownDays > 30

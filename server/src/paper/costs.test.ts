@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { DEFAULT_CONFIG, validateConfig } from '../config.ts';
-import { admissionCostPct, crossingSlippageBps } from './costs.ts';
+import { admissionCostPct, crossingSlippageBps, stressedSlippage } from './costs.ts';
 import { applyFunding, checkRiskVsFees, closingFeeWaived, feeFor, fillExit, openPosition, sizeContracts } from './logic.ts';
 import { runBacktest } from './backtest.ts';
 import { Db } from '../db.ts';
@@ -85,6 +85,11 @@ test('invalid quote costs and enrollment dates are rejected', () => {
   assert.ok(validateConfig(c).some(s => s.includes('quotedSlippageBps')));
   c.paper.quotedSlippageBps = 0; c.paper.scalperOffer!.joinedAt = NaN;
   assert.ok(validateConfig(c).some(s => s.includes('joinedAt')));
+});
+
+test('screen stress is added to the account slippage and cannot replace a wider one', () => {
+  assert.deepEqual(stressedSlippage({ slippageBps: 20, quotedSlippageBps: 5 }, 10), { slippageBps: 30, quotedSlippageBps: 15 });
+  assert.deepEqual(stressedSlippage({ slippageBps: 2, quotedSlippageBps: 0 }, 10), { slippageBps: 12, quotedSlippageBps: 10 });
 });
 
 test('incubator ATR prefilter uses the same maker budget without counting the book fee twice', () => {

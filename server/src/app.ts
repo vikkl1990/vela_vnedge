@@ -111,6 +111,9 @@ export class App {
   readonly profiles: ProfileStore;
   readonly marketGate: MarketGate;
   private marketTimer: ReturnType<typeof setInterval> | null = null;
+  /** Periodic execution work registered during construction and armed only from {@link start}. */
+  readonly executionLoops: Array<() => ReturnType<typeof setInterval>> = [];
+  private executionLoopsStarted = false;
   readonly evidenceReview: EvidenceReview<{synced: ReturnType<typeof incubatorSyncLive>; report: ReturnType<typeof incubatorEvaluate>; promoted: string[]; blocked: string[]}>;
   private lastAdmissionAt = 0;
   private huntTimer: ReturnType<typeof setInterval> | null = null;
@@ -365,7 +368,15 @@ export class App {
     return out;
   }
 
+  startExecutionLoops(): void {
+    if (this.executionLoopsStarted) return;
+    this.executionLoopsStarted = true;
+    for (const start of this.executionLoops) start();
+    this.tradeMonitor?.start();
+  }
+
   async start(): Promise<void> {
+    this.startExecutionLoops();
     this.tapeAudit.start();
     this.context.start();
     this.accountObserver.start();
