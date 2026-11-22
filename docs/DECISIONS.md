@@ -8386,3 +8386,9 @@ Nightly and conjunction screens use one timestamped-signal entry point. Training
 The optional multiple-testing guard remains disabled by default. Disabled evaluations perform no trial-count query. When explicitly enabled, one lightweight stage-count snapshot is shared by all pair/cohort judgments in that evaluation; retiring an earlier cell cannot relax the denominator for later cells. Approval performs its own fresh count. No repeated full-catalogue loads or JSON decoding are needed to count trials.
 
 Regression coverage includes an occupied API port with normal and stalled cleanup, the real app's execution timer lifecycle, pair/cohort evaluation with the optional guard on and off, a stable denominator through retirements, and shared signal-screen holdout/density boundaries. Saved paper mode, risk limits, evidence settings and held-position policies are preserved.
+
+## 320. Record the AGPL packages in NOTICE and the README (22 November 2026)
+
+`NOTICE` and the README licence section now say which dependencies carry which licence, read from the npm registry on 22 November 2026: `pinets` and `@luxalgo/vela-pinets` are AGPL-3.0-only, `@luxalgo/vela` and `@luxalgo/vela-ui` are Apache-2.0. Neither file mentioned them before, although the scanners and the chart run on the AGPL ones.
+
+This is a record, not a licence choice. The owner still decides what the project's own code is released under, and the notice is not legal advice. What was checked: the packages are installed unmodified, because `server/src/pine/patches.ts` rewrites Pine scripts and no patch files or install hooks edit the packages. What was not checked: the packages' own LICENSE files (only the npm metadata), and whether serving the bundled dashboard from a localhost-only bot is covered by the network clause in any particular reading. No code, setting, scanner or paper trade changes.

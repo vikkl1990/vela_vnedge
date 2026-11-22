@@ -306,6 +306,7 @@ There is no single license for this repository. That choice belongs to the owner
 * The bot and dashboard sources are the project's own code. A copy of an MIT grant sits at `scripts/licenses/vnedge-MIT.txt` and does not by itself license the Pine library.
 * `scripts/pine/` holds third-party TradingView scripts. Many headers are CC BY-NC-SA, some are MPL, and some publish no license. Those files stay under the terms in their own headers.
 * `scripts/libraries/` holds imported Pine libraries under the licenses those libraries publish, commonly MPL.
+* `pinets` and `@luxalgo/vela-pinets`, which run the scanners and the chart, are AGPL-3.0-only; `@luxalgo/vela` and `@luxalgo/vela-ui` are Apache-2.0. See `NOTICE` before giving the bot, the dashboard or a hosted copy to anyone else.
 
 Do not treat a missing header as permission to reuse a script.
 

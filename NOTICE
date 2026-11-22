@@ -7,3 +7,12 @@ This repository mixes project code with third-party Pine scripts. It does not ha
 - `scripts/libraries/` is imported Pine library code, commonly under MPL, and stays under the license that library publishes.
 
 A script with no header is not free to reuse.
+
+## Third-party packages with a copyleft licence
+
+The server and the dashboard depend on packages published by LuxAlgo. Their licences, as published on npm on 22 November 2026:
+
+- `pinets` (the Pine engine the server runs the scanners on, also bundled in the dashboard) and `@luxalgo/vela-pinets` (runs Pine scripts on the chart) are **AGPL-3.0-only**.
+- `@luxalgo/vela` (the chart) and `@luxalgo/vela-ui` are Apache-2.0.
+
+The AGPL asks that anyone who modifies these packages and lets other people use the result over a network also offers them the corresponding source. As of this note the project installs them unmodified from npm: `server/src/pine/patches.ts` rewrites Pine scripts before PineTS runs them, and nothing in the repository edits the packages themselves (no patch files, no install hooks). The bot serves its dashboard, which bundles the AGPL packages, but is bound to localhost and used by its owner. Before the bot, the dashboard or a hosted copy is given to anyone else, the owner must decide how to meet these terms, and changing a package would make that decision more pressing. This note records the facts; it is not legal advice.
