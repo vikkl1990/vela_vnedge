@@ -88,6 +88,20 @@ test('historical extremes cannot create a backdated exit or a retrospective trai
  assert.equal(x.e.pendingExits().length,0);assert.equal(x.p.sl,95);
  x.e.onTrade('BTCUSD',94,1,x.now,x.now);assert.equal(x.e.pendingExits()[0].trigger_at,x.now);
 });
+test('a tighter trail during a pending amendment replaces the stored stop but not its deadline', t => {
+  const x = setup(t, true, 'long', { trailAfterR: 0.5, trailGiveBackPct: 0, trailDistanceR: 1, floorAtR: 0 });
+  x.at(T + 300);
+  x.e.onTrade('BTCUSD', 103, 1, x.now, x.now);
+  const first = x.e.exitExecution.state(x.p.id)!;
+  assert.ok(first.desired_stop! > 95);
+  const deadline = first.ack_at;
+  x.at(T + 350);
+  x.e.onTrade('BTCUSD', 110, 1, x.now, x.now);
+  const next = x.e.exitExecution.state(x.p.id)!;
+  assert.ok(next.desired_stop! > first.desired_stop!, 'the pending stop keeps the better price');
+  assert.equal(next.ack_at, deadline, 'the acknowledgement deadline does not move earlier');
+  assert.equal(x.p.sl, 95);
+});
 test('desired trail becomes active only after its acknowledgement, including restart',t=>{
  const x=setup(t,true,'long',{trailAfterR:.5,trailGiveBackPct:10,floorAtR:0});
  x.at(T+300);x.e.onTrade('BTCUSD',103,1,x.now,x.now);assert.equal(x.p.sl,95);assert.ok(x.e.view(x.p).execution!.desiredStop!>102);

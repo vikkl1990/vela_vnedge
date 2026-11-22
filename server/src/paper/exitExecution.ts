@@ -54,9 +54,13 @@ export class PaperExitExecution {
   if(desired===null||desired===p.sl)return;
   const s=this.state(p.id);if(!s)return;
   const tighter=(a:number,b:number|null)=>b===null||(p.side==='long'?a>b:a<b);
-  if(s.ack_at!==null||!tighter(desired,p.sl))return;
-  // An already-sent amendment retains its value/deadline. The next observation
-  // can request a newer level after acknowledgement, never activate it early.
+  if(s.ack_at!==null){
+    // Keep the tightest stop seen while the first amendment is still waiting.
+    // Do not move ack_at earlier: the stop still cannot activate before that deadline.
+    if(s.desired_stop!=null&&tighter(desired,s.desired_stop))this.db.run('UPDATE paper_execution_positions SET desired_stop=? WHERE position_id=?',desired,p.id);
+    return;
+  }
+  if(!tighter(desired,p.sl))return;
   this.db.run('UPDATE paper_execution_positions SET desired_stop=?,ack_at=? WHERE position_id=?',desired,at+Math.max(0,latency),p.id);
  }
  /** Resolve a single report, including shared account liquidity consumption, atomically with its fill. */
