@@ -8520,6 +8520,14 @@ This changes diagnostics only. Current scanner readings, scheduling, minimum clo
 
 The parity audit also exposed redundant work: `qualifiedEvidence` re-read and revalidated the entire exact sample after already obtaining it for the forward-hold check. Reuse that validated synchronous result (preserving latest-trade limit semantics); passing fee-restoration assessments still perform their separate compatible read. The incubator response yields between bounded chunks so building diagnostics does not monopolize feed/exit timers. Neither optimization caches evidence across calls or omits validation.
 
+## 329. Finish restored shadow samples in the bounded collection lane (23 November 2026)
+
+The 86 replay-restored cells still below the paper-copy sample minimum all had real shadow fills in the preceding seven days. In the 24-hour audit, 42 cells produced entry signals and 25 filled 29 entries. Four XRP 4h cells missed their last scan deadline; the other 82 completed their latest scans. No sample, liquidity, fee, chop, stop or target rule was removed.
+
+Execution-replay restoration metadata was absent from the timely research lane used by explicit forward evaluations and watched comparisons. Include current-policy replay-restored cells only while the actual close-time copy refusal is a sample-count shortfall. Metadata is merely a scheduling hint: full replay proof validation still happens in the existing qualification boundary. A completed losing sample, quarantine, changed policy, missing market data or a move out of shadow loses this preference. Losing incomplete samples receive the same collection priority as winning ones.
+
+The lane remains one of every four background starts. Paper reservations, memory pressure guards, signal-age deadlines, ordinary exploration turns, risk settings and evidence identities are unchanged. The metadata refresh is read-only and yields cooperatively. No historical signal is replayed into a fill. In a controlled overloaded 2,386-job test, restored cells completed 0/86 before and 86/86 after; total throughput and total expiries were identical, and reserved paper jobs remained at 200 ms. This reallocates scarce research starts; it does not claim to increase total machine capacity or guarantee a signal on every scan.
+
 ## 330. Step through journal trades with j and k (16 November 2026)
 
 Reviewing why trades stopped out meant clicking a row, reading its detail, scrolling back up and clicking the next one. With a

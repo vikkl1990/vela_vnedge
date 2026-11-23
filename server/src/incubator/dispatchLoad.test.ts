@@ -38,3 +38,37 @@ test('split admission waits clear a saturated wave without delaying paper or ext
  assert.ok(after.latency.every(ms=>ms===200));assert.ok(after.maxOutstanding<=24);assert.ok(after.maxResearch<=6);
  t.diagnostic(JSON.stringify({baseline:{finished:before.finished,expired:before.expired},split:{finished:after.finished,expired:after.expired,maxOutstanding:after.maxOutstanding},paperLatencyMs:after.latency}));
 });
+
+test('restored sample collection survives a saturated wave without borrowing paper capacity',async t=>{
+ t.mock.timers.enable({apis:['Date','setTimeout','setInterval'],now:2_000_000});
+ const flush=()=>new Promise<void>(resolve=>setImmediate(resolve));
+ async function scenario(restoredLane:boolean){
+  const pool=new PinePool(8,90_000,()=>{
+   const w:any=new EventEmitter();w.postMessage=(job:any)=>setTimeout(()=>w.emit('message',{id:job.id,ok:true}),job.scannerId==='paper'?200:800);
+   w.terminate=async()=>0;queueMicrotask(()=>w.emit('message',{ready:true}));return w;
+  },Number.MAX_SAFE_INTEGER);
+  pool.rssReader=()=>0;
+  const start=Date.now(),latency:number[]=[],papers:Promise<unknown>[]=[],restored:number[]=[];
+  const job={source:'',symbol:'XRPUSD',tf:'4h',tickSize:.01,bars:[],tailBars:1,plotTail:1};
+  const d=new ShadowDispatch<number>({limit:()=>6,maxInFlight:()=>24,priority:i=>i<2300?.8:.2,
+   timely:i=>restoredLane&&i>=2300,ready:()=>pool.stats.queuedLive===0&&pool.stats.queuedMirror===0,
+   run:async(i,release)=>{const r=await pool.run({...job,scannerId:String(i)},{priority:'shadow',deadlineMs:start+295000-Date.now()});
+    assert.equal(r.ok,true);release();if(i>=2300)restored.push(i);}});
+  for(let i=0;i<2386;i++)d.enqueue(String(i),i,start+295000);
+  for(let elapsed=0;elapsed<=310000;elapsed+=100){
+   if([0,60000,120000,180000,240000].includes(elapsed)){
+    const at=Date.now();for(let i=0;i<2;i++)papers.push(pool.run({...job,scannerId:'paper'},{priority:'live'}).then(r=>{assert.equal(r.ok,true);latency.push(Date.now()-at);}));
+   }
+   d.drain();await flush();assert.ok(d.stats.computing<=6);assert.ok(d.stats.inFlight<=24);
+   t.mock.timers.tick(100);await flush();
+  }
+  await Promise.all(papers);d.stop();await pool.stop();
+  return {...d.stats,restored:restored.length,latency};
+ }
+ const before=await scenario(false),after=await scenario(true);
+ assert.equal(before.restored,0,'baseline reproduces missing the restored cells');
+ assert.equal(after.restored,86);assert.equal(after.finished,before.finished,'total throughput is preserved');
+ assert.deepEqual(after.latency,before.latency);assert.ok(after.latency.every(ms=>ms===200));
+ assert.ok(after.fairTurns>0);assert.ok(after.timelyTurns<=Math.ceil(after.started/4));
+ t.diagnostic(JSON.stringify({before:{restored:before.restored,finished:before.finished,expired:before.expired},after:{restored:after.restored,finished:after.finished,expired:after.expired},paperLatencyMs:after.latency}));
+});

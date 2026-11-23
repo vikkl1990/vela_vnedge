@@ -67,6 +67,8 @@ export class ShadowRunner {
   private stopped=false;
   private timelyCells:ReadonlySet<string>=new Set();
   private forwardCells:ReadonlySet<string>=new Set();
+  private replayCells:ReadonlySet<string>=new Set();
+  private collectingReplay=new Set<string>();
   private readingCells:ReadonlySet<string>=new Set();
   private scheduledBars=new Map<string,number>();
   private syncing:Promise<void>|null=null;
@@ -115,7 +117,7 @@ export class ShadowRunner {
       ready:()=>!deps.pool.stats.queuedLive && !deps.pool.stats.queuedMirror && deps.pool.rssReader()<deps.pool.memoryGuardBytes*SHADOW_MEMORY_SHARE,
       priority:({r})=>evidencePriority(r,this.deps.cfgRef().incubator),
       timely:({r})=>this.readingCells.has(`${r.scannerId}:${r.symbol}:${r.tf}`) || (r.stage==='tracked'&&this.timelyCells.has(`${r.scannerId}:${r.symbol}:${r.tf}`))
-        || (['shadow','proposed'].includes(r.stage)&&this.forwardCells.has(`${r.scannerId}:${r.symbol}:${r.tf}`)),
+        || (['shadow','proposed'].includes(r.stage)&&(this.forwardCells.has(`${r.scannerId}:${r.symbol}:${r.tf}`)||this.collectingReplay.has(`${r.scannerId}:${r.symbol}:${r.tf}`))),
       run:({r,barAt,seenAt},releaseCompute)=>this.runScheduled(r,barAt,false,seenAt,undefined,releaseCompute),
       dropped:({r,barAt},reason)=>{this.releaseScheduled(r,barAt);this.deps.store.noteShadowScan?.(r,barAt-TF_SECONDS[r.tf]*1000,reason,reason==='expired'?'scan could not start within the unchanged signal-age window':'cell no longer scheduled');},
       error:(e,{r})=>{this.noteError(r,String((e as any)?.message??e));log.warn(`shadow ${r.scannerId} ${r.symbol}: ${String(e)}`);}
@@ -242,6 +244,8 @@ export class ShadowRunner {
     const cfg = this.deps.cfgRef();
     this.timelyCells=this.deps.timelyResearch?.()??new Set();
     this.forwardCells=this.deps.store.forwardCollectionKeys?.()??new Set();
+    this.replayCells=cfg.incubator.mirror?.enabled?await this.deps.store.replayCollectionKeys?.()??new Set():new Set();
+    for(const key of this.collectingReplay)if(!this.replayCells.has(key))this.collectingReplay.delete(key);
     this.readingCells=new Set([
       ...(cfg.executionPlans??[]).filter(p=>p.enabled&&(p.comparison?.kind==='maker-fill'||p.readingOverride||solFilterPlan(p)||([SOL_MAKER_REFERENCE_ID,SOL_MAKER_TICK_REFERENCE_ID].includes(p.id)&&p.revision===1&&p.scannerId===SOL_MAKER_SCANNER&&p.symbol==='SOLUSD'&&p.tf==='15m'))).map(p=>`${p.scannerId}:${p.symbol}:${p.tf}`),
       ...this.deps.paper.openPositions().filter(p=>p.executionPlan?.readingOverride).map(p=>`${p.executionPlan!.sourceScannerId}:${p.symbol}:${p.tf}`),
@@ -308,7 +312,18 @@ export class ShadowRunner {
     const canEnter = (r: PairRow) => !!focus && !focus.full && !focus.held.has(r.symbol) && this.deps.marketVerdict?.(r.symbol)?.allowed !== false;
     const rank = (r: PairRow) => (r.stage === 'live' || focus?.held.has(r.symbol) ? 0 : canEnter(r) ? 1 : 2);
     // In copy mode, unqualified research cells must not consume the urgent lane.
-    const copyable=(r:PairRow)=>r.stage!=='tracked' && (r.stage==='live' || !this.deps.store.copyRefusal(r,this.deps.cfgRef().incubator.mirror,this.turnoverOf(r.symbol)));
+    const copyable=(r:PairRow)=>{
+      if(r.stage==='tracked')return false;
+      if(r.stage==='live')return true;
+      const reason=this.deps.store.copyRefusal(r,this.deps.cfgRef().incubator.mirror,this.turnoverOf(r.symbol));
+      const key=`${r.scannerId}:${r.symbol}:${r.tf}`;
+      // Reuse the actual close-time verdict, not last night's gate statistics.
+      // The existing one-in-four research lane can finish replay-restored samples,
+      // positive or negative; it never grants copying or bypasses a forward hold.
+      if(this.replayCells.has(key)&&/^mirror held: \d+\/\d+ shadow closes$/.test(reason??''))this.collectingReplay.add(key);
+      else this.collectingReplay.delete(key);
+      return reason===null;
+    };
     // Rank across symbols in the shared mirror queue, not just within this
     // symbol's callback. Research positions still precede ordinary research.
     const mirrorRanks = new Map<PairRow, number>();
