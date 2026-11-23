@@ -1,0 +1,41 @@
+{
+  "date": "2026-11-23",
+  "baselineCommit": "569bf85e9615beb9b238bb604e53ab6f1997719d",
+  "method": "Local in-memory replay of retained journal. Identical synthetic funding rates in both engines. No VM trade/config writes.",
+  "baseline": {
+    "baselineCommit": "569bf85e9615beb9b238bb604e53ab6f1997719d",
+    "closedTrades": 18400,
+    "openTrades": 140,
+    "markets": 31,
+    "affected": 140,
+    "wallMs": 12578.140833000001,
+    "maxTimerIntervalMs": 12580.374,
+    "closedReads": 34,
+    "ledgerHash": "83a468baa38cba9df02a0e177a335b4f38f9af8cc10e45e0c60594a7e4e8ada1",
+    "statsHash": "90f8c88b0c57609ac2a2e7b69ebc76e4ba7aa1fe97f8137dc5eed2a94e9f1858"
+  },
+  "candidate": {
+    "baselineCommit": "569bf85e9615beb9b238bb604e53ab6f1997719d",
+    "closedTrades": 18400,
+    "openTrades": 140,
+    "markets": 31,
+    "affected": 140,
+    "wallMs": 144.785208,
+    "maxTimerIntervalMs": 11.125957999999855,
+    "closedReads": 0,
+    "ledgerHash": "83a468baa38cba9df02a0e177a335b4f38f9af8cc10e45e0c60594a7e4e8ada1",
+    "statsHash": "90f8c88b0c57609ac2a2e7b69ebc76e4ba7aa1fe97f8137dc5eed2a94e9f1858"
+  },
+  "accountingIdentical": true,
+  "settlementReductionPct": 98.84891408100519,
+  "profitImprovementProven": false,
+  "paperExitChanges": false,
+  "prospectiveStudy": "intrabar-flow-protection-v1",
+  "limits": [
+    "Timing is local controlled benchmark, not post-deploy VM latency.",
+    "Future shadow entries only; current positions are not reconstructed.",
+    "No completed prospective cohort existed at implementation time.",
+    "Maker entries without exact taker depth remain in their separate maker studies.",
+    "Ordinary paper rules and evidence qualification unchanged."
+  ]
+}

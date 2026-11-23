@@ -1510,7 +1510,15 @@ export class PaperEngine extends EventEmitter {
       if(!fill)continue;
       this.db.transaction(()=>{this.persistFill(pos,fill);this.persist(pos);});
       if(this.open.has(pos.id))Object.assign(this.open.get(pos.id)!,pos);
-      this.closedCache=null;n++;
+      // Funding on held exposure does not change the closed journal. Re-reading
+      // every closed position (and its frozen policy) for each market at a funding
+      // boundary stalls the shared feed/exit loop. Late closed-trade accounting
+      // updates only that cached row; a cold cache still loads normally.
+      if(pos.status==='closed'&&this.closedCache){
+        const i=this.closedCache.findIndex(p=>p.id===pos.id&&p.entryAt===pos.entryAt);
+        if(i>=0)this.closedCache[i]=pos;else this.closedCache=null;
+      }
+      n++;
     }
     if(n){this.recordEquity(true);this.emit('stats',this.stats());this.emit('accounting',{at:this.now(),reason:'funding',symbol,settledAt:at});}
     return n;
@@ -1891,11 +1899,20 @@ export class PaperEngine extends EventEmitter {
     const g = computeStats(closed, initial);
     const byScanner: Record<string, TradeStats & { open: number; unrealized: number }> = {};
     const bySymbol: Record<string, { trades: number; pnl: number }> = {};
-    const ids = new Set<string>([...closed.map(p => p.scannerId), ...[...this.open.values()].map(p => p.scannerId)]);
-    for (const id of ids) {
-      const s = computeStats(closed.filter(p => p.scannerId === id), initial) as any;
-      s.open = [...this.open.values()].filter(p => p.scannerId === id).length;
-      s.unrealized = [...this.open.values()].filter(p => p.scannerId === id).reduce((a, p) => a + unrealized(p, this.marks.get(p.symbol) ?? p.entryPrice), 0);
+    const grouped=new Map<string,{closed:Position[];open:number;unrealized:number}>();
+    const group=(id:string)=>{
+      let row=grouped.get(id);
+      if(!row){row={closed:[],open:0,unrealized:0};grouped.set(id,row);}
+      return row;
+    };
+    for(const p of closed)group(p.scannerId).closed.push(p);
+    for(const p of this.open.values()){
+      const row=group(p.scannerId);row.open++;row.unrealized+=unrealized(p,this.marks.get(p.symbol)??p.entryPrice);
+    }
+    for (const [id,row] of grouped) {
+      const s = computeStats(row.closed, initial) as any;
+      s.open = row.open;
+      s.unrealized = row.unrealized;
       byScanner[id] = s;
     }
     for (const p of closed) { const b = bySymbol[p.symbol] ?? (bySymbol[p.symbol] = { trades: 0, pnl: 0 }); b.trades++; b.pnl += p.realizedPnl - p.fees; }
