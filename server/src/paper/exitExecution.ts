@@ -33,7 +33,9 @@ export class PaperExitExecution {
    CREATE TABLE IF NOT EXISTS paper_exit_intents(id INTEGER PRIMARY KEY,position_id INTEGER NOT NULL,book INTEGER NOT NULL,symbol TEXT NOT NULL,side TEXT NOT NULL,reason TEXT NOT NULL,trigger_at INTEGER NOT NULL,ready_at INTEGER NOT NULL,reference REAL NOT NULL,qty REAL NOT NULL,filled_qty REAL NOT NULL DEFAULT 0,market_qty INTEGER NOT NULL,market_filled INTEGER NOT NULL DEFAULT 0,status TEXT NOT NULL,last_error TEXT,updated_at INTEGER NOT NULL);
    CREATE UNIQUE INDEX IF NOT EXISTS paper_exit_active ON paper_exit_intents(position_id) WHERE status IN ('waiting','partial');
    CREATE INDEX IF NOT EXISTS paper_exit_due ON paper_exit_intents(book,status,ready_at);
+   CREATE INDEX IF NOT EXISTS paper_exit_intent_position ON paper_exit_intents(position_id,id);
    CREATE TABLE IF NOT EXISTS paper_exit_reports(id INTEGER PRIMARY KEY,intent_id INTEGER NOT NULL,at INTEGER NOT NULL,qty REAL NOT NULL,market_qty INTEGER NOT NULL,price REAL NOT NULL,book_key TEXT NOT NULL,depth TEXT NOT NULL);
+   CREATE INDEX IF NOT EXISTS paper_exit_report_intent ON paper_exit_reports(intent_id,at,id);
    CREATE TABLE IF NOT EXISTS paper_exit_liquidity(scope TEXT NOT NULL,symbol TEXT NOT NULL,side TEXT NOT NULL,book_key TEXT NOT NULL,consumed INTEGER NOT NULL,at INTEGER NOT NULL,PRIMARY KEY(scope,symbol,side,book_key));
    CREATE TABLE IF NOT EXISTS paper_stop_amendments(position_id INTEGER NOT NULL,active_at INTEGER NOT NULL,stop REAL NOT NULL,PRIMARY KEY(position_id,active_at));`);
   const columns=new Set(db.all<{name:string}>('PRAGMA table_info(paper_execution_positions)').map(c=>c.name));

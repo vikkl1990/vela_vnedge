@@ -1,0 +1,60 @@
+{
+  "date": "2026-11-23",
+  "baseline": "bd2a497f6058a6ef10857da3dccfeaf42df9521c",
+  "evidenceValidationBenchmark": [
+    {
+      "pass": "baseline",
+      "cohorts": 90,
+      "validatedTrades": 149,
+      "totalMs": 1961.48595,
+      "maxCellMs": 100.41962600000011,
+      "verdictHash": "c5bc66ba2b09525fb795436b5eb00fa45d1720ae5603fad0d0af81468b7712ff"
+    },
+    {
+      "pass": "indexed",
+      "cohorts": 90,
+      "validatedTrades": 149,
+      "totalMs": 300.29527499999995,
+      "maxCellMs": 11.731534999999894,
+      "verdictHash": "c5bc66ba2b09525fb795436b5eb00fa45d1720ae5603fad0d0af81468b7712ff"
+    }
+  ],
+  "method": "Same 90 retained VM shadow replay cohorts on a private database copy. Complete cohort verdict hashes match. No production journal/config writes. Timing is an offline VM benchmark, not proof every live pause is resolved.",
+  "executionDepth": {
+    "before": [
+      "BTCUSD",
+      "ETHUSD",
+      "SOLUSD"
+    ],
+    "after": "Current paper exposure, pending entries and active scanner allocations; existing checksum/sequence/one-second freshness and post-arrival bounds. Stream limit 100 symbols; REST remains fallback.",
+    "source": "https://docs.delta.exchange/#ob_updates"
+  },
+  "study": {
+    "rule": "early-net-profit-retreat-v1",
+    "mode": "prospective-shadow-advisory",
+    "netPeakR": 0.15,
+    "peakSpreadMultiple": 4,
+    "givebackR": 0.06,
+    "peakGivebackFraction": 0.35,
+    "givebackSpreadMultiple": 2,
+    "remainingNetR": 0.03,
+    "remainingSpreadMultiple": 2,
+    "confirmationSeconds": 5,
+    "distinctBooks": 3,
+    "adverseDirectionalDepthImbalance": -0.2,
+    "existingArmedTrails": "excluded",
+    "spreadSizedRecovery": "resets confirmation",
+    "stress": "Existing configured latency plus 3 seconds, plus 5 bps adverse pricing",
+    "comparisons": [
+      "net R and normalized executable-size USD",
+      "SL outcomes",
+      "winners cut/lost",
+      "unchanged trades",
+      "coverage/censored fills"
+    ],
+    "promotionEligible": false,
+    "paperExitChanges": false,
+    "profitImprovementProven": false
+  },
+  "accountConfigChanges": false
+}
