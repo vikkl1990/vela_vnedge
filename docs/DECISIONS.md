@@ -8094,6 +8094,20 @@ No capital, risk, evidence, scanner-reading, fee or admission threshold changes.
 The audit is in `docs/research/paper-copy-fills-2026-11-16/`. Regression tests cover the cancelled-order defect, causal recovery,
 expiry, restart, unchanged economics/policy, pilot disablement and executor isolation. No profit uplift is claimed from a data-gap fix.
 
+## 333. Step through journal trades with j and k (16 November 2026)
+
+Reviewing why trades stopped out meant clicking a row, reading its detail, scrolling back up and clicking the next one. With a
+trade open in the journal, `j` now opens the next trade on the page and `k` the previous one, and the detail panel shows
+"2 of 50 on this page" with Previous and Next buttons that do the same. Stepping stops at the ends of the page instead of
+wrapping, because a page is a slice of a longer list and wrapping would skip the rest. A trade that is not on the page (a link,
+or another page of results) starts from the top.
+
+The app already binds `g j` (Lab) and `g k` (Gates). Single-key shortcuts registered by different components could not see each
+other's chords, so `g k` would have opened Gates and stepped the list at once. The hotkey hook now shares the last key and every
+registered chord prefix, and a single key pressed within the chord window after a prefix belongs to the chord.
+
+Display only. Nothing here changes a trade.
+
 ## 293. Validated REST depth supplies a paper quote when the stream is quiet (16 November 2026)
 
 The entry path fetched fresh depth but could still reject for a missing executable bid/ask because that quote lived in a
@@ -8548,16 +8562,8 @@ The first live cohort exposed an over-strict research check. A market entry's `d
 
 Verify the entry from its saved bid/ask, both quote clocks, exact depth at frozen executable quantity, original entry freshness limit, conservative quote/depth rule and frozen impact costs. Missing or future observations, stale data outside that policy, unreproduced prices and insufficient size remain unavailable. Hypothetical exits and triggering depth still require one-second freshness. No execution, admission, risk, evidence-qualification or exit hypothesis changes. Do not restore earlier missed observations or relabel excluded historical trials; only future comparisons can benefit.
 
-## 333. Step through journal trades with j and k (16 November 2026)
+## 332. Refresh one closed journal row after each fill instead of reloading the book (23 November 2026)
 
-Reviewing why trades stopped out meant clicking a row, reading its detail, scrolling back up and clicking the next one. With a
-trade open in the journal, `j` now opens the next trade on the page and `k` the previous one, and the detail panel shows
-"2 of 50 on this page" with Previous and Next buttons that do the same. Stepping stops at the ends of the page instead of
-wrapping, because a page is a slice of a longer list and wrapping would skip the rest. A trade that is not on the page (a link,
-or another page of results) starts from the top.
+Post-deploy monitoring found another execution-thread stall, separate from funding: eight shadow closes on AINUSD occupied about twelve seconds on the VM. Each close discarded the full closed-position cache, synchronously deserializing the journal and all its frozen policies before the next close. Keep a warm cache and refresh only the committed row, including late funding, restated fills and peak/worst updates recorded after closure. Keep exit-time/id ordering and the same persisted representation. A failed outer decision invalidates the cache, preserving transaction rollback and deferred close-event semantics.
 
-The app already binds `g j` (Lab) and `g k` (Gates). Single-key shortcuts registered by different components could not see each
-other's chords, so `g k` would have opened Gates and stepped the list at once. The hotkey hook now shares the last key and every
-registered chord prefix, and a single key pressed within the chord window after a prefix belongs to the chord.
-
-Display only. Nothing here changes a trade.
+In a controlled replay over the same retained 18,400 closed / 140 open positions, eight synthetic closes took 2,828 ms with deployed `9a0b24c` and 58 ms with the correction, with full journal reloads falling from eight to zero. Full ledger, financial accounting and statistics hashes match exactly. This benchmark reproduces the expensive operation with identical synthetic fills; it is not a claim of observed VM latency, improved trading profit or an exit-rule backtest. Paper/shadow executions, policies, fees, risk and evidence rules are unchanged. Regressions cover both books, partial exits, late funding, restated fees, out-of-order/tied close times and rollback after closure.
