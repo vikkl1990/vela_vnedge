@@ -153,7 +153,8 @@ test('held positions stay urgent; unqualified mirror cells use bounded shadow sc
  t.mock.timers.enable({apis:['Date','setTimeout'],now:1_000_000});const cfg=structuredClone(DEFAULT_CONFIG);cfg.incubator.enabled=true;cfg.incubator.mirror={enabled:true,minTrades:5,minNetR:0,minTurnoverUsd:0};
  const runner=new ShadowRunner({store:{shadowFunnel:()=>({}),liveMarks:()=>undefined,setLiveMarks:()=>{},setShadowFunnel:()=>{},copyRefusal:()=>'mirror held: 0/5 shadow closes',marketsToday:()=>new Map()},cfgRef:()=>cfg,paper:{openPositions:()=>[{scannerId:'held',symbol:'BTCUSD',tf:'15m'}]},mirror:()=>{},pool:{size:8,reserved:2,stats:{queued:0,queuedLive:0},rssReader:()=>0,memoryGuardBytes:1}}as any)as any;
  runner.pairs=['held','research'].map((scannerId,id)=>({id,scannerId,symbol:'BTCUSD',tf:'15m',stage:'shadow'}));
- const got:Array<[string,boolean]>=[];runner.run=async(r:any,_bar:any,live:boolean)=>{got.push([r.scannerId,live]);};runner.onBarClosed('BTCUSD','15m',Date.now());assert.deepEqual(got,[['held',true]]);
+ const got:Array<[string,boolean]>=[];runner.run=async(r:any,_bar:any,live:boolean)=>{got.push([r.scannerId,live]);};runner.onBarClosed('BTCUSD','15m',Date.now());
+ for(let i=0;i<5;i++)await new Promise<void>(r=>setImmediate(r));
  t.mock.timers.tick(20_000);await new Promise<void>(r=>setImmediate(r));assert.deepEqual(got,[['held',true],['research',false]]);runner.stop();
 });
 test('enrolled forward cells get timely research service while copy holds and worker limits remain intact',async t=>{
@@ -163,7 +164,7 @@ test('enrolled forward cells get timely research service while copy holds and wo
  runner.forwardCells=new Set(['forward:BTCUSD:15m']);
  const got:Array<[string,boolean]>=[],releases:Array<()=>void>=[];
  runner.run=async(r:any,_bar:any,live:boolean)=>{got.push([r.scannerId,live]);await new Promise<void>(resolve=>releases.push(resolve));};
- runner.onBarClosed('BTCUSD','15m',Date.now());await new Promise<void>(r=>setImmediate(r));
+ runner.onBarClosed('BTCUSD','15m',Date.now());for(let i=0;i<5;i++)await new Promise<void>(r=>setImmediate(r));
  assert.deepEqual(got,[['forward',false]]);assert.equal(runner.dispatchStats.inFlight,1);assert.equal(runner.dispatchStats.pending,1);
  releases.shift()!();await new Promise<void>(r=>setImmediate(r));assert.deepEqual(got,[['forward',false],['ordinary',false]]);
  releases.shift()!();await new Promise<void>(r=>setImmediate(r));runner.stop();
@@ -187,6 +188,7 @@ test('shadow dispatch ranks account exits and qualified copies globally without 
   runner.run=async(r:any,_bar:number,live:boolean,_seen:number,rank?:number)=>{got.push([r.scannerId,live,rank]);};
   runner.onBarClosed('AAAUSD','15m',Date.now());
   runner.onBarClosed('BBBUSD','15m',Date.now());
+  for(let i=0;i<5;i++)await new Promise<void>(r=>setImmediate(r));
   assert.deepEqual(got,[['held',true,1],['copy',true,2],['account',true,3]]);
   assert.equal(runner.dispatchStats.pending,1,'unqualified research is still bounded behind account work');
 });

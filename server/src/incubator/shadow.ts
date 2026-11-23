@@ -73,6 +73,30 @@ export class ShadowRunner {
   private scheduledBars=new Map<string,number>();
   private syncing:Promise<void>|null=null;
   private syncRequested=false;
+  private qualificationTimer:ReturnType<typeof setImmediate>|null=null;
+  private qualificationQueue:Array<{read:()=>boolean;resolve:(value:boolean)=>void;reject:(error:unknown)=>void}>=[];
+  /** One shared budget across all simultaneous market closes. Per-market yields
+   * still execute dozens of expensive first checks/continuations in one turn. */
+  private qualifyCopy(read:()=>boolean):Promise<boolean>{
+    if(this.stopped)return Promise.resolve(false);
+    return new Promise((resolve,reject)=>{
+      this.qualificationQueue.push({read,resolve,reject});
+      if(!this.qualificationTimer)this.qualificationTimer=setImmediate(()=>this.drainQualifications());
+    });
+  }
+  private drainQualifications(){
+    const deadline=performance.now()+10;
+    try{
+      while(!this.stopped&&this.qualificationQueue.length){
+        const job=this.qualificationQueue.shift()!;
+        try{job.resolve(job.read());}catch(error){job.reject(error);}
+        if(performance.now()>=deadline)break;
+      }
+    }finally{
+      this.qualificationTimer=null;
+      if(!this.stopped&&this.qualificationQueue.length)this.qualificationTimer=setImmediate(()=>this.drainQualifications());
+    }
+  }
   private releaseScheduled(r:PairRow,barAt:number) {
     const key=`${r.scannerId}:${r.symbol}:${r.tf}`;
     if(this.scheduledBars.get(key)===barAt)this.scheduledBars.delete(key);
@@ -215,7 +239,7 @@ export class ShadowRunner {
     this.timer.unref();
   }
 
-  stop() { this.stopped=true;this.dispatch.stop();if(this.dispatchTimer)clearInterval(this.dispatchTimer);this.dispatchTimer=null; if (this.timer) clearInterval(this.timer); this.timer = null; this.saveFunnel(); }
+  stop() { this.stopped=true;this.dispatch.stop();if(this.qualificationTimer)clearImmediate(this.qualificationTimer);this.qualificationTimer=null;for(const job of this.qualificationQueue.splice(0))job.resolve(false);if(this.dispatchTimer)clearInterval(this.dispatchTimer);this.dispatchTimer=null; if (this.timer) clearInterval(this.timer); this.timer = null; this.saveFunnel(); }
 
   private planSources(): PairRow[] {
     const cfg=this.deps.cfgRef(), cells=new Map<string,{scannerId:string;symbol:string;tf:string}>();
@@ -280,6 +304,7 @@ export class ShadowRunner {
   }
 
   private onBarClosed(symbol: string, tf: string, closedAt = Date.now()) {
+    if(this.stopped)return;
     const due = this.pairs.filter(r => r.symbol === symbol && r.tf === tf
       && (this.marks.get(`${r.scannerId}:${symbol}:${tf}`)??-Infinity)<closedAt-TF_SECONDS[tf]*1000
       && (this.scheduledBars.get(`${r.scannerId}:${symbol}:${tf}`)??-Infinity)<closedAt);
@@ -293,7 +318,7 @@ export class ShadowRunner {
     }
     void this.launchClose(due,barAt,seenAt,symbol,tf).catch(e=>{
       for(const r of due)this.releaseScheduled(r,barAt);
-      log.warn(`shadow close dispatch failed: ${String(e)}`);
+      if(!this.stopped)log.warn(`shadow close dispatch failed: ${String(e)}`);
     });
   }
 
@@ -331,7 +356,7 @@ export class ShadowRunner {
     let deadline=performance.now()+10;
     for(const r of due){
       if(this.stopped){for(const cell of due)this.releaseScheduled(cell,barAt);return;}
-      const held=holds(r),canCopy=mirror&&copyable(r);
+      const held=holds(r),canCopy=mirror&&await this.qualifyCopy(()=>copyable(r));
       if(held||canCopy){mirrorRanks.set(r,this.deps.accountHolds?.(r.scannerId,r.symbol,r.tf)?3:canCopy?2:1);urgent.push(r);}
       // Qualification still happens on the same rules, then again at entry.
       // Only ranking is cooperative: never block quote/exit timers for the universe.

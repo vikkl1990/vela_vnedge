@@ -183,3 +183,27 @@ test('replay-restored sample shortfalls use bounded timely research and release 
  assert.equal(JSON.stringify({paper:f.cfg.paper,risk:f.cfg.risk}),before);
  assert.equal(f.db.get('SELECT count(*) n FROM positions')!.n,0);
 });
+
+test('simultaneous markets share one qualification budget instead of stacking first checks',async t=>{
+ const f=fixture(t);f.cfg.incubator.mirror!.enabled=true;f.runner.deps.mirror=()=>assert.fail('no copy authority');
+ const cells=Array.from({length:60},(_,i)=>({...f.pair,id:i+1,scannerId:`s${i}`,symbol:`PAIR${i}USD`}));f.runner.pairs=cells;
+ let checked=0,checkedAtExecution=-1;
+ f.store.copyRefusal=()=>{checked++;const until=performance.now()+1;while(performance.now()<until){}return 'mirror held: insufficient evidence';};
+ setImmediate(()=>{checkedAtExecution=checked;});
+ for(const r of cells)f.runner.onBarClosed(r.symbol,r.tf,CLOSE);
+ assert.equal(checked,0,'close announcements must not synchronously qualify the universe');
+ for(let i=0;i<100&&checked<cells.length;i++)await flush();await flush();
+ assert.equal(checkedAtExecution,0,'execution callback precedes qualification work');
+ assert.equal(checked,cells.length);assert.equal(f.runner.dispatchStats.offered,cells.length);
+ assert.equal(f.runner.stats.mirrored,0);assert.equal(f.runner.deps.pool.reserved,2);
+ assert.equal(f.db.get('SELECT count(*) n FROM positions')!.n,0);
+});
+
+test('one failed qualification does not starve another market and stopping drops queued checks',async t=>{
+ const f=fixture(t);let calls=0;
+ const bad=f.runner.qualifyCopy(()=>{calls++;throw Error('test qualification error');});
+ const good=f.runner.qualifyCopy(()=>{calls++;return true;});
+ await assert.rejects(bad,/test qualification error/);assert.equal(await good,true);assert.equal(calls,2);
+ const cancelled=f.runner.qualifyCopy(()=>{calls++;return true;});f.runner.stop();assert.equal(await cancelled,false);
+ assert.equal(calls,2);assert.equal(f.runner.qualificationQueue.length,0);assert.equal(f.runner.qualificationTimer,null);
+});
