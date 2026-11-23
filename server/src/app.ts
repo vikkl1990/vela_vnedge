@@ -381,6 +381,11 @@ export class App {
 
   startExecutionLoops(): void {
     if (this.executionLoopsStarted) return;
+    // Hydrate the persisted journals before feeds/timers can deliver a close.
+    // Subsequent closes update one cached row; a cold shadow journal otherwise
+    // makes its first live close deserialize the entire history in the hot path.
+    this.paper.closedPositions();
+    this.shadow.closedPositions();
     this.executionLoopsStarted = true;
     for (const start of this.executionLoops) start();
     this.tradeMonitor?.start();
