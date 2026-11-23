@@ -213,7 +213,8 @@ export function wireRealtime(app: App): void {
   const stopScheduler = deferLoop(app, () => {
     if(schedulerStopped||schedulerTask)return;
     schedulerTask=(async()=>{try {
-      await funding.settleCooperatively(Date.now(),(symbol,rate,mark,at)=>{for(const b of books)b.reconcileFunding(symbol,rate,mark,at);},{stopped:()=>schedulerStopped});
+      await funding.settleCooperatively(Date.now(),(...args)=>{app.shadow.reconcileFunding(...args);},
+       {stopped:()=>schedulerStopped,priority:(...args)=>{app.paper.reconcileFunding(...args);}});
       if(schedulerStopped)return;
       const now = Date.now();
       // Settle overdue charges first: never backdate an avoidance exit after settlement.

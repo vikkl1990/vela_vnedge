@@ -94,3 +94,13 @@ test('verified funding evidence cannot be overwritten by live estimates',t=>{
  j.observe(f());j.mark({symbol:'BTCUSD',markPrice:99,timeMs:T,bestBid:null,bestAsk:null});
  let actual:any;j.settle(T+11000,(...x)=>actual=x);assert.deepEqual(actual,['BTCUSD',.02,123,T]);
 });
+
+test('all due account funding precedes yielded entry work; a background failure leaves durable retry work',async t=>{
+ const d=db(t),j=new FundingJournal(d),events:string[]=[];
+ for(const symbol of ['BTCUSD','ETHUSD'])j.verify(symbol,T,.01,100,'verified settlement statement');
+ await j.settleCooperatively(T+11000,s=>events.push(`shadow ${s}`),{priority:s=>events.push(`paper ${s}`),yield:async()=>{events.push('entry sizing');}});
+ assert.deepEqual(events,['paper BTCUSD','paper ETHUSD','shadow BTCUSD','entry sizing','shadow ETHUSD','entry sizing']);
+ const failed=new FundingJournal(db(t));failed.verify('BTCUSD',T,.01,100,'verified settlement statement');
+ await assert.rejects(failed.settleCooperatively(T+11000,()=>{throw Error('shadow disk');},{priority:()=>{}}),/shadow disk/);
+ let retried=0;await failed.settleCooperatively(T+12000,()=>retried++);assert.equal(retried,1);
+});
