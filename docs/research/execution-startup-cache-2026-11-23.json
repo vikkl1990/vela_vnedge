@@ -1,0 +1,38 @@
+{
+  "date": "2026-11-23",
+  "baselineCode": "a375a14640515cbdd59001091bcfb8601ceb0837",
+  "method": "Same retained journal and eight identical synthetic shadow closes. Cold first close versus startup hydration before execution timers; local controlled benchmark, not live VM profit or latency evidence.",
+  "cold": {
+    "startupLoadMs": 0.0017919999997957348,
+    "baselineCommit": "569bf85e9615beb9b238bb604e53ab6f1997719d",
+    "closedTrades": 18408,
+    "openTrades": 132,
+    "affected": 8,
+    "wallMs": 391.79724999999985,
+    "maxTimerIntervalMs": 392.0100000000002,
+    "closedReads": 2,
+    "ledgerHash": "9947fef608d5b61f0f71851b1d2df161e8f76f35676d266658407b447fb65b0e",
+    "accountingHash": "0f0e0f2b51a63c431925042a29d726cafa1d74b319085d3ab567a92eca0263c6",
+    "statsHash": "6eb32dea5eaa5712d1399b0d6986a95116d55ad5fec05756a6e677cf5cb52efa"
+  },
+  "startupHydrated": {
+    "startupLoadMs": 357.63979100000006,
+    "baselineCommit": "569bf85e9615beb9b238bb604e53ab6f1997719d",
+    "closedTrades": 18408,
+    "openTrades": 132,
+    "affected": 8,
+    "wallMs": 103.33937500000002,
+    "maxTimerIntervalMs": 103.58716700000014,
+    "closedReads": 0,
+    "ledgerHash": "9947fef608d5b61f0f71851b1d2df161e8f76f35676d266658407b447fb65b0e",
+    "accountingHash": "0f0e0f2b51a63c431925042a29d726cafa1d74b319085d3ab567a92eca0263c6",
+    "statsHash": "6eb32dea5eaa5712d1399b0d6986a95116d55ad5fec05756a6e677cf5cb52efa"
+  },
+  "ledgerIdentical": true,
+  "statsIdentical": true,
+  "limits": [
+    "The startup work is moved before live loops, not removed.",
+    "A rollback may still invalidate the journal; this change does not hide recovery errors.",
+    "No trading, risk, sizing, evidence, or exit policy changes."
+  ]
+}
