@@ -516,6 +516,20 @@ test('late settlement persists once after close without duplicate execution even
  assert.equal(resumed.reconcileFunding('BTCUSD',.01,100,60020),0);
  assert.equal(db.get<any>("SELECT count(*) n FROM orders WHERE position_id=? AND reason='funding'",p.id)!.n,1);
 });
+test('funding keeps the closed cache warm and updates late closed funding without stale stats',t=>{
+ const {db,cfg,engine,open}=setup(t);cfg.paper.fundingCharges=true;
+ const first=open();engine.onBar('BTCUSD',{time:60000,high:100,low:94,close:94},60030);
+ const second=open('short');engine.stats();
+ const all=db.all.bind(db);let closedReads=0;
+ db.all=((sql:string,...args:any[])=>{if(sql.includes("status='closed'")&&sql.includes('SELECT * FROM positions'))closedReads++;return all(sql,...args);}) as typeof db.all;
+ assert.equal(engine.reconcileFunding('BTCUSD',.01,100,60020),2);
+ assert.equal(closedReads,0,'funding must not deserialize the complete closed journal');
+ const stats=engine.stats();
+ const resumed=new PaperEngine(db,()=>cfg);resumed.setMark('BTCUSD',engine.mark('BTCUSD')!);
+ assert.deepEqual(stats,resumed.stats(),'warm-cache stats equal a fresh engine after both open and closed funding');
+ assert.equal(engine.reconcileFunding('BTCUSD',.01,100,60020),0);
+ assert.ok(first.id!==second.id);
+});
 
 test('a delayed market entry waits through missing status only until its original deadline', t => {
   const { engine, cfg, open } = setup(t);

@@ -72,3 +72,12 @@ test('REST advisory settlement archives original exchange and receipt times befo
  const event=x.rows.find(r=>r.kind==='study_exit_book');assert.ok(event);assert.equal(event.payload.book.exchangeAt,T-1500);
  assert.equal(event.payload.book.receivedAt,T);assert.deepEqual(event.payload.book,offered.b);assert.equal(event.at,offered.at);
 });
+
+test('intrabar research yields between bounded groups so execution callbacks can run first',async t=>{
+ const x=setup(t);x.db.run("UPDATE positions SET bt=2,evidence_scope='shadow' WHERE id=?",x.p.id);
+ const positions=Array.from({length:24},()=>({...x.p,entryAt:T,status:'open' as const}));
+ Object.assign(x.app.shadow,{openPositions:()=>positions,advisoryObservation:()=>({config:x.cfg.paper,marketQty:1,exitPending:false})});
+ const order:string[]=[];x.runtime.monitor.observeIntrabar=()=>{order.push('research');};
+ setImmediate(()=>order.push('execution'));
+ await x.runtime.intrabarTick();assert.equal(order.indexOf('execution'),8);assert.equal(order.filter(s=>s==='research').length,24);
+});

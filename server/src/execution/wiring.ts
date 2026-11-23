@@ -78,6 +78,7 @@ export function wireRealtime(app: App): void {
   // The incubator's shadow book gets exactly the same market data as the live book, so its evidence
   // describes the same fills, liquidation and funding a promoted pair would see.
   const books = [app.paper, app.shadow];
+  let schedulerTask:Promise<void>|null=null, schedulerStopped=false;
   const timing=app.executionTiming=new ExecutionTiming(app.db);
   for(const b of books)b.causalExits=app.config.get().execution.mode==='paper';
   // Freeze the deployable quantity at entry; shadow's research purse must not
@@ -157,7 +158,7 @@ export function wireRealtime(app: App): void {
     try{flow.flush();}catch(e:any){log.warn(`order flow: ${e.message}`);}
     void replay.flush();
   }, 5000);
-  app.stopExecutionAudit=async()=>{app.tradeMonitor.stop();exitPump.stop();stopExit();app.accountObserver.stop();stopStatus();for(const stop of [stopAudit,stopHistory,stopDepth,stopScheduler])stop();depth.disconnect();try{depth.flush();flow.connection(false);}catch(e:any){log.warn(`audit shutdown flush: ${e.message}`);}timing.flush();await replay.close();};
+  app.stopExecutionAudit=async()=>{schedulerStopped=true;app.tradeMonitor.stop();exitPump.stop();stopExit();app.accountObserver.stop();stopStatus();for(const stop of [stopAudit,stopHistory,stopDepth,stopScheduler])stop();await schedulerTask;depth.disconnect();try{depth.flush();flow.connection(false);}catch(e:any){log.warn(`audit shutdown flush: ${e.message}`);}timing.flush();await replay.close();};
   const status = app.exchangeStatus ?? new TradingStatus();
   const stopStatus = wireTradingStatus(app, status);
   for (const b of books) b.entryBlock = (symbol, at) => app.runtime?.entryBlock ?? status.block(symbol, at);
@@ -168,7 +169,7 @@ export function wireRealtime(app: App): void {
     const a=fundingAssessment(app.marks.funding(symbol),app.config.get().paper,side,tf,notional,risk,at);
     return a.trigger?`funding guard: next payment ${a.costR!.toFixed(3)}R exceeds ${a.limitR}R budget`:null;
   };
-  app.feed.on('status', ({ connected }: { connected: boolean }) => { try { flow.connection(connected); } catch(e:any) { log.warn(`order flow connection: ${e.message}`); } if (!connected) { replay.record('*','gap',{reason:'execution feed disconnected; trades/marks/funding unavailable'},Date.now(),'execution-feed');depth.disconnect(); app.marks.invalidateQuotes(); } });
+  app.feed.on('status', ({ connected }: { connected: boolean }) => { try { flow.connection(connected); app.tradeMonitor.intrabarFlow.connection(connected); } catch(e:any) { log.warn(`order flow connection: ${e.message}`); } if (!connected) { replay.record('*','gap',{reason:'execution feed disconnected; trades/marks/funding unavailable'},Date.now(),'execution-feed');depth.disconnect(); app.marks.invalidateQuotes(); } });
   app.feed.on('quote', q => {replay.record(q.symbol,'quote',q,Date.now(),'execution-feed');app.marks.onWsQuote(q);});
   app.feed.on('quoteGap', ({ symbols, at }: { symbols: string[]; at?:number }) => {
     for(const symbol of symbols)replay.record(symbol,'quote_gap',{reason:'L1 unavailable; cached quote invalidated'},at??Date.now(),'execution-feed');
@@ -205,14 +206,17 @@ export function wireRealtime(app: App): void {
     replay.record(t.symbol,'trade',t,receivedAt,'execution-feed');
     if (isExecutableTrade(t, receivedAt)) { app.tapeAudit.onTrade(t); for (const b of books) b.onTrade(t.symbol, t.price, t.qty, t.timeMs, receivedAt, t.id); }
     else replay.record(t.symbol,'trade_rejected',{reason:tradeRefusal(t,receivedAt),eventAt:t.timeMs,ageMs:receivedAt-t.timeMs},receivedAt,'execution-feed');
-    try { flow.onTrade(t); } catch(e:any) { log.warn(`order flow print: ${e.message}`); }
+    try { flow.onTrade(t); app.tradeMonitor.intrabarFlow.onTrade(t,receivedAt); } catch(e:any) { log.warn(`order flow print: ${e.message}`); }
   });
   app.feed.on('mark', (m: WsMark) => { replay.record(m.symbol,'mark',m,Date.now(),'execution-feed');funding.mark(m); app.marks.onWsMark(m); for (const b of books) b.onMarkPrice(m.symbol, m.markPrice, m.timeMs); });
   app.feed.on('funding', (f: WsFunding) => { replay.record(f.symbol,'funding',f,Date.now(),'execution-feed');funding.observe(f); app.marks.onWsFunding(f); });
   const stopScheduler = deferLoop(app, () => {
-    const now = Date.now();
-    try {
-      funding.settle(now,(symbol,rate,mark,at)=>{for(const b of books)b.reconcileFunding(symbol,rate,mark,at);});
+    if(schedulerStopped||schedulerTask)return;
+    schedulerTask=(async()=>{try {
+      await funding.settleCooperatively(Date.now(),(...args)=>{app.shadow.reconcileFunding(...args);},
+       {stopped:()=>schedulerStopped,priority:(...args)=>{app.paper.reconcileFunding(...args);}});
+      if(schedulerStopped)return;
+      const now = Date.now();
       // Settle overdue charges first: never backdate an avoidance exit after settlement.
       if (!app.executor) for (const b of books) for (const p of b.openPositions()) {
         const mark=app.marks.mark(p.symbol);
@@ -224,6 +228,7 @@ export function wireRealtime(app: App): void {
       for (const b of books) b.housekeeping(now);
       app.risk.tick(now);
     } catch (e: any) { log.warn(`scheduler step failed: ${e?.message ?? e}`); }
+    })().finally(()=>{schedulerTask=null;});
   }, TICK_MS);
 }
 

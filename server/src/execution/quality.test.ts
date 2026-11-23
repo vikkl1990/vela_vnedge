@@ -25,6 +25,25 @@ test('missing intervals remain unresolved and do not borrow current rates',t=>{
 test('failed funding callback retries without falsely marking applied',t=>{
  const j=new FundingJournal(db(t));j.verify('BTCUSD',T,0,100,'zero rate statement');assert.throws(()=>j.settle(T+11000,()=>{throw Error('disk');}));let n=0;j.settle(T+12000,()=>n++);assert.equal(n,1);
 });
+test('cooperative funding yields to protective work between markets and resumes after shutdown',async t=>{
+ const d=db(t),j=new FundingJournal(d),events:string[]=[];
+ for(const symbol of ['BTCUSD','ETHUSD','SOLUSD'])j.verify(symbol,T,.01,100,'verified settlement statement');
+ let stopped=false;
+ await j.settleCooperatively(T+11000,s=>events.push(s),{stopped:()=>stopped,yield:async()=>{events.push('protective timer');stopped=true;}});
+ assert.deepEqual(events,['BTCUSD','protective timer']);
+ assert.equal(d.get<any>("SELECT count(*) n FROM funding_settlements WHERE status='applied'")!.n,1);
+ await new FundingJournal(d).settleCooperatively(T+12000,s=>events.push(s));
+ assert.deepEqual(events,['BTCUSD','protective timer','ETHUSD','SOLUSD']);
+});
+test('cooperative funding failure remains pending and default yielding lets timers run',async t=>{
+ const d=db(t),j=new FundingJournal(d),events:string[]=[];
+ for(const symbol of ['BTCUSD','ETHUSD'])j.verify(symbol,T,0,100,'verified zero settlement');
+ await assert.rejects(j.settleCooperatively(T+11000,()=>{throw Error('disk');}),/disk/);
+ assert.equal(d.get<any>("SELECT count(*) n FROM funding_settlements WHERE status='applied'")!.n,0);
+ setImmediate(()=>events.push('execution'));
+ await j.settleCooperatively(T+12000,s=>events.push(s));
+ assert.deepEqual(events,['BTCUSD','execution','ETHUSD']);
+});
 test('late funding reconstructs earlier quantity even after full close',()=>{
  const p:any={entryAt:T-100,exitAt:T+100,qty:10,qtyOpen:0,contractValue:1,side:'long',realizedPnl:10,fills:[{at:T-10,qty:3,reason:'tp1'},{at:T+100,qty:7,reason:'sl'}]};
  assert.ok(Math.abs(applyFundingSettlement(p,1,100,T)!.pnl+7)<1e-9);assert.ok(Math.abs(p.realizedPnl-3)<1e-9);assert.equal(applyFundingSettlement(p,1,100,T),null);assert.equal(applyFundingSettlement(p,1,100,T+100),null);
@@ -74,4 +93,14 @@ test('verified funding evidence cannot be overwritten by live estimates',t=>{
  const d=db(t),j=new FundingJournal(d);j.verify('BTCUSD',T,.02,123,'verified settlement statement');
  j.observe(f());j.mark({symbol:'BTCUSD',markPrice:99,timeMs:T,bestBid:null,bestAsk:null});
  let actual:any;j.settle(T+11000,(...x)=>actual=x);assert.deepEqual(actual,['BTCUSD',.02,123,T]);
+});
+
+test('all due account funding precedes yielded entry work; a background failure leaves durable retry work',async t=>{
+ const d=db(t),j=new FundingJournal(d),events:string[]=[];
+ for(const symbol of ['BTCUSD','ETHUSD'])j.verify(symbol,T,.01,100,'verified settlement statement');
+ await j.settleCooperatively(T+11000,s=>events.push(`shadow ${s}`),{priority:s=>events.push(`paper ${s}`),yield:async()=>{events.push('entry sizing');}});
+ assert.deepEqual(events,['paper BTCUSD','paper ETHUSD','shadow BTCUSD','entry sizing','shadow ETHUSD','entry sizing']);
+ const failed=new FundingJournal(db(t));failed.verify('BTCUSD',T,.01,100,'verified settlement statement');
+ await assert.rejects(failed.settleCooperatively(T+11000,()=>{throw Error('shadow disk');},{priority:()=>{}}),/shadow disk/);
+ let retried=0;await failed.settleCooperatively(T+12000,()=>retried++);assert.equal(retried,1);
 });
