@@ -194,6 +194,7 @@ export function wireRealtime(app: App): void {
   for (const engine of books) engine.on('position', (e: any) => {
     if(e.type==='closed')app.tradeMonitor.captureClosed(e.position,engine.book);
     if (e.type !== 'opened') return;
+    if(engine.book===0)syncExecutionDepth(app);
     app.tradeMonitor.captureEntry(e.position,engine.book);
     if (queue.length >= 100) { app.db.run('UPDATE entry_execution SET depth_state=? WHERE position_id=?','skipped queue full',e.position.id); return; }
     const p = e.position;
@@ -237,7 +238,7 @@ export function subscribeRealtime(app: App): void {
   // A paper allocation can be outside the global universe and the shadow runner.
   // Subscribe before its first order: candles alone cannot price a quoted entry.
   const symbols = [...new Set([...app.resolvedSymbols, ...app.scanners.requiredSeries().map(p => p.symbol), ...app.paper.openPositions().map(p => p.symbol), ...app.shadow.openPositions().map(p => p.symbol), ...app.paper.pendingEntries().map(p => p.symbol), ...app.shadow.pendingEntries().map(p => p.symbol), ...app.incubator.symbols(),...EXIT_STUDY_SYMBOLS])];
-  app.feed.subscribe('ob_updates', app.depthRecorder.symbols);
+  syncExecutionDepth(app);
   if (!symbols.length) return;
   app.feed.subscribe('v2/ticker', symbols);
   app.feed.subscribe('ob_l1', symbols);
@@ -247,7 +248,25 @@ export function subscribeRealtime(app: App): void {
   app.tradeMonitor?.setSymbols(symbols);
 }
 
-/** Prefer the verified stream already retained for majors; REST supplies the other markets.
+/** Warm the existing verified execution stream for account allocations and
+ * exposure, rather than depending on a successful REST call after a stop hits.
+ * Delta's 100-symbol/socket limit is a feed bound, never a trading/risk rule. */
+export function syncExecutionDepth(app:Pick<App,'paper'|'scanners'|'depthRecorder'|'feed'>){
+  const requested=[...new Set([
+    ...app.paper.openPositions().map(p=>p.symbol),
+    ...app.paper.pendingEntries().map(p=>p.symbol),
+    'BTCUSD','ETHUSD','SOLUSD',
+    ...app.scanners.requiredSeries().map(p=>p.symbol),
+  ])];
+  const symbols=requested.slice(0,100),old=[...app.depthRecorder.symbols];
+  const removed=old.filter(s=>!symbols.includes(s));
+  if(removed.length)app.feed.unsubscribe('ob_updates',removed);
+  app.depthRecorder.setSymbols(symbols);
+  app.feed.subscribe('ob_updates',symbols);
+  if(requested.length>100)log.warn('execution depth subscription full; remaining account markets retain fresh REST exits');
+}
+
+/** Prefer the verified stream retained for account markets; REST supplies missing books.
  * Neither source may backdate an observation across the simulated order's arrival.
  */
 export async function readPaperExitBook(app:Pick<App,'rest'|'depthRecorder'>,symbol:string,readyAt:number,now:()=>number=()=>Date.now()) {

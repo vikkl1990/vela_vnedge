@@ -295,6 +295,7 @@ export function TradeMonitor() {
                     better performance.
                   </Callout>
                   {d.intrabarStudy && <IntrabarProtectionStudy study={d.intrabarStudy} />}
+                  {d.earlyProfitStudy && <IntrabarProtectionStudy title="Profit protection before 0.5R" study={d.earlyProfitStudy} />}
                   {d.scannerExitStudy && <ScannerExitStudy study={d.scannerExitStudy} />}
                   {d.invalidationStudy && (
                     <Section

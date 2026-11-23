@@ -5,11 +5,13 @@ import {fillExit,type Position} from '../paper/logic.ts';
 import {priceExit,type ExitBook} from '../paper/exitExecution.ts';
 import {ScannerEarlyExitStudy,SCANNER_EARLY_EXIT,SCANNER_EARLY_STRESS,earlyExitPosition} from './scannerEarlyExit.ts';
 import {ShadowInvalidationStudy,ARIA_RULE,ARIA_STRESS_RULE} from './shadowInvalidation.ts';
-import {IntrabarProtectionStudy,INTRABAR_RULE,INTRABAR_STRESS} from './intrabarProtection.ts';
+import {IntrabarProtectionStudy,INTRABAR_RULE,INTRABAR_STRESS,EARLY_PROFIT_RULE,EARLY_PROFIT_STRESS} from './intrabarProtection.ts';
 import type {IntrabarFlowSnapshot} from '../orderflow/intrabar.ts';
 
 export const MONITOR_VERSION='recovery-observer-v1';
 export const MONITOR_RULES=[
+ {id:EARLY_PROFIT_RULE,name:'Early net-profit retreat',description:'Shadow only: spread-aware protection below the 0.5R trail after sustained fresh depth pressure.'},
+ {id:EARLY_PROFIT_STRESS,name:'Early net-profit retreat stress',description:'Same shadow trigger, configured delay +3 seconds and 5bps adverse execution.'},
  {id:INTRABAR_RULE,name:'Intrabar flow profit protection',description:'Prospective ordinary shadow only: net giveback plus sustained adverse flow, price and fresh depth. No actual exits.'},
  {id:INTRABAR_STRESS,name:'Intrabar flow protection stress',description:'Same shadow trigger, configured latency +3 seconds and 5 bps adverse execution.'},
  {id:SCANNER_EARLY_EXIT,name:'Scanner-specific half-stop study',description:'Prospective SuperTrend Cluster, AI Predictive Flow and SOL continuation-maker only; hypothetical exit at −0.5 price R. No actual exits.'},
@@ -37,6 +39,7 @@ export class OpenTradeMonitor {
  readonly invalidation:ShadowInvalidationStudy;
  readonly scannerExits:ScannerEarlyExitStudy;
  readonly intrabar:IntrabarProtectionStudy;
+ readonly earlyProfit:IntrabarProtectionStudy;
  private lastMaintenance=0;private lastTick=0;
  constructor(db:Db,now=Date.now()){
   this.db=db;
@@ -56,16 +59,17 @@ export class OpenTradeMonitor {
   this.invalidation=new ShadowInvalidationStudy(db,now);
   this.scannerExits=new ScannerEarlyExitStudy(db,now);
   this.intrabar=new IntrabarProtectionStudy(db,now);
+  this.earlyProfit=new IntrabarProtectionStudy(db,now,'retreat');
  }
  observeIntrabar(input:WatchInput,flow:IntrabarFlowSnapshot,book:ExitBook|null,now=Date.now()){
   if(!this.intrabar.eligible(input,now))return;
-  const pendingBefore=new Map(this.pending);
+  const pendingBefore=new Map(this.pending),netR=estimateExit(input,book,now).netR;
   try{this.db.transaction(()=>{
-   if(this.intrabar.observe(input,flow,book,estimateExit(input,book,now).netR,now)){
-    this.trigger(input,INTRABAR_RULE,now,{extraLatencyMs:0,maxWaitMs:30000,slippageBps:0});
-    this.trigger(input,INTRABAR_STRESS,now,{extraLatencyMs:3000,maxWaitMs:30000,slippageBps:5});
+   for(const study of [this.intrabar,this.earlyProfit])if(study.observe(input,flow,book,netR,now)){
+    this.trigger(input,study.rule,now,{extraLatencyMs:0,maxWaitMs:30000,slippageBps:0});
+    this.trigger(input,study.stressRule,now,{extraLatencyMs:3000,maxWaitMs:30000,slippageBps:5});
    }
-  });}catch(error){this.pending=pendingBefore;this.intrabar.rollback(input.position);throw error;}
+  });}catch(error){this.pending=pendingBefore;this.intrabar.rollback(input.position);this.earlyProfit.rollback(input.position);throw error;}
  }
  observe(inputs:WatchInput[],markets:Map<string,MarketObservation>,setup:(p:Position)=>unknown,now=Date.now()){
   this.lastTick=now;const active=new Set(inputs.map(x=>key(x.position)));
@@ -184,6 +188,7 @@ export class OpenTradeMonitor {
   this.invalidation.reconcile(now);
   this.scannerExits.reconcile(now);
   this.intrabar.reconcile(now);
+  this.earlyProfit.reconcile(now);
   this.db.run("UPDATE advisory_exits SET status='censored',delta=NULL,error='Actual position unavailable or reset' WHERE status='filled' AND actual_net IS NULL AND NOT EXISTS(SELECT 1 FROM positions p WHERE p.id=position_id AND p.entry_at=advisory_exits.entry_at)");
   this.db.run('DELETE FROM advisory_exit_liquidity WHERE at<?',now-86400000);
   // Bound storage independently of trading journals. Keep 90 days / 200k checkpoints and 50k trials.
@@ -197,7 +202,7 @@ export class OpenTradeMonitor {
    sum(CASE WHEN status='filled' AND actual_net IS NOT NULL THEN delta ELSE 0 END) deltaUsd,
    sum(CASE WHEN status='filled' AND actual_net IS NOT NULL THEN delta/json_extract(payload,'$.position.riskAmount') ELSE 0 END) deltaR,
    sum(status IN ('unpriced','censored')) unavailable,sum(status='filled' AND actual_net>0 AND net<0) winnersLost FROM advisory_exits GROUP BY book,scope,rule`);
-  return {mode:'advisory' as const,version:MONITOR_VERSION,at:this.lastTick,rules:MONITOR_RULES,positions:[...this.states.values()],trials:rows,summary,invalidationStudy:this.invalidation.view(),scannerExitStudy:this.scannerExits.view(),intrabarStudy:this.intrabar.view()};
+  return {mode:'advisory' as const,version:MONITOR_VERSION,at:this.lastTick,rules:MONITOR_RULES,positions:[...this.states.values()],trials:rows,summary,invalidationStudy:this.invalidation.view(),scannerExitStudy:this.scannerExits.view(),intrabarStudy:this.intrabar.view(),earlyProfitStudy:this.earlyProfit.view()};
  }
  detail(id:number){return this.db.all<any>('SELECT checkpoint,at,payload FROM advisory_checkpoints WHERE position_id=? ORDER BY at LIMIT 100',id).map(x=>({...x,payload:JSON.parse(x.payload)}));}
 }

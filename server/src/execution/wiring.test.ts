@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { subscribeRealtime, wireTradingStatus, readPaperExitBook } from './wiring.ts';
+import { subscribeRealtime, syncExecutionDepth, wireTradingStatus, readPaperExitBook } from './wiring.ts';
 import { EventEmitter } from 'node:events';
 import { TradingStatus } from '../delta/tradingStatus.ts';
 
@@ -35,7 +35,7 @@ test('maintenance completion discards an in-flight catalogue and immediately req
 });
 test('L1 subscriptions include held and pending markets from both books even after scanner removal',()=>{
   const seen=new Map<string,string[]>();
-  subscribeRealtime({resolvedSymbols:['BTCUSD'],scanners:{requiredSeries:()=>[]},paper:{openPositions:()=>[{symbol:'ETHUSD'}],pendingEntries:()=>[{symbol:'SOLUSD'}]},shadow:{openPositions:()=>[{symbol:'AINUSD'}],pendingEntries:()=>[{symbol:'ETHUSD'}]},incubator:{symbols:()=>['BTCUSD','XRPUSD']},orderFlow:{symbols:['BTCUSD']},depthRecorder:{symbols:['BTCUSD']},feed:{subscribe:(ch:string,sy:string[])=>seen.set(ch,sy)}} as any);
+  subscribeRealtime({resolvedSymbols:['BTCUSD'],scanners:{requiredSeries:()=>[]},paper:{openPositions:()=>[{symbol:'ETHUSD'}],pendingEntries:()=>[{symbol:'SOLUSD'}]},shadow:{openPositions:()=>[{symbol:'AINUSD'}],pendingEntries:()=>[{symbol:'ETHUSD'}]},incubator:{symbols:()=>['BTCUSD','XRPUSD']},orderFlow:{symbols:['BTCUSD']},depthRecorder:{symbols:['BTCUSD'],setSymbols:()=>{}},feed:{subscribe:(ch:string,sy:string[])=>seen.set(ch,sy),unsubscribe:()=>{}}} as any);
   assert.deepEqual(seen.get('ob_l1'),['BTCUSD','ETHUSD','AINUSD','SOLUSD','XRPUSD','ARIAUSD','INITUSD','PARTIUSD','EVAAUSD']);
   assert.deepEqual(seen.get('all_trades'),seen.get('ob_l1'));
 });
@@ -48,8 +48,8 @@ function allocationFixture() {
   return {seen, required, app: {
     resolvedSymbols: ['BTCUSD'], scanners: {requiredSeries: () => required},
     paper: emptyBook, shadow: emptyBook, incubator: {symbols: () => []},
-    orderFlow: {symbols: ['BTCUSD']}, depthRecorder: {symbols: ['BTCUSD']},
-    feed: {subscribe: (channel: string, symbols: string[]) => seen.set(channel, symbols)},
+    orderFlow: {symbols: ['BTCUSD']}, depthRecorder: {symbols: ['BTCUSD'],setSymbols: () => {}},
+    feed: {subscribe: (channel: string, symbols: string[]) => seen.set(channel, symbols),unsubscribe:()=>{}},
   }};
 }
 
@@ -58,7 +58,7 @@ test('explicit paper allocations receive execution feeds before any order exists
   required.push({symbol: 'PARTIUSD', tf: '1h'}, {symbol: 'LTCUSD', tf: '1h'}, {symbol: 'PARTIUSD', tf: '15m'});
   subscribeRealtime(app as any);
   for (const channel of channels) assert.deepEqual(seen.get(channel), ['BTCUSD', 'PARTIUSD', 'LTCUSD', 'ARIAUSD', 'INITUSD', 'EVAAUSD', 'SOLUSD'], channel);
-  assert.deepEqual(seen.get('ob_updates'), ['BTCUSD'], 'full depth audit retains its bounded symbol set');
+  assert.deepEqual(seen.get('ob_updates'), ['BTCUSD','ETHUSD','SOLUSD','PARTIUSD','LTCUSD'], 'account allocations have verified streaming depth before their first stop');
 });
 
 test('a newly activated paper allocation gets execution feeds on configuration refresh', () => {
@@ -75,4 +75,16 @@ test('paper exit source prefers validated post-arrival depth, otherwise performs
   rest:{orderbook:async(symbol:string,depth:number,options:any)=>{calls++;assert.equal(symbol,'BTCUSD');assert.equal(depth,100);assert.deepEqual(options,{retries:0,timeoutMs:2000});return {last_updated_at:T*1000,buy:[{price:'98',size:2}],sell:[{price:'102',size:2}]};}}} as any;
  assert.equal((await readPaperExitBook(app,'BTCUSD',T-1,()=>T)).source,'l2-websocket');assert.equal(calls,0);
  receivedAt=T-2;const r=await readPaperExitBook(app,'BTCUSD',T-1,()=>T);assert.equal(r.source,'l2-rest');assert.equal(r.exchangeAt,T);assert.equal(calls,1);
+});
+
+test('execution depth preserves retained books, warms account exposure and bounds socket subscriptions',()=>{
+ const subscriptions:string[][]=[],removed:string[][]=[];
+ const recorder={symbols:['BTCUSD','OLDUSD'],setSymbols(symbols:string[]){this.symbols=[...symbols];}};
+ const app={paper:{openPositions:()=>[{symbol:'AVAXUSD'}],pendingEntries:()=>[{symbol:'PEPEUSD'}]},
+  scanners:{requiredSeries:()=>Array.from({length:120},(_,i)=>({symbol:`PAIR${i}USD`}))},depthRecorder:recorder,
+  feed:{subscribe:(_ch:string,s:string[])=>subscriptions.push(s),unsubscribe:(_ch:string,s:string[])=>removed.push(s)}};
+ syncExecutionDepth(app as any);
+ assert.equal(recorder.symbols.length,100);
+ assert.deepEqual(recorder.symbols.slice(0,5),['AVAXUSD','PEPEUSD','BTCUSD','ETHUSD','SOLUSD']);
+ assert.deepEqual(removed,[['OLDUSD']]);assert.deepEqual(subscriptions,[recorder.symbols]);
 });

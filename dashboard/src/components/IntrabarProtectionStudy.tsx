@@ -5,11 +5,13 @@ import { fmtPnlUsd } from '../lib/format'
 const r = (n: number) => `${n >= 0 ? '+' : ''}${n.toFixed(2)}R`
 export function IntrabarProtectionStudy({
   study,
+  title = 'Intrabar order-flow protection',
 }: {
   study: NonNullable<TradeMonitorView['intrabarStudy']>
+  title?: string
 }) {
   return (
-    <Section title="Intrabar order-flow protection" hint="Shadow comparison · no paper exit changes">
+    <Section title={title} hint="Shadow comparison · no paper exit changes">
       <p className="small muted">{study.description}</p>
       <DataTable
         rows={study.groups}

@@ -53,6 +53,7 @@ export interface MonitorTrial {
   risk: number
 }
 export interface TradeMonitorView {
+  earlyProfitStudy?: TradeMonitorView['intrabarStudy']
   intrabarStudy?: {
     rule: string
     startedAt: number

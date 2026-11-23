@@ -5,7 +5,7 @@ import {DEFAULT_CONFIG} from '../config.ts';
 import {PaperEngine} from '../paper/engine.ts';
 import {EntryDepthGate,wireEntryDepth} from '../risk/entryDepth.ts';
 import {OpenTradeMonitor} from './openTradeMonitor.ts';
-import {INTRABAR_RULE,INTRABAR_STRESS,pressure} from './intrabarProtection.ts';
+import {INTRABAR_RULE,INTRABAR_STRESS,EARLY_PROFIT_RULE,EARLY_PROFIT_STRESS,pressure} from './intrabarProtection.ts';
 import type {IntrabarFlowSnapshot} from '../orderflow/intrabar.ts';
 const T=1800000000000;
 const book=(at:number,price=101,size=10000,side:'long'|'short'='long')=>({receivedAt:at,exchangeAt:at,bids:[{price:side==='long'?price:price-.01,size:side==='long'?size:size*4}],asks:[{price:side==='long'?price+.01:price,size:side==='long'?size*4:size}]});
@@ -26,7 +26,7 @@ async function fixture(t:any,side:'long'|'short'='long',symbol='INITUSD',options
  const observe=(at:number,netPrice:number,overrides:Partial<ReturnType<typeof input>>={},f=flow(at,side),b=book(at,netPrice,10000,side))=>{now=at;monitor.observeIntrabar({...input(),...overrides},f,b,at);};
  const trigger=()=>{observe(T+100,side==='long'?102:98);observe(T+1100,side==='long'?101:99);observe(T+2100,side==='long'?101:99);};
  const rows=()=>db.all<any>('SELECT * FROM advisory_exits WHERE rule IN (?,?) ORDER BY rule',INTRABAR_RULE,INTRABAR_STRESS);
- const cohort=()=>db.get<any>('SELECT * FROM advisory_intrabar_cohort');
+ const cohort=()=>db.get<any>('SELECT * FROM advisory_intrabar_cohort WHERE rule=?',INTRABAR_RULE);
  const close=(net:number,reason='sl',at=T+6000)=>{db.run("UPDATE positions SET status='closed',exit_at=?,exit_reason=?,realized_pnl=?,fees=0 WHERE id=?",at,reason,net,p.id);monitor.resolve(at+1);};
  return {db,cfg,engine,p,input,observe,trigger,rows,cohort,close,get monitor(){return monitor;},restart:(at:number)=>{monitor=new OpenTradeMonitor(db,at);},settle:(at:number,b=book(at,side==='long'?100.9:99.1,10000,side))=>monitor.settle(symbol,b,at,()=>p)};
 }
@@ -105,4 +105,48 @@ test('optimistic or undocumented prices and stale/future entry observations rema
   if(change==='stale-depth'){depth.exchangeAt=T-5001;x.db.run('UPDATE entry_fill_evidence SET depth=?',JSON.stringify(depth));}
   x.observe(T+100,102);assert.equal(x.cohort().status,'unverified',change);
  }
+});
+
+
+test('early net-profit protection works below 0.5R on quiet markets only after sustained fresh executable retreat',async t=>{
+ for(const side of ['long','short'] as const){
+  const x=await fixture(t,side,'1000PEPEUSD'),before=JSON.stringify(x.p),sign=side==='long'?1:-1;
+  const unit=Math.abs(x.p.entryPrice-x.p.slOriginal!);
+  const price=(r:number)=>x.p.entryPrice+sign*unit*r;
+  const quiet=(at:number)=>{const f=flow(at,side);f.windows.s60.trades=0;return f;};
+  x.observe(T+100,price(.3),{},quiet(T+100));
+  for(let sec=1;sec<=6;sec++)x.observe(T+100+sec*1000,price(.16),{},quiet(T+100+sec*1000));
+  const rows=x.db.all<any>('SELECT * FROM advisory_exits WHERE rule IN (?,?)',EARLY_PROFIT_RULE,EARLY_PROFIT_STRESS);
+  assert.equal(rows.length,2);assert.equal(x.rows().length,0,'quiet flow never becomes a flow trigger');
+  assert.equal(JSON.stringify(x.p),before,'candidate cannot change actual protection');
+  x.settle(T+9200,book(T+9200,price(.14),10000,side));
+  x.close(-x.p.riskAmount,'sl',T+10000);
+  const g=x.monitor.view().earlyProfitStudy.groups[0];assert.equal(g.covered,1);assert.ok(g.deltaR>0);assert.equal(g.stopsBefore,1);assert.equal(g.stopsAfter,0);assert.equal(g.winnersCut,0);
+ }
+});
+test('early protection counts winners cut and cannot trigger on spread noise, a single retreat, or repeated books',async t=>{
+ const x=await fixture(t);x.observe(T+100,101.5);
+ for(let sec=1;sec<=6;sec++)x.observe(T+100+sec*1000,100.8);
+ x.settle(T+9200,book(T+9200,100.7));x.close(x.p.riskAmount,'trail',T+10000);
+ assert.equal(x.monitor.view().earlyProfitStudy.groups[0].winnersCut,1);
+ for(const kind of ['single','noise','repeated','favorable','below-cost','already-armed']){
+  const y=await fixture(t);y.observe(T+100,kind==='already-armed'?104:101.5);
+  for(let sec=1;sec<=7;sec++){
+   const at=T+100+sec*1000,price=kind==='noise'?101.4:kind==='single'&&sec>1?101.5:kind==='below-cost'?100.05:100.8;
+   const b=book(kind==='repeated'?T+1100:at,price);
+   if(kind==='favorable'){b.bids[0].size=100000;b.asks[0].size=1;}
+   y.observe(at,price,{},flow(at),b);
+  }
+  assert.equal(y.db.get<any>('SELECT count(*) n FROM advisory_exits WHERE rule=?',EARLY_PROFIT_RULE).n,0,kind);
+ }
+});
+
+test('early protection restarts confirmation on recovery and never replaces an already armed trail',async t=>{
+ const x=await fixture(t);x.observe(T+100,101.5);x.observe(T+1100,100.8);x.observe(T+2100,100.8);
+ x.observe(T+3100,100.9); // Fresh recovery clears sustained pressure.
+ for(const at of [T+4100,T+5100,T+6100])x.observe(at,100.8);
+ assert.equal(x.db.get<any>('SELECT count(*) n FROM advisory_exits WHERE rule=?',EARLY_PROFIT_RULE).n,0);
+ const y=await fixture(t);y.p.trailArmedAt=T;
+ y.observe(T+100,101.5);for(let sec=1;sec<=7;sec++)y.observe(T+100+1000*sec,100.8);
+ assert.equal(y.db.get<any>('SELECT count(*) n FROM advisory_exits WHERE rule=?',EARLY_PROFIT_RULE).n,0);
 });
