@@ -11,9 +11,10 @@ test('saved research plans join the shadow schedule before config refresh comple
   resolveUniverse:async()=>{},feed:{subscribe:(_channel:string,symbols:string[])=>subscriptions.push([...symbols])},
   scanners:{refresh:async()=>{calls.push('account');},requiredSeries:()=>[]},paper:book,shadow:book,
   incubator:{sync:async()=>{calls.push('shadow');researchSymbols=['SOLUSD'];},symbols:()=>researchSymbols},
-  depthRecorder:{symbols:[]},orderFlow:{symbols:[]},marketGate:{needsRefresh:()=>false}};
+  depthRecorder:{symbols:[] as string[],setSymbols(symbols:string[]){this.symbols=[...symbols];}},orderFlow:{symbols:[]},marketGate:{needsRefresh:()=>false}};
  await App.prototype.onConfigChanged.call(app as any);
  assert.deepEqual(calls,['account','shadow']);
  assert.ok(subscriptions.some(s=>s.includes('SOLUSD')),'new shadow market gets the entry-price stream immediately');
+ assert.deepEqual(app.depthRecorder.symbols,['BTCUSD','ETHUSD','SOLUSD'],'refresh warms the verified execution depth stream');
  assert.deepEqual(cfg,before,'refresh cannot alter risk, evidence, sizing or execution settings');
 });
