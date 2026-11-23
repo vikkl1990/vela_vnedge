@@ -1,5 +1,5 @@
 import type {Db} from '../db.ts';
-import type {Position} from '../paper/logic.ts';
+import {impactOnly,type Position} from '../paper/logic.ts';
 import {priceExit,type ExitBook,CAUSAL_CANDLE_VERSION} from '../paper/exitExecution.ts';
 import {tradePolicyIdFor} from '../paper/tradePolicy.ts';
 import type {IntrabarFlowSnapshot} from '../orderflow/intrabar.ts';
@@ -60,8 +60,18 @@ export class IntrabarProtectionStudy {
   if(!reason){
    if(!e||e.at!==p.entryAt||e.qty!==p.qty||e.price!==p.entryPrice||e.source!=='depth'||!e.depth)reason='Entry lacks exact taker depth; maker models remain separate';
    else try{
-    const d=JSON.parse(e.depth),q=priceExit(d,p.side==='long'?'short':'long',input.marketQty!,p.entryAt,1000,d.consumedQty??0);
-    if(q.error||q.qty!==input.marketQty||q.price===null||Math.abs(q.price-p.entryPrice)>Math.max(1e-9,p.entryPrice*1e-9))reason='Entry depth does not reproduce executable size and price';
+    const d=JSON.parse(e.depth),maxAge=input.config.quoteMaxAgeMs;
+    const q=priceExit(d,p.side==='long'?'short':'long',input.marketQty!,p.entryAt,maxAge,d.consumedQty??0);
+    const quote=this.db.get<{bid:number|null;ask:number|null;quote_at:number|null;quote_exchange_at:number|null}>('SELECT bid,ask,quote_at,quote_exchange_at FROM entry_execution WHERE position_id=?',p.id);
+    if(q.error||q.qty!==input.marketQty||q.price===null)reason='Entry depth unavailable under its frozen freshness/size policy';
+    else if(!quote||!(quote.bid!>0&&quote.ask!>=quote.bid!)||[quote.quote_at,quote.quote_exchange_at].some(at=>at===null||at>p.entryAt||p.entryAt-at>maxAge))reason='Missing fresh entry quote needed to reproduce the current model';
+    else {
+     // depthPlan deliberately retains the worse of the executable quote and the
+     // depth VWAP. Comparing against VWAP alone rejects conservative real entries.
+     const reference=p.side==='long'?Math.max(quote.ask!,q.price):Math.min(quote.bid!,q.price);
+     const expected=impactOnly(reference,p.side==='long'?'buy':'sell',input.config,reference*p.qty*p.contractValue);
+     if(Math.abs(expected-p.entryPrice)>Math.max(1e-9,p.entryPrice*1e-9))reason='Saved quote/depth and frozen costs do not reproduce the entry';
+    }
    }catch{reason='Malformed entry depth';}
   }
   const c:Cohort={id:p.id,entryAt:p.entryAt,scanner:p.scannerId,symbol:p.symbol,tf:p.tf,policyId:policy?.id??'unknown',sourceHash:policy?.sourceHash??'unknown',
@@ -133,7 +143,7 @@ export class IntrabarProtectionStudy {
    g.winnerGivebackR+=before>0?Math.max(0,before-after)/c.risk:0;
   }
   return {rule:INTRABAR_RULE,startedAt:this.startedAt,mode:'shadow-advisory' as const,promotionEligible:false as const,
-   description:'Future ordinary shadow trades with verified depth entries. Protect a net peak ≥0.25R after ≥0.10R giveback, while ≥0.05R remains, only with sustained adverse 15s flow, 5s price retreat and fresh 10bps depth pressure. Base delay matches the entry policy; stress adds 3s and 5bps. Quiet/unknown data abstains. Net dollars are normalized to frozen executable size, not account cash. No paper activation or promotion evidence.',
+   description:'Future ordinary shadow trades with entries verified against their saved quote, depth and frozen execution policy. Protect a net peak ≥0.25R after ≥0.10R giveback, while ≥0.05R remains, only with sustained adverse 15s flow, 5s price retreat and fresh 10bps depth pressure. Exit depth must be under one second old. Base delay matches the entry policy; stress adds 3s and 5bps. Quiet/unknown data abstains. Net dollars are normalized to frozen executable size, not account cash. No paper activation or promotion evidence.',
    groups:[...groups.values()].map(g=>({...g,deltaR:g.candidateR-g.baselineR,stressDeltaR:g.stressR-g.baselineR})),recent};
  }
 }
