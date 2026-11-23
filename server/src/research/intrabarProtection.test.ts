@@ -13,12 +13,12 @@ function flow(at:number,side:'long'|'short'='long'):IntrabarFlowSnapshot{
  const w={trades:20,buy:side==='long'?1:9,sell:side==='long'?9:1,imbalance:side==='long'?-.8:.8,firstPrice:100,lastPrice:side==='long'?99:101};
  return {at,since:T-60000,covered:true,reason:null,lastTradeAt:at,windows:{s5:{...w},s15:{...w},s60:{...w}}};
 }
-async function fixture(t:any,side:'long'|'short'='long',symbol='INITUSD'){
+async function fixture(t:any,side:'long'|'short'='long',symbol='INITUSD',options:{bid?:number;ask?:number;depthAge?:number;slippage?:number}={}){
  const db=new Db(':memory:');t.after(()=>db.db.close());const cfg=structuredClone(DEFAULT_CONFIG);let now=T;
- Object.assign(cfg.paper,{initialEquity:1000,sizingMode:'risk',riskPerTradePct:1,maxStopLossPct:0,maxSignalAgeSec:0,minRiskFeeRatio:0,useSpread:true,requireQuote:true,quoteMaxAgeMs:1000,slippageBps:0,quotedSlippageBps:0,feeRatePct:.05,makerFeeRatePct:.02,feeTaxPct:18,liquidation:false,latencyMs:0,trailAfterR:0,floorAtR:0,limitEntry:undefined,skipScriptStops:false,fillSource:'candles'});
+ Object.assign(cfg.paper,{initialEquity:1000,sizingMode:'risk',riskPerTradePct:1,maxStopLossPct:0,maxSignalAgeSec:0,minRiskFeeRatio:0,useSpread:true,requireQuote:true,quoteMaxAgeMs:5000,slippageBps:0,quotedSlippageBps:options.slippage??0,feeRatePct:.05,makerFeeRatePct:.02,feeTaxPct:18,liquidation:false,latencyMs:0,trailAfterR:0,floorAtR:0,limitEntry:undefined,skipScriptStops:false,fillSource:'candles'});
  cfg.execution.mode='paper';cfg.risk.marketGate={...cfg.risk.marketGate!,enabled:true,freshDepth:true,maxBookCostPct:1,exempt:[]};
- const engine=new PaperEngine(db,()=>cfg,{book:2,now:()=>now});engine.causalExits=true;engine.sourceHashFor=()=> 'source';engine.quotes={executable:(_s,dir)=>dir==='buy'?100:99.99};
- const gate=new EntryDepthGate({cfg:()=>cfg,now:()=>now,book:async()=>({timestamp:now*1000,buy:[{price:99.99,size:1000000}],sell:[{price:100,size:1000000}]})});wireEntryDepth(engine,engine,gate);await gate.prepare(symbol);
+ const engine=new PaperEngine(db,()=>cfg,{book:2,now:()=>now});engine.causalExits=true;engine.sourceHashFor=()=> 'source';engine.quotes={executable:(_s,dir)=>dir==='buy'?(options.ask??100):(options.bid??99.99),markState:()=>({bestBid:options.bid??99.99,bestAsk:options.ask??100,at:now,quoteAt:now,quoteExchangeAt:now})};
+ const gate=new EntryDepthGate({cfg:()=>cfg,now:()=>now,book:async()=>({timestamp:(now-(options.depthAge??0))*1000,buy:[{price:99.99,size:1000000}],sell:[{price:100,size:1000000}]})});wireEntryDepth(engine,engine,gate);await gate.prepare(symbol);
  const d=engine.onEntry({kind:'entry',side,price:100,sl:side==='long'?95:105,tp:[],label:'entry',message:'',source:'alert',barTime:T-900000,barIndex:0},{scannerId:'test-scanner',scannerName:'Test',symbol,tf:'15m',market:{tickSize:.01,contractValue:1},refPrice:100,at:T,signalId:null,exitMode:'both'});
  assert.equal(d.action,'opened',d.reason);const p=d.position!;db.run("UPDATE positions SET evidence_scope='shadow' WHERE id=?",p.id);
  let monitor=new OpenTradeMonitor(db,T-1);
@@ -84,4 +84,25 @@ test('quarantine and late accounting changes stay visible and cannot restore a d
  x.db.run("INSERT INTO evidence_flags(position_id,entry_at,status,reason,source,checked_at) VALUES(?,?,'quarantined','test','test',?)",x.p.id,x.p.entryAt,T+7001);
  x.monitor.resolve(T+7100);assert.equal(x.monitor.view().intrabarStudy.groups[0].covered,0);
  x.db.run("UPDATE evidence_flags SET status='cleared' WHERE position_id=?",x.p.id);x.monitor.resolve(T+7200);assert.equal(x.monitor.view().intrabarStudy.groups[0].covered,0);
+});
+
+test('entry proof reproduces conservative quote/depth pricing under the original freshness and cost policy',async t=>{
+ for(const side of ['long','short'] as const){
+  const x=await fixture(t,side,'INITUSD',{bid:99.8,ask:100.1,depthAge:2000,slippage:1});
+  x.observe(T+100,side==='long'?102:98);assert.equal(x.cohort().status,'watching',x.cohort().payload);
+  const d=JSON.parse(x.db.get<any>('SELECT depth FROM entry_fill_evidence').depth);assert.notEqual(d.vwap,x.p.entryPrice);
+  // Entry policy can accept a two-second book; hypothetical exits still cannot.
+  x.observe(T+1100,101,{},flow(T+1100),book(T-1000));assert.equal(x.rows().length,0);
+ }
+});
+test('optimistic or undocumented prices and stale/future entry observations remain excluded',async t=>{
+ for(const change of ['price','missing-quote','future-quote','stale-quote','stale-depth']){
+  const x=await fixture(t);const depth=JSON.parse(x.db.get<any>('SELECT depth FROM entry_fill_evidence').depth);
+  if(change==='price'){depth.asks[0].price=100.1;x.db.run('UPDATE entry_fill_evidence SET depth=?',JSON.stringify(depth));}
+  if(change==='missing-quote')x.db.run('UPDATE entry_execution SET quote_at=NULL');
+  if(change==='future-quote')x.db.run('UPDATE entry_execution SET quote_at=?',T+1);
+  if(change==='stale-quote')x.db.run('UPDATE entry_execution SET quote_exchange_at=?',T-5001);
+  if(change==='stale-depth'){depth.exchangeAt=T-5001;x.db.run('UPDATE entry_fill_evidence SET depth=?',JSON.stringify(depth));}
+  x.observe(T+100,102);assert.equal(x.cohort().status,'unverified',change);
+ }
 });

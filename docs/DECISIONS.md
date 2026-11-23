@@ -8542,6 +8542,12 @@ Collect incrementally from the existing trade feed after execution callbacks, wi
 
 Observer gaps, changed exposure/policy, quarantined evidence, missing fills and restart interruptions remain unavailable. Trigger, both arms and their cohort update commit atomically. This deploy adds measurement, not a proven profitable exit: retain paper mode, all current exits, risk settings and evidence rules. No automatic paper activation or historical evidence rewrite.
 
+## 331. Verify an intrabar comparison entry against the actual frozen entry model (23 November 2026)
+
+The first live cohort exposed an over-strict research check. A market entry's `depthPlan` deliberately chooses the worse of its fresh executable quote and depth VWAP, then applies frozen impact costs. Comparing the recorded entry only to raw VWAP incorrectly rejected conservative INIT and ARIA entries. Reusing the hypothetical exit's one-second freshness requirement for entry snapshots also rejected entries legitimately admitted under their frozen entry policy.
+
+Verify the entry from its saved bid/ask, both quote clocks, exact depth at frozen executable quantity, original entry freshness limit, conservative quote/depth rule and frozen impact costs. Missing or future observations, stale data outside that policy, unreproduced prices and insufficient size remain unavailable. Hypothetical exits and triggering depth still require one-second freshness. No execution, admission, risk, evidence-qualification or exit hypothesis changes. Do not restore earlier missed observations or relabel excluded historical trials; only future comparisons can benefit.
+
 ## 333. Step through journal trades with j and k (16 November 2026)
 
 Reviewing why trades stopped out meant clicking a row, reading its detail, scrolling back up and clicking the next one. With a
