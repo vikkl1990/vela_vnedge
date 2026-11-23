@@ -1,4 +1,5 @@
 import {twoBarFailure} from './failedTradeExit.ts';
+import {SETUP_LIFECYCLE,initSetupLifecycle,claimSetupExit,invalidatesSetup,type SetupExitEvent} from './setupLifecycle.ts';
 import {nativeGeometryError} from '../scanners/plotLifecycle.ts';
 import {BASKET_SCANNER,BASKET_MARKER,basketRefusal,basketLevels,basketSizing,basketStopRisk,sizeBasketEntry} from './basket.ts';
 import {PartialExits} from './partialExits.ts';
@@ -275,6 +276,7 @@ export class PaperEngine extends EventEmitter {
     this.partialExits=new PartialExits(db,this.exitExecution);
     this.partialMaker=new PartialMakerLedger(db,this.book);
     initEntryExecution(db);
+    initSetupLifecycle(db);
     db.run('CREATE TABLE IF NOT EXISTS paper_basket_entries(position_id INTEGER NOT NULL,sequence INTEGER NOT NULL,at INTEGER NOT NULL,qty INTEGER NOT NULL,price REAL NOT NULL,fee REAL NOT NULL,signal_bar INTEGER NOT NULL,plan_event_id INTEGER,context TEXT NOT NULL,PRIMARY KEY(position_id,sequence))');
     initReclaimAudit(db);
     db.run('CREATE UNIQUE INDEX IF NOT EXISTS basket_entry_event ON paper_basket_entries(plan_event_id) WHERE plan_event_id IS NOT NULL');
@@ -475,6 +477,16 @@ export class PaperEngine extends EventEmitter {
       exitPending:!!this.exitExecution.active(p.id)};
   }
   private partial(p:Position){return this.causal(p) && (p.executionPlan?.partialExitVersion===1 || p.legs.filter(q=>q>0).length>1);}
+  private setupLifecycle(cell:{executionPlan?:ExecutionPlanSnapshot}):boolean {
+    return this.book===2 && cell.executionPlan?.setupLifecycle===SETUP_LIFECYCLE &&
+      !!cell.executionPlan.sourceHash && this.causalExits && !this.mirrored() && this.cfgRef().execution.mode==='paper';
+  }
+  private independentClose(p:Position):boolean {
+    if(!this.setupLifecycle(p))return false;
+    if(this.partial(p)&&this.partialExits.closing(p))return true;
+    const active=this.exitExecution.active(p.id);
+    return !!active && ['script_exit','script_flip','sl','be'].includes(active.reason) && active.qty>=p.qtyOpen;
+  }
   private mirrored(): boolean { return this.fillMode === 'mirrored' || Boolean(this.executionIntent); }
   private causal(p:Position){return this.causalExits&&!this.mirrored()&&this.cfgRef().execution.mode==='paper'&&(p.executionPlan?.executionVersion??p.policy?.sim??0)>=CAUSAL_EXIT_VERSION;}
   pendingExits(){return this.exitExecution.pending().filter(i=>{const p=this.open.get(i.position_id);return !!p&&this.causal(p);});}
@@ -701,6 +713,11 @@ export class PaperEngine extends EventEmitter {
       ctx={...ctx,features:{...ctx.features,basket_signal_bar:ev.barTime,...(held?{basket_parent:held.id}:{})}};
     }
     if (!this.planEnabled(ctx.executionPlan)) return {action:"rejected",reason:"research plan disabled or wrong book"};
+    if(ctx.executionPlan?.setupLifecycle&&!this.setupLifecycle(ctx))return {action:'rejected',reason:'setup lifecycle requires the causal paper shadow adapter and pinned source'};
+    if(ctx.executionPlan?.setupLifecycle){
+      if(!Number.isFinite(ev.barTime)||ev.barTime<=0||!(ctx.tf in TF_SECONDS)||ev.barTime+TF_SECONDS[ctx.tf]*1000>ctx.at)return {action:'rejected',reason:'setup lifecycle requires a confirmed source bar'};
+      ctx={...ctx,features:{...ctx.features,setup_source_bar:ev.barTime}};
+    }
     if(!ctx.executionPlan&&!ctx.policy)ctx={...ctx,policy:this.policyForCell(ctx)};
     if(ctx.policy){saveTradePolicy(this.db,ctx.policy);const source=this.sourceCodeFor?.(ctx.scannerId);
       if(source&&ctx.policy.sourceHash)this.db.run('INSERT OR IGNORE INTO scanner_source_versions(hash,source) VALUES(?,?)',ctx.policy.sourceHash,source);}
@@ -844,12 +861,13 @@ export class PaperEngine extends EventEmitter {
     // risk gate, size, exposure — with the existing position counted as gone; only then is the existing
     // position closed. A replacement that cannot be admitted leaves the position as it was.
     let replacing: Position | undefined;
-    const awaitingNativeClose = !!existing && this.book===2 && ctx.executionPlan?.nativeReentryVersion===1 &&
+    const independentClose=!!existing&&this.independentClose(existing);
+    const awaitingNativeClose = independentClose || !!existing && this.book===2 && ctx.executionPlan?.nativeReentryVersion===1 &&
       this.partial(existing) && this.partialExits.closing(existing);
     if (existing) {
       if (existing.side === ev.side && !ctx.executionPlan?.basket && !awaitingNativeClose) return { action: 'ignored', reason: 'already in position' };
       if (!ctx.executionPlan?.basket) {
-        if (existing.side !== ev.side) {
+        if (existing.side !== ev.side && !independentClose) {
           if (!cfg.allowReversal) return { action: 'ignored', reason: 'opposite signal while in position (reversal disabled)' };
           const markNow = this.marks.get(existing.symbol) ?? ctx.refPrice;
           if (!reversalAllowed(existing, markNow, cfg)) {
@@ -860,7 +878,7 @@ export class PaperEngine extends EventEmitter {
       }
     }
     const refused = (reason: string): EntryDecision => ({ action: 'rejected', reason: awaitingNativeClose ?
-      `native re-entry refused; existing close retained: ${reason}` : replacing ? `reversal refused, position kept: ${reason}` : reason });
+      `${independentClose?'replacement refused; independent close retained':'native re-entry refused; existing close retained'}: ${reason}` : replacing ? `reversal refused, position kept: ${reason}` : reason });
     let closed: Position | undefined;
     if (this.findPending(ctx.scannerId, ctx.symbol, ctx.tf)) return { action: 'ignored', reason: 'entry already pending' };
     const positionCap=this.positionCap(cfg);
@@ -1387,6 +1405,9 @@ export class PaperEngine extends EventEmitter {
 
   /** Expire pending entries that neither the tape nor a candle could fill within a minute past their due time. */
   housekeeping(now = this.now()): void {
+    // Durable research close receipts retry outside entry transactions. A retry
+    // requests a present-time exit; it cannot synthesize an offline execution.
+    if(!this.decisionActive)this.emit('housekeeping',now);
     for (const pe of [...this.pending.values()]) {
       if(tickDepthMaker(pe.executionPlan?.makerFill)&&(!this.makerTape(pe)||!this.causalExits)){this.cancelPending(pe.id,'partial maker model unavailable outside paper tape execution');continue;}
       if (pe.features?.reclaim_trial && !this.reclaimAvailable(pe,pe.reclaim?.ruleKey??pe.reclaimRuleKey)) {this.cancelPending(pe.id,'reclaim trial disabled or changed');continue;}
@@ -1540,11 +1561,34 @@ export class PaperEngine extends EventEmitter {
     return n;
   }
 
-  onScriptExit(scannerId: string, symbol: string, tf: string, exitType: ExitType, price: number | undefined, at: number, exitMode: ExitMode, side?: Side, targets?:{positionId:number|null;pendingIds:number[]}): Position | undefined {
+  onScriptExit(scannerId: string, symbol: string, tf: string, exitType: ExitType, price: number | undefined, at: number, exitMode: ExitMode, side?: Side, targets?:{positionId:number|null;pendingIds:number[]}, event?:SetupExitEvent): Position | undefined {
     const bound=this.findOpen(scannerId,symbol,tf);
+    const pending=[...this.pending.values()].filter(pe=>pe.scannerId===scannerId&&pe.symbol===symbol&&pe.tf===tf);
+    const lifecycle=!!bound&&this.setupLifecycle(bound)||pending.some(pe=>this.setupLifecycle(pe));
+    if(lifecycle){
+      if(!Number.isFinite(at)||bound&&at<bound.entryAt)return undefined;
+      if(!event||!Number.isFinite(event.barTime)||event.barTime<=0||!(tf in TF_SECONDS)||event.barTime+TF_SECONDS[tf]*1000>at)return undefined;
+      // Cancellations, close intent and receipt either all commit or all roll back.
+      if(!this.decisionActive)return this.commitDecision(()=>this.onScriptExit(scannerId,symbol,tf,exitType,price,at,exitMode,side,targets,event));
+    }
     exitMode=bound?.policy?.exitMode??exitMode;
     // Level-only scanners ignore script exits for both pending setups and held positions.
     if (exitMode === 'levels') return undefined;
+    if(bound&&this.setupLifecycle(bound)&&!invalidatesSetup(exitType)&&
+      (!event||!Number.isFinite(bound.features?.setup_source_bar)||event.barTime<=bound.features!.setup_source_bar))return undefined;
+    if(lifecycle&&invalidatesSetup(exitType)){
+      const matching=pending.filter(pe=>this.setupLifecycle(pe)&&(!targets||targets.pendingIds.includes(pe.id))&&
+        (!side||pe.side===side)&&at>=pe.at&&!!event&&!!pe.observation&&event.barTime>pe.observation.event.barTime);
+      // Events from the entry bar were evaluated before this paper trade existed.
+      // They close the previous author trade, never the later paper entry on that bar.
+      const held=bound&&this.setupLifecycle(bound)&&(!targets||targets.positionId===bound.id)&&(!side||side===bound.side)&&
+        !!event&&Number.isFinite(bound.features?.setup_source_bar)&&event.barTime>bound.features!.setup_source_bar?bound:undefined;
+      if(!held&&!matching.length)return undefined;
+      if(!claimSetupExit(this.db,{book:this.book,scannerId,symbol,tf,at,exitType,side,event,positionId:held?.id??null,pendingIds:matching.map(pe=>pe.id)}))return undefined;
+      for(const pe of matching)this.cancelPending(pe.id,`confirmed script ${exitType}: setup invalidated`);
+      // A stale old-position notification must not fall through and close the bound trade.
+      if(!held)return undefined;
+    }
     if (exitType === 'stop_update') {
       if (!bound || (targets && bound.id !== targets.positionId) || (side && side !== bound.side) ||
           typeof price !== 'number' || !(price > 0) || !Number.isFinite(price) || !Number.isFinite(at) || at < bound.entryAt) return undefined;

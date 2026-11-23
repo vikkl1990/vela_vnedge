@@ -1,5 +1,7 @@
 import type { AppConfig } from '../config.ts';
 import {solFilterPlan} from '../scanners/solMakerExperiment.ts';
+import {SETUP_LIFECYCLE,invalidatesSetup} from './setupLifecycle.ts';
+import {SetupExitInbox} from './setupExitInbox.ts';
 import type { Db } from '../db.ts';
 import type { Bar } from '../data/candleStore.ts';
 import {extractEvents, type ScanEvent} from '../scanners/extractor.ts';
@@ -40,9 +42,12 @@ function matchedReadingKey(raw:string):string {
 
 /** Fan-out of ONE live source run into isolated plans inside the existing shadow engine. */
 export class PlanComparisons {
+  private exitInbox:SetupExitInbox;
   private db:Db; private cfg:()=>AppConfig; private paper:PaperEngine; private sourceHash:(id:string)=>string|null;
   constructor(db:Db, cfg:()=>AppConfig, paper:PaperEngine, sourceHash:(id:string)=>string|null) {
     this.db=db;this.cfg=cfg;this.paper=paper;this.sourceHash=sourceHash;
+    this.exitInbox=new SetupExitInbox(db);
+    paper.on('housekeeping',(at:number)=>this.recoverSetupExits(at));
     db.run(`CREATE TABLE IF NOT EXISTS execution_plan_cohorts (
       scanner_id TEXT PRIMARY KEY, plan_id TEXT NOT NULL, revision INTEGER NOT NULL, signature TEXT NOT NULL,
       symbol TEXT NOT NULL, tf TEXT NOT NULL, first_at INTEGER NOT NULL, snapshot TEXT NOT NULL)`);
@@ -73,12 +78,28 @@ export class PlanComparisons {
     });
   }
 
+  /** Replayed instructions use the current clock and fresh depth; never a historical fill. */
+  recoverSetupExits(at=Date.now()) {
+    if(this.paper.book!==2||!this.paper.causalExits||this.paper.fillMode!=='simulated'||this.paper.executionIntent||this.cfg().execution.mode!=='paper')return;
+    this.exitInbox.drain(at,({plan:p,event:ev,targets},complete)=>{
+      const held=targets.positionId===null?undefined:this.paper.position(targets.positionId);
+      const single=held?.status==='open'&&targets.pendingIds.every(id=>id===held.id)?held:undefined;
+      this.paper.commitDecision(()=>{
+        this.paper.onScriptExit(planScannerId(p),p.symbol,p.tf,ev.exitType??'close',ev.price,at,p.exitMode,ev.side,targets,ev);
+        complete();
+      },single);
+    });
+  }
+
   /** Legacy exit/TP experiments consume the current interpretation only. */
   observe(input:Observation) {
     if(input.event.kind==='exit'){
-      for(const pos of this.paper.openPositions()){
+      const seen=new Set<string>();
+      for(const pos of [...this.paper.openPositions(),...this.paper.pendingEntries()]){
         const p=pos.executionPlan;
-        if(p&&!p.readingOverride&&p.sourceScannerId===input.scannerId&&pos.symbol===input.symbol&&pos.tf===input.tf&&p.sourceHash===this.sourceHash(input.scannerId))this.execute(input,p);
+        if(p&&!p.readingOverride&&p.sourceScannerId===input.scannerId&&pos.symbol===input.symbol&&pos.tf===input.tf&&p.sourceHash===this.sourceHash(input.scannerId)&&!seen.has(pos.scannerId)){
+          seen.add(pos.scannerId);this.execute(input,p);
+        }
       }
       return;
     }
@@ -109,7 +130,7 @@ export class PlanComparisons {
       snapshots.set(planScannerId(p),{p,enabled:true});
     }
     // A retired reading still supplies the exits promised to its held positions.
-    for(const pos of this.paper.openPositions()){
+    for(const pos of [...this.paper.openPositions(),...this.paper.pendingEntries()]){
       const p=pos.executionPlan;
       if(p?.readingOverride&&p.sourceScannerId===input.scannerId&&pos.symbol===input.symbol&&pos.tf===input.tf&&p.sourceHash===this.sourceHash(input.scannerId)&&!snapshots.has(pos.scannerId))snapshots.set(pos.scannerId,{p,enabled:false});
     }
@@ -140,7 +161,15 @@ export class PlanComparisons {
     const ev=planEvents([input.event],input.bars,p)[0],scannerId=planScannerId(p);
     if(!ev)return;
     if(ev.kind==='exit'){
-      this.paper.onScriptExit(scannerId,p.symbol,p.tf,ev.exitType??'close',ev.price,input.at,p.exitMode,ev.side);
+      if(p.setupLifecycle===SETUP_LIFECYCLE&&invalidatesSetup(ev.exitType??'close')){
+        const targets={
+          positionId:this.paper.findOpen(scannerId,p.symbol,p.tf)?.id??null,
+          pendingIds:this.paper.pendingEntries().filter(pe=>pe.scannerId===scannerId&&pe.symbol===p.symbol&&pe.tf===p.tf).map(pe=>pe.id)};
+        if(targets.positionId===null&&!targets.pendingIds.length)return;
+        this.exitInbox.enqueue(scannerId,{plan:p,event:ev,at:input.at,targets});
+        this.recoverSetupExits(input.at);return;
+      }
+      this.paper.onScriptExit(scannerId,p.symbol,p.tf,ev.exitType??'close',ev.price,input.at,p.exitMode,ev.side,undefined,ev);
       return;
     }
     if(ev.kind!=='entry'||!ev.side)return;
@@ -161,6 +190,7 @@ export class PlanComparisons {
 
   view() {
     const cfg=this.cfg();
+    const exitDelivery=this.exitInbox.summary();
     const configured=(cfg.executionPlans??[]).map(p=>{
       try{
         const snapshot=planSnapshot(cfg,p,this.sourceHash(p.scannerId),this.paper.marketFeesFor?.(p.symbol));
@@ -185,7 +215,7 @@ export class PlanComparisons {
       const gains=closed.map(e=>e.realized_pnl-e.fees).filter(n=>n>0),losses=closed.map(e=>e.realized_pnl-e.fees).filter(n=>n<0);
       const avgWin=gains.length?gains.reduce((a,b)=>a+b,0)/gains.length:null,avgLoss=losses.length?losses.reduce((a,b)=>a+b,0)/losses.length:null;
       const scans=this.db.get<{n:number;last:number|null}>('SELECT count(*) n,max(at) last FROM execution_plan_scans WHERE scanner_id=?',row.scanner_id)!;
-      return {partialExitVersion:p.partialExitVersion??null,executionVersion:p.executionVersion??null,readingVersion:p.readingOverride?.version??null,scans:scans.n,lastScanAt:scans.last,id:p.id,label:p.label??p.id,comparison:p.comparison,revision:p.revision,signature:p.signature,sourceScannerId:p.sourceScannerId,takeProfitLabel:takeProfitLabel(p),symbol:p.symbol,tf:p.tf,variant:p.variant,firstAt:row.first_at,
+      return {setupLifecycle:p.setupLifecycle??null,exitDelivery:exitDelivery.get(row.scanner_id)??null,partialExitVersion:p.partialExitVersion??null,executionVersion:p.executionVersion??null,readingVersion:p.readingOverride?.version??null,scans:scans.n,lastScanAt:scans.last,id:p.id,label:p.label??p.id,comparison:p.comparison,revision:p.revision,signature:p.signature,sourceScannerId:p.sourceScannerId,takeProfitLabel:takeProfitLabel(p),symbol:p.symbol,tf:p.tf,variant:p.variant,firstAt:row.first_at,
         referenceEquity:p.referenceEquity,margin:p.paper.marginPerTrade,leverage:p.paper.marginLeverage?.base,
         maxStopLossPct:p.paper.maxStopLossPct,avgWin,avgLoss,winRate:closed.length?gains.length/closed.length:null,
         payoffRatio:avgWin!==null&&avgLoss!==null?avgWin/-avgLoss:null,
@@ -209,17 +239,17 @@ export class PlanComparisons {
       const closedPairs=shared.map(k=>[cm.get(k)!,vm.get(k)!]).filter(([a,b])=>a.status==='closed'&&b.status==='closed');
       // Exit-only evidence must not attribute different entry prices or size to the exit.
       const sameEntry=([a,b]:any[])=>['entry_at','entry_price','qty','contract_value','side','sl_original','risk_amount'].every(k=>a[k]===b[k]);
-      const paired=['two-bar','profit-floor'].includes(control.comparison?.kind??'')?closedPairs.filter(sameEntry):closedPairs;
+      const paired=['two-bar','profit-floor','setup-lifecycle'].includes(control.comparison?.kind??'')?closedPairs.filter(sameEntry):closedPairs;
       const unresolved=(e:any)=>e.status!=='closed'&&(e.status==='open'||e.status==='pending'||['pending','processing','error','interrupted'].includes(e.action));
       const controlNet=cohorts.find(c=>c.id===control.id&&c.signature===control.signature)?.net??0;
       const candidateNet=cohorts.find(c=>c.id===candidate.id&&c.signature===candidate.signature)?.net??0;
-      comparisons.push({kind:['two-bar','profit-floor','maker-fill'].includes(control.comparison?.kind??'')?control.comparison!.kind:control.comparison?.kind==='exit-policy'?'exit':control.readingOverride?'reading':'exit',group,symbol:control.symbol,tf:control.tf,enabled:control.enabled&&candidate.enabled,
+      comparisons.push({kind:['two-bar','profit-floor','maker-fill','setup-lifecycle'].includes(control.comparison?.kind??'')?control.comparison!.kind:control.comparison?.kind==='exit-policy'?'exit':control.readingOverride?'reading':'exit',group,symbol:control.symbol,tf:control.tf,enabled:control.enabled&&candidate.enabled,
         controlId:control.id,candidateId:candidate.id,controlLabel:control.label??control.id,candidateLabel:candidate.label??candidate.id,
         controlSignature:control.signature,candidateSignature:candidate.signature,controlNet,candidateNet,
         sharedSignals:shared.length,controlOnly:cm.size-shared.length,candidateOnly:vm.size-shared.length,
         unresolvedSignals:shared.filter(k=>unresolved(cm.get(k))||unresolved(vm.get(k))).length,
         differentAdmissions:shared.filter(k=>Boolean(cm.get(k).status==='open'||cm.get(k).status==='closed')!==Boolean(vm.get(k).status==='open'||vm.get(k).status==='closed')).length,
-        matchedEntryMismatch:['two-bar','profit-floor'].includes(control.comparison?.kind??'')?closedPairs.length-paired.length:0,matchedClosed:paired.length,matchedDeltaNet:paired.length?paired.reduce((sum,[a,b])=>sum+(b.realized_pnl-b.fees)-(a.realized_pnl-a.fees),0):null,
+        matchedEntryMismatch:['two-bar','profit-floor','setup-lifecycle'].includes(control.comparison?.kind??'')?closedPairs.length-paired.length:0,matchedClosed:paired.length,matchedDeltaNet:paired.length?paired.reduce((sum,[a,b])=>sum+(b.realized_pnl-b.fees)-(a.realized_pnl-a.fees),0):null,
         promotionEligible:false,
         matchedControlNet:paired.length?paired.reduce((n,[a])=>n+a.realized_pnl-a.fees,0):null,
         matchedCandidateNet:paired.length?paired.reduce((n,[,b])=>n+b.realized_pnl-b.fees,0):null,
