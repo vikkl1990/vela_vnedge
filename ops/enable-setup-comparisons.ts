@@ -14,7 +14,7 @@ import {ScannerRegistry} from '../server/src/scanners/registry.ts';
 
 export const RETIRED_SETUP_PLANS=[
   'mt-garch-ethusd-15m-v1-control','mt-garch-ethusd-15m-v1-candidate',
-  'maker-v2-link-impulse-control','maker-v2-link-impulse-candidate',
+  'import-trend-continuation-btcusd-1h-v1','author-strat-eth-15m-v1',
 ];
 const families=[
   {sourcePlan:'author-strat-eth-15m-v1',key:'setup-strat-eth-15m',symbol:'ETHUSD',tf:'15m'},
@@ -22,7 +22,7 @@ const families=[
 ];
 export function setupComparisonPlans(cfg:AppConfig):ExecutionPlan[]{
   return families.flatMap(f=>{
-    const p=cfg.executionPlans?.find(p=>p.id===f.sourcePlan);
+    const p=cfg.executionPlans?.find(p=>p.id===f.sourcePlan)??cfg.executionPlans?.find(p=>p.id===`${f.key}-control`);
     if(!p)throw Error(`Missing reviewed template ${f.sourcePlan}`);
     return (['control','candidate'] as const).map(role=>({...structuredClone(p),id:`${f.key}-${role}`,revision:1,
       enabled:true,symbol:f.symbol,tf:f.tf,label:`${f.symbol} ${f.tf} · ${role==='control'?'current setup lifecycle':'confirmed-exit lifecycle'}`,
@@ -51,7 +51,12 @@ export function enableSetupComparisons(file:string,dbFile:string,dryRun=false,ex
     if(!installed.length)for(const id of RETIRED_SETUP_PLANS){
       if(!cfg.executionPlans?.some(p=>p.id===id))throw Error(`Retirement plan changed: ${id}`);
       const row=db.prepare('SELECT count(*) n FROM execution_plan_events WHERE plan_id=? AND at>=?').get(id,Date.now()-3*86400_000) as {n:number};
-      if(row.n)throw Error(`Retirement plan has recent signal evidence: ${id}`);
+      if(row.n){
+        const old=cfg.executionPlans!.find(p=>p.id===id)!;
+        const definition=(p:ExecutionPlan)=>Object.fromEntries(Object.entries(p).filter(([k])=>!['id','label','comparison','revision'].includes(k)));
+        const unchangedControl=families.find(f=>f.sourcePlan===id)&&selected.some(p=>p.comparison?.role==='control'&&isDeepStrictEqual(definition(old),definition(p)));
+        if(!unchangedControl)throw Error(`Retirement plan has recent signal evidence: ${id}`);
+      }
     }
   }finally{db.close();}
   for(const p of selected){const s=source(p.scannerId);if(!s||s.status!=='ok'||!s.patched)throw Error(`Source unavailable ${p.scannerId}`);planSnapshot(cfg,p,hash(s.patched));}

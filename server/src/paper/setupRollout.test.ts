@@ -16,7 +16,7 @@ function fixture(t:TestContext){
   cfg.scanners.maker={enabled:true,symbols:null,timeframes:null,reader:2,exitMode:'both'};
   const base={revision:1,enabled:true,scannerId:'native',symbol:'ETHUSD',tf:'15m',variant:'current' as const,referenceEquity:1000,readingOverride:{version:1,reader:2 as const}};
   cfg.executionPlans=[{...base,id:'author-strat-eth-15m-v1'},{...base,id:'reader-liquidity-aiot-15m-candidate',scannerId:'maker'},
-    ...RETIRED_SETUP_PLANS.map(id=>({...base,id})),...Array.from({length:MAX_RESEARCH_PLANS-6},(_,i)=>({...base,id:`other-${i}`}))];
+    ...RETIRED_SETUP_PLANS.filter(id=>id!=='author-strat-eth-15m-v1').map(id=>({...base,id})),...Array.from({length:MAX_RESEARCH_PLANS-5},(_,i)=>({...base,id:`other-${i}`}))];
   const file=path.join(dir,'config.json'),dbFile=path.join(dir,'vnedge.db');fs.writeFileSync(file,JSON.stringify(cfg));
   const db=new Db(dbFile);db.run('CREATE TABLE execution_plan_events(id INTEGER PRIMARY KEY,plan_id TEXT,at INTEGER)');t.after(()=>db.db.close());
   const source=()=>({status:'ok',patched:'reviewed source'});
@@ -43,4 +43,10 @@ test('activation rejects config drift, edited installs, unavailable sources and 
   assert.throws(()=>enableSetupComparisons(x.file,x.dbFile,true,undefined,()=>({status:'incompatible',patched:''})),/Source unavailable/);
   x.cfg.execution.allowProduction=true;x.save();assert.throws(()=>x.run(),/paper-only/);
   x.cfg.execution.allowProduction=false;x.save();x.run();const next=JSON.parse(fs.readFileSync(x.file,'utf8'));next.executionPlans.at(-1).label='operator edit';fs.writeFileSync(x.file,JSON.stringify(next));assert.throws(()=>x.run(),/will not be overwritten/);
+});
+test('a flat active template rotates only into a behavior-identical control, preserving its record',t=>{
+  const x=fixture(t);x.db.run('INSERT INTO execution_plan_events(plan_id,at) VALUES(?,?)','author-strat-eth-15m-v1',Date.now());
+  assert.equal(x.run(true).changed,true);assert.equal(x.db.get<{n:number}>('SELECT count(*) n FROM execution_plan_events')!.n,1);
+  x.cfg.executionPlans!.find(p=>p.id==='author-strat-eth-15m-v1')!.symbol='BTCUSD';x.save();
+  assert.throws(()=>x.run(),/recent signal evidence/);
 });

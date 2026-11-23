@@ -212,6 +212,9 @@ test('All navigation destinations render through unavailable endpoint states', a
   faults,
   writes,
 }) => {
+  // This test visits 23 routes. Keep every per-page assertion's timeout, while
+  // allowing the complete cold-build traversal more than a single-page budget.
+  test.setTimeout(120_000)
   void faults
   for (const route of [
     '/',
