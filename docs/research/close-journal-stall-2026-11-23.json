@@ -1,0 +1,32 @@
+{
+  "date": "2026-11-23",
+  "baselineCode": "9a0b24ccbd7245d2bb5cc6869615d117d1fc8b1c",
+  "journalSnapshotCommit": "569bf85e9615beb9b238bb604e53ab6f1997719d",
+  "method": "Scratch in-memory journal, identical eight synthetic shadow closes on both engines. No production trade/config writes.",
+  "baseline": {
+    "closedTrades": 18408,
+    "openTrades": 132,
+    "affected": 8,
+    "wallMs": 2827.51325,
+    "maxTimerIntervalMs": 2829.087167,
+    "closedReads": 8,
+    "ledgerHash": "9947fef608d5b61f0f71851b1d2df161e8f76f35676d266658407b447fb65b0e",
+    "accountingHash": "0f0e0f2b51a63c431925042a29d726cafa1d74b319085d3ab567a92eca0263c6",
+    "statsHash": "6eb32dea5eaa5712d1399b0d6986a95116d55ad5fec05756a6e677cf5cb52efa"
+  },
+  "candidate": {
+    "closedTrades": 18408,
+    "openTrades": 132,
+    "affected": 8,
+    "wallMs": 57.51408300000003,
+    "maxTimerIntervalMs": 57.69416699999988,
+    "closedReads": 0,
+    "ledgerHash": "9947fef608d5b61f0f71851b1d2df161e8f76f35676d266658407b447fb65b0e",
+    "accountingHash": "0f0e0f2b51a63c431925042a29d726cafa1d74b319085d3ab567a92eca0263c6",
+    "statsHash": "6eb32dea5eaa5712d1399b0d6986a95116d55ad5fec05756a6e677cf5cb52efa"
+  },
+  "ledgerIdentical": true,
+  "statisticsIdentical": true,
+  "profitImprovementProven": false,
+  "tradingPolicyChanges": false
+}

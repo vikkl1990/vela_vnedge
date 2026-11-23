@@ -389,8 +389,27 @@ export class PaperEngine extends EventEmitter {
   get initialEquity(): number { return this.db.kvGet<number>(`${this.kvPrefix}.initialEquity`) ?? this.paper.initialEquity; }
 
   closedPositions(): Position[] {
-    if (!this.closedCache) this.closedCache = this.db.all<any>(`SELECT * FROM positions WHERE status='closed' AND bt=${this.book} ORDER BY exit_at ASC`).map(r=>this.readPosition(r));
+    if (!this.closedCache) this.closedCache = this.db.all<any>(`SELECT * FROM positions WHERE status='closed' AND bt=${this.book} ORDER BY exit_at ASC, id ASC`).map(r=>this.readPosition(r));
     return this.closedCache;
+  }
+
+  /** A committed close/accounting correction changes one journal row, not its
+   * entire history. Keep the persisted representation and chronological order;
+   * outer decision rollback still invalidates the cache before the next read. */
+  private refreshClosedPosition(id:number):void {
+    if(!this.closedCache)return;
+    const row=this.db.get<any>("SELECT * FROM positions WHERE id=? AND bt=? AND status='closed'",id,this.book);
+    if(!row){this.closedCache=null;return;}
+    const pos=this.readPosition(row);
+    const existing=this.closedCache.findIndex(p=>p.id===id);
+    if(existing>=0)this.closedCache.splice(existing,1);
+    let lo=0,hi=this.closedCache.length;
+    while(lo<hi){
+      const mid=(lo+hi)>>>1,p=this.closedCache[mid];
+      if((p.exitAt??0)<(pos.exitAt??0)||((p.exitAt??0)===(pos.exitAt??0)&&p.id<pos.id))lo=mid+1;
+      else hi=mid;
+    }
+    this.closedCache.splice(lo,0,pos);
   }
 
   realizedPnl(): number { return this.closedPositions().reduce((a, p) => a + p.realizedPnl - p.fees, 0) + [...this.open.values()].reduce((a, p) => a + p.realizedPnl - p.fees, 0); }
@@ -1514,10 +1533,7 @@ export class PaperEngine extends EventEmitter {
       // every closed position (and its frozen policy) for each market at a funding
       // boundary stalls the shared feed/exit loop. Late closed-trade accounting
       // updates only that cached row; a cold cache still loads normally.
-      if(pos.status==='closed'&&this.closedCache){
-        const i=this.closedCache.findIndex(p=>p.id===pos.id&&p.entryAt===pos.entryAt);
-        if(i>=0)this.closedCache[i]=pos;else this.closedCache=null;
-      }
+      if(pos.status==='closed')this.refreshClosedPosition(pos.id);
       n++;
     }
     if(n){this.recordEquity(true);this.emit('stats',this.stats());this.emit('accounting',{at:this.now(),reason:'funding',symbol,settledAt:at});}
@@ -1822,7 +1838,7 @@ export class PaperEngine extends EventEmitter {
       this.db.run("UPDATE orders SET price=?, fee=?, price_source='exchange' WHERE id=? AND bt=?", price, fee, orderId,this.book);
       this.persist(pos);commit?.();
     }); } catch(e) {Object.assign(pos,before);this.closedCache=null;throw e;}
-    if (pos.status === 'closed') { this.closedCache = null; this.emit('stats', this.stats()); }
+    if (pos.status === 'closed') { this.refreshClosedPosition(pos.id); this.emit('stats', this.stats()); }
     else this.emit('position', { type: 'updated', position: pos });
     this.recordEquity(true);
     this.logInfo(`FILL RESTATED #${pos.id} ${pos.symbol} ${reason}: ${fill.qty} @ ${price} fee ${fee.toFixed(4)} (exchange)`);
@@ -2002,7 +2018,10 @@ export class PaperEngine extends EventEmitter {
     if (r < (p.worstR ?? Infinity)) { p.worstR = r; p.worstAt = at; moved = true; }
     // written straight away: a fill persists the position before this runs, and a closed trade is
     // never persisted again, so waiting for the next persist would lose the peak of the last bar
-    if (moved) this.db.run('UPDATE positions SET peak_r=?, peak_at=?, worst_r=?, worst_at=? WHERE id=?', p.peakR ?? null, p.peakAt ?? null, p.worstR ?? null, p.worstAt ?? null, p.id);
+    if (moved) {
+      this.db.run('UPDATE positions SET peak_r=?, peak_at=?, worst_r=?, worst_at=? WHERE id=?', p.peakR ?? null, p.peakAt ?? null, p.worstR ?? null, p.worstAt ?? null, p.id);
+      if(p.status==='closed')this.refreshClosedPosition(p.id);
+    }
     const last = this.lastPathAt.get(p.id) ?? 0;
     if (!event && at - last < this.pathEveryMs) return;
     this.lastPathAt.set(p.id, at);
@@ -2075,7 +2094,7 @@ export class PaperEngine extends EventEmitter {
     for (const f of fills) this.emit('order', orderOf(pos, f));
     if (pos.status === 'closed') {
       this.open.delete(pos.id);
-      this.closedCache = null;
+      this.refreshClosedPosition(pos.id);
       this.emit('position', { type: 'closed', position: pos });
       this.emit('trade', tradeOf(pos));
       this.logInfo(`${this.book ? 'INCUBATOR ' : ''}CLOSE ${pos.side.toUpperCase()} ${pos.symbol} x${pos.qty} ${pos.exitReason} pnl ${(pos.realizedPnl - pos.fees).toFixed(2)} [${pos.scannerId}]`);
