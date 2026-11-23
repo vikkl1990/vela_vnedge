@@ -1,0 +1,44 @@
+{
+  "date": "2026-11-23",
+  "baselineCommit": "569bf85e9615beb9b238bb604e53ab6f1997719d",
+  "method": "Local in-memory replay of retained journal. Identical synthetic funding rates in both engines. No VM trade/config writes.",
+  "baseline": {
+    "baselineCommit": "569bf85e9615beb9b238bb604e53ab6f1997719d",
+    "closedTrades": 18400,
+    "openTrades": 140,
+    "markets": 31,
+    "affected": 140,
+    "wallMs": 13065.126790999999,
+    "maxTimerIntervalMs": 13066.897792,
+    "closedReads": 34,
+    "ledgerHash": "83a468baa38cba9df02a0e177a335b4f38f9af8cc10e45e0c60594a7e4e8ada1",
+    "accountingHash": "718a5158d9ef8c03613dad6f15abf8f442ea72d91cd3843b61dadf3a3c0b4bc2",
+    "statsHash": "90f8c88b0c57609ac2a2e7b69ebc76e4ba7aa1fe97f8137dc5eed2a94e9f1858"
+  },
+  "candidate": {
+    "baselineCommit": "569bf85e9615beb9b238bb604e53ab6f1997719d",
+    "closedTrades": 18400,
+    "openTrades": 140,
+    "markets": 31,
+    "affected": 140,
+    "wallMs": 212.04100000000017,
+    "maxTimerIntervalMs": 12.957417000000078,
+    "closedReads": 0,
+    "ledgerHash": "bccb5ea5a2a5f48277159a659934a1443ef2031d09e69d9e218afb6a4b759ccf",
+    "accountingHash": "718a5158d9ef8c03613dad6f15abf8f442ea72d91cd3843b61dadf3a3c0b4bc2",
+    "statsHash": "90f8c88b0c57609ac2a2e7b69ebc76e4ba7aa1fe97f8137dc5eed2a94e9f1858"
+  },
+  "accountingIdentical": true,
+  "settlementReductionPct": 98.3770459836175,
+  "profitImprovementProven": false,
+  "paperExitChanges": false,
+  "prospectiveStudy": "intrabar-flow-protection-v1",
+  "limits": [
+    "Timing is local controlled benchmark, not post-deploy VM latency.",
+    "Future shadow entries only; current positions are not reconstructed.",
+    "No completed prospective cohort existed at implementation time.",
+    "Maker entries without exact taker depth remain in their separate maker studies.",
+    "Ordinary paper rules and evidence qualification unchanged."
+  ],
+  "comparison": "Financial fields and statistics match. Receipt IDs differ because account funding now precedes shadow funding; accountingHash omits orderId only. No historical production rows were rewritten."
+}

@@ -8,10 +8,14 @@ import {logger} from '../log.ts';
 import {EXIT_STUDY_SYMBOLS} from './focusedReplay.ts';
 import {frozenSignalBar} from './shadowInvalidation.ts';
 import {earlyExitPosition} from './scannerEarlyExit.ts';
+import {setImmediate as yieldToExecution} from 'node:timers/promises';
+import {IntrabarFlow} from '../orderflow/intrabar.ts';
 const log=logger.scoped('trade-monitor');
 
 export class MonitorRuntime {
  readonly monitor:OpenTradeMonitor;readonly depth:AdvisoryDepthPool;
+ readonly intrabarFlow=new IntrabarFlow();
+ private intrabarTimer:ReturnType<typeof setInterval>|null=null;private intrabarBusy=false;
  private app:App;private symbols:string[]=[];private markets=new Map<string,MarketObservation>();
  private timer:ReturnType<typeof setInterval>|null=null;private pump:ReturnType<typeof setInterval>|null=null;private stopped=false;
  private busy=new Set<string>();private lastFetch=new Map<string,number>();private nextFetch=0;private lastSample=0;
@@ -27,11 +31,13 @@ export class MonitorRuntime {
  start(){
   if(this.timer)return;
   this.stopped=false;
+  this.intrabarFlow.connection(!!this.app.feed.connected);
+  this.intrabarTimer=setInterval(()=>{void this.intrabarTick().catch(e=>log.warn(`intrabar observation: ${String(e)}`));},1000);this.intrabarTimer.unref();
   this.timer=setInterval(()=>{try{this.tick();}catch(e){log.warn(`observation failed: ${String(e)}`);}},5000);this.timer.unref();
   this.pump=setInterval(()=>this.settle(),250);this.pump.unref();
  }
  setSymbols(symbols:string[]){
-  this.symbols=[...new Set(symbols)].sort();this.depth.setSymbols(this.symbols);this.app.orderFlow.observeSymbols(this.symbols);
+  this.symbols=[...new Set(symbols)].sort();this.depth.setSymbols(this.symbols);this.app.orderFlow.observeSymbols(this.symbols);this.intrabarFlow.observeSymbols(this.symbols);
   for(const s of this.markets.keys())if(!this.symbols.includes(s))this.markets.delete(s);
  }
  private inputs():WatchInput[]{
@@ -42,6 +48,22 @@ export class MonitorRuntime {
   const bars=this.app.candles.get(p.symbol,p.tf,{closedOnly:true,limit:200});
   return {kind:'closed-bar context; not a scanner invalidation verdict',lastClosedBarAt:bars.at(-1)?.time??null,lastClose:bars.at(-1)?.close??null,
    trend21:bars.length>=21?trendSide(bars.map(b=>b.close),21):null,trend50:bars.length>=50?trendSide(bars.map(b=>b.close),50):null,availableAt:Date.now()};
+ }
+ async intrabarTick(){
+  if(this.stopped||this.intrabarBusy)return;
+  this.intrabarBusy=true;
+  try{
+   this.intrabarFlow.pulse();
+   const scopes=new Set(this.app.db.all<{id:number}>("SELECT id FROM positions WHERE bt=2 AND status='open' AND evidence_scope='shadow'").map(x=>x.id));
+   let batch=0;
+   for(const p of this.app.shadow.openPositions()){
+    if(this.stopped)break;
+    if(!scopes.has(p.id)||p.entryAt<this.monitor.intrabar.startedAt||p.executionPlan||p.basket)continue;
+    const now=Date.now(),book=this.depth.recorder.bookAt(p.symbol,now,1000);
+    this.monitor.observeIntrabar({position:p,book:2,scope:'shadow',...this.app.shadow.advisoryObservation(p)},this.intrabarFlow.snapshot(p.symbol,now),book,now);
+    if(++batch%8===0)await yieldToExecution();
+   }
+  }finally{this.intrabarBusy=false;}
  }
  /** Called after an actual entry commits. Capture must never affect the fill or invent its past. */
  captureEntry(position:Position,book:number,now=Date.now()){
@@ -175,5 +197,5 @@ export class MonitorRuntime {
   });
   return {...monitor,generatedAt:now,pairs,connections:this.depth.summary(),marketError,replay:this.app.replayArchive?.status(),retention:'Compact flow/depth: 72h, up to 500k rows each. Checkpoints/trials: 90d, up to 200k/50k. Broad replay: 14-day target / 16 GiB. Focused studies and active/recent paper pairs: 21-day target / 4 GiB, 4 GiB free-disk reserve. Recent paper pairs remain captured for 24h after closure; gaps remain explicit.'};
  }
- stop(){this.stopped=true;if(this.timer)clearInterval(this.timer);if(this.pump)clearInterval(this.pump);this.timer=null;this.pump=null;this.depth.stop();}
+ stop(){this.stopped=true;if(this.timer)clearInterval(this.timer);if(this.pump)clearInterval(this.pump);if(this.intrabarTimer)clearInterval(this.intrabarTimer);this.timer=null;this.pump=null;this.intrabarTimer=null;this.depth.stop();}
 }

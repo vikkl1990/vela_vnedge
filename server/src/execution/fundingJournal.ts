@@ -1,6 +1,9 @@
 import type {Db} from '../db.ts';
 import type {WsFunding,WsMark} from '../delta/ws.ts';
 import type {DeltaRest} from '../delta/rest.ts';
+import {setImmediate as yieldToExecution} from 'node:timers/promises';
+type Settlement={symbol:string;at:number;source:string;rate_at:number;mark_at:number;rate:number|null;mark:number|null};
+type ApplySettlement=(symbol:string,rate:number,mark:number,at:number)=>void;
 /** Durable observations, not an assertion that a funding OHLC close is a settled payment. */
 export class FundingJournal {
  private db:Db;
@@ -31,15 +34,32 @@ export class FundingJournal {
   if(!(Number.isFinite(m.markPrice)&&m.markPrice>0&&Number.isFinite(m.timeMs)))return;
   this.db.run("UPDATE funding_settlements SET mark=?,mark_at=? WHERE symbol=? AND at BETWEEN ? AND ? AND status!='applied' AND source!='verified-import' AND (mark_at IS NULL OR abs(mark_at-at)>abs(?-at))",m.markPrice,m.timeMs,m.symbol,m.timeMs-10000,m.timeMs+10000,m.timeMs);
  }
- settle(now:number,apply:(symbol:string,rate:number,mark:number,at:number)=>void){
-  for(const r of this.db.all<any>("SELECT * FROM funding_settlements WHERE status='pending' AND at<=? ORDER BY at LIMIT 200",now-10000)){
-   const observed=r.source==='observed-websocket'&&r.rate_at<=r.at&&r.at-r.rate_at<=120000&&Math.abs(r.mark_at-r.at)<=10000;
-   if((!observed&&r.source!=='verified-import')||r.rate===null||r.mark===null||!(r.mark>0)){
-    this.db.run("UPDATE funding_settlements SET status='unresolved',error='missing fresh settlement rate or boundary mark; historical candidates are not verified' WHERE symbol=? AND at=?",r.symbol,r.at);continue;
+ private due(now:number){return this.db.all<Settlement>("SELECT * FROM funding_settlements WHERE status='pending' AND at<=? ORDER BY at LIMIT 200",now-10000);}
+ private verified(r:Settlement){return r.rate!==null&&r.mark!==null&&r.mark>0&&(r.source==='verified-import'||r.source==='observed-websocket'&&r.rate_at<=r.at&&r.at-r.rate_at<=120000&&Math.abs(r.mark_at-r.at)<=10000);}
+ private apply(r:Settlement,apply:ApplySettlement){
+   if(!this.verified(r)){
+    this.db.run("UPDATE funding_settlements SET status='unresolved',error='missing fresh settlement rate or boundary mark; historical candidates are not verified' WHERE symbol=? AND at=?",r.symbol,r.at);return;
    }
    // Per-position persisted fills make retries safe if one book fails midway.
-   apply(r.symbol,r.rate,r.mark,r.at);
+   apply(r.symbol,r.rate!,r.mark!,r.at);
    this.db.run("UPDATE funding_settlements SET status='applied',error=NULL WHERE symbol=? AND at=?",r.symbol,r.at);
+ }
+ settle(now:number,apply:ApplySettlement){for(const r of this.due(now))this.apply(r,apply);}
+ /** Per-position funding remains durable/idempotent. Yield only between complete
+  * market settlements so research accounting cannot monopolize protective timers. */
+ async settleCooperatively(now:number,apply:ApplySettlement,options:{stopped?:()=>boolean;yield?:()=>Promise<void>;priority?:ApplySettlement}={}){
+  const due=this.due(now);
+  // Complete account charges before a yielded feed callback can size another
+  // entry. Research books may then settle cooperatively. Position-level receipts
+  // make a failed/restarted background pass safe to retry in both books.
+  if(options.priority)for(const r of due){
+   if(options.stopped?.())return;
+   if(this.verified(r))options.priority(r.symbol,r.rate!,r.mark!,r.at);
+  }
+  for(const r of due){
+   if(options.stopped?.())break;
+   this.apply(r,apply);
+   await (options.yield??yieldToExecution)();
   }
  }
  verify(symbol:string,at:number,rate:number,mark:number,evidence:string){

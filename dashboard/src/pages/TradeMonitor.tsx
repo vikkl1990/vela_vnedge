@@ -18,6 +18,7 @@ import {
 } from '../components/kit'
 import { PairHeatmap } from '../components/PairHeatmap'
 import { ScannerExitStudy } from '../components/ScannerExitStudy'
+import { IntrabarProtectionStudy } from '../components/IntrabarProtectionStudy'
 
 import type { TradeMonitorView } from '../api/tradeMonitor'
 import { fmtAge, fmtPnl, fmtPnlUsd } from '../lib/format'
@@ -293,6 +294,7 @@ export function TradeMonitor() {
                     after both the what-if fill and the real trade have finished. More early exits do not mean
                     better performance.
                   </Callout>
+                  {d.intrabarStudy && <IntrabarProtectionStudy study={d.intrabarStudy} />}
                   {d.scannerExitStudy && <ScannerExitStudy study={d.scannerExitStudy} />}
                   {d.invalidationStudy && (
                     <Section
