@@ -272,7 +272,7 @@ export class ShadowRunner {
     for(const key of this.collectingReplay)if(!this.replayCells.has(key))this.collectingReplay.delete(key);
     this.readingCells=new Set([
       ...(cfg.executionPlans??[]).filter(p=>p.enabled&&(p.comparison?.kind==='maker-fill'||p.readingOverride||solFilterPlan(p)||([SOL_MAKER_REFERENCE_ID,SOL_MAKER_TICK_REFERENCE_ID].includes(p.id)&&p.revision===1&&p.scannerId===SOL_MAKER_SCANNER&&p.symbol==='SOLUSD'&&p.tf==='15m'))).map(p=>`${p.scannerId}:${p.symbol}:${p.tf}`),
-      ...this.deps.paper.openPositions().filter(p=>p.executionPlan?.readingOverride).map(p=>`${p.executionPlan!.sourceScannerId}:${p.symbol}:${p.tf}`),
+      ...[...this.deps.paper.openPositions(),...this.deps.paper.pendingEntries()].filter(p=>p.executionPlan?.readingOverride).map(p=>`${p.executionPlan!.sourceScannerId}:${p.symbol}:${p.tf}`),
     ]);
     if (!cfg.incubator?.enabled) { this.pairs = [];this.dispatch.prune(new Set()); return; }
     this.pairs = this.deps.store.list([...ACTIVE_STAGES, 'tracked']).filter(r => r.tf in TF_SECONDS && this.deps.registry.get(r.scannerId)?.status === 'ok');
@@ -487,7 +487,7 @@ export class ShadowRunner {
     }
     // Interpretation experiments see the raw output even when today's reader found no entry.
     if(this.deps.compareScan && ((cfg.executionPlans??[]).some(p=>p.enabled&&(p.readingOverride||solFilterPlan(p))&&p.scannerId===s.id&&p.symbol===r.symbol&&p.tf===r.tf)
-      ||this.deps.paper.openPositions().some(p=>p.executionPlan?.readingOverride&&p.executionPlan.sourceScannerId===s.id&&p.symbol===r.symbol&&p.tf===r.tf))){
+      ||[...this.deps.paper.openPositions(),...this.deps.paper.pendingEntries()].some(p=>p.executionPlan?.readingOverride&&p.executionPlan.sourceScannerId===s.id&&p.symbol===r.symbol&&p.tf===r.tf))){
       if(this.deps.paper.prepareEntryDepth)await this.deps.paper.prepareEntryDepth(r.symbol);
       const at=Date.now(),refPrice=this.deps.paper.mark(r.symbol)??lastBar.close,atr=lastAtr(bars,14);
       try { this.deps.compareScan({scannerId:s.id,scannerName:s.name,symbol:r.symbol,tf:r.tf,result:res,patched:s.patched,variantOf:s.variantOf,

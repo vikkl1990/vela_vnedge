@@ -1,4 +1,5 @@
 import {lifecycleIdentity} from './lifecycleIdentity.ts';
+import {SETUP_LIFECYCLE} from './setupLifecycle.ts';
 import {upstreamLifecycle} from '../scanners/upstreamLifecycle.ts';
 import {SOL_MAKER_FILTER_OFF,SOL_MAKER_FILTER_SOURCE,SOL_FILTER_PLAN_PREFIX,solFilterPlan} from '../scanners/solMakerExperiment.ts';
 import {isTwoBarCell,TWO_BAR_EXIT} from './failedTradeExit.ts';
@@ -38,10 +39,12 @@ export interface ProfitCapturePlan {
   floorAtR: number;
   floorKeepR: number;
 }
-export interface PlanComparison { group: string; role: 'control' | 'candidate'; kind?: 'exit-policy' | 'two-bar' | 'profit-floor' | 'maker-fill' }
+export interface PlanComparison { group: string; role: 'control' | 'candidate'; kind?: 'exit-policy' | 'two-bar' | 'profit-floor' | 'maker-fill' | 'setup-lifecycle' }
 /** Interpretation only: changing Pine inputs or trading rules requires a different experiment. */
 export type ReadingOverride = {version:number} & Pick<Partial<ScannerConfig>,'reader'|'sources'|'labels'|'sides'|'labelStyles'|'invert'|'edge'>;
 export interface ExecutionPlan {
+  /** Explicit author exits cancel setups and remain independent of replacement admission. */
+  setupLifecycle?: typeof SETUP_LIFECYCLE;
   /** Shadow-only quantity-bounded maker replay; never infer entries from candles. */
   makerFill?: 'tick-depth-v1' | 'tick-depth-v2';
   profitFloor?: {afterR:number;keepR:number};
@@ -65,6 +68,7 @@ export interface ExecutionPlan {
   readingOverride?: ReadingOverride;
 }
 export interface ExecutionPlanSnapshot {
+  setupLifecycle?: ExecutionPlan['setupLifecycle'];
   makerFill?: ExecutionPlan['makerFill'];
   profitFloor?: {afterR:number;keepR:number};
   failedTradeExit?: typeof TWO_BAR_EXIT;
@@ -133,7 +137,9 @@ export function planSnapshot(cfg: AppConfig, p: ExecutionPlan, sourceHash: strin
     ...(p.comparison?{comparison:structuredClone(p.comparison)}:{})};
   if(p.basket && (paper.sizingMode!=='margin'||paper.marginPerTrade!==150||!(paper.maxStopLossPct!>0)||Object.keys(sc?.inputs??{}).length))throw Error('basket requires $150 margin, a stop cap and reviewed default inputs');
   const native = nativeReentry(p.scannerId,sc?.reader);
+  if(p.setupLifecycle && (!sourceHash || exitMode==='levels'))throw Error('setup lifecycle requires pinned source and explicit script exits');
   const versioned = {...result,...(p.makerFill?{makerFill:p.makerFill}:{}),...(sc?.reader===3||p.basket||plotLifecycle(p.scannerId)?{partialExitVersion:1 as const}:{}),
+    ...(p.setupLifecycle?{setupLifecycle:p.setupLifecycle}:{}),
     ...(native?{reversalEntryVersion:1 as const,nativeReentryVersion:1 as const}:{}),
     ...(p.readingOverride?{readingOverride:structuredClone(p.readingOverride)}:{})};
   // Presentation/grouping edits must not reset evidence for an identical policy.
@@ -149,10 +155,11 @@ export function planSnapshot(cfg: AppConfig, p: ExecutionPlan, sourceHash: strin
 export function planEvents(events: ScanEvent[], bars: Bar[], p: ExecutionPlanSnapshot): ScanEvent[] {
   // Own exits are the author's stop and targets as written: the scanner's ATR entry protection would strip them, and a
   // partial strategy exit cannot be replicated, so it is dropped rather than closing the whole position early.
-  if(p.exitPolicy==='own-exits')return events.filter(ev=>!(ev.kind==='exit'&&ev.partial));
+  if(p.exitPolicy==='own-exits'||p.setupLifecycle)return events.filter(ev=>!(ev.kind==='exit'&&ev.partial));
   return p.variant === 'current' ? events.map(ev=>protectEntry(ev,p.reading?.entryProtection)) : adaptPlan(events,bars,p.variant);
 }
 export function planBacktest(p: ExecutionPlanSnapshot) {
+  if(p.setupLifecycle)throw Error('setup lifecycle requires causal event/tick/depth replay; candle-only backtest is unsupported');
   if(p.makerFill)throw Error('maker fill study requires recorded ticks and depth; candles cannot qualify it');
   if(p.failedTradeExit)throw Error('two-bar exit requires causal tick/depth replay; candle-only backtest is unsupported');
   if(p.basket)throw Error('basket execution requires stateful shadow replay; single-position candle backtest is unsupported');
@@ -169,6 +176,11 @@ export function validateExecutionPlans(plans: ExecutionPlan[] | undefined, tfs: 
   for(const p of plans){
     if(!p || !/^[a-z0-9][a-z0-9-]{0,79}$/.test(p.id??'') || ids.has(p.id))errors.push('executionPlans requires unique safe ids');
     if(!p)continue;ids.add(p.id);
+    if(p.setupLifecycle!==undefined && (p.setupLifecycle!==SETUP_LIFECYCLE || p.variant!=='current' || p.basket ||
+      p.makerFill || p.takeProfit || p.trailing || p.profitFloor || p.failedTradeExit || p.maxHoldMinutes!==undefined ||
+      !p.readingOverride || ![2,3].includes(p.readingOverride.reader??0) || p.readingOverride.invert ||
+      cfg && (cfg.scanners[p.scannerId]?.exitMode==='levels' && p.exitPolicy!=='own-exits')))
+      errors.push(`executionPlans.${p.id}: setup lifecycle requires a versioned current reading with explicit exits and unchanged entry/exit settings`);
     // V1 is a frozen SOL study. V2 can compare any configured resting maker
     // setup, using the research depth feed; it never enables account copying.
     const makerSource=p.makerFill==='tick-depth-v1'?(p.scannerId===SOL_MAKER_FILTER_SOURCE||solFilterPlan(p))&&p.symbol==='SOLUSD'&&p.tf==='15m'
@@ -217,7 +229,7 @@ export function validateExecutionPlans(plans: ExecutionPlan[] | undefined, tfs: 
       if(!t||![t.afterR,t.giveBackPct,t.floorAtR,t.floorKeepR].every(Number.isFinite)||t.afterR<=0||t.afterR>10||t.giveBackPct<=0||t.giveBackPct>=100||t.floorAtR<0||t.floorAtR>10||t.floorKeepR<0||(t.floorAtR===0?t.floorKeepR!==0:t.floorKeepR>=t.floorAtR))errors.push(`executionPlans.${p.id}: invalid profit-capture trail or floor`);
       if(p.takeProfit?.trailAfterR!==undefined)errors.push(`executionPlans.${p.id}: specify trail activation in only one place`);
     }
-    if(p.comparison!==undefined&&(!p.comparison||!/^[a-z0-9][a-z0-9-]{0,79}$/.test(p.comparison.group??'')||!['control','candidate'].includes(p.comparison.role)||p.comparison.kind!==undefined&&!['exit-policy','two-bar','profit-floor','maker-fill'].includes(p.comparison.kind)))errors.push(`executionPlans.${p.id}: invalid comparison group or role`);
+    if(p.comparison!==undefined&&(!p.comparison||!/^[a-z0-9][a-z0-9-]{0,79}$/.test(p.comparison.group??'')||!['control','candidate'].includes(p.comparison.role)||p.comparison.kind!==undefined&&!['exit-policy','two-bar','profit-floor','maker-fill','setup-lifecycle'].includes(p.comparison.kind)))errors.push(`executionPlans.${p.id}: invalid comparison group or role`);
     if(p.comparison?.kind==='maker-fill'&&(p.variant!=='current'||p.readingOverride||p.trailing||p.takeProfit||p.failedTradeExit||p.profitFloor||p.basket||p.maxHoldMinutes!==undefined||p.exitPolicy!==undefined))errors.push(`executionPlans.${p.id}: maker study requires unchanged entries, exits and reading`);
     if(p.failedTradeExit!==undefined&&(p.failedTradeExit!==TWO_BAR_EXIT||p.comparison?.kind!=='two-bar'||p.comparison.role!=='candidate'))errors.push(`executionPlans.${p.id}: two-bar exit requires its explicit shadow candidate`);
     if(p.comparison?.kind==='two-bar'&&(!isTwoBarCell(p.scannerId,p.symbol,p.tf)||p.variant!=='current'||p.readingOverride||p.trailing||p.takeProfit||p.profitFloor||p.basket||p.maxHoldMinutes!==undefined||p.exitPolicy!==undefined))errors.push(`executionPlans.${p.id}: two-bar study requires the reviewed Trend Impulse cell and unchanged entry/exit policy`);
@@ -246,6 +258,11 @@ export function validateExecutionPlans(plans: ExecutionPlan[] | undefined, tfs: 
   }
   for(const group of new Set(plans.filter(p=>p?.comparison).map(p=>p.comparison!.group))){
     const pair=plans.filter(p=>p?.comparison?.group===group);
+    if(pair.some(p=>p.comparison?.kind==='setup-lifecycle')){
+      const control=pair.find(p=>p.comparison?.role==='control'),candidate=pair.find(p=>p.comparison?.role==='candidate');
+      const identity=(p:ExecutionPlan)=>Object.fromEntries(Object.entries(p).filter(([k])=>!['id','label','comparison','setupLifecycle'].includes(k)));
+      if(pair.length!==2||!control||!candidate||pair.some(p=>p.comparison?.kind!=='setup-lifecycle')||control.setupLifecycle!==undefined||candidate.setupLifecycle!==SETUP_LIFECYCLE||stable(identity(control))!==stable(identity(candidate)))errors.push(`executionPlans comparison ${group}: lifecycle arms must differ only in confirmed-exit handling`);
+    }
     if(pair.some(p=>p.comparison?.kind==='maker-fill')){
       const control=pair.find(p=>p.comparison?.role==='control'),candidate=pair.find(p=>p.comparison?.role==='candidate');
       const identity=(p:ExecutionPlan)=>Object.fromEntries(Object.entries(p).filter(([k])=>!['id','label','comparison','makerFill'].includes(k)));

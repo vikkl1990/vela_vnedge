@@ -19,6 +19,8 @@ export interface ExecutionPlansView {
     lastSourceBar: number | null
   }>
   cohorts: Array<{
+    setupLifecycle?: 'confirmed-exit-v1' | null
+    exitDelivery?: { pending: number; done: number; maxAttempts: number } | null
     executionVersion?: number | null
     readingVersion?: number | null
     scans?: number

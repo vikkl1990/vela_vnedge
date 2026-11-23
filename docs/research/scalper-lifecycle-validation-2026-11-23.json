@@ -1,0 +1,92 @@
+{
+  "decision": 336,
+  "verifiedAt": "2026-11-23T17:48:26.596Z",
+  "baseCommit": "f7b661217b2642ddf90281ffcdacc9465e683f4a",
+  "scope": "First scalper-engine correctness phase; built and tested locally. No VM deployment or research-plan activation.",
+  "runtime": "v24.22.3",
+  "policy": {
+    "field": "setupLifecycle",
+    "version": "confirmed-exit-v1",
+    "book": "shadow research only",
+    "defaultEnabled": false,
+    "entryInvalidation": "Only explicit confirmed close/flip/SL/BE events from a later source bar; opposite entry markers are not invalidations.",
+    "fillBasis": "Existing causal execution with fresh post-arrival depth, latency, partial exposure, fees and funding.",
+    "evidence": "New plan signature; matched exit outcomes require identical entries, quantity, initial stop and risk. No automatic promotion; candle-only replay rejected."
+  },
+  "compatibility": {
+    "snapshotAt": "2026-11-23T16:56:17.416Z",
+    "baseline": "f7b661217b2642ddf90281ffcdacc9465e683f4a",
+    "configuredPlansChecked": 135,
+    "enabledPaperCellsChecked": 32,
+    "policyOrPlanDifferences": 0,
+    "configurationMutated": false,
+    "sourceHashBasis": "The same supplied hash on both builds; this check measures code compatibility, not source provenance."
+  },
+  "tests": {
+    "server": {
+      "passed": 2024,
+      "failed": 0,
+      "newRegressionCases": 23
+    },
+    "serverTypecheck": "pass",
+    "dashboardBuild": "pass",
+    "dashboardLint": "pass",
+    "browser": {
+      "passed": 82,
+      "failed": 0,
+      "viewports": [
+        "1440x1000 desktop",
+        "375x812 phone"
+      ],
+      "newCases": 2,
+      "api": "mocked; no exchange or Telegram messages"
+    },
+    "inspectedScreenshots": [
+      "dashboard/test-results/setupLifecycle-setup-inval-3c16f-ut-claiming-fills-or-profit-desktop/setup-lifecycle.png",
+      "dashboard/test-results/setupLifecycle-setup-inval-3c16f-ut-claiming-fills-or-profit-phone/setup-lifecycle.png"
+    ]
+  },
+  "regressionCoverage": [
+    "blocked replacement retains independent close",
+    "partial close retains residual until reports",
+    "opposite entry alone cannot invalidate",
+    "ordinary pending cancellation",
+    "partial maker remainder cancellation and exact held quantity",
+    "wrong-side, old and same-bar notifications",
+    "TP and stop-amendment ordering",
+    "duplicate exits across restart/re-entry",
+    "atomic cancellation/close/receipt completion rollback",
+    "recovery after source watermark advancement",
+    "fresh present-time recovery without offline fills",
+    "fair bounded retries",
+    "retired pending-only reading scanned and delivered",
+    "same-entry comparison and no promotion",
+    "account/noncausal/unpinned/candle-only refusals",
+    "legacy signatures and outcomes",
+    "idle SSE snapshot work avoided"
+  ],
+  "unchanged": [
+    "execution.mode paper",
+    "allowProduction flag",
+    "active execution plans",
+    "margin settings",
+    "risk caps and reservations",
+    "fee admission",
+    "evidence and promotion rules",
+    "paper TP/SL policies"
+  ],
+  "economicPerformance": {
+    "improvementProven": false,
+    "profitDelta": null,
+    "slDelta": null,
+    "winnersCutShort": null,
+    "basis": "Deterministic synthetic event/tick/depth regressions establish mechanics, not a historical or prospective profit improvement."
+  },
+  "remainingArchitectureWork": [
+    "Execution process isolation from research/reporting",
+    "Scanner-specific attainable-net-edge admission and out-of-sample validation",
+    "Risk-first allocation and candidate ranking evaluation",
+    "Completed shadow outcomes for earlier profit protection",
+    "Production protective-order capability parity before live trading"
+  ]
+}

@@ -91,8 +91,8 @@ export class ApiServer {
   private startBackground() {
     if (this.background.length) return;
     const sweep = setInterval(() => { try { this.auth.sweep(); } catch { /* ignore */ } }, 3600_000);
-    const stats = setInterval(() => this.broadcast('stats', this.app.paper.stats()), 5_000);
-    const health = setInterval(() => this.broadcast('health', this.app.health()), 10_000);
+    const stats = setInterval(() => this.broadcastLazy('stats', () => this.app.paper.stats()), 5_000);
+    const health = setInterval(() => this.broadcastLazy('health', () => this.app.health()), 10_000);
     for (const timer of [sweep, stats, health]) timer.unref?.();
     this.background.push(sweep, stats, health);
   }
@@ -215,6 +215,12 @@ export class ApiServer {
     for (const r of this.sse) { try { r.write(payload); } catch { this.sse.delete(r); } }
   }
 
+  /** Reporting must not do snapshot work on the execution loop for zero viewers. */
+  broadcastLazy(event: string, snapshot: () => unknown) {
+    if (this.sse.size === 0) return;
+    this.broadcast(event, snapshot());
+  }
+
   private wireEvents() {
     const a = this.app;
     const tickThrottle = new Map<string, number>();
@@ -228,7 +234,7 @@ export class ApiServer {
     a.candles.on('closed', (e: any) => this.broadcast('candle', { symbol: e.symbol, tf: e.tf, bar: e.bar, closed: true }));
     a.scanners.on('signal', (s: any) => this.broadcast('signal', s));
     a.scanners.on('scanner', (s: any) => this.broadcast('scanner', s));
-    a.paper.on('position', (e: any) => this.broadcast('position', { type: e.type, position: this.positionViews.one(e.position) }));
+    a.paper.on('position', (e: any) => this.broadcastLazy('position', () => ({ type: e.type, position: this.positionViews.one(e.position) })));
     a.paper.on('trade', (t: any) => this.broadcast('trade', t));
     a.paper.on('order', (o: any) => this.broadcast('order', o));
     a.paper.on('pending', (e: {type:string;id?:number;entry?:{id:number};reason?:string}) => this.broadcast('pending', {type:e.type,id:e.id??e.entry?.id,reason:e.reason}));

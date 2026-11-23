@@ -37,13 +37,15 @@ export function ExecutionPlans() {
                     {c.symbol} {c.tf} ·{' '}
                     {c.kind === 'reading'
                       ? 'Scanner reading comparison'
-                      : c.kind === 'maker-fill'
-                        ? 'Maker fill model comparison'
-                        : c.kind === 'two-bar'
-                          ? 'Two-bar exit comparison'
-                          : c.kind === 'profit-floor'
-                            ? 'Early profit-floor comparison'
-                            : 'Profit-capture comparison'}
+                      : c.kind === 'setup-lifecycle'
+                        ? 'Setup invalidation comparison'
+                        : c.kind === 'maker-fill'
+                          ? 'Maker fill model comparison'
+                          : c.kind === 'two-bar'
+                            ? 'Two-bar exit comparison'
+                            : c.kind === 'profit-floor'
+                              ? 'Early profit-floor comparison'
+                              : 'Profit-capture comparison'}
                   </strong>{' '}
                   <Pill>{c.enabled ? 'Forward shadow test' : 'Disabled'}</Pill>
                   <p className="small">
@@ -60,6 +62,13 @@ export function ExecutionPlans() {
                       </>
                     )}
                   </p>
+                  {c.kind === 'setup-lifecycle' && candidate?.exitDelivery && (
+                    <p className="small">
+                      Confirmed exit instructions: {candidate.exitDelivery.done} delivered ·{' '}
+                      {candidate.exitDelivery.pending} awaiting retry. Delivery requests a close; fills still
+                      require fresh executable depth.
+                    </p>
+                  )}
                   <p className="small">
                     {c.sharedSignals} shared source signals · {c.unresolvedSignals} awaiting outcomes ·{' '}
                     {c.differentAdmissions} with different fill status · {c.controlOnly + c.candidateOnly}{' '}
