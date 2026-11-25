@@ -31,6 +31,38 @@ test('a block whose value starts with a minus is not a continuation', () => {
   assert.equal(joinContinuations(src), 'dir = if not na(ph)\n    1\nelse if not na(pl)\n    -1\nx = a - b');
 });
 
+test('a wrapped string literal is text: its brackets do not count and its // lines are kept', () => {
+  // the shape that gutted four library scripts: a tooltip wrapped across lines with brackets in its text
+  const src = [
+    'a = input.int(10, "Length", tooltip="Bars on each side (left',
+    'and right) required // not a comment',
+    '// still text",',
+    '  group="g")',
+    'b = 1',
+    'c = b + 1',
+  ].join('\n');
+  const out = joinContinuations(src);
+  assert.match(out, /^b = 1$/m, 'the statement after the call stands on its own line');
+  assert.match(out, /^c = b \+ 1$/m);
+  assert.match(out, /required \/\/ not a comment/, 'a // inside the string is not cut');
+  assert.match(out, /\/\/ still text"/, 'a string line that starts with // is not dropped');
+  // a wrapped string outside brackets keeps its lines
+  const top = joinContinuations('s = "line1\n// not comment\nline2"\nx = 1');
+  assert.equal(top, 's = "line1\n// not comment\nline2"\nx = 1');
+});
+
+test('continuation edge cases follow Pine\'s own indentation rule', () => {
+  // a multiple-of-four indent is a block step in Pine, not a continuation: left for PineTS
+  assert.equal(joinContinuations('x = a\n    + b\ny = 1'), 'x = a\n    + b\ny = 1');
+  // any other indent is a continuation in Pine too, so a 2- or 3-space -1 under a branch joins
+  assert.equal(joinContinuations('if cond\n  -1\nelse\n  0'), 'if cond -1\nelse\n  0');
+  assert.equal(joinContinuations('x = if a\n    1\nelse if b\n   -1\ny = 2'), 'x = if a\n    1\nelse if b -1\ny = 2');
+  // comment-only lines go; a block keeps its statements
+  assert.equal(joinContinuations('if cond\n    // important\n    x := 1\nelse\n    x := 0'), 'if cond\n    x := 1\nelse\n    x := 0');
+  // a trailing comment on the continued-from line is dropped by the join
+  assert.equal(joinContinuations('x = a // comment\n      + b'), 'x = a + b');
+});
+
 test('loop and declaration qualifiers are dropped', () => {
   assert.equal(dropQualifiers('for int j = 0 to 45 by 1'), 'for j = 0 to 45 by 1');
   assert.equal(dropQualifiers('var series float source_h = float(na)'), 'var float source_h = float(na)');

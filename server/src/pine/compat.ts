@@ -37,36 +37,70 @@ const isComment = (l: string) => /^\s*\/\//.test(l) && !/^\s*\/\/\s*@/.test(l);
 const CONTINUES = /^\s*(\+|-|\*|\/|%|\?|:|,|==|!=|<=|>=|<|>|and\b|or\b)/;
 
 /**
+ * One line's comment start, bracket depth change and the quote still open at its end, given the quote open
+ * at its start. Pine v6 lets a string literal wrap across lines, so a line can begin inside a string; its
+ * `//` is then text, not a comment, and its brackets do not count.
+ */
+function scanLine(line: string, open: string | null): { cut: number; depth: number; close: string | null } {
+  let q = open, d = 0;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (q) { if (c === '\\') i++; else if (c === q) q = null; continue; }
+    if (c === '"' || c === "'") q = c;
+    else if (c === '/' && line[i + 1] === '/') return { cut: i, depth: d, close: null };
+    else if (c === '(' || c === '[' || c === '{') d++;
+    else if (c === ')' || c === ']' || c === '}') d--;
+  }
+  return { cut: -1, depth: d, close: q };
+}
+
+/**
  * Pine lets a statement continue on following lines (inside brackets, or a more-indented line that starts with
  * an operator); PineTS's indentation lexer does not. Continuations are joined onto their statement, trailing
  * comments dropped from joined lines, comment-only lines removed.
+ *
+ * The quote state is carried from line to line: a line that begins inside a wrapped string literal is text,
+ * so it is never dropped as blank or comment-only, never read as an operator continuation, and a `//` in it
+ * does not cut the line. For a script without wrapped strings the output is unchanged.
  */
 export function joinContinuations(src: string): string {
-  const lines = src.split('\n'); const out: string[] = []; let depth = 0;
+  const lines = src.split('\n');
+  const out: string[] = [];
+  /** Quote open at the start of each output line, so a later join cuts its trailing comment correctly. */
+  const outOpen: Array<string | null> = [];
+  /** Output lines holding string text: the comment-only filter must not remove them. */
+  const text = new Set<number>();
+  let depth = 0, open: string | null = null;
+  const joinOnto = (i: number, line: string) => {
+    const prev = out[i]; const cut = scanLine(prev, outOpen[i]).cut;
+    out[i] = (cut >= 0 ? prev.slice(0, cut) : prev).replace(/\s+$/, '') + ' ' + line.trim();
+  };
   for (const raw of lines) {
     const line = raw.replace(/\r$/, '');
+    const startOpen = open, scan = scanLine(line, startOpen), inString = startOpen !== null;
+    open = scan.close;
     if (depth > 0) {
-      if (isBlank(line) || isComment(line)) continue;
-      const prev = out.pop()!; const cut = commentStart(prev);
-      out.push((cut >= 0 ? prev.slice(0, cut) : prev).replace(/\s+$/, '') + ' ' + line.trim());
-      depth += depthDelta(line);
+      if (!inString && (isBlank(line) || isComment(line))) continue;
+      joinOnto(out.length - 1, line);
+      if (inString) text.add(out.length - 1);
+      depth += scan.depth;
       continue;
     }
     const prev = out.length ? out[out.length - 1] : null;
     // Pine's rule: a continuation line is indented by an amount that is not a block step (a multiple of four);
     // `else if cond` followed by `        -1` is a block whose value is minus one, not a subtraction
-    if (prev !== null && !isBlank(prev) && !isComment(prev) && CONTINUES.test(line) && indentOf(line) > indentOf(prev) && (indentOf(line) - indentOf(prev)) % 4 !== 0 && !/^\s*-\s*-/.test(line)) {
-      const cut = commentStart(prev); out.pop();
-      out.push((cut >= 0 ? prev.slice(0, cut) : prev).replace(/\s+$/, '') + ' ' + line.trim());
-      depth += depthDelta(line);
+    if (!inString && prev !== null && !isBlank(prev) && !isComment(prev) && CONTINUES.test(line) && indentOf(line) > indentOf(prev) && (indentOf(line) - indentOf(prev)) % 4 !== 0 && !/^\s*-\s*-/.test(line)) {
+      joinOnto(out.length - 1, line);
+      depth += scan.depth;
       continue;
     }
-    out.push(line);
-    depth = Math.max(0, depth + depthDelta(line));
+    out.push(line); outOpen.push(startOpen);
+    if (inString) text.add(out.length - 1);
+    depth = Math.max(0, depth + scan.depth);
   }
   // PineTS lexes comments as tokens whose indentation counts, so a comment-only line at the wrong depth breaks the
   // block around it; comment-only lines are removed (a statement's trailing comment stays)
-  return out.filter(l => !isComment(l)).join('\n');
+  return out.filter((l, i) => text.has(i) || !isComment(l)).join('\n');
 }
 
 /** `for int i = 0 to n` and `var series float x = …`: qualifiers PineTS does not accept. */
