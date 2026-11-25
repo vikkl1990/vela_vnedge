@@ -7,9 +7,11 @@
  *
  * Results are appended per cell, so an interrupted run resumes where it stopped. Concurrency is
  * bounded: holding every job's bars at once is what exhausted the server's heap at warm-up.
- * Pass rule (per cell): >= 20 trades, profit factor >= 1.2 after fees, and positive net P&L in
- * each of three segments: the first and second half of the earliest 70% and the final 30%
- * holdout (>= 5 trades there). Diagnostic: it changes no configuration.
+ * Pass rule (per cell and policy): >= 20 trades, profit factor >= 1.2 after fees, and positive net
+ * P&L in each of three segments: the first and second half of the earliest 70% and the final 30%
+ * holdout (>= 5 trades there). Several paper policies are evaluated from one script run (see
+ * POLICIES); strict policies trade rarely, so pool a scanner's cells across markets to judge it.
+ * Diagnostic: it changes no configuration.
  */
 import fs from 'node:fs';
 import { DeltaRest, marketSpec } from '../delta/rest.ts';
@@ -32,6 +34,17 @@ const rest = new DeltaRest();
 const workers = Number(workersArg ?? 6);
 const pool = new PinePool(workers, 180_000);
 const tfMs = (TF_SECONDS[tf] ?? 0) * 1000;
+/**
+ * Paper rules compared per cell. `current` is the configured policy; the others raise the cost rule
+ * (minimum stop distance, in round trips of fees) and/or stop closing on an opposite signal. Chosen on
+ * a BTC 15m sample where tight-stop entries and one-bar reversals produced most of the losses.
+ */
+const POLICIES: Record<string, Partial<typeof cfg.paper>> = {
+  current: {},
+  cost8x: { minRiskFeeRatio: 8, minRiskFeeRatioBySymbol: undefined },
+  cost12x: { minRiskFeeRatio: 12, minRiskFeeRatioBySymbol: undefined },
+  cost12x_noRev: { minRiskFeeRatio: 12, minRiskFeeRatioBySymbol: undefined, allowReversal: false },
+};
 
 const done = new Set<string>();
 if (fs.existsSync(out)) for (const line of fs.readFileSync(out, 'utf8').split('\n')) { try { const r = JSON.parse(line); done.add(`${r.scannerId}|${r.symbol}`); } catch { /* partial line */ } }
@@ -72,12 +85,19 @@ async function screen(s: ReturnType<ScannerRegistry['runnable']>[number], symbol
     const events = extractEvents(res.alerts, res.shapes, { barMs: tfMs, drawn: res.labels, scannerId: s.id, derived, ...READ.extract });
     row.entries = events.filter(e => e.kind === 'entry').length;
     if (!row.entries) { row.silent = true; return row; }
-    const policy = backtestPolicy(cfg, s.id, tf, 'account', { executor: false, productFees: m.info.productFees });
-    const bt = runBacktest({ scannerId: s.id, scannerName: s.name, symbol, tf, bars: m.bars, events, ...policy, exitMode: sc.exitMode, contractValue: m.info.contractValue, tickSize: m.info.tickSize });
     const t0 = m.bars[0].time, span = m.bars.at(-1).time - t0, trainEnd = t0 + span * 0.7, mid = t0 + span * 0.35;
-    const all = stats(bt.trades), seg = [stats(bt.trades.filter(t => t.entryAt < mid)), stats(bt.trades.filter(t => t.entryAt >= mid && t.entryAt < trainEnd)), stats(bt.trades.filter(t => t.entryAt >= trainEnd))];
-    Object.assign(row, { trades: all.trades, pnl: all.pnl, pf: all.pf, avgR: all.avgR, maxDd: bt.stats.maxDrawdownPct, early: seg[0], middle: seg[1], holdout: seg[2], rejected: bt.rejected });
-    row.pass = all.trades >= 20 && all.pf >= 1.2 && seg.every(x => x.pnl > 0) && seg[2].trades >= 5;
+    // every policy is backtested on the same events: one script run, several paper rules
+    row.policies = {};
+    for (const [name, over] of Object.entries(POLICIES)) {
+      const pcfg = { ...cfg, paper: { ...cfg.paper, ...over } };
+      const bt = runBacktest({ scannerId: s.id, scannerName: s.name, symbol, tf, bars: m.bars, events: structuredClone(events),
+        ...backtestPolicy(pcfg, s.id, tf, 'account', { executor: false, productFees: m.info.productFees }), exitMode: sc.exitMode, contractValue: m.info.contractValue, tickSize: m.info.tickSize });
+      const all = stats(bt.trades), seg = [stats(bt.trades.filter(t => t.entryAt < mid)), stats(bt.trades.filter(t => t.entryAt >= mid && t.entryAt < trainEnd)), stats(bt.trades.filter(t => t.entryAt >= trainEnd))];
+      row.policies[name] = { trades: all.trades, pnl: all.pnl, pf: all.pf, avgR: all.avgR, maxDd: bt.stats.maxDrawdownPct, early: seg[0], middle: seg[1], holdout: seg[2],
+        pass: all.trades >= 20 && all.pf >= 1.2 && seg.every(x => x.pnl > 0) && seg[2].trades >= 5 };
+    }
+    // the current policy stays at the top level for existing readers
+    Object.assign(row, row.policies.current);
     return row;
   } catch (e: any) { row.error = String(e?.message ?? e).slice(0, 160); return row; }
 }
