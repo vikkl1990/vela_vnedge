@@ -117,7 +117,9 @@ These changes remove confirmed conflicts, but are not a production-readiness cer
    source and the six-hour warm-up skip use a result only when its stamp matches the cell's
    current identity; unstamped and older rows remain visible (`current: false`) but are not
    evidence. Forward trade evidence was already keyed by `strategyId`.
-3. Run ML fitting and large replays outside the market-data event loop. Measure close-to-scan,
+3. Run ML fitting and large replays outside the market-data event loop. *26 Nov:* ML training
+   now runs in a worker thread with its own read-only connection (`ml/trainWorker.ts`); large
+   replays and walk-forward post-processing still run on the main thread. Measure close-to-scan,
    signal-to-decision, queue age and feed lag under full research load; reserve execution capacity.
    Pine workers alone do not isolate all synchronous post-processing/training.
 4. Unify execution scheduling for identical source/input/cell requests, then fan out the same

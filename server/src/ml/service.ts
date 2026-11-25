@@ -6,11 +6,12 @@ import { SIMULATION_VERSION } from '../paper/version.ts';
 import type { Db } from '../db.ts';
 import { logger } from '../log.ts';
 import { computeFeatures, FEATURE_LABELS, FEATURE_NAMES, featureVector, type Features, type FeatureInputs } from './features.ts';
-import { deriveRules, predict, trainLogReg, type LogRegModel, type Rule, type Sample } from './model.ts';
+import { predict, type LogRegModel, type Rule, type Sample } from './model.ts';
 import {PredictionEvidence,type ModelEvidence,type PredictionContext} from './predictionEvidence.ts';
+import { computeTraining, eligibleSamples, rowsToSamples, TRAINING_ROW_LIMIT, type TrainingInput, type TrainingResult } from './training.ts';
+import { startTrainingWorker, type TrainHandle } from './trainRunner.ts';
 
 const log = logger.scoped('ml');
-const MIN_SCANNER_SAMPLES = 40;
 const TRAINING_VERSION = 3;
 /** Live feature vectors kept for drift monitoring. */
 const DRIFT_WINDOW = 200;
@@ -101,16 +102,59 @@ export class MlService {
 
   /** Throttled: train at most once per 2 minutes while samples keep arriving (never starves during warm-up). */
   private scheduleTrain() {
-    if (this.trainTimer) return;
-    this.trainTimer = setTimeout(() => { this.trainTimer = null; try { this.train(); } catch (e: any) { log.error(`train failed: ${e?.message ?? e}`); } }, 120_000);
+    if (this.trainTimer || this.stopped) return;
+    this.trainTimer = setTimeout(() => { this.trainTimer = null; void this.trainAsync().catch((e: any) => log.error(`train failed: ${e?.message ?? e}`)); }, 120_000);
     this.trainTimer.unref();
+  }
+
+  /** S4: fit in a worker thread off the market-data event loop. Off with VNEDGE_ML_WORKER=0 or for in-memory databases. */
+  useWorker = process.env.VNEDGE_ML_WORKER !== '0';
+  private training: Promise<MlSnapshot> | null = null;
+  private trainHandle: TrainHandle | null = null;
+  private retrainAfter = false;
+  private stopped = false;
+  /** Test seam: how a worker run is started. */
+  startWorker: (file: string, input: TrainingInput) => TrainHandle = startTrainingWorker;
+
+  /**
+   * Train without blocking the event loop: the worker reads the samples through its own read-only
+   * connection and fits every model; only applying and saving the result happens here. One run at a
+   * time; a request during a run schedules one more. A failed worker falls back to in-process training.
+   */
+  trainAsync(): Promise<MlSnapshot> {
+    if (this.training) { this.retrainAfter = true; return this.training; }
+    if (!this.useWorker || this.db.file === ':memory:' || this.stopped) return Promise.resolve().then(() => this.train());
+    const t0 = Date.now(), input = this.trainingInput(t0);
+    const handle = this.trainHandle = this.startWorker(this.db.file, input);
+    this.training = handle.promise
+      .then(res => this.applyTraining(res, t0), (e: any) => {
+        if (this.stopped) throw e;
+        log.warn(`training worker failed (${e?.message ?? e}); training in-process instead`);
+        return this.train();
+      })
+      .finally(() => {
+        this.training = null; this.trainHandle = null;
+        if (this.retrainAfter) { this.retrainAfter = false; this.scheduleTrain(); }
+      });
+    return this.training;
+  }
+
+  /** Stop scheduled and running training. */
+  stop() {
+    this.stopped = true;
+    if (this.trainTimer) { clearTimeout(this.trainTimer); this.trainTimer = null; }
+    this.trainHandle?.terminate();
+  }
+
+  private trainingInput(t0: number): TrainingInput {
+    return { excluded: [...this.excluded()], t0, resetAt: this.db.kvGet<number>('paper.resetAt') ?? 0 };
   }
 
   samples(scannerId?: string, limit = 5000): Sample[] {
     const rows = scannerId
       ? this.db.all<any>('SELECT * FROM ml_samples WHERE scanner_id=? ORDER BY at DESC LIMIT ?', scannerId, limit)
       : this.db.all<any>('SELECT * FROM ml_samples ORDER BY at DESC LIMIT ?', limit);
-    return rows.map(r => ({ scannerId: r.scanner_id, symbol: r.symbol, tf: r.tf, at: r.at, features: JSON.parse(r.features), win: r.win, r: r.r, pnl: r.pnl, exitReason: r.exit_reason, bt: Boolean(r.bt), resolvedAt: r.resolved_at ?? null }));
+    return rowsToSamples(rows);
   }
 
   count(): { total: number; live: number } {
@@ -123,47 +167,34 @@ export class MlService {
   /** Scripts the runtime has given up on (they repaint, they time out): their samples are fiction and are left out of training (decision 87). */
   excluded: () => Set<string> = () => new Set();
 
+  /** Synchronous, in-process training (the API's explicit retrain, tests, and the worker fallback). */
   train(): MlSnapshot {
-    const t0 = Date.now();
-    this.modelEvidence=null;
-    const ex = this.excluded();
-    const all = this.samples(undefined, 100_000).filter(s => !ex.has(s.scannerId) && s.resolvedAt != null && Number.isFinite(s.resolvedAt) && s.resolvedAt >= s.at && s.resolvedAt<=t0);
+    const t0 = Date.now(), input = this.trainingInput(t0);
+    const all = eligibleSamples(this.samples(undefined, TRAINING_ROW_LIMIT), input);
+    return this.applyTraining(computeTraining(all, input), t0);
+  }
+
+  /** Install a fitted result and persist it. Cheap: everything expensive happened in `computeTraining`. */
+  private applyTraining(res: TrainingResult, t0: number): MlSnapshot {
+    this.modelEvidence = null;
     const names = this.names();
-    const byScanner = new Map<string, Sample[]>();
-    for (const s of all) { const l = byScanner.get(s.scannerId) ?? []; l.push(s); byScanner.set(s.scannerId, l); }
-    const timeframeModels: NonNullable<MlSnapshot['timeframeModels']> = [];
-    this.globalModel = trainLogReg(all);
-    this.timeframeModels.clear();
-    for (const tf of new Set(all.map(s => s.tf))) {
-      const model = trainLogReg(all.filter(s => s.tf === tf));
-      if (model) { this.timeframeModels.set(tf, model); timeframeModels.push({ scannerId: null, tf, model: model.metrics }); }
-    }
-    const gRules = deriveRules(all, { minN: 50 });
-    const scanners: ScannerInsight[] = [];
-    this.models.clear();
-    for (const [id, list] of byScanner) {
-      const m = list.length >= MIN_SCANNER_SAMPLES ? trainLogReg(list) : null;
-      if (m) this.models.set(id, m);
-      for (const tf of new Set(list.map(s => s.tf))) {
-        const rows = list.filter(s => s.tf === tf);
-        const cell = rows.length >= MIN_SCANNER_SAMPLES ? trainLogReg(rows) : null;
-        if (cell) { this.models.set(JSON.stringify([id, tf]), cell); timeframeModels.push({ scannerId: id, tf, model: cell.metrics }); }
-      }
-      const { baseline, rules } = deriveRules(list);
-      scanners.push({ scannerId: id, scannerName: names[id] ?? id, samples: list.length, liveSamples: list.filter(s => !s.bt).length, baseline, model: m?.metrics ?? null, calibration: m?.calibration ?? null, importance: m?.importance.slice(0, 8) ?? [], rules });
-    }
+    this.globalModel = res.globalModel;
+    this.timeframeModels = new Map(res.timeframeModels);
+    this.models = new Map(res.models);
+    const scanners: ScannerInsight[] = res.scanners.map(s => ({ scannerId: s.scannerId, scannerName: names[s.scannerId] ?? s.scannerId, samples: s.samples, liveSamples: s.liveSamples,
+      baseline: s.baseline, model: s.model?.metrics ?? null, calibration: s.model?.calibration ?? null, importance: s.model?.importance.slice(0, 8) ?? [], rules: s.rules }));
     scanners.sort((a, b) => b.samples - a.samples);
-    const resetAt = this.db.kvGet<number>('paper.resetAt') ?? 0;
+    const stored = this.count().total;
     this.snapshot = {
-      timeframeModels, eligibility: { stored: this.count().total, eligible: all.length, excluded: this.count().total - all.length },
-      trainedAt: Date.now(), samples: all.length, liveSamples: all.filter(s => !s.bt).length, liveSinceReset: all.filter(s => !s.bt && s.at >= resetAt).length, scannersWithModel: scanners.filter(s => s.model !== null).length,
-      global: this.globalModel ? { model: this.globalModel.metrics, calibration: this.globalModel.calibration, importance: this.globalModel.importance, rules: gRules.rules, baseline: gRules.baseline } : null,
+      timeframeModels: res.timeframeMetrics, eligibility: { stored, eligible: res.eligible, excluded: stored - res.eligible },
+      trainedAt: Date.now(), samples: res.eligible, liveSamples: res.liveSamples, liveSinceReset: res.liveSinceReset, scannersWithModel: scanners.filter(s => s.model !== null).length,
+      global: this.globalModel ? { model: this.globalModel.metrics, calibration: this.globalModel.calibration, importance: this.globalModel.importance, rules: res.global.rules, baseline: res.global.baseline } : null,
       scanners,
     };
     const bundle={version:TRAINING_VERSION,timeframeModels:Object.fromEntries(this.timeframeModels),global:this.globalModel,models:Object.fromEntries(this.models),snapshot:this.snapshot};
-    this.modelEvidence=this.predictionEvidence.saveModel(bundle,this.snapshot.trainedAt!,all.reduce((v,s)=>Math.max(v,s.resolvedAt!),0));
+    this.modelEvidence=this.predictionEvidence.saveModel(bundle,this.snapshot.trainedAt!,res.maxResolvedAt);
     this.db.kvSet('ml.model', {...bundle,evidence:this.modelEvidence});
-    log.info(`trained on ${all.length} samples (${this.models.size} scanner models, global AUC ${this.globalModel ? this.globalModel.metrics.auc.toFixed(2) : '-'}) in ${Date.now() - t0}ms`);
+    log.info(`trained on ${res.eligible} samples (${this.models.size} scanner models, global AUC ${this.globalModel ? this.globalModel.metrics.auc.toFixed(2) : '-'}) in ${Date.now() - t0}ms (fit ${res.ms}ms)`);
     return this.snapshot;
   }
 

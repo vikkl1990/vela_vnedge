@@ -41,7 +41,16 @@ a registered hypothesis, frozen control and predeclared criteria before they run
   Account mirroring is unchanged (it has its own inbox). Test: `incubator/shadowInbox.test.ts`.
   The forked-process SIGKILL variant was not added; the rollback test simulates the kill inside
   the transaction.
-- **Not started:** S4, S5, S6.
+- **S4 (ML off the hot path), training part:** done. Scheduled and API retraining
+  (`MlService.trainAsync`) runs in a short-lived worker thread (`ml/trainWorker.ts`) that opens
+  its own read-only SQLite connection, reads and parses the samples and fits every model; the main
+  thread only installs and saves the result. The pure fitting code (`ml/training.ts`) is shared
+  with the synchronous `train()`, so results are identical (tested with a real worker). One run at
+  a time; a failed worker falls back to in-process training; `VNEDGE_ML_WORKER=0` disables it.
+  Scoring stays in-process (a dot product). **Not done in S4:** large replays and walk-forward runs
+  still post-process on the main thread, and the close-to-scan / signal-to-decision / queue-age
+  latency budgets are not yet measured. Test: `ml/trainWorker.test.ts`.
+- **Not started:** S5, S6.
 
 ## Structural work (ordered)
 

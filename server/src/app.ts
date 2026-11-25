@@ -1147,7 +1147,7 @@ export class App {
     this.context.stop();
     await this.telegram.stop();
     this.pairAgents.stop();
-    this.scanners.stop();this.boundExits.stop();
+    this.scanners.stop();this.boundExits.stop();this.ml.stop();
     this.validation.stop();
     const auditStopped=this.stopExecutionAudit?.();
     this.screenQueue.stop();
