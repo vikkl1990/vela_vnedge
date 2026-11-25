@@ -23,7 +23,7 @@ export interface OpsDeps {
   db: Db;
   dataDir: string;
   feed: { connected: boolean; lastTickAt: number; on(ev: string, fn: (...a: any[]) => void): unknown };
-  pool: { stats: { size: number; queued: number; busy: number }; stop(): Promise<void>; recycleAll?(): number };
+  pool: { stats: { size: number; queued: number; busy: number; coalescedJoined?: number; coalescedUnique?: number }; stop(): Promise<void>; recycleAll?(): number };
   paper: { stats(): any; trades(opts: { limit: number }): any[]; openPositions(): any[]; priceSource: { quote: number; slippage: number; rejectedNoQuote: number }; on(ev: any, fn: (...a: any[]) => void): unknown };
   /** Top-of-book store; used only to report how many symbols are actually quoted. */
   marks?: { quotedSymbols(maxAgeMs?: number, now?: number): string[] };
@@ -143,6 +143,8 @@ export class OpsService {
     m.gauge('feed_connected', 'Delta websocket connected (1/0)', () => d.feed.connected ? 1 : 0);
     m.gauge('feed_last_tick_age_seconds', 'Seconds since the last websocket message', () => d.feed.lastTickAt ? (Date.now() - d.feed.lastTickAt) / 1000 : null);
     m.gauge('worker_queue_depth', 'Pine jobs waiting for a worker', () => d.pool.stats.queued);
+    m.gauge('pine_jobs_coalesced_total', 'Identical in-flight Pine jobs joined instead of run again (S6)', () => d.pool.stats.coalescedJoined ?? 0);
+    m.gauge('pine_jobs_unique_total', 'Pine jobs that ran (not joined to an identical in-flight job)', () => d.pool.stats.coalescedUnique ?? 0);
     m.gauge('worker_busy', 'Workers currently running a script', () => d.pool.stats.busy);
     m.gauge('worker_pool_size', 'Configured worker threads', () => d.pool.stats.size);
     m.gauge('worker_respawns', 'Worker respawns since start', () => this.workers.respawns);

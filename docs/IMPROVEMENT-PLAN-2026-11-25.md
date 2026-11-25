@@ -57,7 +57,15 @@ a registered hypothesis, frozen control and predeclared criteria before they run
   the Signals and scanner tables show a Fees / R column, red above the limit. Fees only: the book's
   crossing cost is not included. Test: `paper/feeInR.test.ts`. **Not done:** the single backend
   readiness model across Library, Scanner, Incubator, Decisions and Journal (EC-09).
-- **Not started:** S6.
+- **S6 (scheduler unification), compute-level part:** done. `PinePool.run` coalesces identical
+  in-flight live-shaped jobs (same scanner, source, inputs, timezone, market, timeframe, full bar
+  window and output window): the account and shadow schedulers' twin scans run once and each caller
+  gets its own copy, then does its own extraction and book decision. A request joins only a running
+  job or one queued at the same or a higher tier, so an account scan never waits behind a queued
+  shadow twin; a joiner whose shared run failed re-runs on its own. Backtests, strategy ledgers and
+  footprint scripts never coalesce. `pine_jobs_coalesced_total` / `pine_jobs_unique_total` in
+  `/api/metrics` measure the real overlap. Test: `pine/coalesce.test.ts`. **Not done:** merging the
+  two schedulers themselves; worth doing only if the counters show material overlap on the VM.
 
 ## Structural work (ordered)
 

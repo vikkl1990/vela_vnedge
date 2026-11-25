@@ -165,11 +165,12 @@ test('background work never takes the reserved workers', async t => {
   for (const w of workers) w.ready();
 
   const dispatched = () => workers.reduce((n, w) => n + w.jobs.length, 0);
-  for (let i = 0; i < 12; i++) void pool.run(job);
+  // distinct jobs: identical in-flight jobs would be coalesced (S6) and never fill the workers
+  for (let i = 0; i < 12; i++) void pool.run({ ...job, scannerId: `bg${i}` });
   assert.equal(dispatched(), 3, 'three of four workers on background work; one stays free for a bar close');
 
   // a live job takes the reserved worker immediately, without waiting for background work to finish
-  void pool.run(job, { priority: 'live' });
+  void pool.run({ ...job, scannerId: 'live' }, { priority: 'live' });
   assert.equal(dispatched(), 4);
 
   workers.find(w => w.jobs.length)!.finish();
@@ -183,8 +184,8 @@ test('a background job whose deadline passes while queued is dropped unrun', asy
   t.after(() => pool.stop());
   for (const w of workers) w.ready();
 
-  void pool.run(job); void pool.run(job);                // both workers busy, so the next job waits
-  const late = pool.run(job, { deadlineMs: 1 });
+  void pool.run({ ...job, scannerId: 'a' }); void pool.run({ ...job, scannerId: 'b' });   // both workers busy, so the next job waits
+  const late = pool.run({ ...job, scannerId: 'c' }, { deadlineMs: 1 });
   const before = workers.reduce((n, w) => n + w.jobs.length, 0);
   await new Promise(r => setTimeout(r, 10));
   workers.find(w => w.jobs.length)!.finish();            // pumps the queue after the deadline passed

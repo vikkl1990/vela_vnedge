@@ -124,6 +124,8 @@ These changes remove confirmed conflicts, but are not a production-readiness cer
    Pine workers alone do not isolate all synchronous post-processing/training.
 4. Unify execution scheduling for identical source/input/cell requests, then fan out the same
    event to separately versioned books. Preserve held-position exits during any migration.
+   *26 Nov:* identical in-flight Pine jobs are now coalesced in `PinePool` (each caller keeps its
+   own extraction and book; priority is never inverted); the schedulers themselves remain separate.
 5. Complete component lifecycle ownership: stop intake before draining work, cancel/await
    research jobs, detach listeners and stop all timers. Validation now has an owned stop path;
    the whole application's shutdown/restart-in-one-process contract is not yet complete.

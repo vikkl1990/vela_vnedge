@@ -1,5 +1,6 @@
 import { Worker } from 'node:worker_threads';
 import { fork } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -108,6 +109,25 @@ interface Pending { job: WorkerJob; resolve: (r: WorkerResult) => void; startedA
  * hold up or crowd out the account's own scans.
  */
 export type JobPriority = 'live' | 'mirror' | 'shadow' | 'background';
+/** Dispatch order of the queues: a lower tier is served first. */
+const PRIORITY_TIER: Record<JobPriority, number> = { live: 0, mirror: 1, shadow: 2, background: 3 };
+interface Inflight { tier: number; consumers: number; started: () => boolean; result: Promise<WorkerResult> }
+
+/**
+ * S6: identity of a job for coalescing, or null when it must always run on its own. Only
+ * live-shaped scans (a bounded output window) are shared; backtests ('all'), strategy ledgers and
+ * footprint scripts (their input depends on recorded order flow) never are. The bars are hashed in
+ * full, so a gap fill between two requests makes them different jobs.
+ */
+export function coalesceKey(job: Omit<WorkerJob, 'id'>): string | null {
+  if (job.tailBars === 'all' || job.ledger || job.footprints !== undefined || /\brequest\.footprint\s*\(/.test(job.source)) return null;
+  const h = createHash('sha256');
+  h.update(JSON.stringify([job.scannerId, job.symbol, job.tf, job.tickSize, job.tailBars, job.plotTail, job.timezone ?? null, job.legacyConditionTitles ?? null,
+    job.inputs ? Object.keys(job.inputs).sort().map(k => [k, job.inputs![k]]) : null]));
+  h.update('\0'); h.update(job.source); h.update('\0');
+  for (const b of job.bars) h.update(`${b.time},${b.open},${b.high},${b.low},${b.close},${b.volume};`);
+  return h.digest('hex');
+}
 /** A live job still waiting after this long would act on a signal too old to trade: drop it. */
 export const LIVE_QUEUE_DEADLINE_MS = 240_000;
 interface Slot { w: PoolWorker; busy: Pending | null; index: number; ready: boolean; retiring: boolean   /** Jobs completed by this worker; it is recycled after `WORKER_MAX_RUNS` (decision 68). */
@@ -208,6 +228,7 @@ export class PinePool {
     return {
       size: this.size, reserved: this.reserved, queued: this.queue.length + this.live.length + this.mirror.length + this.shadow.length, queuedLive: this.live.length, queuedMirror: this.mirror.length, queuedShadow:this.shadow.length, expiredShadow:this.expiredShadow, completed: this.completed,
       busy: this.workers.filter(w => w.busy).length, expiredLive: this.expiredLive, expiredMirror: this.expiredMirror, expiredBackground: this.expiredBackground, recycled: this.recycled, maxRuns: this.maxRuns,
+      coalescedJoined: this.coalescing.joined, coalescedUnique: this.coalescing.unique,
     };
   }
   private expiredLive = 0;
@@ -299,6 +320,34 @@ export class PinePool {
    * both, and the reason 48% of signals were being discarded on the VM.
    */
   async run(job: Omit<WorkerJob, 'id'>, opts: { priority?: JobPriority; deadlineMs?: number; rank?: number } = {}): Promise<WorkerResult> {
+    // S6: an identical live-shaped job already in flight (the account and the shadow book scanning the
+    // same cell on the same bar) is joined, not run twice. Each caller still reads its own events.
+    const key = coalesceKey(job);
+    if (key === null) { this.coalescing.unique++; return this.runFresh(job, opts); }
+    const tier = PRIORITY_TIER[opts.priority ?? 'background'];
+    const existing = this.inflight.get(key);
+    // join only what will not make this caller wait longer: a running job, or one queued at the same or a higher tier
+    if (existing && (existing.started() || existing.tier <= tier)) {
+      existing.consumers++; this.coalescing.joined++;
+      // a shared failure (crash, timeout, expiry) never takes a joiner down with it: it runs on its own, as before
+      return existing.result.then(r => r.ok ? structuredClone(r) : this.runFresh(job, opts));
+    }
+    this.coalescing.unique++;
+    let pending: Pending | undefined;
+    const entry: Inflight = { tier, consumers: 1, started: () => pending?.startedAt !== undefined, result: undefined as unknown as Promise<WorkerResult> };
+    entry.result = this.runFresh(job, opts, p => { pending = p; });
+    // a lower-tier queued twin was not joinable: later callers join this higher-tier run instead
+    this.inflight.set(key, entry);
+    void entry.result.finally(() => { if (this.inflight.get(key) === entry) this.inflight.delete(key); });
+    // consumers is final once the job settles: every one of them receives its own copy when shared
+    return entry.result.then(r => entry.consumers > 1 ? structuredClone(r) : r);
+  }
+
+  /** S6: identical in-flight jobs joined rather than run, and jobs that ran. */
+  readonly coalescing = { joined: 0, unique: 0 };
+  private inflight = new Map<string, Inflight>();
+
+  private async runFresh(job: Omit<WorkerJob, 'id'>, opts: { priority?: JobPriority; deadlineMs?: number; rank?: number }, queued?: (p: Pending) => void): Promise<WorkerResult> {
     const now = Date.now();
     if (job.footprints === undefined && /\brequest\.footprint\s*\(/.test(job.source)) {
       try { job = { ...job, footprints: await this.footprintLoader?.(job) ?? [] }; }
@@ -309,6 +358,7 @@ export class PinePool {
       const ttl = opts.deadlineMs ?? (live ? LIVE_QUEUE_DEADLINE_MS : undefined);
       const p: Pending = { job: { legacyConditionTitles: readingLegacy().has(job.scannerId), ...job, id: this.nextId++ }, resolve, queuedAt: now, deadline: ttl === undefined ? undefined : now + ttl, live: live || opts.priority === 'mirror', priority: opts.priority ?? 'background', rank: opts.rank };
       if (this.stopped) { this.fail(p, 'worker pool stopped'); return; }
+      queued?.(p);
       if ((live || opts.priority === 'mirror') && p.rank !== undefined) {
         // Decision 268: every bar close of a longer timeframe lands with the closes of the shorter ones (a 4h close is also a
         // 1h and a 15m close), and a plain first-in-first-out queue made the 4h scan wait behind two dozen shorter ones.
