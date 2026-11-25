@@ -14,6 +14,14 @@ import { scriptContextKey, settledTrades, type AuthorLedger } from './tradeCompa
 import { venueSymbol, type ChartVenue } from './venues'
 import { POSITION_LEVELS, positionLevelsIndicator, type PositionOverlay } from './positionOverlay'
 
+/** Backoff between Pine engine start attempts after a failure; one more failure is final until the next selection. */
+const PINE_RETRY_MS = [2_000, 5_000, 15_000]
+/**
+ * Optional hosted Pine worker (VITE_PINE_WORKER_URL). By default the engine starts its inlined worker
+ * from a `blob:` URL, which this app's own CSP allows; set it only behind a policy that blocks `blob:`.
+ */
+const PINE_WORKER_URL: string | undefined = import.meta.env.VITE_PINE_WORKER_URL || undefined
+
 export interface ChartScript {
   /** Stable id, e.g. scanner id. */
   id: string
@@ -149,6 +157,7 @@ export function VelaChart({
     let pineEngine: InstanceType<PineModule['PineWorkerEngine']> | null = null
     let firstBar: (id: string) => number | null = () => null
     let history: ReturnType<typeof withScriptTimezones>['history'] = () => null
+    let pineRetry: ReturnType<typeof setTimeout> | null = null
     let generation = 0
     const latestRuns = new Map<string, { run: ScriptRun; contextKey: string }>()
     const requests = new Map<string, { key: string; serial: number }>()
@@ -262,11 +271,17 @@ export function VelaChart({
           }
           // Candles do not wait for the Pine addon or spawn a worker unless a
           // scanner is selected. One in-flight load belongs to this chart only.
+          // A failed load used to be cached for the chart's lifetime: one bad import or registration
+          // left every later scanner selection without Pine until a reload. Now a failure clears the
+          // load, tears down any half-built engine and retries with backoff; selecting a scanner again
+          // also retries. Only the final failure is reported as unavailable.
           let pineLoading: Promise<void> | null = null
-          ensurePineRef.current = () =>
+          let pineFailures = 0
+          let registered = false
+          const loadPine = (): Promise<void> =>
             (pineLoading ??= import('@luxalgo/vela-pinets')
               .then((pine) => {
-                if (cancelled || !chart) return
+                if (cancelled || !chart || registered) return
                 pineEngine = new pine.PineWorkerEngine({
                   props: 'none',
                   importResolver: createLibraryResolver(() => librarySourcesRef.current, api.pineLibrary),
@@ -274,21 +289,46 @@ export function VelaChart({
                     venue === 'delta'
                       ? (s, timeframe, range) => api.footprints(s, timeframe, range)
                       : undefined,
+                  ...(PINE_WORKER_URL ? { workerUrl: PINE_WORKER_URL } : {}),
                 })
                 const adapter = withScriptTimezones(
                   pineEngine,
                   (id) => scriptsRef.current.find((s) => `vn:${s.id}` === id)?.timezone,
                 )
+                chart.registerEngine('pine', adapter.engine)
+                registered = true
                 firstBar = adapter.firstBar
                 history = adapter.history
-                chart.registerEngine('pine', adapter.engine)
+                if (pineFailures)
+                  toastExternal('info', 'Pine engine started', `after ${pineFailures} failed attempt(s)`)
+                pineFailures = 0
                 setPineReady(true)
               })
               .catch((e: unknown) => {
                 if (cancelled) return
-                console.warn('[vela] registerEngine failed', e)
-                toastExternal('warn', 'Pine engine unavailable', (e as Error).message)
+                pineEngine?.terminate()
+                pineEngine = null
+                pineLoading = null
+                pineFailures++
+                console.warn(`[vela] Pine engine attempt ${pineFailures} failed`, e)
+                const delay = PINE_RETRY_MS[pineFailures - 1]
+                if (delay === undefined) {
+                  toastExternal(
+                    'warn',
+                    'Pine engine unavailable',
+                    `${(e as Error).message} — select a scanner again to retry`,
+                  )
+                  pineFailures = 0
+                  return
+                }
+                if (pineFailures === 1) toastExternal('warn', 'Pine engine failed to start', 'retrying…')
+                if (pineRetry) clearTimeout(pineRetry)
+                pineRetry = setTimeout(() => {
+                  pineRetry = null
+                  if (!cancelled && scriptsRef.current.length) void loadPine()
+                }, delay)
               }))
+          ensurePineRef.current = loadPine
           chartRef.current = chart
           if (import.meta.env.DEV) (window as unknown as { __vnChart?: VelaType }).__vnChart = chart
           const offStart = chart.on('load:start', () => {
@@ -417,6 +457,8 @@ export function VelaChart({
     return () => {
       cancelled = true
       generation++
+      if (pineRetry) clearTimeout(pineRetry)
+      pineRetry = null
       collectRef.current = null
       ensurePineRef.current = null
       positionHandleRef.current = null
