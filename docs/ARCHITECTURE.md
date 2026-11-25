@@ -101,9 +101,19 @@ These changes remove confirmed conflicts, but are not a production-readiness cer
    Recover the remaining consumers from the committed journal with independent cursors,
    and reconcile exchange state before any live replay. Pending
    market/tape entries retain their existing cancel-on-restart policy; maker limits reload.
+   *25 Nov:* learning now catches up at startup: `ScannerEngine.recoverLiveSamples()` replays
+   closed account positions with journalled features and no `ml_samples` row (idempotent,
+   archived books excluded). Risk close bookkeeping already recovers through
+   `risk_close_receipts`. Per-trade alerts are deliberately not replayed (stale notifications).
+   The shadow scheduler still has no receipt boundary.
 2. Key cached backtests/walk-forward evidence by source hash, inputs, signal reader, policy,
    cost model and market-data window. Current simulation-version checks do not capture all
    configuration changes. Promotion must cite the exact evidence version it used.
+   *25 Nov:* cached backtests and walk-forward results are stamped with the cell's
+   `strategyId` and data window (`validation/evidenceKey.ts`). Auto-tune, the walk-forward OOS
+   source and the six-hour warm-up skip use a result only when its stamp matches the cell's
+   current identity; unstamped and older rows remain visible (`current: false`) but are not
+   evidence. Forward trade evidence was already keyed by `strategyId`.
 3. Run ML fitting and large replays outside the market-data event loop. Measure close-to-scan,
    signal-to-decision, queue age and feed lag under full research load; reserve execution capacity.
    Pine workers alone do not isolate all synchronous post-processing/training.

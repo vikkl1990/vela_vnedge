@@ -16,6 +16,7 @@ import type { Bar } from '../data/candleStore.ts';
 import { runBacktest, type BacktestResult, type BacktestInput } from '../paper/backtest.ts';
 import { SIMULATION_VERSION } from '../paper/version.ts';
 import type { ScanEvent } from '../scanners/extractor.ts';
+import type { CachedEvidence } from './evidenceKey.ts';
 
 const DAY = 86_400_000;
 
@@ -61,6 +62,8 @@ export interface WalkForwardResult {
   trades: WfTrade[];
   /** Weekly OOS pnl (selected windows), ascending by week. */
   weekly: Array<{ week: string; from: number; pnl: number; trades: number }>;
+  /** Strategy identity and data window the cached result was produced under (see evidenceKey.ts). */
+  evidence?: CachedEvidence;
 }
 
 /** Rolling windows covering [from, end) (ms, `end` exclusive). The last test window ends at `end`. */

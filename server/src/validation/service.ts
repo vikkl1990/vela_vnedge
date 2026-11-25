@@ -1,6 +1,6 @@
 import {candleReplayBlock} from '../paper/basket.ts';
 /**
- * Walk-forward validation service: runs every active scanner×symbol×timeframe over the deep
+ * Walk-forward validation service: runs every active scannerÃ—symbolÃ—timeframe over the deep
  * candle cache, persists the results (`walk_forward` table) and hands the OOS summaries to the
  * scanner engine's auto-tune.
  */
@@ -19,6 +19,7 @@ import { oosSummary, passesRule, walkForward, type OosSummary, type WalkForwardR
 import {selectiveReclaimRule} from '../paper/selectiveEntry.ts';
 import { backtestPolicy } from '../paper/policy.ts';
 import { readingOf } from '../scanners/reading.ts';
+import { cachedEvidence, evidenceCurrent } from './evidenceKey.ts';
 
 const log = logger.scoped('validation');
 
@@ -39,11 +40,13 @@ export interface WalkForwardSummary {
   inSample: WalkForwardResult['inSample']; outOfSample: WalkForwardResult['outOfSample']; outOfSampleAll: WalkForwardResult['outOfSampleAll'];
   /** Passes the configured OOS gate (autoTune.oos thresholds, regardless of `enabled`). */
   oosPass: boolean;
-  /** OOS profit factor below 1 — the roadmap's red flag. */
+  /** OOS profit factor below 1 â€” the roadmap's red flag. */
   oosFlag: boolean;
   /** Passes the in-sample rule over the whole history (what the current tuner sees). */
   inSamplePass: boolean;
   enabled: boolean;
+  /** Produced under the cell's current strategy identity; a stale result is shown but never feeds auto-tune. */
+  current: boolean;
 }
 
 export class ValidationService {
@@ -69,9 +72,15 @@ export class ValidationService {
 
   static key(id: string, symbol: string, tf: string) { return `${id}:${symbol}:${tf}`; }
 
+  /** True when the stored result was produced under the cell's current strategy identity. */
+  current(r: WalkForwardResult): boolean {
+    return evidenceCurrent(r, this.deps.scanners.strategyIdentity?.(r.scannerId, r.symbol, r.tf)?.strategyId ?? null);
+  }
+
+  /** OOS summary for auto-tune. A result for an older strategy version is not evidence: the caller falls back as if none existed. */
   lookup(id: string, symbol: string, tf: string): OosSummary | null {
     const r = this.results.get(ValidationService.key(id, symbol, tf));
-    return r ? oosSummary(r) : null;
+    return r && this.current(r) ? oosSummary(r) : null;
   }
 
   get(id: string, symbol: string, tf: string): WalkForwardResult | null { return this.results.get(ValidationService.key(id, symbol, tf)) ?? null; }
@@ -87,6 +96,7 @@ export class ValidationService {
       windows: r.windows.length, selectedWindows: r.selectedWindows, inSample: r.inSample, outOfSample: o, outOfSampleAll: r.outOfSampleAll,
       oosPass, oosFlag: o.trades > 0 && (o.profitFactor ?? 0) < 1, inSamplePass: passesRule(r.inSample, cfg.autoTune.minTrades, cfg.autoTune.minProfitFactor),
       enabled: sc ? this.deps.scanners.isActive(sc) && this.deps.scanners.symbolsFor(sc.id).includes(r.symbol) && this.deps.scanners.timeframesFor(sc.id).includes(r.tf) : false,
+      current: this.current(r),
     };
   }
 
@@ -103,7 +113,7 @@ export class ValidationService {
     const out: Array<{ s: LoadedScanner; symbol: string; tf: string }> = [];
     const scanners = opts.scanner ? [this.deps.registry.get(opts.scanner)].filter((s): s is LoadedScanner => Boolean(s && s.status === 'ok')) : this.deps.registry.all().filter(s => this.deps.scanners.isActive(s));
     for (const s of scanners.filter(s=>!candleReplayBlock(s.id))) {
-      // the scanner's explicit pairs (decision 70), never the symbols × timeframes product: validation must describe the strategy that is deployed
+      // the scanner's explicit pairs (decision 70), never the symbols Ã— timeframes product: validation must describe the strategy that is deployed
       const pairs = this.deps.scanners.pairsFor(s.id).filter(p => (!opts.symbol || p.symbol === opts.symbol) && (!opts.tf || p.tf === opts.tf));
       for (const { symbol, tf } of pairs) if (tf in TF_SECONDS) out.push({ s, symbol, tf });
     }
@@ -167,7 +177,7 @@ export class ValidationService {
       if (!res.ok) { this.fail(key, res.error ?? 'script error'); return; }
       const READ = readingOf(sc, s.id, (TF_SECONDS[tf] ?? 0) * 1000, s.patched, s.variantOf);   // decision 195
       const derived = applyRules({ scannerId: s.id, alerts: res.alerts, shapes: res.shapes, labels: res.labels, plots: res.plots, rule, bars, mode: 'backtest', ...READ.rule });
-      // decision 85: validation reads the scanner exactly as the live path does — the same channels, edge, labels and inversion
+      // decision 85: validation reads the scanner exactly as the live path does â€” the same channels, edge, labels and inversion
       const events = extractEvents(res.alerts, res.shapes, { barMs: (TF_SECONDS[tf] ?? 0) * 1000, drawn: res.labels, scannerId: s.id, derived, ...READ.extract });
       const wf = cfg.validation.walkForward;
       // decision 191: validated under the account's own policy (entry model, exit rules with script protection, gates)
@@ -175,6 +185,7 @@ export class ValidationService {
       const subBars=selectiveReclaimRule(policy.cfg,{scannerId:s.id,symbol,tf})?await this.deps.cache.getHistory(symbol,'1m',{from:bars[0].time,to:bars.at(-1)!.time+(TF_SECONDS[tf]??0)*1000-60_000}):undefined;
       const r = walkForward({ scannerId: s.id, scannerName: s.name, symbol, tf, bars, subBars, events, ...policy, exitMode: sc.exitMode, contractValue: market.contractValue, tickSize: market.tickSize,
         opts: { trainDays: wf.trainDays, testDays: wf.testDays, stepDays: wf.stepDays, minTrades: cfg.autoTune.minTrades, minProfitFactor: cfg.autoTune.minProfitFactor } });
+      r.evidence = cachedEvidence(this.deps.scanners.strategyIdentity?.(s.id, symbol, tf), bars);
       this.results.set(key, r);
       this.deps.db.run('INSERT INTO walk_forward(scanner_id, symbol, tf, at, bars, from_ms, to_ms, result) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(scanner_id, symbol, tf) DO UPDATE SET at=excluded.at, bars=excluded.bars, from_ms=excluded.from_ms, to_ms=excluded.to_ms, result=excluded.result', s.id, symbol, tf, r.at, r.bars, r.from, r.to, JSON.stringify(r));
       this.status.done++;

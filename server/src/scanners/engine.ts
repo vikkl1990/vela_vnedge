@@ -18,12 +18,13 @@ import { EventEmitter } from 'node:events';
 import type { AppConfig, ScannerConfig, ExitMode, OosTuneConfig } from '../config.ts';
 import { TF_SECONDS } from '../config.ts';
 import type { OosSummary } from '../validation/walkForward.ts';
+import { cachedEvidence, evidenceCurrent } from '../validation/evidenceKey.ts';
 import type { CandleStore, Bar } from '../data/candleStore.ts';
 import { lastAtr } from '../data/indicators.ts';
 import type { Db } from '../db.ts';
 import type { DeltaRest } from '../delta/rest.ts';
 import { logger } from '../log.ts';
-import { PaperEngine } from '../paper/engine.ts';
+import { PaperEngine, rowToPosition, tradeOf } from '../paper/engine.ts';
 import type { MarketInfo } from '../paper/engine.ts';
 import { marketSpec } from '../delta/rest.ts';
 import { SIMULATION_VERSION } from '../paper/version.ts';
@@ -143,7 +144,9 @@ export class ScannerEngine extends EventEmitter {
     this.ml = deps.ml ?? null;
     this.cfgStore = deps.cfgStore ?? null;
     // every closed live trade becomes a learning sample
-    this.paper.on('trade', (t: any) => { if (this.ml && t.features) this.ml.addLiveSample(t.scannerId, t.symbol, t.tf, t.entryAt, t.features, t.pnl > 0, t.rMultiple ?? 0, t.pnl, String(t.exitReason ?? ''), t.exitAt); });
+    this.paper.on('trade', (t: any) => this.learnFromTrade(t));
+    // The listener runs after the close commits, so a kill in between loses the sample; catch up from the journal.
+    this.recoverLiveSamples();
     for (const r of this.db.all<any>('SELECT * FROM scanner_runs')) this.lastRun.set(`${r.scanner_id}:${r.symbol}:${r.tf}`, { at: r.at, ms: r.ms, symbol: r.symbol, tf: r.tf, error: r.error, barTime: r.bar_time });
     for (const r of this.db.all<any>('SELECT * FROM backtests')) { try { const result = JSON.parse(r.result); if (result.version === SIMULATION_VERSION) this.backtests.set(`${r.scanner_id}:${r.symbol}:${r.tf}`, result); } catch { /* ignore */ } }
     this.candles.on('closed', (e: { symbol: string; tf: string; bar: Bar }) => this.onBarClosed(e.symbol, e.tf, e.bar));
@@ -153,6 +156,32 @@ export class ScannerEngine extends EventEmitter {
       if (ev.kind === 'exit') { const m = String(r.label).match(/TP\s?(\d)/i); ev.exitType = m ? (`tp${m[1]}` as any) : /SL/i.test(r.label) ? 'sl' : /BE/i.test(r.label) ? 'be' : /REVERSAL|FLIP/i.test(r.label) ? 'flip' : 'close'; }
       this.db.run('UPDATE signals SET summary=? WHERE id=?', describeEvent(ev), r.id);
     }
+  }
+
+  /** One closed account trade becomes one learning sample. `ml_samples` is unique per cell × entry time × book, so a repeat is a no-op. */
+  private learnFromTrade(t: ReturnType<typeof tradeOf>): boolean {
+    if (!this.ml || !t.features || !Object.keys(t.features).length) return false;
+    this.ml.addLiveSample(t.scannerId, t.symbol, t.tf, t.entryAt, t.features as any, t.pnl > 0, t.rMultiple ?? 0, t.pnl, String(t.exitReason ?? ''), t.exitAt ?? undefined);
+    return true;
+  }
+
+  /**
+   * Observer catch-up for learning: every closed account position in the committed journal (its
+   * entry features live in the same row) that has no live ML sample is replayed through the same
+   * conversion the live listener uses. Idempotent; archived books (bt < 0) are not touched.
+   */
+  recoverLiveSamples(): number {
+    if (!this.ml) return 0;
+    let n = 0;
+    try {
+      for (const row of this.db.all<any>(`SELECT p.* FROM positions p WHERE p.bt=0 AND p.status='closed' AND NOT EXISTS
+          (SELECT 1 FROM ml_samples m WHERE m.bt=0 AND m.scanner_id=p.scanner_id AND m.symbol=p.symbol AND m.tf=p.tf AND m.at=p.entry_at)
+          ORDER BY p.exit_at, p.id`)) {
+        if (this.learnFromTrade(tradeOf(rowToPosition(row)))) n++;
+      }
+    } catch (e: any) { log.warn(`live ML sample recovery failed: ${e?.message ?? e}`); return n; }
+    if (n) log.info(`recovered ${n} live ML sample(s) missed after a restart`);
+    return n;
   }
 
   /** Deep candle history for warm backtests (validation module); live runs keep the in-memory bars. */
@@ -215,6 +244,19 @@ export class ScannerEngine extends EventEmitter {
   }
   getOverlay(id: string, symbol: string, tf: string): Overlay | undefined { return this.overlays.get(`${id}:${symbol}:${tf}`); }
   getBacktest(id: string, symbol: string, tf: string): BacktestResult | undefined { return this.backtests.get(`${id}:${symbol}:${tf}`); }
+  /**
+   * The cell's current strategy identity (source, reading, exit mode, costs, regime, sim version),
+   * resolved without per-product fee overlays so it does not depend on catalogue timing. Cached
+   * research evidence is current only when it was produced under this identity.
+   */
+  strategyIdentity(id: string, symbol: string, tf: string): { strategyId: string; sourceHash: string | null } | null {
+    try { const p = this.paper.policyForCell({ scannerId: id, symbol, tf }, true); return { strategyId: p.strategyId, sourceHash: p.sourceHash }; }
+    catch { return null; }
+  }
+  /** True when the cached backtest for the cell was produced under its current strategy identity. */
+  backtestCurrent(id: string, symbol: string, tf: string): boolean {
+    return evidenceCurrent(this.backtests.get(`${id}:${symbol}:${tf}`), this.strategyIdentity(id, symbol, tf)?.strategyId ?? null);
+  }
   allBacktests(): Array<{ id: string; symbol: string; tf: string; result: BacktestResult }> { return [...this.backtests.entries()].map(([k, result]) => { const [id, symbol, tf] = k.split(':'); return { id, symbol, tf, result }; }); }
   /** Backtests grouped by scanner id; the per-scanner filter was rescanning the whole map each time. */
   backtestsByScanner(): Map<string, BacktestResult[]> {
@@ -262,7 +304,8 @@ export class ScannerEngine extends EventEmitter {
     const report: AutoTuneReport[] = [];
     const inSample = (id: string, symbol: string, tfs: string[]): AutoTuneDecision => {
       let trades = 0, pnl = 0, gp = 0, gl = 0;
-      for (const tf of tfs) { const b = this.backtests.get(`${id}:${symbol}:${tf}`); if (!b) continue; trades += b.stats.trades; pnl += b.stats.pnl; gp += b.stats.grossProfit; gl += b.stats.grossLoss; }
+      // a backtest produced under a different strategy identity is not evidence for the current one
+      for (const tf of tfs) { const b = this.backtests.get(`${id}:${symbol}:${tf}`); if (!b || !this.backtestCurrent(id, symbol, tf)) continue; trades += b.stats.trades; pnl += b.stats.pnl; gp += b.stats.grossProfit; gl += b.stats.grossLoss; }
       const pf = gl > 0 ? gp / gl : gp > 0 ? 999 : 0;
       const keep = trades >= minTrades && pnl > 0 && pf >= minPf;
       return { symbol, tf: tfs.length === 1 && byTf ? tfs[0] : null, keep, rule: oos ? 'provisional' : 'in-sample', trades, pnl, profitFactor: trades ? pf : null, positiveWeeks: null,
@@ -280,10 +323,11 @@ export class ScannerEngine extends EventEmitter {
       const tfs = this.timeframesFor(s.id);
       // A scanner enabled moments ago has no backtest yet; disabling it for "0 trades" would
       // silently undo the operator's change, so leave unmeasured scanners alone until they warm.
-      if (!before.some(sym => tfs.some(tf => this.backtests.has(`${s.id}:${sym}:${tf}`)))) {
+      // A backtest stamped with an older strategy identity (edited source, inputs, reading, costs) counts as none.
+      if (!before.some(sym => tfs.some(tf => this.backtestCurrent(s.id, sym, tf)))) {
         report.push({ id: s.id, name: s.name, applied:false, before, after: before, beforeTimeframes: tfs, afterTimeframes: tfs, disabled: false,
           rule: oos ? 'oos' : 'in-sample', provisional: false, dropped: [], decisions: [], skipped: true });
-        log.info(`auto-tune ${s.id}: skipped, no backtest yet`);
+        log.info(`auto-tune ${s.id}: skipped, no backtest for the current strategy version yet`);
         continue;
       }
       const decisions: AutoTuneDecision[] = [];
@@ -390,7 +434,8 @@ export class ScannerEngine extends EventEmitter {
     // resume: a backtest from the last hour that already carries ML features does not need re-running
     const prev = this.backtests.get(key);
     // a backtest from the last six hours is fresh enough (decision 80): a restart must not re-run the fleet's history
-    if (prev && Date.now() - prev.at < 6 * 3600_000 && (prev.trades.length === 0 || (prev.trades[0] as any).features)) { log.debug(`warm ${key}: fresh backtest, skipping`); return; }
+    // ... but only when it measured the current strategy version: an edit within those six hours must re-run
+    if (prev && Date.now() - prev.at < 6 * 3600_000 && this.backtestCurrent(s.id, symbol, tf) && (prev.trades.length === 0 || (prev.trades[0] as any).features)) { log.debug(`warm ${key}: fresh backtest, skipping`); return; }
     try {
       await this.runOnce(s, symbol, tf, { backtest: true, live: true });
     } catch (e: any) { log.error(`warm ${key} failed: ${e?.message ?? e}`); }
@@ -538,6 +583,7 @@ export class ScannerEngine extends EventEmitter {
         const selective=selectiveReclaimRule(policy.cfg,{scannerId:s.id,symbol,tf});
         const subBars=selective?await this.history?.getHistory(symbol,'1m',Math.ceil((Date.now()-btBars[0].time)/60_000)):undefined;
         const bt = runBacktest({ scannerId: s.id, scannerName: s.name, symbol, tf, bars: btBars, subBars, events, ...policy, exitMode, contractValue:market.contractValue, tickSize:market.tickSize });
+        bt.evidence = cachedEvidence(this.strategyIdentity(s.id, symbol, tf), btBars);
         this.backtests.set(key, bt);
         if (this.ml) this.ml.replaceBacktestSamples(s.id, symbol, tf, bt.trades.filter((t: any) => t.features).map((t: any) => ({ at: t.entryAt, features: t.features, win: t.pnl > 0, r: t.rMultiple ?? 0, pnl: t.pnl, exitReason: String(t.exitReason ?? ''), resolvedAt: t.exitAt ?? null })));
         this.db.run('INSERT INTO backtests(scanner_id, symbol, tf, at, bars, result) VALUES (?,?,?,?,?,?) ON CONFLICT(scanner_id, symbol, tf) DO UPDATE SET at=excluded.at, bars=excluded.bars, result=excluded.result', s.id, symbol, tf, bt.at, bt.bars, JSON.stringify(bt));

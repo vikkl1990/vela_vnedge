@@ -7,27 +7,55 @@ import { PaperEngine } from '../paper/engine.ts';
 import { ScannerEngine } from './engine.ts';
 import { SIMULATION_VERSION } from '../paper/version.ts';
 import type { OosSummary } from '../validation/walkForward.ts';
+import { cachedEvidence } from '../validation/evidenceKey.ts';
 
-function build(opts: { tfs?: string[] } = {}) {
+function build(opts: { tfs?: string[]; unstamped?: boolean } = {}) {
   const db = new Db(':memory:');
   const cfg = structuredClone(DEFAULT_CONFIG);
   cfg.incubator.enabled=false;
   cfg.symbols = ['BTCUSD', 'ETHUSD', 'SOLUSD']; cfg.timeframes = opts.tfs ?? ['15m'];
   cfg.scanners.s = { enabled: true, symbols: [...cfg.symbols], timeframes: null, exitMode: 'both' };
-  const bt = (trades: number, pnl: number) => ({ version: SIMULATION_VERSION, at: Date.now(), trades: [], stats: { trades, pnl, grossProfit: pnl > 0 ? pnl : 0, grossLoss: pnl < 0 ? -pnl : 0 } });
+  const paper = new PaperEngine(db, () => cfg);
+  // cached evidence is stamped with the cell's strategy identity at production time
+  const evidence = (symbol: string, tf: string) => opts.unstamped ? undefined : cachedEvidence(
+    (p => ({ strategyId: p.strategyId, sourceHash: p.sourceHash }))(paper.policyForCell({ scannerId: 's', symbol, tf }, true)), [{ time: 0 }, { time: 1 }]);
+  const bt = (symbol: string, tf: string, trades: number, pnl: number) => ({ version: SIMULATION_VERSION, at: Date.now(), trades: [], stats: { trades, pnl, grossProfit: pnl > 0 ? pnl : 0, grossLoss: pnl < 0 ? -pnl : 0 }, evidence: evidence(symbol, tf) });
   // in-sample: BTC good, ETH good, SOL bad (all tfs)
   for (const tf of cfg.timeframes) {
-    db.run('INSERT INTO backtests(scanner_id, symbol, tf, at, bars, result) VALUES (?,?,?,?,?,?)', 's', 'BTCUSD', tf, 1, 1, JSON.stringify(bt(10, 500)));
-    db.run('INSERT INTO backtests(scanner_id, symbol, tf, at, bars, result) VALUES (?,?,?,?,?,?)', 's', 'ETHUSD', tf, 1, 1, JSON.stringify(bt(8, 200)));
-    db.run('INSERT INTO backtests(scanner_id, symbol, tf, at, bars, result) VALUES (?,?,?,?,?,?)', 's', 'SOLUSD', tf, 1, 1, JSON.stringify(bt(9, -300)));
+    db.run('INSERT INTO backtests(scanner_id, symbol, tf, at, bars, result) VALUES (?,?,?,?,?,?)', 's', 'BTCUSD', tf, 1, 1, JSON.stringify(bt('BTCUSD', tf, 10, 500)));
+    db.run('INSERT INTO backtests(scanner_id, symbol, tf, at, bars, result) VALUES (?,?,?,?,?,?)', 's', 'ETHUSD', tf, 1, 1, JSON.stringify(bt('ETHUSD', tf, 8, 200)));
+    db.run('INSERT INTO backtests(scanner_id, symbol, tf, at, bars, result) VALUES (?,?,?,?,?,?)', 's', 'SOLUSD', tf, 1, 1, JSON.stringify(bt('SOLUSD', tf, 9, -300)));
   }
   const store = { setScanner: (id: string, patch: any) => { cfg.scanners[id] = { ...cfg.scanners[id], ...patch }; return cfg.scanners[id]; } };
-  const engine = new ScannerEngine({ db, cfgRef: () => cfg, paper: new PaperEngine(db, () => cfg), candles: Object.assign(new EventEmitter(), { get: () => [] }) as any, pool: { stats: { queued: 0 }, run: async () => ({}) } as any,
+  const engine = new ScannerEngine({ db, cfgRef: () => cfg, paper, candles: Object.assign(new EventEmitter(), { get: () => [] }) as any, pool: { stats: { queued: 0 }, run: async () => ({}) } as any,
     registry: { all: () => [{ id: 's', name: 'S', status: 'ok', patched: '' }], get: () => undefined } as any, rest: {} as any, cfgStore: store });
   return { db, cfg, engine };
 }
 
 const oos = (trades: number, pnl: number, pf: number | null, positiveWeeks: number): OosSummary => ({ at: 1, windows: 20, selectedWindows: 12, trades, pnl, profitFactor: pf, positiveWeeks, negativeWeeks: 1, weeks: positiveWeeks + 1, maxDrawdownPct: 2 });
+
+test('legacy backtests without a strategy identity stamp are not evidence: the scanner is skipped, not retuned', t => {
+  const { db, cfg, engine } = build({ unstamped: true }); t.after(() => db.db.close());
+  const before = structuredClone(cfg.scanners);
+  const [r] = engine.autoTune({ minTrades: 3, minProfitFactor: 1 });
+  assert.equal(r.skipped, true);
+  assert.deepEqual(cfg.scanners, before);
+});
+
+test('editing what a scanner reads makes its cached backtests stale until re-run', t => {
+  const { db, cfg, engine } = build(); t.after(() => db.db.close());
+  assert.equal(engine.backtestCurrent('s', 'BTCUSD', '15m'), true);
+  // allocation fields do not change the strategy
+  cfg.scanners.s = { ...cfg.scanners.s, symbols: ['BTCUSD'] };
+  assert.equal(engine.backtestCurrent('s', 'BTCUSD', '15m'), true);
+  // the exit mode does
+  cfg.scanners.s = { ...cfg.scanners.s, exitMode: 'levels' };
+  assert.equal(engine.backtestCurrent('s', 'BTCUSD', '15m'), false);
+  const before = structuredClone(cfg.scanners);
+  const [r] = engine.autoTune({ minTrades: 3, minProfitFactor: 1 });
+  assert.equal(r.skipped, true);
+  assert.deepEqual(cfg.scanners, before);
+});
 
 test('Incubator ownership makes backtest tuning advisory without rewriting account allocations',t=>{
  const {db,cfg,engine}=build();t.after(()=>db.db.close());cfg.incubator.enabled=true;

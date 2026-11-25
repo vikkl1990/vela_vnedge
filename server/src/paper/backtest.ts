@@ -1,4 +1,5 @@
 import {candleReplayBlock} from './basket.ts';
+import type {CachedEvidence} from '../validation/evidenceKey.ts';
 import {nativeGeometryError} from '../scanners/plotLifecycle.ts';
 import {quoteMakerCell,passiveMakerPrice,tradedVolume,makerTapeCell} from './makerPricing.ts';
 import {offerStatus} from './costs.ts';
@@ -111,6 +112,8 @@ export interface BacktestResult {
   rejected: Record<string, number>;
   entryFlow?: Record<string, number>;
   costCoverage: { feeSchedule?:ProductFees & {basis:'current-product-scenario'}; crossing: 'observed' | 'fallback'; funding: 'provided' | 'not-modelled' | 'disabled'; depthImpact: 'modelled' | 'not-modelled'; feeWaiver: 'disabled' | 'enrollment-dated' | 'verified-from' | 'unverified-full-fees' };
+  /** Strategy identity and data window the cached result was produced under (see validation/evidenceKey.ts). */
+  evidence?: CachedEvidence;
 }
 
 export function runBacktest(inp: BacktestInput): BacktestResult {
