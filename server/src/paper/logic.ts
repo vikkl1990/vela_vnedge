@@ -184,12 +184,29 @@ export function resolveLevels(req: EntryRequest, cfg: PaperConfig, tick: number)
   return { sl, tp, source };
 }
 
+/** The cost rule's required stop-to-cost multiple for a market (0 = rule off). */
+export function costRuleRatio(cfg: PaperConfig, symbol?: string): number {
+  return (symbol ? cfg.minRiskFeeRatioBySymbol?.[symbol] : undefined) ?? cfg.minRiskFeeRatio ?? 0;
+}
+
+/**
+ * Operator view of the cost rule: the round trip's admission cost as a share of the stop
+ * distance (1R), from the same `admissionCostPct` the rule uses. The rule refuses an entry when
+ * this exceeds `1 / costRuleRatio`. Null without a positive price and a stop away from it.
+ */
+export function feeInR(entry: number, sl: number | null | undefined, cfg: PaperConfig, spreadPct = 0, execution: EntryExecution = {}): number | null {
+  if (!(entry > 0) || sl == null || !Number.isFinite(sl)) return null;
+  const risk = Math.abs(entry - sl);
+  if (!(risk > 0)) return null;
+  return entry * admissionCostPct(cfg, spreadPct, execution) / 100 / risk;
+}
+
 /**
  * Stop distance versus round-trip taker fees. Returns an error string when the stop is so
  * tight that fees would consume more than 1/minRiskFeeRatio of the risk (0 disables).
  */
 export function checkRiskVsFees(entry: number, sl: number, cfg: PaperConfig, symbol?: string, spreadPct = 0, execution: EntryExecution = {}): string | null {
-  const ratio = (symbol ? cfg.minRiskFeeRatioBySymbol?.[symbol] : undefined) ?? cfg.minRiskFeeRatio ?? 0;
+  const ratio = costRuleRatio(cfg, symbol);
   if (!(ratio > 0)) return null;
   const risk = Math.abs(entry - sl);
   // the round trip's cost: both fees, and the book crossed twice when its cost is known (the market gate's reading)

@@ -1,4 +1,5 @@
 import {fillComparison} from './fillComparison.ts';
+import {costRuleRatio,feeInR} from '../paper/logic.ts';
 import {chartReceipt} from '../scanners/chartReceipts.ts';
 import {gatedSignalPage} from '../evidence/gatedSignals.ts';
 import {positionsHealthReader} from './positionsHealth.ts';
@@ -424,11 +425,16 @@ export class ApiServer {
       // Most scripts signal through a bare alertcondition, which carries a direction and nothing
       // else; the levels are derived from ATR when the position opens. Showing blank columns hides
       // the prices the trade actually used, so fall back to the position they produced.
+      const current = a.config.get().paper;
       return rows.map(r => {
-        if (!r.positionId || (r.price && r.sl)) return r;
-        const p = a.paper.position(r.positionId);
-        if (!p) return r;
-        return { ...r, price: r.price ?? p.entryPrice, sl: r.sl ?? p.slOriginal ?? p.sl, tp: r.tp?.length ? r.tp : p.tp, levelsSource: r.levelsSource ?? p.levelsSource, derived: true };
+        const p = r.positionId ? a.paper.position(r.positionId) : undefined;
+        const row = !p || (r.price && r.sl) ? r
+          : { ...r, price: r.price ?? p.entryPrice, sl: r.sl ?? p.slOriginal ?? p.sl, tp: r.tp?.length ? r.tp : p.tp, levelsSource: r.levelsSource ?? p.levelsSource, derived: true };
+        if (row.kind !== 'entry') return row;
+        // S5: fees in R by the cost rule's arithmetic, under the position's bound fees when it has one
+        const cfg = p?.policy?.paper ?? current;
+        const ratio = costRuleRatio(cfg, row.symbol);
+        return { ...row, feeR: feeInR(row.price ?? 0, row.sl, cfg), feeRLimit: ratio > 0 ? 1 / ratio : null };
       });
     });
     this.add('GET', '/api/positions', () => this.positionViews.all());

@@ -28,6 +28,13 @@ export interface Signal {
   levelsSource: string
   action: string
   positionId: number | null
+  /**
+   * Round-trip fees as a share of the stop distance (1R), from the same arithmetic as the cost rule.
+   * Fees only: the live book's crossing cost is not included. Null without a price and stop.
+   */
+  feeR?: number | null
+  /** The cost rule's ceiling in R (1 / minRiskFeeRatio for the market); null when the rule is off. */
+  feeRLimit?: number | null
 }
 
 export interface Protection {

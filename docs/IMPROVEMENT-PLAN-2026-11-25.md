@@ -50,7 +50,14 @@ a registered hypothesis, frozen control and predeclared criteria before they run
   Scoring stays in-process (a dot product). **Not done in S4:** large replays and walk-forward runs
   still post-process on the main thread, and the close-to-scan / signal-to-decision / queue-age
   latency budgets are not yet measured. Test: `ml/trainWorker.test.ts`.
-- **Not started:** S5, S6.
+- **S5 (operator surfaces), fee-in-R part:** done. Refusing-gate pills (Signals), demotion clocks
+  and own/fleet-exit pills (Incubator) already existed. New: `feeInR()` / `costRuleRatio()` in
+  `paper/logic.ts`, shared with `checkRiskVsFees`; `/api/signals` entry rows carry `feeR` and the
+  cost rule's `feeRLimit` (a position's bound fee policy when it has one, else current config);
+  the Signals and scanner tables show a Fees / R column, red above the limit. Fees only: the book's
+  crossing cost is not included. Test: `paper/feeInR.test.ts`. **Not done:** the single backend
+  readiness model across Library, Scanner, Incubator, Decisions and Journal (EC-09).
+- **Not started:** S6.
 
 ## Structural work (ordered)
 

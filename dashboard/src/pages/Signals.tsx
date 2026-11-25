@@ -151,6 +151,30 @@ export function SignalsTable({
         ),
       },
       {
+        key: 'feeR',
+        mobile: 'detail',
+        header: 'Fees / R',
+        numeric: true,
+        value: (s) => s.feeR ?? null,
+        title:
+          'Round-trip fees as a share of the stop distance, by the cost rule’s own arithmetic (fees only, the book’s crossing cost is not included)',
+        render: (s) =>
+          s.feeR == null ? (
+            <span className="muted">—</span>
+          ) : (
+            <span
+              className={`mono ${s.feeRLimit != null && s.feeR > s.feeRLimit ? 'loss' : ''}`}
+              title={
+                s.feeRLimit != null
+                  ? `${s.feeR.toFixed(2)}R of fees; the cost rule allows at most ${s.feeRLimit.toFixed(2)}R${s.feeR > s.feeRLimit ? ' — over the limit' : ''}`
+                  : `${s.feeR.toFixed(2)}R of fees; the cost rule is off`
+              }
+            >
+              {s.feeR.toFixed(2)}R
+            </span>
+          ),
+      },
+      {
         key: 'tp',
         mobile: 'detail',
         header: 'TP1 / 2 / 3',
