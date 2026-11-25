@@ -105,7 +105,10 @@ These changes remove confirmed conflicts, but are not a production-readiness cer
    closed account positions with journalled features and no `ml_samples` row (idempotent,
    archived books excluded). Risk close bookkeeping already recovers through
    `risk_close_receipts`. Per-trade alerts are deliberately not replayed (stale notifications).
-   The shadow scheduler still has no receipt boundary.
+   Shadow-book decisions now have a receipt boundary (`incubator/shadowInbox.ts`): receipts
+   commit with the shadow watermark, decisions complete them atomically, and startup plus a
+   5 s timer retry pending receipts (exits first, entries ≤ 60 s, original target only).
+   Account and shadow still run separate schedulers.
 2. Key cached backtests/walk-forward evidence by source hash, inputs, signal reader, policy,
    cost model and market-data window. Current simulation-version checks do not capture all
    configuration changes. Promotion must cite the exact evidence version it used.

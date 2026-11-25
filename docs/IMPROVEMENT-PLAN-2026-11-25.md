@@ -32,8 +32,16 @@ a registered hypothesis, frozen control and predeclared criteria before they run
 - **S1 (observers), learning part:** done. `ScannerEngine.recoverLiveSamples()` restores ML samples
   lost between commit and callback. Test: `scanners/liveSampleRecovery.test.ts`. Risk close
   bookkeeping was already durable. Alerts are intentionally not replayed.
-- **Not started:** S2, S4, S5, S6. They change the shadow decision path, process layout or UI and
-  need the SIGKILL suite, which only runs on Linux/macOS.
+- **S2 (shadow receipts):** done. `incubator/shadowInbox.ts`: each event a run applies to the
+  shadow book gets a receipt in the same transaction that advances the persisted watermark;
+  the decision and the receipt's completion share one `commitDecision`. Startup and a 5 s timer
+  retry pending receipts, exits first; entries expire after ≤ 60 s and need an unchanged source,
+  reading and active pair plus a fresh price, and execute at the current mark; a recovered exit
+  touches only the position it was received for. Done receipts are pruned after 14 days.
+  Account mirroring is unchanged (it has its own inbox). Test: `incubator/shadowInbox.test.ts`.
+  The forked-process SIGKILL variant was not added; the rollback test simulates the kill inside
+  the transaction.
+- **Not started:** S4, S5, S6.
 
 ## Structural work (ordered)
 

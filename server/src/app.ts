@@ -26,6 +26,7 @@ import { ScreenQueue } from './incubator/screenQueue.ts';
 import { PairAgents } from './incubator/pairAgents.ts';
 import { aliasMap, duplicateGroups } from './scanners/identity.ts';
 import { ShadowRunner } from './incubator/shadow.ts';
+import { ShadowInbox } from './incubator/shadowInbox.ts';
 import { dailyReport } from './analytics/daily.ts';
 import { listTrackers, removeTracker, saveTracker, trackerView, timelyTrackerKeys } from './incubator/tracker.ts';
 import { approve as incubatorApprove, demote as incubatorDemote, reject as incubatorReject, evaluate as incubatorEvaluate, evaluateCooperative, admitOnly as incubatorAdmitOnly, candidateBlockers, syncLive as incubatorSyncLive, autoPromote as incubatorAutoPromote, livePairs } from './incubator/cycle.ts';
@@ -249,6 +250,7 @@ export class App {
       mirror: (s, symbol, tf, ev, bars, market, exitMode, lastBar) => this.scanners.ingestEvent(s, symbol, tf, ev, bars, market, exitMode, lastBar),
       subscribe: symbols => { this.feed.subscribe('v2/ticker', symbols); subscribeRealtime(this); },
       accountHolds: (scannerId, symbol, tf) => this.paper.openPositions().some(p => p.scannerId === scannerId && p.symbol === symbol && p.tf === tf),
+      inbox: new ShadowInbox(this.db),
       accountFocus: () => {
         const open = this.paper.openPositions(); const c = cfg();
         const cap = Math.min(c.paper.maxOpenPositions || Infinity, c.risk?.maxPositionsTotal || Infinity);

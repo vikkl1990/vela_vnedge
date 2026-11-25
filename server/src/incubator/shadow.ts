@@ -37,8 +37,11 @@ import { logger } from '../log.ts';
 import { IncubatorStore, funnelClass, type PairRow, type SignalFunnel } from './store.ts';
 import { ACTIVE_STAGES } from './cycle.ts';
 import { readingOf } from '../scanners/reading.ts';
+import { ShadowInbox, shadowEventKey, type ShadowDelivery, type ShadowReceipt } from './shadowInbox.ts';
 
 const log = logger.scoped('incubator');
+/** How often pending shadow receipts are retried (the account inbox uses the same cadence). */
+const RECEIPT_RETRY_MS = 5_000;
 const SYNC_MS = 5 * 60_000;
 /** Decision 112: how long a shadow pair's signal record is kept, and how many entries per pair. */
 const FUNNEL_MS = 14 * 86_400_000;
@@ -113,7 +116,11 @@ export class ShadowRunner {
   private seen = new Set<string>();
   private labels = new Map<string, Set<string>>();
   private timer: NodeJS.Timeout | null = null;
-  private deps: { timelyResearch?: () => ReadonlySet<string>; compare?: PlanComparisons['observe']; compareScan?: PlanComparisons['observeScan']; compareSourceScan?: PlanComparisons['observeSourceScan']; store: IncubatorStore; cfgRef: () => AppConfig; candles: CandleStore; pool: PinePool; registry: ScannerRegistry; paper: PaperEngine; marketInfo: (symbol: string) => Promise<MarketInfo>; /** Decision 116: the account takes the shadow pair's events too, under its own gates, when `incubator.mirror.enabled`. */ mirror?: (s: LoadedScanner, symbol: string, tf: string, ev: ScanEvent, bars: Bar[], market: MarketInfo, exitMode: ExitMode, lastBar: Bar) => void | Promise<void>; /** Decision 112: the market gate's verdict on a symbol today, as the account reads it. */ marketVerdict?: (symbol: string) => { allowed: boolean; reasons: string[] } | null; /** Decision 108: every shadow entry carries the model's features and probability, as a live entry does. */ ml?: Pick<MlService,'features'|'scoreEntry'|'bindPrediction'>; subscribe?: (symbols: string[]) => void; /** Decision 166: what the account can act on now, to order a wave's scans by it. */ accountFocus?: () => { held: Set<string>; full: boolean }; /** Decision 201: whether the account holds an open position on this scanner, market and timeframe — its exits must reach the account whatever the copy setting. */ accountHolds?: (scannerId: string, symbol: string, tf: string) => boolean };
+  private deps: { timelyResearch?: () => ReadonlySet<string>; compare?: PlanComparisons['observe']; compareScan?: PlanComparisons['observeScan']; compareSourceScan?: PlanComparisons['observeSourceScan']; store: IncubatorStore; cfgRef: () => AppConfig; candles: CandleStore; pool: PinePool; registry: ScannerRegistry; paper: PaperEngine; marketInfo: (symbol: string) => Promise<MarketInfo>; /** Decision 116: the account takes the shadow pair's events too, under its own gates, when `incubator.mirror.enabled`. */ mirror?: (s: LoadedScanner, symbol: string, tf: string, ev: ScanEvent, bars: Bar[], market: MarketInfo, exitMode: ExitMode, lastBar: Bar) => void | Promise<void>; /** Decision 112: the market gate's verdict on a symbol today, as the account reads it. */ marketVerdict?: (symbol: string) => { allowed: boolean; reasons: string[] } | null; /** Decision 108: every shadow entry carries the model's features and probability, as a live entry does. */ ml?: Pick<MlService,'features'|'scoreEntry'|'bindPrediction'>; subscribe?: (symbols: string[]) => void; /** Decision 166: what the account can act on now, to order a wave's scans by it. */ accountFocus?: () => { held: Set<string>; full: boolean }; /** Decision 201: whether the account holds an open position on this scanner, market and timeframe — its exits must reach the account whatever the copy setting. */ accountHolds?: (scannerId: string, symbol: string, tf: string) => boolean; /** S2: durable receipts for shadow-book decisions; without one, decisions are applied directly as before. */ inbox?: ShadowInbox };
+  /** Receipts a live run created and has not decided yet; recovery leaves them alone. */
+  private inFlight = new Set<string>();
+  private recovering = false;
+  private receiptTimer: NodeJS.Timeout | null = null;
   private marketsCache: { at: number; map: Map<string, { turnoverUsd: number | null }> } | null = null;
   /** The market gate's 24h turnover for a symbol (null when unjudged), read at most once a minute. */
   private turnoverOf(symbol: string): number | null {
@@ -237,9 +244,14 @@ export class ShadowRunner {
     void this.sync();
     this.timer = setInterval(() => void this.sync(), SYNC_MS);
     this.timer.unref();
+    if (this.deps.inbox) {
+      const retry = () => void this.recoverReceipts().catch(e => log.error(`shadow receipt recovery failed: ${String((e as Error)?.message ?? e)}`));
+      retry();
+      this.receiptTimer = setInterval(retry, RECEIPT_RETRY_MS); this.receiptTimer.unref();
+    }
   }
 
-  stop() { this.stopped=true;this.dispatch.stop();if(this.qualificationTimer)clearImmediate(this.qualificationTimer);this.qualificationTimer=null;for(const job of this.qualificationQueue.splice(0))job.resolve(false);if(this.dispatchTimer)clearInterval(this.dispatchTimer);this.dispatchTimer=null; if (this.timer) clearInterval(this.timer); this.timer = null; this.saveFunnel(); }
+  stop() { this.stopped=true;if(this.receiptTimer)clearInterval(this.receiptTimer);this.receiptTimer=null;this.dispatch.stop();if(this.qualificationTimer)clearImmediate(this.qualificationTimer);this.qualificationTimer=null;for(const job of this.qualificationQueue.splice(0))job.resolve(false);if(this.dispatchTimer)clearInterval(this.dispatchTimer);this.dispatchTimer=null; if (this.timer) clearInterval(this.timer); this.timer = null; this.saveFunnel(); }
 
   private planSources(): PairRow[] {
     const cfg=this.deps.cfgRef(), cells=new Map<string,{scannerId:string;symbol:string;tf:string}>();
@@ -501,17 +513,33 @@ export class ShadowRunner {
           return shadowRefusal({regime:cfg.risk?.regime,scannerId:s.id,symbol:r.symbol,at,price:ev.price&&ev.price>0?ev.price:refPrice,atr,bars,market:this.deps.marketVerdict?.(r.symbol)})?.reason;
         }}); } catch(error) { this.noteError(r,`reading comparison: ${String(error)}`); log.warn(`reading comparison ${s.id} ${r.symbol}: ${String(error)}`); }
     }
-    this.marks.advance(key, lastBar.time);
     const exitMode = cfg.scanners[s.id]?.exitMode ?? 'both';
+    // S2: every event bound for the shadow book gets a durable receipt in the same transaction
+    // that advances the watermark, so a kill before its decision can no longer lose it.
+    const inbox = this.deps.inbox;
+    const created = new Set<string>();
+    if (inbox && r.id >= 0) {
+      const srcHash = sourceHash(s.patched), scannerConfig = JSON.stringify(cfg.scanners[s.id] ?? null);
+      const held = this.deps.paper.findOpen(s.id, r.symbol, r.tf)?.id ?? null;
+      const deliveries: ShadowDelivery[] = events.filter(ev => ev.kind === 'exit' || (ev.kind === 'entry' && ev.side && !quarantine()))
+        .map(ev => ({ version: 1, pairId: r.id, scannerId: s.id, scannerName: s.name, symbol: r.symbol, tf: r.tf, ev, bars, market, exitMode, lastBar,
+          sourceHash: srcHash, scannerConfig, targetPositionId: ev.kind === 'exit' ? held : null }));
+      for (const c of inbox.acceptAll(deliveries, Date.now(), () => this.marks.advance(key, lastBar.time))) { created.add(c.event_key); this.inFlight.add(c.event_key); }
+      try { inbox.prune(); } catch (e) { log.warn(`shadow receipt prune failed: ${String(e)}`); }
+    } else this.marks.advance(key, lastBar.time);
+    try {
     for (const ev of events) {
+      const receiptKey = inbox && r.id >= 0 && (ev.kind === 'exit' || (ev.kind === 'entry' && ev.side)) ? shadowEventKey({ scannerId: s.id, symbol: r.symbol, tf: r.tf, ev }) : null;
       // Quarantine may have arrived while the worker was running. Preserve held
       // exits, but never offer a new entry to paper, shadow or a comparison plan.
-      if(ev.kind==='entry' && quarantine())continue;
+      if(ev.kind==='entry' && quarantine()){ if(receiptKey&&created.has(receiptKey))this.decide(receiptKey,()=>({outcome:'ignored:scanner quarantined'})); continue; }
       const id = `${key}:${ev.barTime}:${ev.kind}:${ev.side ?? ''}:${ev.label}`;
       if (this.seen.has(id)) continue;
       this.seen.add(id);
       if (this.seen.size > 20_000) this.seen = new Set([...this.seen].slice(-10_000));
-      let now = Date.now();
+      // a receipt from an earlier run (or one recovery owns) has been or will be decided once
+      if (receiptKey && !created.has(receiptKey)) continue;
+      const now = Date.now();
       // decision 116: the account is offered the same event, and judges it by its own gates and caps
       // decision 139: a tracked cell is the operator's to watch, never the account's to copy
       // decision 201: an exit reaches the account whenever the account holds the position, copying on or off — switching
@@ -536,9 +564,33 @@ export class ShadowRunner {
           try { await this.deps.mirror(s, r.symbol, r.tf, ev, bars, market, exitMode, lastBar); } catch (e: any) { log.warn(`mirror ${s.id} ${r.symbol}: ${e?.message ?? e}`); }
         }
       }
+      try { await this.applyShadowEvent({ s, r, ev, bars, market, exitMode, lastBar, cfg, quarantine, receiptKey, recovery: false }); }
+      catch (e) { if (receiptKey) { this.deps.inbox?.fail(receiptKey, e); this.inFlight.delete(receiptKey); } throw e; }
+    }
+    } finally { for (const k of created) this.inFlight.delete(k); }
+    this.deps.store.noteShadowScan?.(r,lastBar.time,'scanned',quarantine()?`exit-only: scanner quarantined: ${quarantine()}`:null,quarantine()?0:events.filter(e=>e.kind==='entry').length);
+  }
+
+  /** Run `fn` as the shadow decision; with a receipt, its completion commits in the same transaction. */
+  private decide<T extends { outcome: string }>(receiptKey: string | null, fn: () => T): T {
+    const inbox = this.deps.inbox;
+    if (!receiptKey || !inbox) return fn();
+    return this.deps.paper.commitDecision(() => { const res = fn(); inbox.complete(receiptKey, res.outcome); return res; });
+  }
+
+  /**
+   * The shadow book's handling of one entry or exit event: gates, features, the paper decision
+   * and the funnel. Shared by the live run and receipt recovery (which skips research observers).
+   */
+  private async applyShadowEvent(c: { s: LoadedScanner; r: PairRow; ev: ScanEvent; bars: Bar[]; market: MarketInfo; exitMode: ExitMode; lastBar: Bar; cfg: AppConfig;
+    quarantine: () => string | null; receiptKey: string | null; recovery: boolean; targetPositionId?: number | null; sourceHash?: string | null; reading?: ReturnType<typeof policyReading> }): Promise<void> {
+    const { s, r, bars, market, exitMode, lastBar, cfg, quarantine, receiptKey, recovery } = c;
+    // a recovered entry executes against the current price, never the pre-crash signal price
+    const ev = recovery && c.ev.kind === 'entry' ? { ...c.ev, price: this.deps.paper.mark(r.symbol) ?? c.ev.price } : c.ev;
+    let now = Date.now();
       if (ev.kind === 'entry' && ev.side) {
         if(this.deps.paper.prepareEntryDepth){await this.deps.paper.prepareEntryDepth(r.symbol);now=Date.now();}
-        if(quarantine())continue;
+        if(quarantine()){this.decide(receiptKey,()=>({outcome:'ignored:scanner quarantined'}));return;}
         // the shadow book is evidence for the live fleet, so it is gated exactly as the fleet is
         const g = cfg.paper.trendGate;
         let trendReason:string|null=null;
@@ -553,12 +605,16 @@ export class ShadowRunner {
         // decision 112: the market and regime gates refuse a shadow entry exactly as they refuse a live one
         const fkey = `${s.id}|${r.symbol}|${r.tf}`;
         const refusal = shadowRefusal({ regime: cfg.risk?.regime, scannerId: s.id, symbol: r.symbol, at: now, price: ev.price && ev.price > 0 ? ev.price : refPrice, atr, bars, market: this.deps.marketVerdict?.(r.symbol) });
-        this.deps.compare?.({scannerId:s.id,scannerName:s.name,symbol:r.symbol,tf:r.tf,event:ev,bars,market,at:now,refPrice,refusal:trendReason??refusal?.reason});
-        if(r.id<0)continue;
-        if(trendReason||refusal)this.deps.paper.recordGatedEntry(ev,{scannerId:s.id,scannerName:s.name,symbol:r.symbol,tf:r.tf,
-          market,atr,refPrice,at:now,signalId:null,exitMode,signalBar:lastBar},trendReason??refusal!.reason,'admission');
-        if(trendReason){this.stats.refused++;this.note(fkey,'regime',now,trendReason);continue;}
-        if (refusal) { this.stats.refused++; this.note(fkey, refusal.kind, now, refusal.reason); continue; }
+        if(!recovery)this.deps.compare?.({scannerId:s.id,scannerName:s.name,symbol:r.symbol,tf:r.tf,event:ev,bars,market,at:now,refPrice,refusal:trendReason??refusal?.reason});
+        if(r.id<0)return;
+        if(trendReason||refusal){
+          const reason=trendReason??refusal!.reason;
+          this.decide(receiptKey,()=>{this.deps.paper.recordGatedEntry(ev,{scannerId:s.id,scannerName:s.name,symbol:r.symbol,tf:r.tf,
+            market,atr,refPrice,at:now,signalId:null,exitMode,signalBar:lastBar},reason,'admission');return {outcome:`rejected:${reason}`};});
+          this.stats.refused++;
+          if(trendReason)this.note(fkey,'regime',now,trendReason);else this.note(fkey,refusal!.kind,now,refusal!.reason);
+          return;
+        }
         // decision 108: the same entry-time features and probability a live entry gets, so the shadow book can
         // compare saved predictions; chronological receipts are still required for prospective evidence.
         let features: Features | undefined; let mlProb: number | null = null;let predictionId:string|undefined;
@@ -571,20 +627,79 @@ export class ShadowRunner {
             const score=this.deps.ml.scoreEntry(s.id,features,{tf:r.tf,symbol:r.symbol,book:this.deps.paper.book,startedAt:now},false);mlProb=score?.prob??null;predictionId=score?.receiptId;
           }
         }
-        const d = this.deps.paper.onEntry(ev, { scannerId: s.id, scannerName: s.name, symbol: r.symbol, tf: r.tf, market, signalBar:lastBar, atr, refPrice, at: now, signalId: null, exitMode, features, mlProb });
-        if(['opened','reversed','pending'].includes(d.action))this.deps.ml?.bindPrediction(predictionId,this.deps.paper.book,d.position?.id??d.pendingId,d.position?.policy?.id??this.deps.paper.pendingEntries().find(p=>p.id===d.pendingId)?.policy?.id);
+        const {d} = this.decide(receiptKey,()=>{
+          const d = this.deps.paper.onEntry(ev, { scannerId: s.id, scannerName: s.name, symbol: r.symbol, tf: r.tf, market, signalBar:lastBar, atr, refPrice, at: now, signalId: null, exitMode, features, mlProb });
+          if(['opened','reversed','pending'].includes(d.action))this.deps.ml?.bindPrediction(predictionId,this.deps.paper.book,d.position?.id??d.pendingId,d.position?.policy?.id??this.deps.paper.pendingEntries().find(p=>p.id===d.pendingId)?.policy?.id);
+          return {d,outcome:`${d.action}${d.reason?':'+d.reason:''}`};
+        });
         if (d.action === 'opened' || d.action === 'reversed') this.stats.entries++;
         const kind: FunnelKind = d.action === 'opened' || d.action === 'reversed' ? 'opened' : funnelClass(`${d.action}:${d.reason ?? ''}`);
         this.note(fkey, kind, now, `${d.action}${d.reason ? ':'+d.reason : ''}`);
         if (kind === 'pending' && d.pendingId !== undefined) this.pendingFunnel.set(d.pendingId, { key: fkey, at: now });
       } else if (ev.kind === 'exit') {
-        this.deps.compare?.({scannerId:s.id,scannerName:s.name,symbol:r.symbol,tf:r.tf,event:ev,bars,market,at:now,refPrice:this.deps.paper.mark(r.symbol)??lastBar.close});
-        if(r.id<0)continue;
-        const held=this.deps.paper.findOpen(s.id,r.symbol,r.tf);
-        if(held&&!sameExitSource(held.policy,sourceHash(s.patched),policyReading(cfg.scanners[s.id])))continue;
-        this.deps.paper.onScriptExit(s.id, r.symbol, r.tf, ev.exitType ?? 'close', ev.price, now, exitMode, ev.side);
+        if(!recovery)this.deps.compare?.({scannerId:s.id,scannerName:s.name,symbol:r.symbol,tf:r.tf,event:ev,bars,market,at:now,refPrice:this.deps.paper.mark(r.symbol)??lastBar.close});
+        if(r.id<0)return;
+        this.decide(receiptKey,()=>{
+          const held=this.deps.paper.findOpen(s.id,r.symbol,r.tf);
+          // a recovered exit may touch only the position it was received for
+          if(recovery&&(!held||held.id!==c.targetPositionId))return {outcome:'ignored:no matching held shadow position'};
+          // the source that raised the exit: at receipt for recovery, current for a live run
+          if(held&&!sameExitSource(held.policy,c.sourceHash!==undefined?c.sourceHash:sourceHash(s.patched),c.reading??policyReading(cfg.scanners[s.id])))
+            return {outcome:'ignored:exit source differs from the held position'};
+          // with nothing held, a live exit can still cancel pending setup-lifecycle orders, as before
+          this.deps.paper.onScriptExit(s.id, r.symbol, r.tf, ev.exitType ?? 'close', ev.price, now, exitMode, ev.side);
+          return {outcome:held?'exit:applied':'exit:no shadow position held'};
+        });
       }
+  }
+
+  /** Retry receipts a kill or error left pending: exits first, entries only while still timely and unchanged. */
+  async recoverReceipts(): Promise<number> {
+    const inbox = this.deps.inbox;
+    if (!inbox || this.stopped || this.recovering) return 0;
+    this.recovering = true;
+    let n = 0;
+    try {
+      for (const row of inbox.pending()) {
+        if (this.stopped) break;
+        if (this.inFlight.has(row.event_key)) continue;   // the live run that created it still owns it
+        this.inFlight.add(row.event_key);
+        try { if (await this.recoverReceipt(row)) n++; }
+        catch (e) { inbox.fail(row.event_key, e); log.warn(`shadow receipt ${row.event_key.slice(0, 12)} recovery pending: ${String((e as Error)?.message ?? e)}`); }
+        finally { this.inFlight.delete(row.event_key); }
+      }
+    } finally { this.recovering = false; }
+    if (n) log.info(`recovered ${n} interrupted shadow decision(s)`);
+    return n;
+  }
+
+  private async recoverReceipt(row: ShadowReceipt): Promise<boolean> {
+    const inbox = this.deps.inbox!;
+    const cur = inbox.get(row.event_key);
+    if (!cur || cur.state === 'done' || !cur.payload) return false;
+    const d = JSON.parse(cur.payload) as ShadowDelivery;
+    if (d.version !== 1) throw new Error('unsupported shadow receipt version');
+    inbox.attempt(row.event_key);
+    const close = (outcome: string) => { this.decide(row.event_key, () => ({ outcome })); return true; };
+    const cfg = this.deps.cfgRef();
+    const s = this.deps.registry.get(d.scannerId);
+    const pair = this.deps.store.get(d.pairId);
+    const quarantine = () => this.deps.store.quarantineReason?.(d.scannerId) ?? null;
+    if (d.ev.kind === 'entry') {
+      const maxMs = Math.min(60_000, (cfg.paper.maxSignalAgeSec || 60) * 1000);
+      if (Date.now() - cur.received_at > maxMs) return close('rejected:interrupted shadow entry expired before recovery');
+      if (!s || s.status !== 'ok' || sourceHash(s.patched) !== d.sourceHash || JSON.stringify(cfg.scanners[d.scannerId] ?? null) !== d.scannerConfig)
+        return close('rejected:source or reading changed before shadow decision');
+      if (!pair || !([...ACTIVE_STAGES, 'tracked'] as string[]).includes(pair.stage) || !cfg.incubator?.enabled) return close('rejected:shadow pair no longer active');
+      if (!this.deps.paper.hasFreshPrice(d.symbol, d.ev.side === 'long' ? 'buy' : 'sell')) throw new Error('waiting for fresh market price after interruption');
+      await this.applyShadowEvent({ s, r: pair, ev: d.ev, bars: d.bars, market: d.market, exitMode: d.exitMode, lastBar: d.lastBar, cfg, quarantine, receiptKey: row.event_key, recovery: true });
+      return true;
     }
-    this.deps.store.noteShadowScan?.(r,lastBar.time,'scanned',quarantine()?`exit-only: scanner quarantined: ${quarantine()}`:null,quarantine()?0:events.filter(e=>e.kind==='entry').length);
+    if (!s) return close('ignored:scanner unavailable during recovery');
+    const r = pair ?? ({ id: d.pairId, scannerId: d.scannerId, symbol: d.symbol, tf: d.tf, stage: 'shadow' } as PairRow);
+    const reading = policyReading((JSON.parse(d.scannerConfig) ?? undefined) as any);
+    await this.applyShadowEvent({ s, r, ev: d.ev, bars: d.bars, market: d.market, exitMode: d.exitMode, lastBar: d.lastBar, cfg, quarantine, receiptKey: row.event_key,
+      recovery: true, targetPositionId: d.targetPositionId, sourceHash: d.sourceHash, reading });
+    return true;
   }
 }
