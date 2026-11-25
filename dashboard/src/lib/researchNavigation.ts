@@ -38,7 +38,7 @@ export function sectionLocation(pathname: string, search: URLSearchParams, secti
 }
 
 export function signalSectionFromUrl(search: URLSearchParams, hash: string) {
-  const sections = ['signals', 'outcomes', 'recovery', 'trace', 'costs'] as const
+  const sections = ['signals', 'outcomes', 'recovery', 'trace', 'costs', 'parity'] as const
   const legacy = search.get('section') === 'diagnostics' ? 'trace' : 'signals'
   return sectionFromUrl(search, hash, sections, legacy, {
     '#signal-diagnostics': 'trace',

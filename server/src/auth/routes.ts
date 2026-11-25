@@ -19,6 +19,7 @@ const BACKTEST_SAFE: RegExp[] = [
   /^\/api\/validation\/history\/fetch$/,
   /^\/api\/dev\/script-list$/,
   /^\/api\/library\/favorites$/,   // decision 153: a favorite is the viewer's own bookmark, not a trade
+  /^\/api\/parity\/observations$/, // chart-versus-bot parity: a diagnostic record, never a trading change
 ];
 
 /** What a request needs. `null` means the route is public. */

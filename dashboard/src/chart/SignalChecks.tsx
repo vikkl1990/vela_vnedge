@@ -1,8 +1,12 @@
 import './verification.css'
+import { useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../api/client'
 import { compareChart, type ChartObservation } from '../../../shared/chartVerification'
 import { fmtDateTime } from '../lib/format'
+
+/** Observations already sent this session: one record per cell and closed bar, never on every render. */
+const recorded = new Set<string>()
 
 function Check({ observation: o }: { observation: ChartObservation }) {
   const q = useQuery({
@@ -17,6 +21,16 @@ function Check({ observation: o }: { observation: ChartObservation }) {
         : 15000,
   })
   const result = compareChart(o, q.data ?? null)
+  // Parity report: once the server has scanned the same closed bar, send the observation. The server
+  // recomputes the verdict against its own receipt; nothing here changes evidence or admission.
+  const matched = q.data?.barTime === o.barTime
+  useEffect(() => {
+    if (!matched) return
+    const key = `${o.scannerId}|${o.symbol}|${o.tf}|${o.barTime}`
+    if (recorded.has(key)) return
+    recorded.add(key)
+    api.recordParity(o).catch(() => recorded.delete(key))
+  }, [matched, o])
   return (
     <tr>
       <td data-label="Scanner / closed bar">

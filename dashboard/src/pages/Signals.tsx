@@ -28,6 +28,7 @@ import {
 } from '../components/kit'
 import { ScannerPipelinePanel } from '../components/ScannerPipeline'
 import { choice, signalSectionFromUrl } from '../lib/researchNavigation'
+import { ParityReport } from '../chart/ParityReport'
 import { gateOf, summarizeOutcomes } from '../lib/signalOutcomes'
 import { DELTA_TIMEFRAMES } from '../lib/timeframes'
 import { useResearchFilters } from '../lib/useResearchFilters'
@@ -248,7 +249,7 @@ export function SignalsTable({
   )
 }
 
-type SignalTab = 'signals' | 'outcomes' | 'recovery' | 'trace' | 'costs'
+type SignalTab = 'signals' | 'outcomes' | 'recovery' | 'trace' | 'costs' | 'parity'
 
 export function Signals() {
   const activity = useSignalActivity()
@@ -407,6 +408,7 @@ export function Signals() {
           },
           { id: 'trace', label: 'Decision trace' },
           { id: 'costs', label: 'Fees and costs' },
+          { id: 'parity', label: 'Chart parity' },
         ]}
       />
 
@@ -655,6 +657,10 @@ export function Signals() {
           <DecisionTrace />
           <ScannerPipelinePanel />
         </div>
+      </TabPanel>
+
+      <TabPanel id="parity" value={tab} idPrefix="sig">
+        <ParityReport />
       </TabPanel>
 
       <TabPanel id="costs" value={tab} idPrefix="sig">

@@ -1,6 +1,7 @@
 import {fillComparison} from './fillComparison.ts';
 import {costRuleRatio,feeInR} from '../paper/logic.ts';
 import {chartReceipt} from '../scanners/chartReceipts.ts';
+import {parseObservation,ParityInputError,recordParity,parityReport} from '../scanners/chartParity.ts';
 import {gatedSignalPage} from '../evidence/gatedSignals.ts';
 import {positionsHealthReader} from './positionsHealth.ts';
 import {paperPositionViews} from './paperPositions.ts';
@@ -397,6 +398,13 @@ export class ApiServer {
       if(!a.registry.get(p.id))throw new HttpError(404,'unknown scanner');
       return chartReceipt(a.db,p.id,url.searchParams.get('symbol')??'',url.searchParams.get('tf')??'');
     });
+    // Chart-versus-bot parity: the chart reports its closed-bar observation; the server recomputes the verdict.
+    this.add('POST','/api/parity/observations',(_r,_s,_p,_url,body)=>{
+      let o;try{o=parseObservation(body);}catch(e){if(e instanceof ParityInputError)throw new HttpError(400,e.message);throw e;}
+      if(!a.registry.get(o.scannerId))throw new HttpError(404,'unknown scanner');
+      return recordParity(a.db,o);
+    });
+    this.add('GET','/api/parity',(_r,_s,_p,url)=>parityReport(a.db,Number(url.searchParams.get('days')??7)));
     this.add('GET','/api/positions/:id/fill-comparison',(_r,_s,p)=>{
       const id=Number(p.id);if(!Number.isSafeInteger(id)||id<1)throw new HttpError(400,'Invalid position');
       const result=fillComparison(a.db,id);if(!result)throw new HttpError(404,'No such position');return result;

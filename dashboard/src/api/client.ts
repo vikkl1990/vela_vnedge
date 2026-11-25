@@ -1,4 +1,9 @@
-import type { SignalReceipt, FillComparison } from '../../../shared/chartVerification'
+import type {
+  SignalReceipt,
+  FillComparison,
+  ChartObservation,
+  ParityReport,
+} from '../../../shared/chartVerification'
 import type { ScannerContractDetail, ScannerReadiness } from '../../../shared/scannerContracts'
 import { fetchJournalCsv } from '../lib/journalExport'
 import type { ContributionDetail, Contributions } from './contributions'
@@ -142,6 +147,10 @@ const del = <T>(path: string) => request<T>(path, { method: 'DELETE' })
 export const api = {
   chartReceipt: (id: string, symbol: string, tf: string) =>
     get<SignalReceipt | null>(`/scanners/${encodeURIComponent(id)}/chart-receipt${qs({ symbol, tf })}`),
+  /** Diagnostic: the server recomputes the verdict against its own receipt; nothing changes trading. */
+  recordParity: (observation: ChartObservation) =>
+    post<{ recorded: boolean; status: string }>('/parity/observations', observation),
+  parityReport: (days = 7) => get<ParityReport>(`/parity${qs({ days })}`),
   fillComparison: (id: number) => get<FillComparison>(`/positions/${id}/fill-comparison`),
   tradeMonitor: () => get<TradeMonitorView>('/trade-monitor'),
   deltaConnection: () => get<DeltaConnectionStatus>('/connections/delta'),

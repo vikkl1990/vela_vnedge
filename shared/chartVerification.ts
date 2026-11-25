@@ -33,6 +33,16 @@ export function compareChart(o:ChartObservation,r:SignalReceipt|null){
  return {status:!Object.keys(r.outputs).length?'No comparable chart outputs':differences.length?'Closed-bar outputs differ':r.truncated?'Available outputs agree; truncated':r.signalCoverage==='shape'?'Shape outputs agree; bot signals shown':'Outputs agree; other signal channels unverified',
   differences,comparable:!r.truncated&&Object.keys(r.outputs).length>0};
 }
+/** Per-scanner chart-versus-server parity over a window; the server recomputes every verdict. */
+export interface ParityScanner {
+ scannerId:string;cells:number;checks:number;comparable:number;agreed:number;differed:number;
+ /** Recorded checks that could not be compared, by reason. */
+ notComparable:Record<string,number>;lastAt:number;
+ lastDifference:{symbol:string;tf:string;barTime:number;outputs:string[]}|null;
+ /** diverges: some comparable bar differed. agrees: comparable bars only, none differed. unverified: nothing comparable. */
+ verdict:'diverges'|'agrees'|'unverified';
+}
+export interface ParityReport {since:number;days:number;scanners:ParityScanner[]}
 export interface FillComparison {
  positionId:number;symbol:string;book:number;
  fills:Array<{id:number;at:number;reason:string;side:string;qty:number;price:number;source:string|null;
