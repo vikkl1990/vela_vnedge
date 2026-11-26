@@ -35,7 +35,7 @@ import type { WorkerResult } from '../pine/worker.ts';
 import { extractEvents, describeEvent, type ScanEvent } from './extractor.ts';
 import { applyRules, labelKey } from './rules.ts';
 import type { MlService } from '../ml/service.ts';
-import { resolveLevels, trendGateReason, trendNow } from '../paper/logic.ts';
+import { resolveLevels, trendGateApplies, trendGateReason, trendNow } from '../paper/logic.ts';
 import { protectEntry } from '../paper/entryProtection.ts';
 import type { ScannerRegistry, LoadedScanner } from './registry.ts';
 import { ScriptHealth } from './health.ts';
@@ -647,7 +647,7 @@ export class ScannerEngine extends EventEmitter {
   trendGateBlock(scannerId: string, symbol: string, tf: string, side: 'long' | 'short'): string | null {
     const cfg = this.cfgRef();
     const g = cfg.paper.trendGate;
-    if (!g?.enabled) return null;
+    if (!g || !trendGateApplies(g, tf)) return null;
     const mode = this.scannerConfig(scannerId).trendGate ?? g.mode;
     if (mode === 'off') return null;
     const trendTf = g.tf && g.tf !== tf ? g.tf : tf;

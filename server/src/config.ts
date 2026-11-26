@@ -155,9 +155,11 @@ export interface PaperConfig {
    * below, `fade` is the opposite (a mean-reversion scanner is meant to buy dips), `off` takes every
    * signal. A scanner overrides it with its own `trendGate`. `tf` is the timeframe the trend is
    * measured on — empty means the signal's own; a higher one is aggregated from it and only ever
-   * reads bars that had closed when the signal fired.
+   * reads bars that had closed when the signal fired. `tfs` limits the gate to signals on those
+   * timeframes (unset or empty: every timeframe), so a fast timeframe can trade both ways while a
+   * slower one keeps to the trend.
    */
-  trendGate?: { enabled: boolean; emaLen: number; tf: string; mode: TrendGateMode };
+  trendGate?: { enabled: boolean; emaLen: number; tf: string; mode: TrendGateMode; tfs?: string[] };
   /**
    * Per-market exit overrides. A market's volatility decides how far a trade travels before it turns,
    * so the point at which protection should arm is not the same on BTCUSD as on a small alt. Only the
@@ -926,6 +928,7 @@ export function validateConfig(c: AppConfig): string[] {
     if (!(p.trendGate.emaLen >= 2)) errs.push('paper.trendGate.emaLen must be ≥ 2');
     if (!['follow', 'fade', 'off'].includes(p.trendGate.mode)) errs.push('paper.trendGate.mode must be follow|fade|off');
     if (p.trendGate.tf && !(p.trendGate.tf in TF_SECONDS)) errs.push(`paper.trendGate.tf ${p.trendGate.tf} is not a known timeframe`);
+    if (p.trendGate.tfs !== undefined && (!Array.isArray(p.trendGate.tfs) || p.trendGate.tfs.some(tf => !(tf in TF_SECONDS)))) errs.push('paper.trendGate.tfs must list known timeframes');
   }
   if (!(Number.isFinite(p.trailAfterR) && p.trailAfterR >= 0)) errs.push('paper.trailAfterR must be ≥ 0 (0 = off)');
   if (!(Number.isFinite(p.trailGiveBackPct) && p.trailGiveBackPct >= 0 && p.trailGiveBackPct < 100)) errs.push('paper.trailGiveBackPct must be in [0, 100)');

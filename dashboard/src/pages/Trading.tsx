@@ -162,7 +162,12 @@ export function Rules({ o }: { o: TradingOverview }) {
   const rows: Array<[string, string]> = [
     ['Scanners', `${p.scanners} on ${p.markets} markets · ${p.timeframes.join(', ') || '–'}`],
     ['Cost rule', p.costRatio > 0 ? `stop ≥ ${p.costRatio}× round-trip fees` : 'off'],
-    ['Trend gate', p.trendGate ? `${p.trendGate.mode} EMA${p.trendGate.emaLen}${p.trendGate.tf ? ` on ${p.trendGate.tf}` : ''}` : 'off'],
+    [
+      'Trend gate',
+      p.trendGate
+        ? `${p.trendGate.mode} EMA${p.trendGate.emaLen}${p.trendGate.tf ? ` on ${p.trendGate.tf}` : ''}${p.trendGate.tfs ? ` · ${p.trendGate.tfs.join(', ')} signals only` : ''}`
+        : 'off',
+    ],
     ['Reversals', p.allowReversal ? 'an opposite signal closes the trade' : 'off: exits by stop, targets or script'],
     ['Sizing', `${p.sizing}${p.sizing === 'risk' ? ` · ${p.riskPerTradePct}% of equity a trade` : ''}`],
     ['Exits', `stop ${p.fallbackAtrSl}× ATR when the script gives none · targets ${p.tpSplit.map((x) => Math.round(x * 100)).join('/')}%${p.breakEvenAfterTp1 ? ' · breakeven after the first' : ''}`],

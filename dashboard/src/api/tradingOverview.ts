@@ -53,7 +53,7 @@ export interface TradingOverview {
   scanners: ScannerOverview[]
   policy: {
     costRatio: number
-    trendGate: { emaLen: number; mode: string; tf: string | null } | null
+    trendGate: { emaLen: number; mode: string; tf: string | null; tfs: string[] | null } | null
     allowReversal: boolean
     sizing: string
     riskPerTradePct: number

@@ -110,7 +110,7 @@ export function tradingOverview(d: OverviewDeps, opts: { since?: number; now?: n
     scanners,
     policy: {
       costRatio: p.minRiskFeeRatio ?? 0,
-      trendGate: p.trendGate?.enabled ? { emaLen: p.trendGate.emaLen, mode: p.trendGate.mode, tf: p.trendGate.tf || null } : null,
+      trendGate: p.trendGate?.enabled ? { emaLen: p.trendGate.emaLen, mode: p.trendGate.mode, tf: p.trendGate.tf || null, tfs: p.trendGate.tfs?.length ? p.trendGate.tfs : null } : null,
       allowReversal: p.allowReversal, sizing: p.sizingMode, riskPerTradePct: p.riskPerTradePct, maxStopLossPct: p.maxStopLossPct ?? 0,
       breakEvenAfterTp1: p.breakEvenAfterTp1, tpSplit: p.tpSplit, fallbackAtrSl: p.fallbackAtrSl,
       timeframes: tfs, markets: markets.size, scanners: scanners.length,

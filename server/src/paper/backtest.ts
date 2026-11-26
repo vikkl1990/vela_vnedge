@@ -23,7 +23,7 @@ import type { TrendGateMode, PaperConfig, ExitMode, ExitOverride } from '../conf
 import type { Bar } from '../data/candleStore.ts';
 import { atrSeries } from '../data/indicators.ts';
 import type { ScanEvent } from '../scanners/extractor.ts';
-import { scriptModeExit, applyFunding, applyBar, applyScriptExit, earlyStallExit, earlyCutExit, checkRiskVsFees, computeStats, fillExit, restingEntryStop, openPosition, resolveLevels, reversalAllowed, sizeContracts, roundTick, trendExit, type Position, trendGateReason, higherTrend, trendPerBar, exitConfigFor, modelTrail, type TrailModel } from './logic.ts';
+import { scriptModeExit, applyFunding, applyBar, applyScriptExit, earlyStallExit, earlyCutExit, checkRiskVsFees, computeStats, fillExit, restingEntryStop, openPosition, resolveLevels, reversalAllowed, sizeContracts, roundTick, trendExit, type Position, trendGateReason, trendGateApplies, higherTrend, trendPerBar, exitConfigFor, modelTrail, type TrailModel } from './logic.ts';
 import { tradeOf } from './engine.ts';
 import { TF_SECONDS } from '../config.ts';
 import { SIMULATION_VERSION } from './version.ts';
@@ -164,7 +164,7 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
 
   // the trend every bar sees, on its own timeframe or a higher one, never reading an unclosed bar
   const gate = cfg.trendGate;
-  const gateMode: TrendGateMode = gate?.enabled ? (inp.trendGate ?? gate.mode) : 'off';
+  const gateMode: TrendGateMode = trendGateApplies(gate, inp.tf) ? (inp.trendGate ?? gate!.mode) : 'off';
   const gateTrend: Array<1 | -1 | undefined> = gateMode === 'off' ? []
     : gate!.tf && gate!.tf !== inp.tf
       ? higherTrend(bars, TF_SECONDS[inp.tf] * 1000, TF_SECONDS[gate!.tf] * 1000, gate!.emaLen)

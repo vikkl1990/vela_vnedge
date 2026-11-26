@@ -53,7 +53,7 @@ test('overview counts the window only, splits the funnel and sets live beside ba
   assert.equal(a.backtest?.profitFactor, 1.5); assert.equal(a.backtest?.perDay, 2);
   assert.equal(o.scanners[1].backtest, null); assert.equal(o.scanners[1].open, 1);
   assert.equal(o.policy.costRatio, 16);
-  assert.deepEqual(o.policy.trendGate, { emaLen: 200, mode: 'follow', tf: null });
+  assert.deepEqual(o.policy.trendGate, { emaLen: 200, mode: 'follow', tf: null, tfs: null });
   assert.deepEqual(o.policy.timeframes, ['5m']);
   assert.equal(o.policy.markets, 1);
 });
