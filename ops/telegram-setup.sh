@@ -2,7 +2,7 @@
 # Install the Telegram alert channel for the vnedge service (decision 168).
 #
 # Run it yourself on the VM, in your own terminal:
-#   ssh -t -i ~/.ssh/cryptobot_oci ubuntu@161.118.252.185 'sudo bash /opt/vnedge/ops/telegram-setup.sh'
+#   ssh -t -i ~/.ssh/cryptobot_oci ubuntu@129.225.94.85 'sudo bash /opt/vnedge/ops/telegram-setup.sh'
 #
 # The bot token is typed here, hidden, and goes only to Telegram and to a root-only systemd drop-in. It is never put on
 # a command line (curl reads the URL from stdin), never logged and never printed.
