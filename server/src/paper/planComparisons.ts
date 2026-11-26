@@ -233,7 +233,14 @@ export class PlanComparisons {
       const candidate=valid.find(p=>p.comparison?.group===group&&p.comparison.role==='candidate');
       if(!control||!candidate)continue;
       const ce=eventsByCohort.get(planScannerId(control))??[],ve=eventsByCohort.get(planScannerId(candidate))??[];
-      const key=(e:any,p:typeof control)=>p.readingOverride?matchedReadingKey(e.source_event):e.source_event;
+      const key=(e:any,p:typeof control)=>{
+        if(p.comparison?.kind==='source-update'){
+          let k:any;try{k=JSON.parse(e.source_event);}catch{return e.source_event;}
+          const side=e.side??(typeof k?.[5]==='string'?(/long|bull|buy|cross up/i.test(k[5])?'long':/short|bear|sell|cross down/i.test(k[5])?'short':null):null);
+          return side&&Array.isArray(k)&&k.length===6?JSON.stringify(['fisher-source',k[1],k[2],k[3],side]):e.source_event;
+        }
+        return p.readingOverride?matchedReadingKey(e.source_event):e.source_event;
+      };
       const cm=new Map(ce.map(e=>[key(e,control),e])),vm=new Map(ve.map(e=>[key(e,candidate),e]));
       const shared=[...cm.keys()].filter(k=>vm.has(k));
       const closedPairs=shared.map(k=>[cm.get(k)!,vm.get(k)!]).filter(([a,b])=>a.status==='closed'&&b.status==='closed');
@@ -243,7 +250,7 @@ export class PlanComparisons {
       const unresolved=(e:any)=>e.status!=='closed'&&(e.status==='open'||e.status==='pending'||['pending','processing','error','interrupted'].includes(e.action));
       const controlNet=cohorts.find(c=>c.id===control.id&&c.signature===control.signature)?.net??0;
       const candidateNet=cohorts.find(c=>c.id===candidate.id&&c.signature===candidate.signature)?.net??0;
-      comparisons.push({kind:['two-bar','profit-floor','maker-fill','setup-lifecycle'].includes(control.comparison?.kind??'')?control.comparison!.kind:control.comparison?.kind==='exit-policy'?'exit':control.readingOverride?'reading':'exit',group,symbol:control.symbol,tf:control.tf,enabled:control.enabled&&candidate.enabled,
+      comparisons.push({kind:['two-bar','profit-floor','maker-fill','setup-lifecycle','source-update'].includes(control.comparison?.kind??'')?control.comparison!.kind:control.comparison?.kind==='exit-policy'?'exit':control.readingOverride?'reading':'exit',group,symbol:control.symbol,tf:control.tf,enabled:control.enabled&&candidate.enabled,
         controlId:control.id,candidateId:candidate.id,controlLabel:control.label??control.id,candidateLabel:candidate.label??candidate.id,
         controlSignature:control.signature,candidateSignature:candidate.signature,controlNet,candidateNet,
         sharedSignals:shared.length,controlOnly:cm.size-shared.length,candidateOnly:vm.size-shared.length,

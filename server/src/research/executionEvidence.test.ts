@@ -117,3 +117,12 @@ test('stop activation receipts export for their position lifetime without inferr
  const rows=read().trades.find(r=>r.positionId===id)!.receipts.paper_stop_amendments;
  assert.deepEqual(rows.map(r=>[r.active_at,r.stop]),[[1000,95],[1500,100]]);
 });
+
+
+test('checkout dirty detection is bounded for large vendor-source updates',async t=>{
+ const{checkoutDirty}=await import('../../../ops/export-execution-evidence.ts');
+ const{mkdtempSync,writeFileSync,rmSync}=await import('node:fs');const{tmpdir}=await import('node:os');const{execFileSync}=await import('node:child_process');
+ const root=mkdtempSync(join(tmpdir(),'evidence-git-'));t.after(()=>rmSync(root,{recursive:true,force:true}));
+ const git=(args:string[])=>execFileSync('git',args,{cwd:root,stdio:'ignore'});git(['init','-q']);writeFileSync(join(root,'large.txt'),'baseline');git(['add','large.txt']);git(['-c','user.name=Evidence Test','-c','user.email=evidence@example.invalid','commit','-qm','fixture']);
+ assert.equal(checkoutDirty(root),false);writeFileSync(join(root,'large.txt'),'source'.repeat(400000));assert.equal(checkoutDirty(root),true);
+});

@@ -7,7 +7,7 @@ import {DEFAULT_CONFIG,TF_SECONDS,validateConfig} from '../config.ts';
 import {Db} from '../db.ts';
 import {PaperEngine} from '../paper/engine.ts';
 import {PlanComparisons} from '../paper/planComparisons.ts';
-import {planSnapshot,validateExecutionPlans} from '../paper/executionPlans.ts';
+import {planSnapshot,validateExecutionPlans,MAX_RESEARCH_PLANS} from '../paper/executionPlans.ts';
 import {eligibleEvidence} from '../evidence/trades.ts';
 import {MAKER_UNIVERSE_PLANS,MAKER_UNIVERSE_CELLS} from './makerUniverseStudy.ts';
 import {enableMakerUniverseStudy} from '../../../ops/enable-maker-universe-study.ts';
@@ -52,7 +52,7 @@ test('all twelve comparisons preserve reading, exits, fees and risk; incomplete 
     }
     assert.ok(validateExecutionPlans([plans[i+1]],TF_SECONDS,cfg).length);
   }
-  const old=Array.from({length:111},(_,i)=>({...plans[0],id:'old-'+i,comparison:undefined}));
+  const old=Array.from({length:MAX_RESEARCH_PLANS-plans.length},(_,i)=>({...plans[0],id:'old-'+i,comparison:undefined}));
   assert.deepEqual(validateExecutionPlans([...old,...plans],TF_SECONDS,cfg),[]);
   assert.ok(validateExecutionPlans([...old,...plans,{...old[0],id:'too-many'}],TF_SECONDS,cfg).length);
 });

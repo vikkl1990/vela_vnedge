@@ -2764,5 +2764,33 @@
       "x": "none"
     },
     "exitMode": "both"
+  },
+  "precision-sniper-v2-3-native": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [
+      "alert"
+    ],
+    "exitMode": "script",
+    "entryProtection": "native",
+    "inputs": {
+      "webhookInput": true
+    },
+    "timezone": "Etc/UTC"
+  },
+  "indicatorneo-v4-native": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [
+      "alert"
+    ],
+    "exitMode": "levels",
+    "entryProtection": "native",
+    "exit": {
+      "scriptTargets": "use"
+    }
+  },
+  "fisher-wpr-upstream-v2": {
+    "enabled": false
   }
 }

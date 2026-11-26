@@ -1,3 +1,4 @@
+import {sourceReader,PRECISION_NATIVE,FISHER_UPDATED,NEO_NATIVE} from '../scanners/sourceReaders.ts';
 import {lifecycleIdentity} from './lifecycleIdentity.ts';
 import {SETUP_LIFECYCLE} from './setupLifecycle.ts';
 import {upstreamLifecycle} from '../scanners/upstreamLifecycle.ts';
@@ -22,9 +23,9 @@ import { exitConfigFor } from './logic.ts';
 import { scannerExitPolicy, entryPolicy, ownExitsOverride } from './policy.ts';
 import { adaptPlan } from './planStudy.ts';
 
-// Bounded research capacity: 111 existing plans plus twelve paired maker studies.
+// Bounded research capacity: 135 retained studies plus four source-reader arms.
 // This does not change account positions, allocation or risk limits.
-export const MAX_RESEARCH_PLANS = 135;
+export const MAX_RESEARCH_PLANS = 139;
 /** Explicit TP experiment; original stop and sizing stay fixed. Trail changes are opt-in and labeled. */
 export interface TakeProfitPlan {
   mode: 'native' | 'r';
@@ -39,7 +40,7 @@ export interface ProfitCapturePlan {
   floorAtR: number;
   floorKeepR: number;
 }
-export interface PlanComparison { group: string; role: 'control' | 'candidate'; kind?: 'exit-policy' | 'two-bar' | 'profit-floor' | 'maker-fill' | 'setup-lifecycle' }
+export interface PlanComparison { group: string; role: 'control' | 'candidate'; kind?: 'exit-policy' | 'two-bar' | 'profit-floor' | 'maker-fill' | 'setup-lifecycle' | 'source-update' }
 /** Interpretation only: changing Pine inputs or trading rules requires a different experiment. */
 export type ReadingOverride = {version:number} & Pick<Partial<ScannerConfig>,'reader'|'sources'|'labels'|'sides'|'labelStyles'|'invert'|'edge'>;
 export interface ExecutionPlan {
@@ -94,6 +95,8 @@ export interface ExecutionPlanSnapshot {
   nativeReentryVersion?: 1;
 }
 export function takeProfitLabel(p: Pick<ExecutionPlanSnapshot,'paper'|'takeProfit'|'basket'> & Partial<Pick<ExecutionPlanSnapshot,'sourceScannerId'|'exitPolicy'|'failedTradeExit'>>): string {
+  if(p.sourceScannerId===PRECISION_NATIVE)return 'Author 1/2/3R targets · full TP3 · confirmed step-stop amendments · no partials';
+  if(p.sourceScannerId===NEO_NATIVE)return 'Native ATR stop and one target · no synthetic target ladder';
   if(p.sourceScannerId===TREND_CONTINUATION)return 'Native 2×ATR stop · one 2R target · no trailing stop';
   if(plotLifecycle(p.sourceScannerId)&&p.exitPolicy!=='account-ladder')return p.sourceScannerId?.startsWith('machine-learning')?'Native Supertrend stop and flip exit · no fixed TP':'Native stop and TP1/TP2 milestones · closes at TP3';
   if(p.basket)return 'Basket: up to 3 entries · $150 total margin · 4% shared target · 3% below lowest fill stop';
@@ -106,6 +109,7 @@ const stable = (v: unknown) => JSON.stringify(v, (_k,x) => x && typeof x === 'ob
 export const planScannerId = (p: Pick<ExecutionPlanSnapshot,'id'|'revision'|'signature'>) => `plan:${p.id}:v${p.revision}:${p.signature}`;
 export function planSnapshot(cfg: AppConfig, p: ExecutionPlan, sourceHash: string | null = null, fees?:ProductFees): ExecutionPlanSnapshot {
   const original = cfg.scanners[p.scannerId];
+  if(sourceReader(p.scannerId)&&!sourceHash)throw Error('Updated native plan requires its pinned source identity');
   const override={...p.readingOverride};delete override.version;
   const sc=p.readingOverride?{...original,...override}:original;
   const exitMode = upstreamLifecycle(p.scannerId)&&p.exitPolicy==='account-ladder' ? 'levels' : p.exitPolicy==='own-exits' ? 'script' : p.variant === 'current' ? sc?.exitMode ?? 'both' : 'levels';
@@ -131,6 +135,7 @@ export function planSnapshot(cfg: AppConfig, p: ExecutionPlan, sourceHash: strin
     floorAtR:p.trailing.floorAtR,floorKeepR:p.trailing.floorKeepR,trailAtrMult:0,trailDistanceR:0,trailSteps:[],trailStall:undefined});
   if(p.profitFloor)Object.assign(paper,{floorAtR:p.profitFloor.afterR,floorKeepR:p.profitFloor.keepR});
   if(p.maxStopLossPct!==undefined)paper.maxStopLossPct=paper.maxStopLossPct>0?Math.min(paper.maxStopLossPct,p.maxStopLossPct):p.maxStopLossPct;
+  if(sourceReader(p.scannerId))Object.assign(paper,{tpSplit:[0,0,1],fallbackRR:[0,0,0],scriptTargets:'use'});
   const result = {...lifecycleIdentity(paper),...(p.profitFloor?{profitFloor:structuredClone(p.profitFloor)}:{}),...(p.failedTradeExit?{failedTradeExit:p.failedTradeExit}:{}),...(p.exitPolicy?{exitPolicy:p.exitPolicy}:{}),...(p.basket?{basket:p.basket,basketAccountingVersion:BASKET_ACCOUNTING_VERSION as 2}:{}),id:p.id,revision:p.revision,executionVersion:CAUSAL_CANDLE_VERSION,sourceHash,reading:sc?structuredClone(sc):null,sourceScannerId:p.scannerId,variant:p.variant,symbol:p.symbol,tf:p.tf,
     paper,exitMode,requireAtrStop:Boolean(paper.skipScriptStops),referenceEquity:p.referenceEquity,maxHoldMinutes:p.maxHoldMinutes,
     ...(p.takeProfit?{takeProfit:structuredClone(p.takeProfit)}:{}),...(p.label?{label:p.label}:{}),
@@ -138,7 +143,7 @@ export function planSnapshot(cfg: AppConfig, p: ExecutionPlan, sourceHash: strin
   if(p.basket && (paper.sizingMode!=='margin'||paper.marginPerTrade!==150||!(paper.maxStopLossPct!>0)||Object.keys(sc?.inputs??{}).length))throw Error('basket requires $150 margin, a stop cap and reviewed default inputs');
   const native = nativeReentry(p.scannerId,sc?.reader);
   if(p.setupLifecycle && (!sourceHash || exitMode==='levels'))throw Error('setup lifecycle requires pinned source and explicit script exits');
-  const versioned = {...result,...(p.makerFill?{makerFill:p.makerFill}:{}),...(sc?.reader===3||p.basket||plotLifecycle(p.scannerId)?{partialExitVersion:1 as const}:{}),
+  const versioned = {...result,...(p.makerFill?{makerFill:p.makerFill}:{}),...(sc?.reader===3||p.basket||sourceReader(p.scannerId)||plotLifecycle(p.scannerId)?{partialExitVersion:1 as const}:{}),
     ...(p.setupLifecycle?{setupLifecycle:p.setupLifecycle}:{}),
     ...(native?{reversalEntryVersion:1 as const,nativeReentryVersion:1 as const}:{}),
     ...(p.readingOverride?{readingOverride:structuredClone(p.readingOverride)}:{})};
@@ -162,6 +167,7 @@ export function planBacktest(p: ExecutionPlanSnapshot) {
   if(p.setupLifecycle)throw Error('setup lifecycle requires causal event/tick/depth replay; candle-only backtest is unsupported');
   if(p.makerFill)throw Error('maker fill study requires recorded ticks and depth; candles cannot qualify it');
   if(p.failedTradeExit)throw Error('two-bar exit requires causal tick/depth replay; candle-only backtest is unsupported');
+  if(p.sourceScannerId===PRECISION_NATIVE)throw Error('Precision native lifecycle requires causal shadow replay');
   if(p.basket)throw Error('basket execution requires stateful shadow replay; single-position candle backtest is unsupported');
   const le=p.paper.limitEntry;
   return {cfg:p.paper,exitMode:p.exitMode,scannerExitResolved:true as const,requireAtrStop:p.requireAtrStop,
@@ -176,6 +182,7 @@ export function validateExecutionPlans(plans: ExecutionPlan[] | undefined, tfs: 
   for(const p of plans){
     if(!p || !/^[a-z0-9][a-z0-9-]{0,79}$/.test(p.id??'') || ids.has(p.id))errors.push('executionPlans requires unique safe ids');
     if(!p)continue;ids.add(p.id);
+    if(sourceReader(p.scannerId)&&cfg){const sc=cfg.scanners[p.scannerId];if(!sc||sc.enabled||p.readingOverride?.reader!==2||p.variant!=='current'||p.basket||p.takeProfit||p.trailing||p.failedTradeExit||p.profitFloor||p.maxHoldMinutes!==undefined||(p.scannerId===PRECISION_NATIVE&&(p.exitPolicy!=='own-exits'||p.setupLifecycle!==SETUP_LIFECYCLE)))errors.push(`executionPlans.${p.id}: updated native reader requires its tested shadow lifecycle`);}
     if(p.setupLifecycle!==undefined && (p.setupLifecycle!==SETUP_LIFECYCLE || p.variant!=='current' || p.basket ||
       p.makerFill || p.takeProfit || p.trailing || p.profitFloor || p.failedTradeExit || p.maxHoldMinutes!==undefined ||
       !p.readingOverride || ![2,3].includes(p.readingOverride.reader??0) || p.readingOverride.invert ||
@@ -229,7 +236,7 @@ export function validateExecutionPlans(plans: ExecutionPlan[] | undefined, tfs: 
       if(!t||![t.afterR,t.giveBackPct,t.floorAtR,t.floorKeepR].every(Number.isFinite)||t.afterR<=0||t.afterR>10||t.giveBackPct<=0||t.giveBackPct>=100||t.floorAtR<0||t.floorAtR>10||t.floorKeepR<0||(t.floorAtR===0?t.floorKeepR!==0:t.floorKeepR>=t.floorAtR))errors.push(`executionPlans.${p.id}: invalid profit-capture trail or floor`);
       if(p.takeProfit?.trailAfterR!==undefined)errors.push(`executionPlans.${p.id}: specify trail activation in only one place`);
     }
-    if(p.comparison!==undefined&&(!p.comparison||!/^[a-z0-9][a-z0-9-]{0,79}$/.test(p.comparison.group??'')||!['control','candidate'].includes(p.comparison.role)||p.comparison.kind!==undefined&&!['exit-policy','two-bar','profit-floor','maker-fill','setup-lifecycle'].includes(p.comparison.kind)))errors.push(`executionPlans.${p.id}: invalid comparison group or role`);
+    if(p.comparison!==undefined&&(!p.comparison||!/^[a-z0-9][a-z0-9-]{0,79}$/.test(p.comparison.group??'')||!['control','candidate'].includes(p.comparison.role)||p.comparison.kind!==undefined&&!['exit-policy','two-bar','profit-floor','maker-fill','setup-lifecycle','source-update'].includes(p.comparison.kind)))errors.push(`executionPlans.${p.id}: invalid comparison group or role`);
     if(p.comparison?.kind==='maker-fill'&&(p.variant!=='current'||p.readingOverride||p.trailing||p.takeProfit||p.failedTradeExit||p.profitFloor||p.basket||p.maxHoldMinutes!==undefined||p.exitPolicy!==undefined))errors.push(`executionPlans.${p.id}: maker study requires unchanged entries, exits and reading`);
     if(p.failedTradeExit!==undefined&&(p.failedTradeExit!==TWO_BAR_EXIT||p.comparison?.kind!=='two-bar'||p.comparison.role!=='candidate'))errors.push(`executionPlans.${p.id}: two-bar exit requires its explicit shadow candidate`);
     if(p.comparison?.kind==='two-bar'&&(!isTwoBarCell(p.scannerId,p.symbol,p.tf)||p.variant!=='current'||p.readingOverride||p.trailing||p.takeProfit||p.profitFloor||p.basket||p.maxHoldMinutes!==undefined||p.exitPolicy!==undefined))errors.push(`executionPlans.${p.id}: two-bar study requires the reviewed Trend Impulse cell and unchanged entry/exit policy`);
@@ -283,7 +290,12 @@ export function validateExecutionPlans(plans: ExecutionPlan[] | undefined, tfs: 
       const identity=(p:ExecutionPlan)=>Object.fromEntries(Object.entries(p).filter(([k])=>!['id','label','comparison','profitFloor'].includes(k)));
       if(pair.length!==2||!control||!candidate||pair.some(p=>p.comparison?.kind!=='profit-floor')||control.profitFloor!==undefined||!candidate.profitFloor||stable(identity(control))!==stable(identity(candidate)))errors.push(`executionPlans comparison ${group}: floor arms must differ only in the profit floor`);
     }
-    const comparable=(p:ExecutionPlan)=>[p.scannerId,p.symbol,p.tf,p.variant,p.referenceEquity,p.maxStopLossPct,p.maxHoldMinutes,p.enabled,p.takeProfit];
+    if(pair.some(p=>p.comparison?.kind==='source-update')){
+      const a=pair.find(p=>p.comparison?.role==='control'),b=pair.find(p=>p.comparison?.role==='candidate');
+      const normalized=(p:ExecutionPlan|undefined)=>p?Object.fromEntries(Object.entries(p).filter(([k])=>!['id','label','scannerId','comparison'].includes(k))):null;
+      if(pair.length!==2||a?.scannerId!=='fisher-transform-of-williams-r-divergence'||b?.scannerId!==FISHER_UPDATED||pair.some(p=>p.comparison?.kind!=='source-update')||stable(normalized(a))!==stable(normalized(b)))errors.push(`executionPlans comparison ${group}: Fisher source arms must retain identical policy and reading`);
+    }
+    const comparable=(p:ExecutionPlan)=>[p.comparison?.kind==='source-update'?'fisher-source':p.scannerId,p.symbol,p.tf,p.variant,p.referenceEquity,p.maxStopLossPct,p.maxHoldMinutes,p.enabled,p.takeProfit];
     if(pair.length!==2||new Set(pair.map(p=>p.comparison!.role)).size!==2||stable(comparable(pair[0]))!==stable(comparable(pair[1])))errors.push(`executionPlans comparison ${group}: control and candidate must share source, entry/target policy, sizing and enabled state`);
   }
   return errors;

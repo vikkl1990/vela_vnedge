@@ -1,3 +1,4 @@
+import {sourceGeometryError} from './sourceReaders.ts';
 import {upstreamLifecycle,upstreamSources} from './upstreamLifecycle.ts';
 /** Source-pinned, observation-only lifecycle adapters. Never inferred from drawing positions. */
 import type {RuleContext} from './rules.ts';
@@ -10,6 +11,7 @@ export const plotLifecycle=(id:string|undefined)=>id===BREAKOUT_NATIVE||id===ML_
 export const plotPrefix='VNEDGE lifecycle v1 ';
 /** A native setup cannot acquire a different stop or fewer milestones after price moves. */
 export function nativeGeometryError(id:string|undefined,side:Side,price:number,sl:number|undefined,tp:number[]):string|null {
+ const updated=sourceGeometryError(id,side,price,sl,tp);if(updated)return updated;
  if(!plotLifecycle(id))return null;
  const dir=side==='long'?1:-1;
  if(!(price>0&&Number.isFinite(price))||!(sl!==undefined&&sl>0&&Number.isFinite(sl)&&dir*(price-sl)>0))return 'native stop crossed or unavailable';

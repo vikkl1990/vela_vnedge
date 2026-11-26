@@ -1,3 +1,4 @@
+import {PRECISION_NATIVE} from './sourceReaders.ts';
 import {upstreamLifecycle} from './upstreamLifecycle.ts';
 /** Validated native trade engines. This capability never grants evidence eligibility. */
 export const NATIVE_REENTRY_SCANNERS = new Set([
@@ -11,4 +12,4 @@ export const NATIVE_REENTRY_SCANNERS = new Set([
 
 export const nativeReentry = (id: string, reader?: number) =>
   reader === 3 && NATIVE_REENTRY_SCANNERS.has(id) ||
-  reader === 2 && (id === 'stealthtrail-supertrend-author-native-v1' || upstreamLifecycle(id));
+  reader === 2 && (id===PRECISION_NATIVE || id === 'stealthtrail-supertrend-author-native-v1' || upstreamLifecycle(id));

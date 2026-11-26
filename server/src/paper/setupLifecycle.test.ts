@@ -292,3 +292,26 @@ for(const rollback of [false,true])test(`partial maker invalidation preserves fi
   assert.equal(closed.status,'closed');assert.equal(closed.fills.filter(f=>f.reason!=='entry').reduce((n,f)=>n+f.qty,0),1);
   assert.equal(closed.fills[0].liquidity,'maker');assert.equal(closed.fills.at(-1)!.liquidity,'taker');
 });
+
+test('source-trade identity survives restart and prevents another author trade from closing held exposure',t=>{
+ const x=fixture(t);x.entry('long',{authorEntryAt:T-H});x.tick(T+100);const id=x.e.openPositions()[0].id;x.restart();
+ x.at(T+200);const wrong={...exitEvent,authorEntryAt:T-3*H};
+ x.e.onScriptExit(x.id,'ETHUSD','15m','close',undefined,T+200,'both','long',undefined,wrong);
+ assert.equal(x.e.pendingExits().length,0);assert.equal(x.e.position(id)!.features!.setup_author_entry_at,T-H);
+ x.e.onScriptExit(x.id,'ETHUSD','15m','close',undefined,T+200,'both','long',undefined,{...exitEvent,authorEntryAt:T-H});
+ assert.equal(x.e.pendingExits().length,1);x.settle(T+300);assert.equal(x.e.position(id)!.status,'closed');
+});
+test('source-trade identity also protects pending orders and stop amendments',t=>{
+ const x=fixture(t,true,true);x.entry('long',{authorEntryAt:T-H});x.at(T+100);
+ x.e.onScriptExit(x.id,'ETHUSD','15m','close',undefined,T+100,'both','long',undefined,{...exitEvent,authorEntryAt:T-3*H});assert.equal(x.e.pendingEntries().length,1);
+ x.e.onScriptExit(x.id,'ETHUSD','15m','close',undefined,T+100,'both','long',undefined,{...exitEvent,authorEntryAt:T-H});assert.equal(x.e.pendingEntries().length,0);
+ const y=fixture(t);y.entry('long',{authorEntryAt:T-H});y.tick(T+100);const p=y.e.openPositions()[0];
+ y.e.onScriptExit(y.id,'ETHUSD','15m','stop_update',96,T+200,'both','long',undefined,{...exitEvent,authorEntryAt:T-3*H});assert.equal(p.sl,95);
+});
+
+test('next-bar author amendment beyond current market triggers only after acknowledgement and uses fresh depth',t=>{
+ const x=fixture(t);x.entry('long',{authorEntryAt:T-H});x.tick(T+100);const p=x.e.openPositions()[0];x.at(T+200);
+ x.e.onScriptExit(x.id,'ETHUSD','15m','stop_update',101,T+200,'both','long',undefined,{...exitEvent,authorEntryAt:T-H});assert.equal(p.sl,95);
+ x.tick(T+299,100);assert.equal(x.e.pendingExits().length,0);x.tick(T+300,100);assert.equal(p.sl,101);assert.equal(p.status,'open');assert.equal(x.e.pendingExits().length,1);
+ assert.equal(x.settle(T+399,1000,99.5),0);assert.equal(x.settle(T+400,1000,99.5),1);assert.equal(p.exitPrice,99.5);assert.equal(p.status,'closed');
+});
