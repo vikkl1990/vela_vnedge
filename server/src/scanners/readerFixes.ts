@@ -18,11 +18,29 @@ import type { ExitType, Side } from './extractor.ts';
 /** The reader revision a scanner's reading opts into; 1 (or unset) is the reader its record was earned under. */
 export const READER_FIXES = 2;
 
+/**
+ * Reader 4: every reader-2 fix, plus market-structure labels read by price. Reader 1 took a structure
+ * label's side from its style (label_up = long), but scripts draw an upside break as a label sitting on the broken
+ * high, pointing down at it (LuxAlgo, Zeiierman and most SMC scripts), so every such break was read the wrong way. The
+ * level a break, sweep or order-block label marks says which way price went: under the creation bar's close the
+ * break was upward (long), above it downward (short). A label whose own text names a direction keeps that direction.
+ */
+export const READER_STRUCTURE = 4;
+const STRUCTURE_WORD = /\b(bos|choch|mss|break|sweep|ob)\b/i;
+export function isStructureLabel(text: string): boolean {
+  return STRUCTURE_WORD.test(text.replace(/[0-9.,%+\-:#()]/g, ' '));
+}
+/** The side a structure label marks, from its level against the close of the bar it was created on. */
+export function structureSide(l: { y: number; closeAt?: number }): Side | undefined {
+  if (l.closeAt === undefined || !Number.isFinite(l.closeAt) || !Number.isFinite(l.y) || l.y === l.closeAt) return undefined;
+  return l.y < l.closeAt ? 'long' : 'short';
+}
+
 /** Explicit source contract for scripts that reuse one label glyph on both sides. */
 export type LabelStyleSides = Record<string, Record<string, Side | 'none'>>;
 export function labelStyleContractError(reader: number | undefined, value: unknown): string | null {
   if(value==null)return null;
-  if(reader!==2)return 'labelStyles requires reader 2';
+  if(reader!==2&&reader!==READER_STRUCTURE)return 'labelStyles requires reader 2 or 4';
   const record=(x:unknown):x is Record<string,unknown>=>!!x&&typeof x==='object'&&!Array.isArray(x);
   const keys=(x:Record<string,unknown>)=>Object.keys(x).every(k=>!!k.trim())&&new Set(Object.keys(x).map(k=>k.trim().toLowerCase())).size===Object.keys(x).length;
   if(!record(value)||!keys(value)||Object.values(value).some(v=>!record(v)||!keys(v)||Object.values(v).some(s=>typeof s!=='string'||!['long','short','none'].includes(s))))return 'labelStyles must map unique label texts and exact styles to long|short|none';
@@ -59,7 +77,7 @@ export function reversalClosed(text: string): Side | undefined {
 
 /** A direction vocabulary change must not activate the classifier's regime markers. */
 export function readerContractError(scannerId:string,reader:number|undefined,sides:Record<string,string>|undefined):string|null {
-  if(reader!==2||!scannerId.startsWith('machine-learning-rsi-ai-classification-ranking-zeiierman'))return null;
+  if((reader!==2&&reader!==READER_STRUCTURE)||!scannerId.startsWith('machine-learning-rsi-ai-classification-ranking-zeiierman'))return null;
   const map=new Map(Object.entries(sides??{}).map(([k,v])=>[k.trim().toLowerCase(),v]));
-  return ['st flip up','st flip dn','trend flip up','trend flip down'].every(k=>map.get(k)==='none')?null:'reader 2 requires all ML RSI flip markers mapped to none';
+  return ['st flip up','st flip dn','trend flip up','trend flip down'].every(k=>map.get(k)==='none')?null:`reader ${reader} requires all ML RSI flip markers mapped to none`;
 }

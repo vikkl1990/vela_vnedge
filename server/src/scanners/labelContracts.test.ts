@@ -43,7 +43,7 @@ test('style readings travel through source/plan identities without changing unre
 test('style contract validation rejects malformed or ambiguous mappings',()=>{
  assert.equal(labelStyleContractError(2,styles),null);
  for(const bad of [[],true,{'⯁':'long'},{'⯁':{style_label_up:['long']}},{'⯁':{style_label_up:null}},{'⯁':{style_label_up:'buy'}},{'⯁':{'':'long'}},{'A':{style_label_up:'long'},' a ':{style_label_up:'short'}}])assert.ok(labelStyleContractError(2,bad));
- assert.ok(labelStyleContractError(1,styles));assert.ok(labelStyleContractError(3,styles));
+ assert.ok(labelStyleContractError(1,styles));assert.ok(labelStyleContractError(3,styles));assert.equal(labelStyleContractError(4,styles),null);
  const cfg=structuredClone(DEFAULT_CONFIG);cfg.scanners.x={enabled:false,symbols:null,timeframes:null,exitMode:'levels',reader:1,labelStyles:styles};
  assert.ok(validateConfig(cfg).some(e=>e.includes('labelStyles requires reader 2')));
 });

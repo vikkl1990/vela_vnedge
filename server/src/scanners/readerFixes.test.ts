@@ -79,14 +79,36 @@ test('genuine buy and sell entries are untouched by the fixes', () => {
   }
 });
 
+test('reader 4 reads a structure label by its level against the close; reader 1 keeps its style reading', () => {
+  // LuxAlgo/Zeiierman convention: an upside break is a label on the broken high (under the close), pointing down at it
+  const lb = (text: string, style: string, y: number, closeAt?: number, createdAt = T): WorkerLabel => ({ text, style, y, time: T - 900_000, createdAt, ...(closeAt === undefined ? {} : { closeAt }) });
+  const read = (labels: WorkerLabel[], reader?: number, extra: object = {}) => brief(extractEvents([], [], { scannerId: 'x', sources: ['label'], drawn: labels, ...(reader ? { reader } : {}), ...extra }));
+  const up = lb('BOS', 'style_label_down', 100, 101), down = lb('CHoCH', 'style_label_up', 100, 99, T + 900_000);
+  assert.deepEqual(read([up, down], 4), ['entry:long', 'entry:short']);
+  assert.deepEqual(read([up, down]), ['entry:short', 'entry:long'], 'reader 1 is unchanged: its record was earned on the style reading');
+  assert.deepEqual(read([up, down], 2), ['entry:short', 'entry:long'], 'reader 2 is unchanged');
+  // a sweep of a high closes back under it: the level sits above the close, a short
+  assert.deepEqual(read([lb('Sweep', 'style_label_down', 105, 103)], 4), ['entry:short']);
+  // the text's own direction wins over the level, and an explicit style contract wins over both
+  assert.deepEqual(read([lb('Bullish BOS', 'style_label_up', 105, 103)], 4), ['entry:long']);
+  assert.deepEqual(read([up], 4, { labelStyles: { BOS: { style_label_down: 'short' } } }), ['entry:short']);
+  // without the creation bar's close, or with the level exactly at it, a structure label is not read
+  assert.deepEqual(read([lb('BOS', 'style_label_down', 100)], 4), []);
+  assert.deepEqual(read([lb('BOS', 'style_label_down', 100, 100)], 4), []);
+  // non-structure labels keep the generic reading, and invert turns the whole reading over
+  assert.deepEqual(read([lb('BUY', 'style_label_up', 100, 101)], 4), ['entry:long']);
+  assert.deepEqual(read([up], 4, { invert: true }), ['entry:short']);
+});
+
 test('the reader revision travels with the reading, so opting in is part of the record', () => {
   assert.equal(readingOf({ reader: 2 } as any, 'x', 900_000).extract.reader, 2);
   assert.equal(readingOf({}, 'x', 900_000).extract.reader, undefined);
   const cfg = structuredClone(DEFAULT_CONFIG);
-  cfg.scanners = { a: { enabled: false, symbols: null, timeframes: null, exitMode: 'both', reader: 2 }, b: { enabled: false, symbols: null, timeframes: null, exitMode: 'both', reader: 4 as any } };
+  cfg.scanners = { a: { enabled: false, symbols: null, timeframes: null, exitMode: 'both', reader: 2 }, b: { enabled: false, symbols: null, timeframes: null, exitMode: 'both', reader: 5 as any },
+    c: { enabled: false, symbols: null, timeframes: null, exitMode: 'both', reader: 4 } };
   const errs = validateConfig(cfg);
-  assert.equal(errs.some(e => e.startsWith('scanners.a.')), false);
-  assert.ok(errs.includes('scanners.b.reader must be 1, 2 or 3'));
+  assert.equal(errs.some(e => e.startsWith('scanners.a.') || e.startsWith('scanners.c.')), false);
+  assert.ok(errs.includes('scanners.b.reader must be 1, 2, 3 or 4'));
 });
 
 test('closing shape and label titles cannot create entries; explicit contracts keep precedence',()=>{

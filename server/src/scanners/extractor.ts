@@ -10,7 +10,7 @@
 import type { WorkerAlert, WorkerLabel, WorkerShape } from '../pine/worker.ts';
 import { readingLegacy } from './legacy.ts';
 import { WILLY_HTF_MARKET, readWillyHtfAlert } from './willyHtf.ts';
-import { NOT_AN_ENTRY, READER_FIXES, closesSide, reversalClosed, labelStyleSide, type LabelStyleSides } from './readerFixes.ts';
+import { NOT_AN_ENTRY, READER_FIXES, READER_STRUCTURE, closesSide, reversalClosed, labelStyleSide, isStructureLabel, structureSide, type LabelStyleSides } from './readerFixes.ts';
 import {plotLifecycle} from './plotLifecycle.ts';
 import { readWillyNative } from './willyNative.ts';
 import {MARKITTICK_NATIVE,readMarkitTick} from './markitTick.ts';
@@ -421,6 +421,7 @@ export function extractEvents(alerts: WorkerAlert[], shapes: WorkerShape[], opts
   const legacy = opts.scannerId ? readingLegacy().has(opts.scannerId) : false;
   // decision 241: the reader fixes apply to a scanner whose reading opts into them
   const fixed = (opts.reader ?? 1) >= READER_FIXES;
+  const structural = opts.reader === READER_STRUCTURE;
   const events: ScanEvent[] = [];
   const seenEntry = new Set<string>();
   const alertBars = new Set<number>();
@@ -549,8 +550,10 @@ export function extractEvents(alerts: WorkerAlert[], shapes: WorkerShape[], opts
       }
       if (legacy || !allow('label') || !readLabels) continue;
       if (fixed && !named && NOT_AN_ENTRY.test(l.text)) { drop('label: a failed pattern or a closed trade, not an entry'); continue; }
-      const side = named ?? labelSide(l.text, l.style, fixed);
-      if (!side) { drop('label: no direction in text'); continue; }
+      // reader 4: a structure label without a direction word takes its side from its level against the close
+      const byPrice = !named && structural && isStructureLabel(l.text) && !labelSide(l.text, undefined, fixed);
+      const side = named ?? (byPrice ? structureSide(l) : labelSide(l.text, l.style, fixed));
+      if (!side) { drop(byPrice ? 'label: structure level unknown or at the close' : 'label: no direction in text'); continue; }
       // a label can be drawn at a past bar; the signal is the bar it appeared on, and without that bar it is not read
       if (l.createdAt === undefined) { drop('label: creation bar unknown'); continue; }
       const at = l.createdAt;

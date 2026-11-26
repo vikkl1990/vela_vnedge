@@ -42,7 +42,7 @@ export interface WorkerJob {
 export interface LedgerTrade { size: number; entryPrice: number; exitPrice: number | null; entryIdx: number; exitIdx: number | null }
 export interface WorkerAlert { barIndex: number; time: number; type: 'alert' | 'alertcondition'; title?: string; message: string }
 export interface WorkerShape { key?: string; title: string; shape?: string; location?: string; color?: string; times: number[] }
-export interface WorkerLabel { time: number; y: number; text: string; color?: string; style?: string; barIndex?: number; /** Decision 172: the bar the label was created on, from the label stamp; absent when the script set no stamp. */ createdAt?: number }
+export interface WorkerLabel { time: number; y: number; text: string; color?: string; style?: string; barIndex?: number; /** Decision 172: the bar the label was created on, from the label stamp; absent when the script set no stamp. */ createdAt?: number; /** The close of the creation bar: where a structure label's level sits against price (reader 4). */ closeAt?: number }
 export interface WorkerPlot { key?: string; title: string; style: string; overlay: boolean; color?: string; data: Array<{ time: number; value: number | null; color?: string }> }
 
 export interface WorkerResult {
@@ -168,7 +168,8 @@ async function runJob(job: WorkerJob): Promise<WorkerResult> {
       if (!Number.isFinite(y)) continue;
       const stamp = /^vn:(\d+)$/.exec(String(l.tooltip ?? ''));
       const createdAt = stamp ? timeAt(Number(stamp[1])) : undefined;
-      labels.push({ time, y, text: String(l.text ?? '').slice(0, 80), color: l.color, style: l.style, createdAt });
+      const closeAt = stamp ? job.bars[Number(stamp[1])]?.close : undefined;
+      labels.push({ time, y, text: String(l.text ?? '').slice(0, 80), color: l.color, style: l.style, createdAt, ...(Number.isFinite(closeAt) ? { closeAt } : {}) });
     }
 
     const ledger = job.ledger && ctx.strategy ? ledgerTrades(ctx.strategy) : undefined;
