@@ -1,3 +1,12 @@
+> Host migration (2026-11-27): the active target is `vn-edge-hyd-01` in OCI
+> `ap-hyderabad-1`, reserved IP `129.225.94.85`. Singapore is the rollback host,
+> not a second execution instance. Keep only one bot/Telegram poller active.
+> The normal SSH user/key and loopback API port remain unchanged.
+> `ops/deploy.sh` and `ops/dashboard.sh` default to Hyderabad; `VM` can override it.
+> Moving hosts does not arm production or change risk/evidence configuration.
+> Powering off the former Standard VM stops compute billing; retained boot volumes
+> and backups can continue to incur storage charges.
+
 # Running the bot 24/7
 
 The bot runs as a systemd service on an Ubuntu host. It is paper-trading only: `execution.mode`

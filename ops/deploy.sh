@@ -3,7 +3,7 @@
 # SHA on the VM, install dependencies when the lockfile changed, build the dashboard, and only then restart; require
 # the API to answer afterwards. Refuses within six hours of the last restart unless --force.
 set -euo pipefail
-VM=${VM:-ubuntu@161.118.252.185}; KEY=${KEY:-~/.ssh/cryptobot_oci}; FORCE=${1:-}
+VM=${VM:-ubuntu@129.225.94.85}; KEY=${KEY:-~/.ssh/cryptobot_oci}; FORCE=${1:-}
 cd "$(dirname "$0")/.."
 test -z "$(git status --porcelain --untracked-files=no)" || { echo "working tree has uncommitted changes"; exit 1; }
 [ "$(git rev-parse --abbrev-ref HEAD)" = "main" ] || { echo "deploy from main only"; exit 1; }
