@@ -210,13 +210,13 @@ test('actual shadow dispatch records the restoration hold, continues shadow eval
  const forwarded:string[]=[];
  const runner=new ShadowRunner({store:f.store,cfgRef:()=>f.cfg,paper:shadow,candles:{get:()=>bars},
    registry:{get:()=>({id:'s',name:'s',status:'ok',patched:'alert("x")'})},
-   pool:{run:async()=>({ok:true,alerts:[{type:'alert',time:last,barIndex:79,message:'🟢 LONG | Price: 100'}],shapes:[],labels:[],plots:[],ms:1})},
+   pool:{run:async()=>({ok:true,alerts:[{type:'alert',time:bars.at(-1)!.time,barIndex:79,message:'🟢 LONG | Price: 100'}],shapes:[],labels:[],plots:[],ms:1})},
    marketInfo:async()=>({tickSize:.01,contractValue:1}),mirror:async()=>{forwarded.push('entry');}}as any)as any;
  try {
   await runner.run(f.store.get(f.pair.id),Date.now(),false,Date.now());
   assert.equal(forwarded.length,0);
   const held=f.db.get<any>("SELECT reason FROM gated_signals WHERE stage='copy'");assert.match(held.reason,/forward shadow evaluation/);
-  f.forward();runner.seen.clear();runner.marks={window:()=>({since:0,tailBars:3}),advance:()=>{}};
+  f.forward();t.mock.timers.tick(H);for(const b of bars)b.time+=H;runner.seen.clear();
   await runner.run(f.store.get(f.pair.id),Date.now(),false,Date.now());
   assert.equal(forwarded.length,1);
  }finally{runner.stop();}

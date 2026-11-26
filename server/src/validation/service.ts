@@ -1,3 +1,5 @@
+import {currentResearch,researchProvenance,walkForwardOptions} from './provenance.ts';
+import {runResearchTask} from '../research/tasks.ts';
 import {candleReplayBlock} from '../paper/basket.ts';
 /**
  * Walk-forward validation service: runs every active scanner×symbol×timeframe over the deep
@@ -15,7 +17,7 @@ import type { ScannerEngine } from '../scanners/engine.ts';
 import { extractEvents } from '../scanners/extractor.ts';
 import type { LoadedScanner, ScannerRegistry } from '../scanners/registry.ts';
 import { applyRules } from '../scanners/rules.ts';
-import { oosSummary, passesRule, walkForward, type OosSummary, type WalkForwardResult } from './walkForward.ts';
+import { oosSummary, passesRule, type OosSummary, type WalkForwardResult } from './walkForward.ts';
 import {selectiveReclaimRule} from '../paper/selectiveEntry.ts';
 import { backtestPolicy } from '../paper/policy.ts';
 import { readingOf } from '../scanners/reading.ts';
@@ -39,6 +41,7 @@ export interface WalkForwardSummary {
   inSample: WalkForwardResult['inSample']; outOfSample: WalkForwardResult['outOfSample']; outOfSampleAll: WalkForwardResult['outOfSampleAll'];
   /** Passes the configured OOS gate (autoTune.oos thresholds, regardless of `enabled`). */
   oosPass: boolean;
+  researchStatus:'current'|'historical';
   /** OOS profit factor below 1 — the roadmap's red flag. */
   oosFlag: boolean;
   /** Passes the in-sample rule over the whole history (what the current tuner sees). */
@@ -71,7 +74,9 @@ export class ValidationService {
 
   lookup(id: string, symbol: string, tf: string): OosSummary | null {
     const r = this.results.get(ValidationService.key(id, symbol, tf));
-    return r ? oosSummary(r) : null;
+    const source=this.deps.registry.get(id)?.patched;
+    const cfg=this.deps.cfgRef();
+    return r&&currentResearch(r.provenance,cfg,source,id,symbol,tf,this.deps.scanners.cachedMarketInfo(symbol),this.deps.scanners.executorAttached?.(),walkForwardOptions(cfg))?oosSummary(r):null;
   }
 
   get(id: string, symbol: string, tf: string): WalkForwardResult | null { return this.results.get(ValidationService.key(id, symbol, tf)) ?? null; }
@@ -80,12 +85,13 @@ export class ValidationService {
     const cfg = this.deps.cfgRef();
     const oos = cfg.autoTune.oos;
     const o = r.outOfSample;
-    const oosPass = o.trades >= oos.minTrades && (o.profitFactor ?? 0) >= oos.minProfitFactor && o.positiveWeeks >= oos.minPositiveWeeks && o.pnl > 0;
+    const compatible=this.lookup(r.scannerId,r.symbol,r.tf)!==null;
+    const oosPass = compatible && o.trades >= oos.minTrades && (o.profitFactor ?? 0) >= oos.minProfitFactor && o.positiveWeeks >= oos.minPositiveWeeks && o.pnl > 0;
     const sc = this.deps.registry.get(r.scannerId);
     return {
       scannerId: r.scannerId, scannerName: r.scannerName, symbol: r.symbol, tf: r.tf, at: r.at, bars: r.bars, from: r.from, to: r.to,
       windows: r.windows.length, selectedWindows: r.selectedWindows, inSample: r.inSample, outOfSample: o, outOfSampleAll: r.outOfSampleAll,
-      oosPass, oosFlag: o.trades > 0 && (o.profitFactor ?? 0) < 1, inSamplePass: passesRule(r.inSample, cfg.autoTune.minTrades, cfg.autoTune.minProfitFactor),
+      researchStatus:compatible?'current':'historical',oosPass, oosFlag: o.trades > 0 && (o.profitFactor ?? 0) < 1, inSamplePass: compatible&&passesRule(r.inSample, cfg.autoTune.minTrades, cfg.autoTune.minProfitFactor),
       enabled: sc ? this.deps.scanners.isActive(sc) && this.deps.scanners.symbolsFor(sc.id).includes(r.symbol) && this.deps.scanners.timeframesFor(sc.id).includes(r.tf) : false,
     };
   }
@@ -117,8 +123,15 @@ export class ValidationService {
     return this.status;
   }
 
+  private runningTask:Promise<{jobs:number;done:number;failed:number;ms:number}>|null=null;
+  run(opts:RunOptions={}){
+    if(this.runningTask)return Promise.reject(Error('a walk-forward run is already in progress'));
+    this.runningTask=this.runInside(opts).finally(()=>{this.runningTask=null;});return this.runningTask;
+  }
+  async drain(){await this.runningTask?.catch(()=>{});}
+
   /** Run walk-forward validation for the selected pairs (sequential per pair; the pool parallelises script runs). */
-  async run(opts: RunOptions = {}): Promise<{ jobs: number; done: number; failed: number; ms: number }> {
+  private async runInside(opts: RunOptions = {}): Promise<{ jobs: number; done: number; failed: number; ms: number }> {
     if (this.status.running) throw new Error('a walk-forward run is already in progress');
     const cfg = this.deps.cfgRef();
     const wf = cfg.validation.walkForward;
@@ -138,9 +151,11 @@ export class ValidationService {
         let bars: Awaited<ReturnType<CandleCache['getHistory']>>;
         try { bars = await this.deps.cache.getHistory(symbol, tf, barsN); } catch (e: any) { for (const j of list) this.fail(`${j.s.id}:${symbol}:${tf}`, `history: ${e?.message ?? e}`); return; }
         if (bars.length < 300) { for (const j of list) this.fail(`${j.s.id}:${symbol}:${tf}`, `only ${bars.length} bars of history`); return; }
-        await Promise.all(list.map(j => this.runPair(j.s, symbol, tf, bars)));
+        for(const j of list){if(this.stopped)break;await this.runPair(j.s,symbol,tf,bars,days);}
       })();
       workers.push(p);
+      if(workers.length>=2){await Promise.allSettled(workers);workers.length=0;}
+      if(this.stopped)break;
     }
     await Promise.allSettled(workers);
     const ms = Date.now() - t0;
@@ -155,7 +170,7 @@ export class ValidationService {
     log.warn(`walk-forward ${key}: ${error}`);
   }
 
-  private async runPair(s: LoadedScanner, symbol: string, tf: string, bars: Awaited<ReturnType<CandleCache['getHistory']>>): Promise<void> {
+  private async runPair(s: LoadedScanner, symbol: string, tf: string, bars: Awaited<ReturnType<CandleCache['getHistory']>>,days?:number): Promise<void> {
     const key = ValidationService.key(s.id, symbol, tf);
     this.status.current = key;
     try {
@@ -165,6 +180,7 @@ export class ValidationService {
       const rule = sc.rule ?? null;
       const res = await this.deps.pool.run({ scannerId: s.id, source: s.patched, symbol, tf, tickSize: market.tickSize, bars, tailBars: 'all', plotTail: rule ? bars.length : 10, inputs: sc.inputs && Object.keys(sc.inputs).length ? sc.inputs : undefined, timezone: sc.timezone });
       if (!res.ok) { this.fail(key, res.error ?? 'script error'); return; }
+      if(this.stopped)return;
       const READ = readingOf(sc, s.id, (TF_SECONDS[tf] ?? 0) * 1000, s.patched, s.variantOf);   // decision 195
       const derived = applyRules({ scannerId: s.id, alerts: res.alerts, shapes: res.shapes, labels: res.labels, plots: res.plots, rule, bars, mode: 'backtest', ...READ.rule });
       // decision 85: validation reads the scanner exactly as the live path does — the same channels, edge, labels and inversion
@@ -173,8 +189,10 @@ export class ValidationService {
       // decision 191: validated under the account's own policy (entry model, exit rules with script protection, gates)
       const policy=backtestPolicy(cfg,s.id,tf,'account',{executor:this.deps.scanners.executorAttached?.(),productFees:market.productFees});
       const subBars=selectiveReclaimRule(policy.cfg,{scannerId:s.id,symbol,tf})?await this.deps.cache.getHistory(symbol,'1m',{from:bars[0].time,to:bars.at(-1)!.time+(TF_SECONDS[tf]??0)*1000-60_000}):undefined;
-      const r = walkForward({ scannerId: s.id, scannerName: s.name, symbol, tf, bars, subBars, events, ...policy, exitMode: sc.exitMode, contractValue: market.contractValue, tickSize: market.tickSize,
+      const r = await runResearchTask<WalkForwardResult>('walk-forward',{ scannerId: s.id, scannerName: s.name, symbol, tf, bars, subBars, events, ...policy, exitMode: sc.exitMode, contractValue: market.contractValue, tickSize: market.tickSize,
         opts: { trainDays: wf.trainDays, testDays: wf.testDays, stepDays: wf.stepDays, minTrades: cfg.autoTune.minTrades, minProfitFactor: cfg.autoTune.minProfitFactor } });
+      r.provenance=researchProvenance(cfg,s.patched,s.id,symbol,tf,market,bars,this.deps.scanners.executorAttached?.(),walkForwardOptions(cfg,days),subBars);
+      this.deps.db.run('INSERT OR IGNORE INTO scanner_source_versions(hash,source) VALUES(?,?)',r.provenance.terms.source,s.patched);
       this.results.set(key, r);
       this.deps.db.run('INSERT INTO walk_forward(scanner_id, symbol, tf, at, bars, from_ms, to_ms, result) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(scanner_id, symbol, tf) DO UPDATE SET at=excluded.at, bars=excluded.bars, from_ms=excluded.from_ms, to_ms=excluded.to_ms, result=excluded.result', s.id, symbol, tf, r.at, r.bars, r.from, r.to, JSON.stringify(r));
       this.status.done++;

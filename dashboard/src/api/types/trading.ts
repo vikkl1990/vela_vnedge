@@ -198,6 +198,7 @@ export interface EquityPoint {
 }
 
 export interface BacktestResult {
+  researchStatus?: 'current' | 'historical'
   at: number
   bars: number
   trades: Trade[]

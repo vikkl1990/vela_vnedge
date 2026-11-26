@@ -1,3 +1,5 @@
+import {currentResearch,researchProvenance} from '../validation/provenance.ts';
+import {runResearchTask} from '../research/tasks.ts';
 import {recordChartReceipt} from './chartReceipts.ts';
 import {candleReplayBlock} from '../paper/basket.ts';
 import {transientTradingBlock} from '../delta/tradingStatus.ts';
@@ -7,7 +9,7 @@ import { pilotCapacityRefusal, pilotUsage, reservePilotEntry, type PilotUsage } 
 import {policyReading,stablePolicy} from '../paper/tradePolicy.ts';
 import {EntryCoordinator} from './entryCoordinator.ts';
 import {scannerPairs} from './allocation.ts';
-import { SignalInbox, type Delivery, type InboxRow } from './inbox.ts';
+import { SignalInbox, type Delivery, type InboxRow, type MirroredReceipt } from './inbox.ts';
 import { configFingerprint, sourceHash } from '../paper/fingerprint.ts';
 import {ScanRecovery} from './recovery.ts';
 /**
@@ -28,7 +30,7 @@ import type { MarketInfo } from '../paper/engine.ts';
 import { marketSpec } from '../delta/rest.ts';
 import { SIMULATION_VERSION } from '../paper/version.ts';
 import {selectiveReclaimRule} from '../paper/selectiveEntry.ts';
-import { runBacktest, type BacktestResult } from '../paper/backtest.ts';
+import { type BacktestResult } from '../paper/backtest.ts';
 import type { PinePool } from '../pine/pool.ts';
 import type { WorkerResult } from '../pine/worker.ts';
 import { extractEvents, describeEvent, type ScanEvent } from './extractor.ts';
@@ -109,6 +111,7 @@ export class ScannerEngine extends EventEmitter {
   private lastRun = new Map<string, RunInfo>();
   private overlays = new Map<string, Overlay>();
   private markets = new Map<string, MarketInfo>();
+  private candleHandler=(e:{symbol:string;tf:string;bar:Bar})=>this.onBarClosed(e.symbol,e.tf,e.bar);
   private inFlight = new Set<string>();
   /**
    * One deferred run per scanner/symbol/timeframe. A bar that closes while the previous run is
@@ -143,10 +146,10 @@ export class ScannerEngine extends EventEmitter {
     this.ml = deps.ml ?? null;
     this.cfgStore = deps.cfgStore ?? null;
     // every closed live trade becomes a learning sample
-    this.paper.on('trade', (t: any) => { if (this.ml && t.features) this.ml.addLiveSample(t.scannerId, t.symbol, t.tf, t.entryAt, t.features, t.pnl > 0, t.rMultiple ?? 0, t.pnl, String(t.exitReason ?? ''), t.exitAt); });
+    this.paper.on('trade',()=>{this.ml?.recoverClosedSamples();});
     for (const r of this.db.all<any>('SELECT * FROM scanner_runs')) this.lastRun.set(`${r.scanner_id}:${r.symbol}:${r.tf}`, { at: r.at, ms: r.ms, symbol: r.symbol, tf: r.tf, error: r.error, barTime: r.bar_time });
     for (const r of this.db.all<any>('SELECT * FROM backtests')) { try { const result = JSON.parse(r.result); if (result.version === SIMULATION_VERSION) this.backtests.set(`${r.scanner_id}:${r.symbol}:${r.tf}`, result); } catch { /* ignore */ } }
-    this.candles.on('closed', (e: { symbol: string; tf: string; bar: Bar }) => this.onBarClosed(e.symbol, e.tf, e.bar));
+    this.candles.on('closed',this.candleHandler);
     // one-off backfill of readable summaries for signals stored before the column existed
     for (const r of this.db.all<any>("SELECT * FROM signals WHERE summary = '' OR summary IS NULL")) {
       const ev: ScanEvent = { kind: r.kind, side: r.side ?? undefined, exitType: undefined, price: r.price ?? undefined, sl: r.sl ?? undefined, tp: JSON.parse(r.tp || '[]'), score: r.score ?? undefined, label: r.label, message: r.message, source: r.source, barTime: r.bar_time, barIndex: -1 };
@@ -214,12 +217,20 @@ export class ScannerEngine extends EventEmitter {
     return best;
   }
   getOverlay(id: string, symbol: string, tf: string): Overlay | undefined { return this.overlays.get(`${id}:${symbol}:${tf}`); }
-  getBacktest(id: string, symbol: string, tf: string): BacktestResult | undefined { return this.backtests.get(`${id}:${symbol}:${tf}`); }
+  cachedMarketInfo(symbol:string){return this.markets.get(symbol);}
+  getBacktest(id:string,symbol:string,tf:string):BacktestResult|undefined {
+    const r=this.backtests.get(`${id}:${symbol}:${tf}`);
+    return currentResearch(r?.provenance,this.cfgRef(),this.registry.get(id)?.patched,id,symbol,tf,this.markets.get(symbol),this.executorAttached?.())?r:undefined;
+  }
+  describeBacktest(id:string,symbol:string,tf:string){
+    const result=this.backtests.get(`${id}:${symbol}:${tf}`);if(!result)return undefined;
+    return {...result,researchStatus:this.getBacktest(id,symbol,tf)?'current' as const:'historical' as const};
+  }
   allBacktests(): Array<{ id: string; symbol: string; tf: string; result: BacktestResult }> { return [...this.backtests.entries()].map(([k, result]) => { const [id, symbol, tf] = k.split(':'); return { id, symbol, tf, result }; }); }
   /** Backtests grouped by scanner id; the per-scanner filter was rescanning the whole map each time. */
   backtestsByScanner(): Map<string, BacktestResult[]> {
     const m = new Map<string, BacktestResult[]>();
-    for (const [k, v] of this.backtests) { const id = k.slice(0, k.indexOf(':')); const l = m.get(id); if (l) l.push(v); else m.set(id, [v]); }
+    for (const [k, v] of this.backtests) { const [id,symbol,tf]=k.split(':'); if(!this.getBacktest(id,symbol,tf))continue; const l = m.get(id); if (l) l.push(v); else m.set(id, [v]); }
     return m;
   }
 
@@ -231,7 +242,7 @@ export class ScannerEngine extends EventEmitter {
   }
 
   backtestSummary(id: string, pre?: Map<string, BacktestResult[]>): BacktestResult['stats'] | null {
-    const list = pre ? (pre.get(id) ?? []) : [...this.backtests.entries()].filter(([k]) => k.startsWith(id + ':')).map(([, v]) => v);
+    const list = pre ? (pre.get(id) ?? []) : this.backtestsByScanner().get(id)??[];
     if (!list.length) return null;
     // aggregate across symbols/timeframes
     const agg: any = { trades: 0, wins: 0, losses: 0, pnl: 0, fees: 0, grossProfit: 0, grossLoss: 0, maxDrawdownPct: 0, open: 0 };
@@ -262,7 +273,7 @@ export class ScannerEngine extends EventEmitter {
     const report: AutoTuneReport[] = [];
     const inSample = (id: string, symbol: string, tfs: string[]): AutoTuneDecision => {
       let trades = 0, pnl = 0, gp = 0, gl = 0;
-      for (const tf of tfs) { const b = this.backtests.get(`${id}:${symbol}:${tf}`); if (!b) continue; trades += b.stats.trades; pnl += b.stats.pnl; gp += b.stats.grossProfit; gl += b.stats.grossLoss; }
+      for (const tf of tfs) { const b = this.getBacktest(id,symbol,tf); if (!b) continue; trades += b.stats.trades; pnl += b.stats.pnl; gp += b.stats.grossProfit; gl += b.stats.grossLoss; }
       const pf = gl > 0 ? gp / gl : gp > 0 ? 999 : 0;
       const keep = trades >= minTrades && pnl > 0 && pf >= minPf;
       return { symbol, tf: tfs.length === 1 && byTf ? tfs[0] : null, keep, rule: oos ? 'provisional' : 'in-sample', trades, pnl, profitFactor: trades ? pf : null, positiveWeeks: null,
@@ -280,7 +291,7 @@ export class ScannerEngine extends EventEmitter {
       const tfs = this.timeframesFor(s.id);
       // A scanner enabled moments ago has no backtest yet; disabling it for "0 trades" would
       // silently undo the operator's change, so leave unmeasured scanners alone until they warm.
-      if (!before.some(sym => tfs.some(tf => this.backtests.has(`${s.id}:${sym}:${tf}`)))) {
+      if (!before.some(sym => tfs.some(tf => Boolean(this.getBacktest(s.id,sym,tf))))) {
         report.push({ id: s.id, name: s.name, applied:false, before, after: before, beforeTimeframes: tfs, afterTimeframes: tfs, disabled: false,
           rule: oos ? 'oos' : 'in-sample', provisional: false, dropped: [], decisions: [], skipped: true });
         log.info(`auto-tune ${s.id}: skipped, no backtest yet`);
@@ -322,7 +333,7 @@ export class ScannerEngine extends EventEmitter {
 
   /** Track all needed candle series and warm every active scanner (backtest + first live run). */
   async start(): Promise<void> {
-    this.stopping=false;
+    this.stopping=false;this.candles.off?.('closed',this.candleHandler);this.candles.on('closed',this.candleHandler);
     await this.recoverSignals();
     if(!this.inboxTimer){this.inboxTimer=setInterval(()=>void this.recoverSignals().catch(e=>log.error(`signal recovery failed: ${e?.message??e}`)),5000);this.inboxTimer.unref();}
     const cfg = this.cfgRef();
@@ -388,7 +399,8 @@ export class ScannerEngine extends EventEmitter {
     const key = `${s.id}:${symbol}:${tf}`;
     this.warmed.add(key);
     // resume: a backtest from the last hour that already carries ML features does not need re-running
-    const prev = this.backtests.get(key);
+    await this.marketInfo(symbol);
+    const prev = this.getBacktest(s.id,symbol,tf);
     // a backtest from the last six hours is fresh enough (decision 80): a restart must not re-run the fleet's history
     if (prev && Date.now() - prev.at < 6 * 3600_000 && (prev.trades.length === 0 || (prev.trades[0] as any).features)) { log.debug(`warm ${key}: fresh backtest, skipping`); return; }
     try {
@@ -462,6 +474,7 @@ export class ScannerEngine extends EventEmitter {
   // ---- the core run ----
 
   private async runOnce(s: LoadedScanner, symbol: string, tf: string, mode: { backtest: boolean; live: boolean; exitsOnly?: boolean }): Promise<void> {
+    if(this.stopping)return;
     const key = `${s.id}:${symbol}:${tf}`;
     if (this.inFlight.has(key)) {
       const prev = this.deferred.get(key);
@@ -534,10 +547,12 @@ export class ScannerEngine extends EventEmitter {
         const derived = applyRules({ scannerId: s.id, alerts: res.alerts, shapes: res.shapes, labels: res.labels, plots: res.plots, rule, bars: btBars, mode: 'backtest', ...READ.rule });
         const events = extractEvents(res.alerts, res.shapes, { barMs: (TF_SECONDS[tf] ?? 0) * 1000, drawn: res.labels, scannerId: s.id, derived, ...READ.extract });
         // decision 191: the account's own policy — entry model, exit rules with script protection, trend and chop gates
-        const policy=backtestPolicy(this.cfgRef(),s.id,tf,'account',{executor:this.executorAttached?.(),productFees:market.productFees});
+        const policy=backtestPolicy(cfg,s.id,tf,'account',{executor:this.executorAttached?.(),productFees:market.productFees});
         const selective=selectiveReclaimRule(policy.cfg,{scannerId:s.id,symbol,tf});
         const subBars=selective?await this.history?.getHistory(symbol,'1m',Math.ceil((Date.now()-btBars[0].time)/60_000)):undefined;
-        const bt = runBacktest({ scannerId: s.id, scannerName: s.name, symbol, tf, bars: btBars, subBars, events, ...policy, exitMode, contractValue:market.contractValue, tickSize:market.tickSize });
+        const bt = await runResearchTask<BacktestResult>('backtest',{ scannerId: s.id, scannerName: s.name, symbol, tf, bars: btBars, subBars, events, ...policy, exitMode, contractValue:market.contractValue, tickSize:market.tickSize });
+        bt.provenance=researchProvenance(cfg,s.patched,s.id,symbol,tf,market,btBars,this.executorAttached?.(),null,subBars);
+        this.db.run('INSERT OR IGNORE INTO scanner_source_versions(hash,source) VALUES(?,?)',bt.provenance.terms.source,s.patched);
         this.backtests.set(key, bt);
         if (this.ml) this.ml.replaceBacktestSamples(s.id, symbol, tf, bt.trades.filter((t: any) => t.features).map((t: any) => ({ at: t.entryAt, features: t.features, win: t.pnl > 0, r: t.rMultiple ?? 0, pnl: t.pnl, exitReason: String(t.exitReason ?? ''), resolvedAt: t.exitAt ?? null })));
         this.db.run('INSERT INTO backtests(scanner_id, symbol, tf, at, bars, result) VALUES (?,?,?,?,?,?) ON CONFLICT(scanner_id, symbol, tf) DO UPDATE SET at=excluded.at, bars=excluded.bars, result=excluded.result', s.id, symbol, tf, bt.at, bt.bars, JSON.stringify(bt));
@@ -586,7 +601,7 @@ export class ScannerEngine extends EventEmitter {
     } finally {
       this.inFlight.delete(key);
       const next = this.deferred.get(key);
-      if (next) {
+      if (next&&!this.stopping) {
         this.deferred.delete(key);
         // run on the next tick so the finished job's stack unwinds before the follow-up starts
         setImmediate(() => void this.runOnce(next.s, next.symbol, next.tf, next.mode).catch(e => log.error(`deferred run ${key} failed: ${e?.message ?? e}`)));
@@ -614,17 +629,18 @@ export class ScannerEngine extends EventEmitter {
    * the signal row, the trend gate, the risk manager's gates and caps, the probability, the paper engine — with
    * its label marked so the Signals page says where it came from. The shadow book keeps its own copy.
    */
-  async ingestEvent(s: LoadedScanner, symbol: string, tf: string, ev: ScanEvent, bars: Bar[], market: MarketInfo, exitMode: ExitMode, lastBar: Bar): Promise<void> {
-    await this.handleLiveEvent(s, symbol, tf, ev, bars, market, exitMode, lastBar, true);
+  async ingestEvent(s: LoadedScanner, symbol: string, tf: string, ev: ScanEvent, bars: Bar[], market: MarketInfo, exitMode: ExitMode, lastBar: Bar, targets?:MirroredReceipt): Promise<void> {
+    await this.handleLiveEvent(s, symbol, tf, ev, bars, market, exitMode, lastBar, true,targets);
   }
 
   /** Stop recovery and future scanner intake before worker shutdown. */
   stop() {
-    this.stopping=true;this.entryCoordinator.stop();
+    this.stopping=true;this.deferred.clear();this.candles.off?.('closed',this.candleHandler);this.entryCoordinator.stop();
     if(this.inboxTimer)clearInterval(this.inboxTimer);this.inboxTimer=null;
     if(this.retuneTimer)clearTimeout(this.retuneTimer);this.retuneTimer=null;
   }
 
+  async drain(){while(this.inFlight.size||this.processingReceipts.size)await new Promise(r=>setTimeout(r,5));}
   async recoverSignals():Promise<void>{
     if(this.stopping)return;
     for(const row of this.inbox.pending()){
@@ -637,21 +653,21 @@ export class ScannerEngine extends EventEmitter {
     return sourceHash(stablePolicy(parts))!; // Serializing this object always yields non-empty input.
   }
 
-  private async handleLiveEvent(s: LoadedScanner, symbol: string, tf: string, ev: ScanEvent, bars: Bar[], market: MarketInfo, exitMode: ExitMode, lastBar: Bar, copied = false) {
+  private async handleLiveEvent(s: LoadedScanner, symbol: string, tf: string, ev: ScanEvent, bars: Bar[], market: MarketInfo, exitMode: ExitMode, lastBar: Bar, copied = false, targets?:MirroredReceipt) {
     if(this.stopping)throw new Error('scanner is stopping before signal receipt');
-    const now=Date.now();
+    const now=targets?.receivedAt??Date.now();
     const delivery:Delivery={version:1,scannerId:s.id,scannerName:s.name,symbol,tf,ev,bars,market,exitMode,lastBar,copied,
       pilotRequested:copied&&!(this.isActive(s)&&this.runsOn(s.id,symbol,tf))&&Boolean(this.cfgRef().incubator.mirror?.pilot),
       fingerprint:this.deliveryFingerprint(s,tf),sourceHash:sourceHash(s.patched),
       accountResetAt:this.db.kvGet<number>('paper.resetAt')??null,
-      targetPositionId:this.paper.openPositions().find(p=>p.scannerId===s.id&&p.symbol===symbol&&p.tf===tf&&(!ev.side||p.side===ev.side))?.id??null,
-      targetPendingIds:this.paper.pendingEntries().filter(p=>p.scannerId===s.id&&p.symbol===symbol&&p.tf===tf&&(!ev.side||p.side===ev.side)).map(p=>p.id)};
+      targetPositionId:targets?targets.targetPositionId:this.paper.openPositions().find(p=>p.scannerId===s.id&&p.symbol===symbol&&p.tf===tf&&(!ev.side||p.side===ev.side))?.id??null,
+      targetPendingIds:targets?targets.targetPendingIds:this.paper.pendingEntries().filter(p=>p.scannerId===s.id&&p.symbol===symbol&&p.tf===tf&&(!ev.side||p.side===ev.side)).map(p=>p.id)};
     const label=copied?`${ev.label} (shadow mirror)`.slice(0,80):ev.label;
     const levelsSource=ev.kind==='entry'?(ev.sl&&ev.tp.length?'script':ev.sl||ev.tp.length?'mixed':'atr-fallback'):null;
     const row=this.inbox.accept(delivery,{at:now,barTime:ev.barTime,scannerId:s.id,scannerName:s.name,symbol,tf,kind:ev.kind,side:ev.side??null,
       price:ev.price??null,sl:ev.sl??null,tp:ev.tp,score:ev.score??null,label,message:ev.message,summary:describeEvent(ev),source:ev.source,levelsSource,
       action:'received:awaiting decision',positionId:null});
-    if(row?.state==='pending')await this.processReceipt(row,row.attempts>0);
+    if(row?.state==='pending')await this.processReceipt(row,targets?.recovered===true||row.attempts>0);
   }
 
   private async processReceipt(row:InboxRow,recovery:boolean):Promise<void>{

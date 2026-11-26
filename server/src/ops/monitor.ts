@@ -1,3 +1,4 @@
+import {TradeNotifications} from './tradeNotifications.ts';
 /**
  * Alert conditions evaluated on a timer, the daily summary and per-trade notifications.
  * Everything here reads public state (feed, pool stats, paper stats, candle store, db counters);
@@ -67,6 +68,7 @@ export class Monitor {
   readonly state: MonitorState;
   private startedAt: number;
   private d: MonitorDeps;
+  private tradeNotifications:TradeNotifications;
 
   constructor(d: MonitorDeps) {
     this.d = d;
@@ -76,19 +78,22 @@ export class Monitor {
     const peak = Number(d.db.kvGet<number>('ops.equityPeak') ?? 0);
     const peakResetAt = d.db.kvGet<number>('ops.equityPeakResetAt') ?? null;
     this.state = { feedDownSince: null, queueDeepSince: null, equityPeak: Number.isFinite(peak) ? peak : 0, equityPeakResetAt: peakResetAt, rssPct: 0, sampledAt: 0, prunedAt: 0, completions: [], drawdownPct: 0, dbErrorsSeen: d.db.errors, diskFreeMb: null, lastEvalAt: null, lastSummaryDay: null, evaluations: 0 };
-    d.paper.on('trade', (t: any) => { if (this.d.cfg().alerts.onTrade) void this.onTrade(t); });
+    this.tradeNotifications=new TradeNotifications(d.db,d.alerts,()=>this.d.cfg().alerts.onTrade);
+    d.paper.on('trade',()=>{void this.tradeNotifications.tick().catch(e=>log.warn(`trade notifications pending: ${e?.message??e}`));});
   }
 
   start(intervalMs = 15_000) {
-    this.stop();
+    this.tradeNotifications.start();
+    if(this.timer)clearInterval(this.timer);
     this.timer = setInterval(() => { void this.evaluate().catch(e => log.error(`evaluate failed: ${e?.message ?? e}`)); }, intervalMs);
     this.timer.unref();
   }
 
-  stop() { if (this.timer) { clearInterval(this.timer); this.timer = null; } }
+  async stop() { if (this.timer) { clearInterval(this.timer); this.timer = null; } await this.tradeNotifications.stop(); }
 
   /** Evaluate every condition once (also called by tests and `POST /api/ops/alerts/test`). */
   async evaluate(now = this.now()): Promise<void> {
+    await this.tradeNotifications.tick();
     const cfg = this.d.cfg();
     const a = this.d.alerts;
     const st = this.state;
@@ -229,11 +234,7 @@ export class Monitor {
     return lines.join('\n');
   }
 
-  private async onTrade(t: any) {
-    const emoji = (t.pnl ?? 0) > 0 ? '🟢' : '🔴';
-    const r = t.rMultiple !== null && t.rMultiple !== undefined ? ` ${Number(t.rMultiple).toFixed(2)}R` : '';
-    await this.d.alerts.notify(`${emoji} ${String(t.side).toUpperCase()} ${t.symbol} ${t.tf} closed (${t.exitReason}) pnl ${fmtSigned(t.pnl)}${r} — ${t.scannerName ?? t.scannerId}`);
-  }
+
 }
 
 function fmtMoney(v: number): string { return Number.isFinite(v) ? v.toLocaleString('en-US', { maximumFractionDigits: 2 }) : String(v); }

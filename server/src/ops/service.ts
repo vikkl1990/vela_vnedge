@@ -1,3 +1,4 @@
+import {researchTaskStatus} from '../research/tasks.ts';
 /**
  * Phase 4 composition: metrics, alerts, condition monitor, backups, log rotation and graceful
  * shutdown. Constructed by `App`; everything it needs comes from public objects and events, so
@@ -18,6 +19,7 @@ import { WorkerTracker } from './workers.ts';
 const log = logger.scoped('ops');
 
 export interface OpsDeps {
+  quiesce?:()=>void;
   cfg: () => AppConfig;
   onConfigChange: (l: (next: AppConfig) => void) => void;
   db: Db;
@@ -97,6 +99,7 @@ export class OpsService {
         backup: this.backups.status(),
         log: { file: fileStats.file, bytes: fileStats.bytes, rotations: fileStats.rotations, writeErrors: fileStats.writeErrors, format: logger.format },
         db: { bytes: this.d.db.sizeBytes(), errors: this.d.db.errors, lastError: this.d.db.lastError },
+        research:researchTaskStatus(),
         workers: { spawns: this.workers.spawns, respawns: this.workers.respawns, respawnsLast5m: this.workers.respawnsWithin(300_000), recycled: this.pool.stats.recycled ?? 0, recyclesLast5m: this.pool.recyclesWithin?.(300_000) ?? 0 },
         monitor: { ...this.monitor.state },
         shuttingDown: this.shuttingDown,
@@ -110,9 +113,10 @@ export class OpsService {
    */
   async shutdown(stopApp: () => Promise<void>, fatal: () => boolean = () => false): Promise<{ drained: boolean; waitedMs: number }> {
     this.shuttingDown = true;
+    this.d.quiesce?.();
     const t0 = Date.now();
     const timeout = this.d.cfg().ops.shutdownTimeoutMs;
-    this.monitor.stop(); this.backups.stop(); this.d.candles.stopMaintenance(); this.metrics.stop();
+    await this.monitor.stop(); this.backups.stop(); this.d.candles.stopMaintenance(); this.metrics.stop();
     let drained = false;
     while (!fatal() && Date.now() - t0 < timeout) {
       const s = this.d.pool.stats;
@@ -142,6 +146,8 @@ export class OpsService {
 
     m.gauge('feed_connected', 'Delta websocket connected (1/0)', () => d.feed.connected ? 1 : 0);
     m.gauge('feed_last_tick_age_seconds', 'Seconds since the last websocket message', () => d.feed.lastTickAt ? (Date.now() - d.feed.lastTickAt) / 1000 : null);
+    m.gauge('research_queue_depth','CPU research calculations waiting',()=>researchTaskStatus().queued);
+    m.gauge('research_worker_busy','Isolated research worker active (1/0)',()=>researchTaskStatus().active);
     m.gauge('worker_queue_depth', 'Pine jobs waiting for a worker', () => d.pool.stats.queued);
     m.gauge('worker_busy', 'Workers currently running a script', () => d.pool.stats.busy);
     m.gauge('worker_pool_size', 'Configured worker threads', () => d.pool.stats.size);

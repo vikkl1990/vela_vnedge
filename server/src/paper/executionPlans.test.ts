@@ -24,6 +24,17 @@ function setup(t:any,limit=false){
  const ctx={scannerId:'s',scannerName:'Source',symbol:'ETHUSD',tf:'15m',market:{contractValue:.01,tickSize:.01},at:T,refPrice:100,event:ev,bars};
  return {db,c,e,service,bars,ev,ctx};
 }
+test('a durable recovered comparison retries a failed admission once and prices its market entry now',t=>{
+ const {c,e,service,ctx,db}=setup(t);c.executionPlans=c.executionPlans!.filter(p=>p.variant==='native');
+ const enter=e.onEntry.bind(e);let failed=false;
+ e.onEntry=(...args)=>{if(!failed){failed=true;throw Error('interrupted admission');}return enter(...args);};
+ assert.throws(()=>service.observe(ctx),/interrupted admission/);
+ assert.equal(e.openPositions().length,0);
+ service.observe({...ctx,recovery:true,at:T+1000,refPrice:100.25});
+ service.observe({...ctx,recovery:true,at:T+1000,refPrice:100.25});
+ assert.equal(e.openPositions().length,1);assert.equal(e.openPositions()[0].entryPrice,100.25);
+ assert.equal(db.get<any>('SELECT count(*) n FROM execution_plan_events')!.n,1);
+});
 test('same source event feeds three plans once; current stop restriction remains and experiments use account-sized risk',t=>{
  const {c,e,service,ctx}=setup(t);service.observe(ctx);service.observe(ctx);
  const view=service.view();assert.equal(view.cohorts.length,3);assert.ok(view.cohorts.every(c=>c.signals===1));

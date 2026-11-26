@@ -51,6 +51,7 @@ export function funnelClass(action: string): 'opened' | 'pending' | 'regime' | '
 }
 
 export class IncubatorStore {
+  get decisionDb(){return this.db;}
   private db: Db;
   noteChartReceipt(...args:ChartReceiptArgs){recordChartReceipt(this.db,...args);}
   /** Installed by the runtime/screen composition root. Raw history stays available for audit. */

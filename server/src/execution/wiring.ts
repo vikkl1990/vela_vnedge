@@ -153,6 +153,7 @@ export function wireRealtime(app: App): void {
     app.feed.unsubscribe('ob_updates',depth.symbols); app.feed.subscribe('ob_updates',depth.symbols);
   }, 600_000);
   const stopDepth = deferLoop(app, () => {
+    app.ml.recoverClosedSamples();
     timing.flush();
     try{depth.flush();}catch(e:any){log.warn(`depth audit: ${e.message}`);}
     try{flow.flush();}catch(e:any){log.warn(`order flow: ${e.message}`);}

@@ -1,3 +1,4 @@
+import type {ResearchProvenance} from '../validation/provenance.ts';
 /**
  * Walk-forward validation of one scanner×symbol×timeframe over a long history.
  *
@@ -44,6 +45,7 @@ export interface WfWindowResult extends WfWindow {
 }
 
 export interface WalkForwardResult {
+  provenance?:ResearchProvenance;
   version: number;
   at: number;
   scannerId: string; scannerName: string; symbol: string; tf: string;

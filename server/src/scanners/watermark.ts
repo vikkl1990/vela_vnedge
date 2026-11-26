@@ -42,6 +42,7 @@ export class BarWatermark {
   private store: MarkStore;
   constructor(store: MarkStore) { this.store = store; }
   private all(): Record<string, number> { if (!this.marks) this.marks = this.store.load() ?? {}; return this.marks; }
+  reload(){this.marks=null;}
   get(key: string): number | undefined { return this.all()[key]; }
   since(key: string, lastBarTime: number, tf: string): number { return liveSince(this.get(key), lastBarTime, tf); }
   /** Decision 193: the catch-up window for this pair's next run. */

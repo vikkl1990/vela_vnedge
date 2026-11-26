@@ -448,6 +448,12 @@ function ResultBody({ result, cols }: { result: BacktestResult; tick?: number; c
   const pnl = num(s.pnl)
   return (
     <div className="lab-result">
+      {result.researchStatus === 'historical' && (
+        <p className="muted" role="status">
+          Historical research: this result is not verified against the current source, reader, policy and
+          market costs. It is excluded from automatic tuning. Run a new backtest to refresh it.
+        </p>
+      )}
       <StatGrid min={130}>
         <Stat label="Trades" value={fmtInt(trades.length)} sub={`over ${fmtInt(result.bars)} bars`} />
         <Stat label="Win rate" value={num(s.winRatePct) === null ? '–' : fmtPct(num(s.winRatePct))} />

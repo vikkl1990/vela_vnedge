@@ -492,7 +492,7 @@ export class ApiServer {
     this.add('GET', '/api/equity', (_r, _s, _p, url) => a.paper.equityCurve(url.searchParams.get('scanner'), Number(url.searchParams.get('limit') ?? 2000)));
     this.add('GET', '/api/backtest', (_r, _s, _p, url) => {
       const id = url.searchParams.get('scanner') ?? ''; const symbol = url.searchParams.get('symbol') ?? a.scanners.symbolsFor(id)[0]; const tf = url.searchParams.get('tf') ?? a.scanners.timeframesFor(id)[0];
-      return a.scanners.getBacktest(id, symbol, tf) ?? { at: null, trades: [], stats: null, equity: [] };
+      return a.scanners.describeBacktest(id, symbol, tf) ?? { at: null, trades: [], stats: null, equity: [] };
     });
     this.add('POST', '/api/backtest/run', async (_r, _s, _p, _u, body) => {
       const id = String(body?.scanner ?? ''); const symbol = String(body?.symbol ?? a.scanners.symbolsFor(id)[0]); const tf = String(body?.tf ?? a.scanners.timeframesFor(id)[0]);
@@ -546,7 +546,7 @@ export class ApiServer {
     this.add('GET', '/api/context/history', (_r, _s, _p, url) => ({ symbol: url.searchParams.get('symbol') ?? '', rows: a.context.history(url.searchParams.get('symbol') ?? '', Number(url.searchParams.get('hours') ?? 168)) }));
     this.add('POST', '/api/context/refresh', async () => { await a.context.runOnce(); return a.context.latest(); });
     this.add('GET', '/api/ml', () => ({ ...(a.ml.insights() ?? { trainedAt: null, samples: 0, liveSamples: 0, scannersWithModel: 0, global: null, scanners: [] }), counts: a.ml.count(), config: a.config.get().ml }));
-    this.add('POST', '/api/ml/train', () => a.ml.train());
+    this.add('POST', '/api/ml/train', () => a.ml.trainAsync());
     this.add('GET', '/api/ml/yardstick', (_r, _s, _p, url) => a.mlYardstick(Math.min(180, Math.max(7, Number(url.searchParams.get('days') ?? 60) || 60))));
     this.add('GET', '/api/ml/scanner/:id', (_r, _s, p) => a.ml.insightFor(p.id) ?? { scannerId: p.id, samples: 0, rules: [], model: null });
     this.add('GET', '/api/ml/samples', (_r, _s, _p, url) => a.ml.samples(url.searchParams.get('scanner') ?? undefined, Number(url.searchParams.get('limit') ?? 500)));
