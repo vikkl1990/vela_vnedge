@@ -34,10 +34,10 @@ export const GROUPS: NavGroup[] = [
       },
       {
         to: '/workspace',
-        label: 'Workspace',
+        label: 'Terminal',
         key: 'o',
-        keywords: 'terminal chart market canvas',
-        blurb: 'Markets, chart and positions in one view',
+        keywords: 'workspace scalp terminal chart market canvas tape live signals',
+        blurb: 'Chart, live signal tape, markets and positions on one screen',
       },
       {
         to: '/trades',

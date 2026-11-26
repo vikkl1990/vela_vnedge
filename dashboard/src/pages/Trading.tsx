@@ -122,7 +122,7 @@ const STAGE_TONE: Record<FunnelStage, string> = {
   opened: 'gain', cost: 'accent', trend: 'accent', burst: 'warn', cooldown: 'warn', caps: 'warn', regime: 'warn', risk: 'loss', ignored: 'muted', other: 'muted',
 }
 
-function Funnel({ o }: { o: TradingOverview }) {
+export function Funnel({ o }: { o: TradingOverview }) {
   const f = o.funnel
   const max = Math.max(1, ...f.stages.map((s) => s.n))
   return (
@@ -156,7 +156,7 @@ function Funnel({ o }: { o: TradingOverview }) {
   )
 }
 
-function Rules({ o }: { o: TradingOverview }) {
+export function Rules({ o }: { o: TradingOverview }) {
   const p = o.policy
   const r = p.risk
   const rows: Array<[string, string]> = [

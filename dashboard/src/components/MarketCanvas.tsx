@@ -2,24 +2,41 @@ import { useState } from 'react'
 import type { Candle, Position } from '../api/types'
 import { fmtDateTime, fmtPrice } from '../lib/format'
 
+/** A scanner's entry signal on a bar: filled arrow when it opened a trade, hollow when a rule refused it. */
+export interface CanvasMarker {
+  time: number
+  side: 'long' | 'short'
+  opened: boolean
+  title: string
+}
+
 /** Compact price workspace. Chart observations are never an execution simulator. */
 export function MarketCanvas({
   bars,
   positions,
   symbol,
   tickSize,
+  markers = [],
+  height = 340,
+  candles = 100,
+  livePrice,
 }: {
   bars: Candle[]
   positions: Position[]
   symbol: string
   tickSize?: number
+  markers?: CanvasMarker[]
+  /** viewBox height; the width stays 900 and the SVG scales to its box */
+  height?: number
+  candles?: number
+  /** the live price, drawn as a tagged line on the axis */
+  livePrice?: number | null
 }) {
   const [hover, setHover] = useState<number | null>(null)
-  const data = bars.filter((b) => [b.open, b.high, b.low, b.close, b.time].every(Number.isFinite)).slice(-100)
+  const data = bars.filter((b) => [b.open, b.high, b.low, b.close, b.time].every(Number.isFinite)).slice(-candles)
   if (!data.length)
     return <div className="terminal-empty">No candles available for this market and timeframe.</div>
   const width = 900,
-    height = 340,
     left = 12,
     right = 78,
     top = 25,
@@ -33,6 +50,13 @@ export function MarketCanvas({
   const x = (i: number) => left + dx * (i + 0.5)
   const y = (v: number) => top + ((max - v) / (max - min)) * (height - top - bottom)
   const b = data[hover === null ? data.length - 1 : Math.min(hover, data.length - 1)]
+  // each marker sits on the bar it was raised on: under the low for a long, over the high for a short
+  const index = new Map(data.map((v, i) => [v.time, i]))
+  const placed = markers
+    .map((m) => ({ ...m, i: index.get(m.time) }))
+    .filter((m): m is CanvasMarker & { i: number } => m.i !== undefined)
+  const last = livePrice ?? data[data.length - 1].close
+  const lastUp = last >= data[data.length - 1].open
   const levels = positions
     .flatMap((p) => [
       { value: p.entryPrice, text: `#${p.id} Entry`, color: 'var(--accent-2)' },
@@ -115,6 +139,53 @@ export function MarketCanvas({
             </text>
           </g>
         ))}
+        {placed.map((m, k) => {
+          const cx = x(m.i),
+            long = m.side === 'long',
+            yy = long ? y(data[m.i].low) + 12 : y(data[m.i].high) - 12,
+            s = Math.max(4, Math.min(7, dx * 0.45)),
+            color = long ? 'var(--gain)' : 'var(--loss)'
+          const pts = long
+            ? `${cx},${yy - s} ${cx - s},${yy + s} ${cx + s},${yy + s}`
+            : `${cx},${yy + s} ${cx - s},${yy - s} ${cx + s},${yy - s}`
+          return (
+            <polygon
+              key={`${m.time}-${k}`}
+              points={pts}
+              fill={m.opened ? color : 'none'}
+              stroke={color}
+              strokeWidth={1.2}
+              opacity={m.opened ? 1 : 0.65}
+              className="canvas-marker"
+            >
+              <title>{m.title}</title>
+            </polygon>
+          )
+        })}
+        {last >= min && last <= max && (
+          <g className="canvas-last">
+            <line
+              x1={left}
+              x2={width - right}
+              y1={y(last)}
+              y2={y(last)}
+              stroke={lastUp ? 'var(--gain)' : 'var(--loss)'}
+              strokeDasharray="2 3"
+              opacity=".8"
+            />
+            <rect
+              x={width - right + 2}
+              y={y(last) - 9}
+              width={right - 4}
+              height={18}
+              rx={3}
+              fill={lastUp ? 'var(--gain)' : 'var(--loss)'}
+            />
+            <text x={width - right + 8} y={y(last) + 4} className="canvas-last-text">
+              {fmtPrice(last, tickSize)}
+            </text>
+          </g>
+        )}
         {hover !== null && (
           <line
             x1={x(hover)}

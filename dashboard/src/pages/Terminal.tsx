@@ -1,417 +1,359 @@
+import { useQuery } from '@tanstack/react-query'
 import { useMemo, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
-import {
-  useCandles,
-  useConfig,
-  useHealth,
-  useMarkets,
-  usePositions,
-  useRisk,
-  useSignals,
-  useStats,
-} from '../api/queries'
-import { ASSET_GROUPS } from '../../../shared/assetClass'
-import { MarketCanvas } from '../components/MarketCanvas'
+import { api } from '../api/client'
+import { useConfig, useMarkets, usePositions, useRisk, useStats } from '../api/queries'
+import type { Signal } from '../api/types'
+import { MarketCanvas, type CanvasMarker } from '../components/MarketCanvas'
 import { PaperPositions } from '../components/PaperPositions'
-import { ErrorState, Loading, Pill, Section, Time } from '../components/kit'
-import { chipLabel, useClassOf } from '../lib/assetClass'
-import { fmtMoney, fmtPct, fmtPnl, fmtPrice, pnlClass } from '../lib/format'
+import { ErrorState, Loading, Pill } from '../components/kit'
+import { fmtMoney, fmtPct, fmtPnl, fmtPrice, pnlClass, timeAgo } from '../lib/format'
 import { patchSearch } from '../lib/researchNavigation'
 import { gateOf } from '../lib/signalOutcomes'
 import { accountPositionLimit } from '../lib/positionCapacity'
-import { inHorizon, openCapital, workspaceSignals, type TradingHorizon } from '../lib/workspace'
+import { openCapital } from '../lib/workspace'
 import { useLiveTick } from '../sse/prices'
+import { useNow } from '../lib/useNow'
+import { Funnel, Rules } from './Trading'
+import '../styles/pages/scalp.css'
 
-function MarketPrice({
-  symbol,
-  fallback,
-  tickSize,
-}: {
-  symbol: string
-  fallback?: number
-  tickSize?: number
-}) {
+/**
+ * The scalper terminal: one screen, chart first. Left, the markets the bot trades with their latest signal; centre,
+ * the chart with every entry signal on its bar (filled when it opened a trade, hollow when a rule refused it) and the
+ * open trade's levels; right, the signal tape as the engine decides it; below, positions, the funnel and the rules.
+ * Everything polls the same endpoints as the rest of the dashboard: nothing here can trade.
+ */
+const FRAMES = ['1m', '5m', '15m', '1h', '4h'] as const
+const short = (sym: string) => sym.replace(/USD$/, '')
+
+function LivePrice({ symbol, fallback, tickSize }: { symbol: string; fallback?: number; tickSize?: number }) {
   const tick = useLiveTick(symbol, fallback)
   return (
     <span
-      className={`terminal-price mono ${tick.stale ? 'price-stale' : ''}`}
+      className={`scalp-price mono ${tick.stale ? 'price-stale' : ''}`}
       title={tick.stale ? 'Last known price; live tick is stale or unavailable' : 'Latest trade price'}
     >
       {tick.price == null ? '—' : fmtPrice(tick.price, tickSize)}
-      <small>{tick.stale ? 'Last known' : 'Live price'}</small>
     </span>
   )
 }
 
 export function Terminal() {
   const [search, setSearch] = useSearchParams()
-  const horizon: TradingHorizon =
-    search.get('horizon') === 'scalp' ? 'scalp' : search.get('horizon') === 'swing' ? 'swing' : 'all'
-  const symbol = search.get('symbol') || 'BTCUSD'
-  const requestedFrame = search.get('tf')
-  const frame =
-    requestedFrame && ['1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h', '6h', '1d'].includes(requestedFrame)
-      ? requestedFrame
-      : horizon === 'swing'
-        ? '1h'
-        : '15m'
-  const [filter, setFilter] = useState('')
-  const [classFilter, setClassFilter] = useState('')
-  const classOf = useClassOf()
-  const markets = useMarkets(),
-    positions = usePositions(),
-    stats = useStats(),
-    risk = useRisk(),
-    config = useConfig(),
-    health = useHealth()
-  const signals = useSignals({ kind: 'entry', limit: 100 })
-  const candles = useCandles(symbol, frame, 120)
-  const paper = config.data?.paper as
-    | (NonNullable<typeof config.data>['paper'] & { marginPerTrade?: number; maxStopLossPct?: number })
-    | undefined
-  const capital = useMemo(() => openCapital(positions.data ?? []), [positions.data])
-  const visiblePositions = (positions.data ?? []).filter((p) => inHorizon(p.tf, horizon))
-  const visibleSignals = workspaceSignals(signals.data ?? [], horizon)
-  const classCounts = new Map<string, number>()
-  for (const m of markets.data ?? [])
-    classCounts.set(classOf(m.symbol).group, (classCounts.get(classOf(m.symbol).group) ?? 0) + 1)
-  const marketRows = (markets.data ?? []).filter(
-    (m) =>
-      (!filter || `${m.symbol} ${m.description}`.toLowerCase().includes(filter.toLowerCase())) &&
-      (!classFilter || classOf(m.symbol).group === classFilter),
-  )
-  const selected = markets.data?.find((m) => m.symbol === symbol)
+  const config = useConfig()
+  const markets = useMarkets()
+  const positions = usePositions()
+  const stats = useStats()
+  const risk = useRisk()
+  const now = useNow(5_000)
   const update = (changes: Record<string, string | null>) => setSearch(patchSearch(search, changes))
-  const changeHorizon = (h: TradingHorizon) =>
-    update({ horizon: h === 'all' ? null : h, tf: h === 'swing' ? '1h' : '15m' })
-  const s = stats.data
+
+  // the markets and timeframes the enabled scanners trade
+  const bot = useMemo(() => {
+    const on = Object.values(config.data?.scanners ?? {}).filter((s) => s.enabled)
+    const symbols = [...new Set(on.flatMap((s) => s.symbols ?? config.data?.symbols ?? []))]
+    const tfs = [...new Set(on.flatMap((s) => s.timeframes ?? []))]
+    return { symbols, tfs }
+  }, [config.data])
+  const symbol = search.get('symbol') || bot.symbols[0] || 'BTCUSD'
+  const reqTf = search.get('tf')
+  const frame = reqTf && (FRAMES as readonly string[]).includes(reqTf) ? reqTf : bot.tfs[0] ?? '15m'
+  const [scope, setScope] = useState<'bot' | 'all'>('bot')
+  const [filter, setFilter] = useState('')
+  const [tapeOnly, setTapeOnly] = useState<'all' | 'opened'>('all')
+  const [dock, setDock] = useState<'positions' | 'funnel' | 'rules'>('positions')
+
+  const tape = useQuery({
+    queryKey: ['scalp-tape'],
+    queryFn: () => api.signals({ kind: 'entry', limit: 150 }),
+    refetchInterval: 5_000,
+    staleTime: 4_000,
+  })
+  const chartSignals = useQuery({
+    queryKey: ['scalp-chart-signals', symbol, frame],
+    queryFn: () => api.signals({ kind: 'entry', symbol, tf: frame, limit: 300 }),
+    refetchInterval: 15_000,
+    staleTime: 10_000,
+  })
+  const candles = useQuery({
+    queryKey: ['scalp-candles', symbol, frame],
+    queryFn: () => api.candles({ symbol, tf: frame, limit: 160 }),
+    refetchInterval: 15_000,
+    staleTime: 10_000,
+    retry: 1,
+  })
+  const overview = useQuery({
+    queryKey: ['trading-overview', '1'],
+    queryFn: () => api.tradingOverview(1),
+    refetchInterval: 15_000,
+    staleTime: 10_000,
+  })
+
+  const latestBySymbol = useMemo(() => {
+    const m = new Map<string, Signal>()
+    for (const s of tape.data ?? []) if (!m.has(s.symbol) || m.get(s.symbol)!.at < s.at) m.set(s.symbol, s)
+    return m
+  }, [tape.data])
+  const held = new Set((positions.data ?? []).map((p) => p.symbol))
+  const universe = scope === 'bot' && bot.symbols.length ? bot.symbols : (markets.data ?? []).map((m) => m.symbol)
+  const rows = universe
+    .map((sym) => ({ sym, m: markets.data?.find((x) => x.symbol === sym) }))
+    .filter((r) => !filter || r.sym.toLowerCase().includes(filter.toLowerCase()))
+  const selected = markets.data?.find((m) => m.symbol === symbol)
+  const markers: CanvasMarker[] = (chartSignals.data ?? [])
+    .filter((s) => s.side === 'long' || s.side === 'short')
+    .map((s) => ({
+      time: s.barTime,
+      side: s.side as 'long' | 'short',
+      opened: s.action === 'opened' || s.action === 'reversed',
+      title: `${s.scannerName}: ${s.side} ${s.label} → ${gateOf(s.action).label}`,
+    }))
+  const tapeRows = (tape.data ?? []).filter((s) => tapeOnly === 'all' || s.action === 'opened')
+  const capital = useMemo(() => openCapital(positions.data ?? []), [positions.data])
+  const st = stats.data
+  const total = st ? st.equity - (config.data?.paper.initialEquity ?? st.equity) : null
+  const cap = config.data
+    ? (accountPositionLimit(config.data.paper.maxOpenPositions, config.data.risk?.maxPositionsTotal ?? 0, config.data.risk?.enabled) ??
+      'no count cap')
+    : '—'
+  const halted = risk.data?.halted
+
   return (
-    <div className="page terminal-page">
-      <div className="terminal-heading">
+    <div className="page scalp">
+      <div className="terminal-account-strip scalp-bar">
         <div>
-          <div className="eyebrow">VN EDGE / TRADING WORKSPACE</div>
-          <h1>
-            Precision in every decision<span className="accent">.</span>
-          </h1>
-          <p>Market data → confirmed signal → executable entry → managed exit.</p>
-        </div>
-        <div className="terminal-mode">
-          <Pill tone={health.data?.mode === 'paper' ? 'accent' : 'warn'}>
-            {health.data ? `${health.data.mode.toUpperCase()} ACCOUNT` : 'MODE LOADING'}
-          </Pill>
-          <Link to="/incubator?section=plans">Shadow research ↗</Link>
-        </div>
-      </div>
-      <div className="terminal-account-strip">
-        <div>
-          <span>Account equity</span>
-          <strong className="mono">{s ? `$${fmtMoney(s.equity)}` : '—'}</strong>
-          <small>Starting purse {paper ? `$${fmtMoney(paper.initialEquity, 0)}` : '—'}</small>
+          <span>Equity</span>
+          <strong className={`mono ${pnlClass(total)}`}>{st ? `$${fmtMoney(st.equity)}` : '—'}</strong>
+          <small>{total == null ? '—' : `${fmtPnl(total)} since start`}</small>
         </div>
         <div>
           <span>Today · UTC</span>
           <strong className={`mono ${pnlClass(risk.data?.day?.pnl)}`}>
             {risk.data?.day ? `$${fmtPnl(risk.data.day.pnl)}` : '—'}
           </strong>
-          <small>Equity change, including open P&L</small>
+          <small>including open P&L</small>
         </div>
         <div>
-          <span>Open margin</span>
-          <strong className="mono">
-            {positions.data ? `$${fmtMoney(capital.margin)}${capital.unknown ? ' + unknown' : ''}` : '—'}
-          </strong>
-          <small>Open positions only; pending excluded</small>
-        </div>
-        <div>
-          <span>Initial stop risk</span>
+          <span>Open risk</span>
           <strong className="mono">{positions.data ? `$${fmtMoney(capital.risk)}` : '—'}</strong>
-          <small>Combined opening budgets; not current stops</small>
+          <small>{positions.data ? `$${fmtMoney(capital.margin)} margin` : '—'}</small>
         </div>
         <div>
-          <span>Open positions</span>
+          <span>Positions</span>
           <strong className="mono">
             {positions.data?.length ?? '—'}
-            <em>
-              {' '}
-              /{' '}
-              {config.data
-                ? (accountPositionLimit(
-                    config.data.paper.maxOpenPositions,
-                    config.data.risk?.maxPositionsTotal ?? 0,
-                    config.data.risk?.enabled,
-                  ) ?? 'no count cap')
-                : '—'}
-            </em>
+            <em> / {cap}</em>
           </strong>
           <small>Shared account; margin and risk checks apply</small>
         </div>
-      </div>
-      <div className="terminal-viewbar">
-        <div className="terminal-segments" aria-label="Trading horizon">
-          {(['all', 'scalp', 'swing'] as const).map((h) => (
-            <button
-              key={h}
-              className={horizon === h ? 'on' : ''}
-              aria-pressed={horizon === h}
-              onClick={() => changeHorizon(h)}
-            >
-              {h === 'all' ? 'All strategies' : h === 'scalp' ? 'Scalp' : 'Swing'}
-              <small>{h === 'all' ? 'Portfolio' : h === 'scalp' ? 'Below 1h' : '1h and above'}</small>
-            </button>
-          ))}
+        <div>
+          <span>24h signals</span>
+          <strong className="mono">
+            {overview.data
+              ? `${overview.data.funnel.stages.find((x) => x.stage === 'opened')?.n ?? 0} / ${overview.data.funnel.fired}`
+              : '—'}
+          </strong>
+          <small>opened / fired</small>
         </div>
-        <span className="muted small">View filters only · no reserved quotas</span>
-        <Link className="btn btn-sm" to="/overview">
-          Home & account overview ↗
-        </Link>
+        <div className="scalp-state">
+          <span>Engine</span>
+          <strong className={halted ? 'tone-warn' : 'tone-gain'}>
+            <i className={`scalp-dot ${halted ? 'off' : 'on'}`} aria-hidden />
+            {!risk.data ? '—' : halted ? 'Paused' : 'Scanning'}
+          </strong>
+          <small>
+            {config.data?.execution?.mode ?? '—'} · {bot.tfs.join(', ') || '—'} · {bot.symbols.length} markets
+          </small>
+        </div>
       </div>
-      <div className="terminal-grid">
-        <section className="terminal-panel terminal-watchlist" aria-label="Market watchlist">
-          <div className="terminal-panel-title">
-            <h2>Markets</h2>
-            <span>{markets.data?.length ?? '—'}</span>
-          </div>
-          <label className="terminal-search">
-            <span className="sr-only">Search markets</span>
-            <input
-              placeholder="Search any pair…"
-              value={filter}
-              onChange={(e) => setFilter(e.target.value)}
-            />
-          </label>
-          <div className="watchlist-classes" role="group" aria-label="Asset class">
-            <button aria-pressed={!classFilter} onClick={() => setClassFilter('')}>
-              All
-            </button>
-            {ASSET_GROUPS.filter((g) => classCounts.get(g.key)).map((g) => (
-              <button
-                key={g.key}
-                aria-pressed={classFilter === g.key}
-                title={`${g.hint} · ${classCounts.get(g.key)} markets`}
-                onClick={() => setClassFilter(classFilter === g.key ? '' : g.key)}
-              >
-                {g.key === 'large_alts' ? 'Large alts' : g.key === 'tradfi' ? 'Stocks' : g.label}
+
+      <div className="scalp-grid">
+        <section className="scalp-panel scalp-watch" aria-label="Markets">
+          <div className="scalp-head">
+            <div className="scalp-seg" role="group" aria-label="Market list">
+              <button aria-pressed={scope === 'bot'} onClick={() => setScope('bot')}>
+                Bot <small>{bot.symbols.length}</small>
               </button>
-            ))}
+              <button aria-pressed={scope === 'all'} onClick={() => setScope('all')}>
+                All <small>{markets.data?.length ?? '—'}</small>
+              </button>
+            </div>
           </div>
-          <div className="watchlist-columns">
-            <span>Contract</span>
-            <span>Price / 24h</span>
+          <input
+            className="scalp-search"
+            placeholder="Filter…"
+            aria-label="Filter markets"
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+          />
+          <div className="scalp-watch-cols">
+            <span>Market</span>
+            <span>Last</span>
+            <span>24h</span>
           </div>
-          <div className="watchlist-scroll">
+          <div className="scalp-scroll">
             {markets.isLoading && <Loading kind="cards" rows={4} />}
             {markets.isError && <ErrorState error={markets.error} onRetry={() => markets.refetch()} />}
-            {!markets.isLoading && !markets.isError && !marketRows.length && (
-              <p className="terminal-empty">No matching markets.</p>
-            )}
-            {marketRows.map((m) => (
-              <button
-                key={m.symbol}
-                aria-pressed={symbol === m.symbol}
-                className={`market-row ${symbol === m.symbol ? 'selected' : ''}`}
-                onClick={() => update({ symbol: m.symbol })}
-              >
-                <span>
-                  <b>
-                    {m.symbol.replace(/USD$/, '')}
-                    <small> / USD</small>
-                  </b>
-                  <small>
-                    {(positions.data ?? []).some((p) => p.symbol === m.symbol)
-                      ? '● Position open'
-                      : `Perpetual · ${chipLabel(classOf(m.symbol))}`}
-                  </small>
-                </span>
-                <span className="mono">
-                  <b>{fmtPrice(m.markPrice, m.tickSize)}</b>
-                  <small className={pnlClass(m.change24hPct)}>
-                    {m.change24hPct > 0 ? '+' : ''}
-                    {fmtPct(m.change24hPct)}
-                  </small>
-                </span>
-              </button>
-            ))}
-          </div>
-          <Link className="terminal-panel-footer" to="/radar">
-            Signal coverage across markets →
-          </Link>
-        </section>
-        <section className="terminal-panel terminal-chart" aria-label="Price workspace">
-          <div className="terminal-market-header">
-            <div>
-              <h2>
-                {symbol.replace(/USD$/, '')}
-                <span> / USD</span>
-                <Pill tone="muted">PERPETUAL</Pill>
-              </h2>
-              <span className="muted small">Delta Exchange India</span>
-            </div>
-            <MarketPrice symbol={symbol} fallback={selected?.markPrice} tickSize={selected?.tickSize} />
-          </div>
-          <div className="terminal-chart-tools">
-            <div role="group" aria-label="Chart timeframe">
-              {['1m', '5m', '15m', '30m', '1h', '4h', '1d'].map((tf) => (
+            {rows.map(({ sym, m }) => {
+              const sig = latestBySymbol.get(sym)
+              return (
                 <button
-                  key={tf}
-                  aria-pressed={frame === tf}
-                  className={frame === tf ? 'on' : ''}
-                  onClick={() => update({ tf })}
+                  key={sym}
+                  className={`scalp-row ${symbol === sym ? 'on' : ''}`}
+                  aria-pressed={symbol === sym}
+                  onClick={() => update({ symbol: sym })}
                 >
+                  <span className="scalp-sym">
+                    <span className="scalp-sym-top">
+                      {held.has(sym) && <i className="scalp-dot on" title="Position open" />}
+                      <b>{short(sym)}</b>
+                    </span>
+                    {sig && (
+                      <small
+                        className={sig.side === 'long' ? 'gain' : 'loss'}
+                        title={`${sig.scannerName} · ${gateOf(sig.action).label}`}
+                      >
+                        {sig.side === 'long' ? '▲' : '▼'} {timeAgo(sig.at, now)}
+                      </small>
+                    )}
+                  </span>
+                  <span className="mono">{m ? fmtPrice(m.markPrice, m.tickSize) : '—'}</span>
+                  <span className={`mono ${pnlClass(m?.change24hPct)}`}>
+                    {m ? `${m.change24hPct > 0 ? '+' : ''}${fmtPct(m.change24hPct)}` : '—'}
+                  </span>
+                </button>
+              )
+            })}
+          </div>
+        </section>
+
+        <section className="scalp-panel scalp-chart" aria-label="Chart">
+          <div className="scalp-chart-head">
+            <div className="scalp-title">
+              <h1>
+                {short(symbol)}
+                <span>/USD · perp</span>
+              </h1>
+              <LivePrice symbol={symbol} fallback={selected?.markPrice} tickSize={selected?.tickSize} />
+              {selected && (
+                <span className={`mono scalp-change ${pnlClass(selected.change24hPct)}`}>
+                  {selected.change24hPct > 0 ? '+' : ''}
+                  {fmtPct(selected.change24hPct)}
+                </span>
+              )}
+            </div>
+            <div className="scalp-seg" role="group" aria-label="Chart timeframe">
+              {FRAMES.map((tf) => (
+                <button key={tf} aria-pressed={frame === tf} onClick={() => update({ tf })}>
                   {tf}
+                  {bot.tfs.includes(tf) && <i className="scalp-dot on" title="The bot trades this timeframe" />}
                 </button>
               ))}
+              <Link className="scalp-link" to={`/chart?symbol=${encodeURIComponent(symbol)}&tf=${encodeURIComponent(frame)}`}>
+                Full chart ↗
+              </Link>
             </div>
-            <Link to={`/chart?symbol=${encodeURIComponent(symbol)}&tf=${encodeURIComponent(frame)}`}>
-              Full chart ↗
-            </Link>
           </div>
-          {candles.isLoading && !candles.data ? (
-            <Loading kind="chart" height={340} />
-          ) : candles.isError ? (
-            <ErrorState error={candles.error} onRetry={() => candles.refetch()} />
-          ) : (
-            <MarketCanvas
-              bars={candles.data ?? []}
-              positions={(positions.data ?? []).filter((p) => p.symbol === symbol && p.tf === frame)}
-              symbol={symbol}
-              tickSize={selected?.tickSize}
-            />
-          )}
-          <div className="terminal-chart-caption">
-            <span>Price candles · {frame} · held entries, SL and allocated TP levels</span>
-            <span>Simulated fills are recorded in the journal</span>
+          <div className="scalp-canvas">
+            {candles.isLoading && !candles.data ? (
+              <Loading kind="chart" height={420} />
+            ) : candles.isError ? (
+              <ErrorState error={candles.error} onRetry={() => candles.refetch()} />
+            ) : (
+              <MarketCanvas
+                bars={candles.data ?? []}
+                positions={(positions.data ?? []).filter((p) => p.symbol === symbol && p.tf === frame)}
+                symbol={symbol}
+                tickSize={selected?.tickSize}
+                markers={markers}
+                height={470}
+                candles={140}
+              />
+            )}
+          </div>
+          <div className="scalp-legend">
+            <span>
+              <i className="lg lg-long" /> long signal
+            </span>
+            <span>
+              <i className="lg lg-short" /> short signal
+            </span>
+            <span>filled = opened · hollow = refused by a rule</span>
+            <span>dashed = open trade's entry, stop and targets</span>
           </div>
         </section>
-        <aside className="terminal-panel terminal-capital">
-          <div className="terminal-panel-title">
-            <h2>Execution policy</h2>
-            <span>Current</span>
+
+        <aside className="scalp-panel scalp-tape" aria-label="Signal tape">
+          <div className="scalp-head">
+            <h2>
+              Signal tape <i className="scalp-dot on live" aria-hidden />
+            </h2>
+            <div className="scalp-seg" role="group" aria-label="Tape filter">
+              <button aria-pressed={tapeOnly === 'all'} onClick={() => setTapeOnly('all')}>
+                All
+              </button>
+              <button aria-pressed={tapeOnly === 'opened'} onClick={() => setTapeOnly('opened')}>
+                Opened
+              </button>
+            </div>
           </div>
-          <div className="capital-head">
-            <span className="muted small">Margin sizing</span>
-            <strong>
-              {paper
-                ? paper.sizingMode === 'margin'
-                  ? `$${fmtMoney(paper.marginPerTrade ?? 0, 0)}`
-                  : `${paper.riskPerTradePct}%`
-                : '—'}
-            </strong>
-            <span className="small muted">
-              {paper?.sizingMode === 'margin'
-                ? 'configured allocation before risk scaling'
-                : 'configured risk sizing'}
-            </span>
-          </div>
-          <dl className="terminal-facts">
-            <div>
-              <dt>Stop-risk ceiling</dt>
-              <dd>{paper?.maxStopLossPct ?? '—'}% of equity</dd>
-            </div>
-            <div>
-              <dt>Leverage ceiling</dt>
-              <dd>{paper?.maxLeverage ?? '—'}×</dd>
-            </div>
-            <div>
-              <dt>Entry state</dt>
-              <dd className={risk.data?.halted ? 'warn' : ''}>
-                {!risk.data ? 'Loading' : risk.data.halted ? 'Paused' : 'Evaluating signals'}
-              </dd>
-            </div>
-            <div>
-              <dt>Exit management</dt>
-              <dd>Per held policy</dd>
-            </div>
-          </dl>
-          <p className="terminal-policy-note">
-            Margin funds exposure. The stop and execution costs determine risk. Targets shown on each position
-            belong to that trade.
-          </p>
-          <Link className="btn btn-sm" to="/settings">
-            Sizing & risk settings →
-          </Link>
-          <Link className="terminal-secondary-link" to="/monitor">
-            Inspect open-trade health ↗
-          </Link>
-          <div className="terminal-lab-note">
-            <span className="eyebrow">RESEARCH IS SEPARATE</span>
-            <p>
-              New readers, flexible sizing and target variants need their own results before account
-              admission.
-            </p>
-            <Link to="/incubator?section=plans">View shadow experiments →</Link>
+          <div className="scalp-scroll">
+            {tape.isLoading && <Loading kind="cards" rows={5} />}
+            {tape.isError && <ErrorState error={tape.error} onRetry={() => tape.refetch()} />}
+            {!tape.isLoading && !tapeRows.length && <p className="terminal-empty">No entry signals yet.</p>}
+            {tapeRows.slice(0, 80).map((s) => {
+              const g = gateOf(s.action)
+              return (
+                <button
+                  key={s.id}
+                  className={`scalp-tick ${s.action === 'opened' ? 'opened' : ''}`}
+                  onClick={() => update({ symbol: s.symbol, tf: s.tf })}
+                  title={`${s.scannerName}\n${s.label}\n${s.action}`}
+                >
+                  <span className={`scalp-side ${s.side === 'long' ? 'gain' : 'loss'}`}>
+                    {s.side === 'long' ? '▲' : '▼'}
+                  </span>
+                  <span className="scalp-tick-main">
+                    <b>
+                      {short(s.symbol)} <small>{s.tf}</small>
+                    </b>
+                    <small>{s.scannerName}</small>
+                  </span>
+                  <span className="scalp-tick-end">
+                    <Pill tone={g.tone}>{g.label}</Pill>
+                    <small className="mono">{timeAgo(s.at, now)}</small>
+                  </span>
+                </button>
+              )
+            })}
           </div>
         </aside>
       </div>
-      <div className="terminal-bottom-grid">
-        <Section
-          variant="panel"
-          title={
-            <span>
-              Positions <span className="muted">/ {horizon === 'all' ? 'all horizons' : horizon}</span>
-            </span>
-          }
-          actions={
-            <Link className="btn btn-xs" to="/trades">
-              Journal ↗
-            </Link>
-          }
-          pad={false}
-        >
-          <PaperPositions query={positions} visiblePositions={visiblePositions} compact />
-        </Section>
-        <section className="terminal-panel terminal-setups">
-          <div className="terminal-panel-title">
-            <h2>Signal → execution</h2>
-            <Link to="/signals">All signals ↗</Link>
+
+      <section className="scalp-panel scalp-dock">
+        <div className="scalp-head">
+          <div className="scalp-seg" role="tablist" aria-label="Dock">
+            <button role="tab" aria-selected={dock === 'positions'} aria-pressed={dock === 'positions'} onClick={() => setDock('positions')}>
+              Positions <small>{positions.data?.length ?? 0}</small>
+            </button>
+            <button role="tab" aria-selected={dock === 'funnel'} aria-pressed={dock === 'funnel'} onClick={() => setDock('funnel')}>
+              Signal funnel · 24h
+            </button>
+            <button role="tab" aria-selected={dock === 'rules'} aria-pressed={dock === 'rules'} onClick={() => setDock('rules')}>
+              Rules in force
+            </button>
           </div>
-          <p className="terminal-list-note">
-            Latest {signals.data?.length ?? 0} recorded entry events · {horizon} view. A signal is not a fill.
-          </p>
-          <div className="terminal-setup-scroll">
-            {signals.isLoading ? (
-              <Loading kind="cards" rows={3} />
-            ) : signals.isError ? (
-              <ErrorState error={signals.error} onRetry={() => signals.refetch()} />
-            ) : visibleSignals.length === 0 ? (
-              <p className="terminal-empty">
-                No matching entry events in this recent sample.{' '}
-                <Link to="/scanners">Inspect scanner coverage →</Link>
-              </p>
-            ) : (
-              visibleSignals.slice(0, 16).map((event) => {
-                const outcome = gateOf(event.action)
-                return (
-                  <div className="terminal-setup" key={event.id}>
-                    <div>
-                      <button
-                        className="terminal-symbol-link"
-                        onClick={() => update({ symbol: event.symbol, tf: event.tf })}
-                      >
-                        {event.symbol} <small>{event.tf}</small>
-                      </button>
-                      <span className={event.side === 'long' ? 'gain' : 'loss'}>
-                        {event.side?.toUpperCase() ?? '—'}
-                      </span>
-                    </div>
-                    <Link
-                      className="terminal-scanner-name"
-                      to={`/scanners/${encodeURIComponent(event.scannerId)}`}
-                    >
-                      {event.scannerName}
-                    </Link>
-                    <div>
-                      <span title={event.action}>
-                        <Pill tone={outcome.tone}>{outcome.label}</Pill>
-                      </span>
-                      <Time t={event.at} mode="ago" />
-                    </div>
-                  </div>
-                )
-              })
-            )}
+          <div className="scalp-dock-links">
+            <Link to="/trades">Journal ↗</Link>
+            <Link to="/">Trading overview ↗</Link>
           </div>
-        </section>
-      </div>
+        </div>
+        <div className="scalp-dock-body trading">
+          {dock === 'positions' && <PaperPositions query={positions} compact />}
+          {dock === 'funnel' && (overview.data ? <Funnel o={overview.data} /> : <Loading kind="cards" rows={3} />)}
+          {dock === 'rules' && (overview.data ? <Rules o={overview.data} /> : <Loading kind="cards" rows={3} />)}
+        </div>
+      </section>
     </div>
   )
 }
