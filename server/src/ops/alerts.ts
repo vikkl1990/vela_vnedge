@@ -1,3 +1,4 @@
+import {createHash} from 'node:crypto';
 /**
  * Alert delivery: a Telegram sender plus de-duplication and rate limiting. Conditions are
  * evaluated elsewhere (`monitor.ts`); this module only decides whether a message goes out.
@@ -50,6 +51,7 @@ export function telegramTransport(target: TelegramTarget, fetchImpl: typeof fetc
 
 export class AlertManager {
   private transport: Transport | null;
+  deliveryScope='none';
   private channel: AlertStatus['channel'];
   private opts: { repeatMinutes: number; maxPerHour: number };
   private activeKeys = new Map<string, { since: number; lastSentAt: number; text: string }>();
@@ -59,6 +61,7 @@ export class AlertManager {
   lastSent: AlertRecord | null = null;
 
   constructor(opts: AlertOptions) {
+    this.deliveryScope=opts.telegram?createHash('sha256').update(JSON.stringify(opts.telegram)).digest('hex'):opts.transport?'custom':'none';
     this.opts = { repeatMinutes: opts.repeatMinutes, maxPerHour: opts.maxPerHour };
     if (opts.transport) { this.transport = opts.transport; this.channel = 'custom'; }
     else if (opts.telegram) { this.transport = telegramTransport(opts.telegram); this.channel = 'telegram'; }
@@ -72,6 +75,7 @@ export class AlertManager {
     if (opts.repeatMinutes !== undefined) this.opts.repeatMinutes = opts.repeatMinutes;
     if (opts.maxPerHour !== undefined) this.opts.maxPerHour = opts.maxPerHour;
     if (opts.transport !== undefined || opts.telegram !== undefined) {
+      this.deliveryScope=opts.transport?'custom':opts.telegram?createHash('sha256').update(JSON.stringify(opts.telegram)).digest('hex'):'none';
       if (opts.transport) { this.transport = opts.transport; this.channel = 'custom'; }
       else if (opts.telegram) { this.transport = telegramTransport(opts.telegram); this.channel = 'telegram'; }
       else { this.transport = null; this.channel = 'none'; }

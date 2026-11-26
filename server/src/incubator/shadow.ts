@@ -1,3 +1,7 @@
+import type {MirroredReceipt} from '../scanners/inbox.ts';
+import {ShadowInbox,type ShadowDelivery,type ShadowReceipt} from './inbox.ts';
+import {configFingerprint} from '../paper/fingerprint.ts';
+import {stablePolicy} from '../paper/tradePolicy.ts';
 import {SOL_MAKER_REFERENCE_ID,SOL_MAKER_TICK_REFERENCE_ID,SOL_MAKER_SCANNER} from '../research/solMakerStudy.ts';
 import {solFilterPlan,solMakerRiskSource} from '../scanners/solMakerExperiment.ts';
 import {sourceHash} from '../paper/fingerprint.ts';
@@ -101,19 +105,32 @@ export class ShadowRunner {
     const key=`${r.scannerId}:${r.symbol}:${r.tf}`;
     if(this.scheduledBars.get(key)===barAt)this.scheduledBars.delete(key);
   }
+  private scheduledCount=0;
   private async runScheduled(r:PairRow,barAt:number,live:boolean,seenAt:number,rank?:number,releaseCompute?:()=>void) {
+    this.scheduledCount++;
     try{await this.run(r,barAt,live,seenAt,rank,releaseCompute);}
     catch(e){this.deps.store.noteShadowScan?.(r,barAt-TF_SECONDS[r.tf]*1000,'failed',String((e as Error)?.message??e));throw e;}
-    finally{this.releaseScheduled(r,barAt);}
+    finally{this.scheduledCount--;this.releaseScheduled(r,barAt);}
   }
   private dispatch: ShadowDispatch<{r:PairRow;barAt:number;seenAt:number}>;
   private dispatchTimer: NodeJS.Timeout | null = null;
   private nextDispatchSave=0;
   get dispatchStats(){return this.dispatch.stats;}
+  get receiptStatus(){return this.inbox?.status()??null;}
+  private nextReceiptPrune=0;
   private seen = new Set<string>();
+  private inbox:ShadowInbox|undefined;
+  private recovering=false;
+  private processing=new Set<string>();
   private labels = new Map<string, Set<string>>();
   private timer: NodeJS.Timeout | null = null;
-  private deps: { timelyResearch?: () => ReadonlySet<string>; compare?: PlanComparisons['observe']; compareScan?: PlanComparisons['observeScan']; compareSourceScan?: PlanComparisons['observeSourceScan']; store: IncubatorStore; cfgRef: () => AppConfig; candles: CandleStore; pool: PinePool; registry: ScannerRegistry; paper: PaperEngine; marketInfo: (symbol: string) => Promise<MarketInfo>; /** Decision 116: the account takes the shadow pair's events too, under its own gates, when `incubator.mirror.enabled`. */ mirror?: (s: LoadedScanner, symbol: string, tf: string, ev: ScanEvent, bars: Bar[], market: MarketInfo, exitMode: ExitMode, lastBar: Bar) => void | Promise<void>; /** Decision 112: the market gate's verdict on a symbol today, as the account reads it. */ marketVerdict?: (symbol: string) => { allowed: boolean; reasons: string[] } | null; /** Decision 108: every shadow entry carries the model's features and probability, as a live entry does. */ ml?: Pick<MlService,'features'|'scoreEntry'|'bindPrediction'>; subscribe?: (symbols: string[]) => void; /** Decision 166: what the account can act on now, to order a wave's scans by it. */ accountFocus?: () => { held: Set<string>; full: boolean }; /** Decision 201: whether the account holds an open position on this scanner, market and timeframe — its exits must reach the account whatever the copy setting. */ accountHolds?: (scannerId: string, symbol: string, tf: string) => boolean };
+  private closedHandler=(e:{symbol:string;tf:string;bar:Bar;historical?:boolean})=>{
+    if(!this.pairs.some(r=>r.tf===e.tf))return;
+    if(e.historical)this.recoverFreshClose(e.symbol,e.tf);else this.onBarClosed(e.symbol,e.tf,e.bar.time+TF_SECONDS[e.tf]*1000);
+  };
+  private orderHandler=(o:{positionId:number;reason:string})=>{if(o.reason==='entry')this.resolvePending(o.positionId,'opened');};
+  private pendingHandler=(ev:{type:string;id?:number})=>{if(ev.type==='cancelled'&&ev.id!==undefined)this.resolvePending(ev.id,'other');};
+  private deps: { accountTargets?:(id:string,symbol:string,tf:string,side?:'long'|'short')=>{targetPositionId:number|null;targetPendingIds:number[]}; timelyResearch?: () => ReadonlySet<string>; compare?: PlanComparisons['observe']; compareScan?: PlanComparisons['observeScan']; compareSourceScan?: PlanComparisons['observeSourceScan']; store: IncubatorStore; cfgRef: () => AppConfig; candles: CandleStore; pool: PinePool; registry: ScannerRegistry; paper: PaperEngine; marketInfo: (symbol: string) => Promise<MarketInfo>; /** Decision 116: the account takes the shadow pair's events too, under its own gates, when `incubator.mirror.enabled`. */ mirror?: (s: LoadedScanner, symbol: string, tf: string, ev: ScanEvent, bars: Bar[], market: MarketInfo, exitMode: ExitMode, lastBar: Bar, target?:MirroredReceipt) => void | Promise<void>; /** Decision 112: the market gate's verdict on a symbol today, as the account reads it. */ marketVerdict?: (symbol: string) => { allowed: boolean; reasons: string[] } | null; /** Decision 108: every shadow entry carries the model's features and probability, as a live entry does. */ ml?: Pick<MlService,'features'|'scoreEntry'|'bindPrediction'>; subscribe?: (symbols: string[]) => void; /** Decision 166: what the account can act on now, to order a wave's scans by it. */ accountFocus?: () => { held: Set<string>; full: boolean }; /** Decision 201: whether the account holds an open position on this scanner, market and timeframe — its exits must reach the account whatever the copy setting. */ accountHolds?: (scannerId: string, symbol: string, tf: string) => boolean };
   private marketsCache: { at: number; map: Map<string, { turnoverUsd: number | null }> } | null = null;
   /** The market gate's 24h turnover for a symbol (null when unjudged), read at most once a minute. */
   private turnoverOf(symbol: string): number | null {
@@ -133,6 +150,7 @@ export class ShadowRunner {
   constructor(deps: ShadowRunner['deps']) {
     this.marks = new BarWatermark({ load: () => deps.store.liveMarks(), save: rec => deps.store.setLiveMarks(rec) });
     this.deps = deps;
+    const db=deps.paper.store??deps.store.decisionDb;if(db&&typeof deps.paper.commitDecision==='function')this.inbox=new ShadowInbox(db);
     this.dispatch=new ShadowDispatch({
       limit:()=>Math.max(1,(deps.pool.size??1)-(deps.pool.reserved??0)),
       // Pricing and admission can wait on I/O after Pine releases its worker.
@@ -155,8 +173,8 @@ export class ShadowRunner {
     }
     this.saveFunnel();
     // decision 190: a resting order is `pending` until the book fills or cancels it; then its funnel entry is rewritten
-    deps.paper.on?.('order', (o: { positionId: number; reason: string }) => { if (o.reason === 'entry') this.resolvePending(o.positionId, 'opened'); });
-    deps.paper.on?.('pending', (ev: { type: string; id?: number }) => { if (ev.type === 'cancelled' && ev.id !== undefined) this.resolvePending(ev.id, 'other'); });
+    deps.paper.on?.('order',this.orderHandler);
+    deps.paper.on?.('pending',this.pendingHandler);
   }
 
   private pendingFunnel = new Map<number, { key: string; at: number }>();
@@ -228,18 +246,16 @@ export class ShadowRunner {
   start() {
     this.stopped=false;
     // each pair runs on its own timeframe: the daily screen is 15m, but a survey can admit 1h or 4h pairs
-    this.deps.candles.on('closed', (e: { symbol: string; tf: string; bar: Bar; historical?: boolean }) => {
-      if (!this.pairs.some(r => r.tf === e.tf))return;
-      if(e.historical)this.recoverFreshClose(e.symbol,e.tf);
-      else this.onBarClosed(e.symbol,e.tf,e.bar.time+TF_SECONDS[e.tf]*1000);
-    });
-    this.dispatchTimer=setInterval(()=>{this.dispatch.drain();if(Date.now()>=this.nextDispatchSave){try{this.deps.store.setDispatchStats?.({...this.dispatchStats,at:Date.now()});}catch(e){log.warn(`shadow dispatch metrics save failed: ${String(e)}`);}this.nextDispatchSave=Date.now()+5000;}},100);this.dispatchTimer.unref();
+    this.deps.candles.off?.('closed',this.closedHandler);this.deps.candles.on('closed',this.closedHandler);
+    this.dispatchTimer=setInterval(()=>{this.dispatch.drain();if(this.inbox&&Date.now()>=this.nextReceiptPrune){this.inbox.prune();this.nextReceiptPrune=Date.now()+60000;}if(this.inbox&&!this.recovering)void this.recoverReceipts();if(Date.now()>=this.nextDispatchSave){try{this.deps.store.setDispatchStats?.({...this.dispatchStats,at:Date.now()});}catch(e){log.warn(`shadow dispatch metrics save failed: ${String(e)}`);}this.nextDispatchSave=Date.now()+5000;}},100);this.dispatchTimer.unref();
     void this.sync();
     this.timer = setInterval(() => void this.sync(), SYNC_MS);
     this.timer.unref();
   }
 
-  stop() { this.stopped=true;this.dispatch.stop();if(this.qualificationTimer)clearImmediate(this.qualificationTimer);this.qualificationTimer=null;for(const job of this.qualificationQueue.splice(0))job.resolve(false);if(this.dispatchTimer)clearInterval(this.dispatchTimer);this.dispatchTimer=null; if (this.timer) clearInterval(this.timer); this.timer = null; this.saveFunnel(); }
+  stop() { this.stopped=true;this.deps.candles?.off?.('closed',this.closedHandler);this.deps.paper.off?.('order',this.orderHandler);this.deps.paper.off?.('pending',this.pendingHandler);if(this.funnelTimer)clearTimeout(this.funnelTimer);this.funnelTimer=null;for(const wave of this.waves.values())if(wave.timer)clearTimeout(wave.timer);this.waves.clear();this.dispatch.stop();if(this.qualificationTimer)clearImmediate(this.qualificationTimer);this.qualificationTimer=null;for(const job of this.qualificationQueue.splice(0))job.resolve(false);if(this.dispatchTimer)clearInterval(this.dispatchTimer);this.dispatchTimer=null; if (this.timer) clearInterval(this.timer); this.timer = null; this.saveFunnel(); }
+
+  async drain(){await this.syncing;while(this.scheduledCount||this.processing.size||this.recovering)await new Promise(r=>setTimeout(r,5));}
 
   private planSources(): PairRow[] {
     const cfg=this.deps.cfgRef(), cells=new Map<string,{scannerId:string;symbol:string;tf:string}>();
@@ -471,7 +487,7 @@ export class ShadowRunner {
     const prev = this.labels.get(key);
     const current = new Set(res.labels.map(labelKey));
     const newLabelKeys = prev ? new Set([...current].filter(k => !prev.has(k))) : new Set<string>();
-    this.labels.set(key, current);
+
     const lastBar = bars.at(-1)!;
     const READ = readingOf(cfg.scanners[s.id], s.id, (TF_SECONDS[r.tf] ?? 0) * 1000, s.patched, s.variantOf);   // decision 195
     const derived = applyRules({ scannerId: s.id, alerts: res.alerts, shapes: res.shapes, labels: res.labels, plots: res.plots, rule: cfg.scanners[s.id]?.rule ?? null, bars, mode: 'live', newLabelKeys, ...READ.rule });
@@ -480,18 +496,53 @@ export class ShadowRunner {
     const events = extractEvents(res.alerts, res.shapes, { drops, barMs: (TF_SECONDS[r.tf] ?? 0) * 1000, drawn: res.labels, scannerId: s.id, sinceBarTime: win.since, derived, ...READ.extract })
       .filter(ev => !(ev.kind === 'entry' && ev.barTime < lastBar.time));
     this.deps.store.noteChartReceipt?.(s.id,r.symbol,r.tf,s.patched,cfg.scanners[s.id],bars,res,events);
+    const needsRawScan=Boolean(
+      this.deps.compareSourceScan&&(cfg.executionPlans??[]).some(p=>p.enabled&&p.comparison?.kind==='maker-fill'&&p.scannerId===s.id&&p.symbol===r.symbol&&p.tf===r.tf)
+      ||this.deps.compareScan&&((cfg.executionPlans??[]).some(p=>p.enabled&&(p.readingOverride||solFilterPlan(p))&&p.scannerId===s.id&&p.symbol===r.symbol&&p.tf===r.tf)
+      ||[...this.deps.paper.openPositions(),...this.deps.paper.pendingEntries()].some(p=>p.executionPlan?.readingOverride&&p.executionPlan.sourceScannerId===s.id&&p.symbol===r.symbol&&p.tf===r.tf)));
+    const exitMode = cfg.scanners[s.id]?.exitMode ?? 'both';
+    const deliveries:ShadowDelivery[]=events.filter(ev=>ev.kind==='entry'||ev.kind==='exit').map(event=>({
+      version:1 as const,plansFingerprint:this.plansFingerprint(r),cell:r,scannerName:s.name,patched:s.patched,sourceHash:sourceHash(s.patched),fingerprint:this.receiptFingerprint(s,r.tf),reading:policyReading(cfg.scanners[s.id]),
+      accountTarget:this.deps.accountTargets?.(s.id,r.symbol,r.tf,event.side),
+      event,bars,market,lastBar,exitMode,receivedAt:Date.now(),
+      target:{positionId:this.deps.paper.openPositions().find(p=>p.scannerId===s.id&&p.symbol===r.symbol&&p.tf===r.tf&&(!event.side||p.side===event.side))?.id??null,
+        pendingIds:(this.deps.paper.pendingEntries?.()??[]).filter(p=>p.scannerId===s.id&&p.symbol===r.symbol&&p.tf===r.tf&&(!event.side||p.side===event.side)).map(p=>p.id)}
+    }));
+    if(needsRawScan)deliveries.unshift({version:1,cell:r,scannerName:s.name,patched:s.patched,sourceHash:sourceHash(s.patched),fingerprint:this.receiptFingerprint(s,r.tf),reading:policyReading(cfg.scanners[s.id]),plansFingerprint:this.plansFingerprint(r),
+      scan:{prepareDepth:Boolean(this.deps.compareScan&&((cfg.executionPlans??[]).some(p=>p.enabled&&(p.readingOverride||solFilterPlan(p))&&p.scannerId===s.id&&p.symbol===r.symbol&&p.tf===r.tf)||[...this.deps.paper.openPositions(),...this.deps.paper.pendingEntries()].some(p=>p.executionPlan?.readingOverride&&p.executionPlan.sourceScannerId===s.id&&p.symbol===r.symbol&&p.tf===r.tf))),result:res,events,drops,since:win.since,newLabelKeys:[...newLabelKeys],variantOf:s.variantOf},
+      event:{kind:'info',label:'scan-output',source:'alert',message:'',tp:[],barTime:lastBar.time,barIndex:bars.length-1},bars,market,lastBar,exitMode,receivedAt:Date.now(),target:{positionId:null,pendingIds:[]}});
+    if(this.inbox){
+      const rows=this.inbox.accept(deliveries,()=>{
+        const marks=this.deps.store.liveMarks()??{};marks[key]=Math.max(marks[key]??0,lastBar.time);this.deps.store.setLiveMarks(marks);
+      });
+      this.marks.reload?.();this.labels.set(key,current);
+      for(const row of rows)await this.processReceipt(row,false);
+    }else{
+      // Isolated diagnostics can provide a non-persistent paper stub; the runtime always owns a Db.
+      this.marks.advance(key,lastBar.time);this.labels.set(key,current);
+      for(const delivery of deliveries){if(delivery.scan){if(delivery.scan.prepareDepth)await this.deps.paper.prepareEntryDepth?.(r.symbol);this.compareRawScan(delivery);continue;}if(delivery.event.kind==='entry'&&quarantine())continue;await this.mirrorReceipt(delivery);if(delivery.event.kind==='entry')await this.deps.paper.prepareEntryDepth?.(r.symbol);this.compareReceipt(delivery);if(!delivery.scan)this.applyReceipt(delivery);}
+    }
+    this.deps.store.noteShadowScan?.(r,lastBar.time,'scanned',quarantine()?`exit-only: scanner quarantined: ${quarantine()}`:null,quarantine()?0:events.filter(e=>e.kind==='entry').length);
+  }
+  private plansFingerprint(r:{scannerId:string;symbol:string;tf:string}){return sourceHash(stablePolicy((this.deps.cfgRef().executionPlans??[]).filter(p=>p.scannerId===r.scannerId&&p.symbol===r.symbol&&p.tf===r.tf)))!;}
+  private compareRawScan(d:ShadowDelivery,recovery=false){
+    const data=d.scan;if(!data)return;
+    const r=d.cell,s={id:r.scannerId,name:d.scannerName,patched:d.patched,variantOf:data.variantOf} as LoadedScanner;
+    const cfg=this.deps.cfgRef(),events=data.events,drops=data.drops,res=data.result,bars=d.bars,market=d.market,lastBar=d.lastBar;
+    const newLabelKeys=new Set(data.newLabelKeys),win={since:data.since};
+    const quarantine=()=>this.deps.store.quarantineReason?.(r.scannerId)??null;
     if(this.deps.compareSourceScan && (cfg.executionPlans??[]).some(p=>p.enabled&&p.comparison?.kind==='maker-fill'&&p.scannerId===s.id&&p.symbol===r.symbol&&p.tf===r.tf)){
       try { this.deps.compareSourceScan({scannerId:s.id,scannerName:s.name,symbol:r.symbol,tf:r.tf,events,drops,bars,market,
         at:Date.now(),refPrice:this.deps.paper.mark(r.symbol)??lastBar.close}); }
-      catch(error){log.warn(`maker comparison scan receipt ${s.id} ${r.symbol}: ${String(error)}`);}
+      catch(error){throw error;}
     }
     // Interpretation experiments see the raw output even when today's reader found no entry.
     if(this.deps.compareScan && ((cfg.executionPlans??[]).some(p=>p.enabled&&(p.readingOverride||solFilterPlan(p))&&p.scannerId===s.id&&p.symbol===r.symbol&&p.tf===r.tf)
       ||[...this.deps.paper.openPositions(),...this.deps.paper.pendingEntries()].some(p=>p.executionPlan?.readingOverride&&p.executionPlan.sourceScannerId===s.id&&p.symbol===r.symbol&&p.tf===r.tf))){
-      if(this.deps.paper.prepareEntryDepth)await this.deps.paper.prepareEntryDepth(r.symbol);
       const at=Date.now(),refPrice=this.deps.paper.mark(r.symbol)??lastBar.close,atr=lastAtr(bars,14);
       try { this.deps.compareScan({scannerId:s.id,scannerName:s.name,symbol:r.symbol,tf:r.tf,result:res,patched:s.patched,variantOf:s.variantOf,
-        since:win.since,newLabelKeys,bars,market,at,refPrice,refusal:ev=>{
+        since:win.since,newLabelKeys,bars,market,at,refPrice,recovery,refusal:ev=>{
+          if(ev.kind==='entry'){const invalid=this.invalidReceipt({...d,event:ev});if(invalid)return invalid;if(d.plansFingerprint!==this.plansFingerprint(r))return 'comparison plans changed before decision';}
           if(ev.kind==='entry' && quarantine())return `scanner quarantined: ${quarantine()}`;
           const g=cfg.paper.trendGate;
           if(g?.enabled&&ev.side){const tf=g.tf&&g.tf!==r.tf?g.tf:r.tf;
@@ -499,18 +550,71 @@ export class ShadowRunner {
             if(reason)return reason;
           }
           return shadowRefusal({regime:cfg.risk?.regime,scannerId:s.id,symbol:r.symbol,at,price:ev.price&&ev.price>0?ev.price:refPrice,atr,bars,market:this.deps.marketVerdict?.(r.symbol)})?.reason;
-        }}); } catch(error) { this.noteError(r,`reading comparison: ${String(error)}`); log.warn(`reading comparison ${s.id} ${r.symbol}: ${String(error)}`); }
+        }}); } catch(error) { throw error; }
     }
-    this.marks.advance(key, lastBar.time);
-    const exitMode = cfg.scanners[s.id]?.exitMode ?? 'both';
-    for (const ev of events) {
-      // Quarantine may have arrived while the worker was running. Preserve held
-      // exits, but never offer a new entry to paper, shadow or a comparison plan.
-      if(ev.kind==='entry' && quarantine())continue;
-      const id = `${key}:${ev.barTime}:${ev.kind}:${ev.side ?? ''}:${ev.label}`;
-      if (this.seen.has(id)) continue;
-      this.seen.add(id);
-      if (this.seen.size > 20_000) this.seen = new Set([...this.seen].slice(-10_000));
+  }
+  private receiptFingerprint(s:LoadedScanner,tf:string){
+    const {sha,...parts}=configFingerprint(this.deps.cfgRef(),s.id,tf,{source:sourceHash(s.patched),book:2}).parts;
+    return sourceHash(stablePolicy(parts))!;
+  }
+  private invalidReceipt(d:ShadowDelivery):string|null {
+    if(d.event.kind!=='entry')return null;
+    const cfg=this.deps.cfgRef(),r=d.cell,s=this.deps.registry.get(r.scannerId);
+    if(!cfg.incubator.enabled)return 'shadow disabled before decision';
+    if(!s||s.status!=='ok'||this.receiptFingerprint(s,r.tf)!==d.fingerprint)return 'source or policy changed before decision';
+    const cur=r.id<0?this.planSources().find(p=>p.scannerId===r.scannerId&&p.symbol===r.symbol&&p.tf===r.tf):this.deps.store.get(r.id);
+    if(!cur||cur.stage!==r.stage||cur.since!==r.since)return 'allocation changed before decision';
+    const age=cfg.paper.maxSignalAgeSec??0;
+    if(age>0&&Date.now()-d.event.barTime-TF_SECONDS[r.tf]*1000>age*1000)return 'interrupted shadow signal expired';
+    return this.deps.store.quarantineReason?.(r.scannerId)??null;
+  }
+  async recoverReceipts(){
+    if(this.stopped||this.recovering||!this.inbox)return;
+    this.recovering=true;
+    try{for(const row of this.inbox.pending()){if(this.stopped)break;await this.processReceipt(row,true);}}
+    finally{this.recovering=false;}
+  }
+  private deliveryFailed(row:ShadowReceipt,error:unknown){
+    this.inbox!.fail(row.id);
+    if(row.attempts===0||row.attempts%60===0)log.warn(`shadow receipt ${row.id.slice(0,12)} pending: ${String((error as Error)?.message??error)}`);
+  }
+  private async processReceipt(row:ShadowReceipt,recovery:boolean){
+    if(!this.inbox||this.stopped||this.processing.has(row.id))return;
+    this.processing.add(row.id);
+    try{
+      let current=this.inbox.current(row.id);if(!current.payload)return;
+      const d=JSON.parse(current.payload) as ShadowDelivery;
+      if(d.version!==1)throw Error('unsupported shadow receipt');
+      if(!current.account_done){
+        try{if(!d.scan&&!this.invalidReceipt(d))await this.mirrorReceipt(d,recovery);this.inbox.finish(row.id,'account','account handoff acknowledged');}
+        catch(error){this.deliveryFailed(row,error);}
+      }
+      current=this.inbox.current(row.id);
+      if((d.scan?.prepareDepth||d.event.kind==='entry')&&!this.invalidReceipt(d))await this.deps.paper.prepareEntryDepth?.(d.cell.symbol);
+      if(this.stopped)return;
+      if(recovery&&d.scan?.prepareDepth&&!this.invalidReceipt({...d,event:{...d.event,kind:'entry'}})&&(!this.deps.paper.hasFreshPrice(d.cell.symbol,'buy')||!this.deps.paper.hasFreshPrice(d.cell.symbol,'sell')))throw Error('waiting for fresh comparison recovery price');
+      if(!current.compare_done){
+        try{if(d.scan)this.compareRawScan(d,recovery);else if(!this.invalidReceipt(d))this.compareReceipt(d,recovery);this.inbox.finish(row.id,'compare','comparison handoff acknowledged');}
+        catch(error){this.deliveryFailed(row,error);}
+      }
+      current=this.inbox.current(row.id);
+      if(current.shadow_done||this.stopped)return;
+      if(d.scan){this.inbox.finish(row.id,'shadow','raw comparison scan received');return;}
+      if(this.stopped)return;
+      if(recovery&&d.event.kind==='entry'&&!this.invalidReceipt(d)&&!this.deps.paper.hasFreshPrice(d.cell.symbol,d.event.side==='long'?'buy':'sell'))throw Error('waiting for fresh recovery price');
+      const fkey=`${d.cell.scannerId}|${d.cell.symbol}|${d.cell.tf}`,funnel=structuredClone(this.funnel.get(fkey)),pending=new Map([...this.pendingFunnel].filter(([,p])=>p.key===fkey)),stats=structuredClone(this.stats);
+      try{this.deps.paper.commitDecision(()=>{
+        const invalid=this.invalidReceipt(d);
+        if(!invalid)this.applyReceipt(d,recovery);
+        else if(d.event.kind==='entry')this.deps.paper.recordGatedEntry(d.event,{scannerId:d.cell.scannerId,scannerName:d.scannerName,symbol:d.cell.symbol,tf:d.cell.tf,market:d.market,atr:lastAtr(d.bars,14),refPrice:this.deps.paper.mark(d.cell.symbol)??d.lastBar.close,at:Date.now(),signalId:null,exitMode:d.exitMode,signalBar:d.lastBar},invalid,'recovery');
+        this.inbox!.finish(row.id,'shadow',invalid??'shadow decision committed');
+      });}catch(e){if(funnel)this.funnel.set(fkey,funnel);else this.funnel.delete(fkey);for(const [id,p] of this.pendingFunnel)if(p.key===fkey)this.pendingFunnel.delete(id);for(const [id,p] of pending)this.pendingFunnel.set(id,p);Object.assign(this.stats,stats);throw e;}
+    }catch(error){this.deliveryFailed(row,error);}
+    finally{this.processing.delete(row.id);}
+  }
+  private async mirrorReceipt(delivery:ShadowDelivery,recovery=false){
+    const r=delivery.cell,s={...this.deps.registry?.get?.(r.scannerId),id:r.scannerId,name:delivery.scannerName,patched:delivery.patched} as LoadedScanner;
+    const ev=delivery.event,bars=delivery.bars,market=delivery.market,lastBar=delivery.lastBar,exitMode=delivery.exitMode,cfg=this.deps.cfgRef();
       let now = Date.now();
       // decision 116: the account is offered the same event, and judges it by its own gates and caps
       // decision 139: a tracked cell is the operator's to watch, never the account's to copy
@@ -519,7 +623,7 @@ export class ShadowRunner {
       const exitForHeld = ev.kind === 'exit' && Boolean(this.deps.mirror) && this.deps.accountHolds?.(s.id, r.symbol, r.tf) === true;
       if (exitForHeld && !(cfg.incubator.mirror?.enabled && r.stage !== 'tracked')) {
         this.stats.exitsForHeld++;
-        try { await this.deps.mirror!(s, r.symbol, r.tf, ev, bars, market, exitMode, lastBar); } catch (e: any) { log.warn(`held exit ${s.id} ${r.symbol}: ${e?.message ?? e}`); }
+        await this.deps.mirror!(s,r.symbol,r.tf,ev,bars,market,exitMode,lastBar,delivery.accountTarget?{...delivery.accountTarget,receivedAt:delivery.receivedAt,recovered:recovery}:undefined);
       } else if (cfg.incubator.mirror?.enabled && this.deps.mirror && r.stage !== 'tracked' && (ev.kind === 'entry' || ev.kind === 'exit')) {
         // decision 177: an entry is copied only once the pair has a record of its own and its market is deep enough; an
         // exit always goes through, since the account may hold the position
@@ -533,12 +637,29 @@ export class ShadowRunner {
         }
         else {
           this.stats.mirrored++;
-          try { await this.deps.mirror(s, r.symbol, r.tf, ev, bars, market, exitMode, lastBar); } catch (e: any) { log.warn(`mirror ${s.id} ${r.symbol}: ${e?.message ?? e}`); }
+          await this.deps.mirror(s,r.symbol,r.tf,ev,bars,market,exitMode,lastBar,delivery.accountTarget?{...delivery.accountTarget,receivedAt:delivery.receivedAt,recovered:recovery}:undefined);
         }
       }
+
+  }
+  private compareReceipt(d:ShadowDelivery,recovery=false){
+    if(!this.deps.compare)return;
+    if(d.event.kind==='entry'&&d.plansFingerprint!==this.plansFingerprint(d.cell))return;
+    const r=d.cell,ev=d.event,cfg=this.deps.cfgRef(),g=cfg.paper.trendGate,at=Date.now();
+    const refPrice=this.deps.paper.mark(r.symbol)??d.lastBar.close,atr=lastAtr(d.bars,14);
+    let trendReason:string|null=null;
+    if(g?.enabled&&ev.side){const tf=g.tf&&g.tf!==r.tf?g.tf:r.tf;
+      trendReason=trendGateReason(ev.side,trendNow(this.deps.candles.get(r.symbol,tf,{closedOnly:true,limit:g.emaLen*4}).map(b=>b.close),g.emaLen),cfg.scanners[r.scannerId]?.trendGate??g.mode);}
+    const refusal=ev.kind==='entry'?trendReason??shadowRefusal({regime:cfg.risk?.regime,scannerId:r.scannerId,symbol:r.symbol,at,price:ev.price&&ev.price>0?ev.price:refPrice,atr,bars:d.bars,market:this.deps.marketVerdict?.(r.symbol)})?.reason:undefined;
+    this.deps.compare({scannerId:r.scannerId,scannerName:d.scannerName,symbol:r.symbol,tf:r.tf,event:ev,bars:d.bars,market:d.market,at,refPrice,refusal,recovery});
+  }
+  private applyReceipt(delivery:ShadowDelivery,recovery=false){
+    const r=delivery.cell,s={...this.deps.registry?.get?.(r.scannerId),id:r.scannerId,name:delivery.scannerName,patched:delivery.patched} as LoadedScanner;
+    const ev=recovery&&delivery.event.kind==='entry'?{...delivery.event,price:this.deps.paper.mark(r.symbol)??delivery.event.price}:delivery.event,bars=delivery.bars,market=delivery.market,lastBar=delivery.lastBar,exitMode=delivery.exitMode,cfg=this.deps.cfgRef();
+    const quarantine=()=>this.deps.store.quarantineReason?.(r.scannerId)??null;
+    let now=Date.now();
       if (ev.kind === 'entry' && ev.side) {
-        if(this.deps.paper.prepareEntryDepth){await this.deps.paper.prepareEntryDepth(r.symbol);now=Date.now();}
-        if(quarantine())continue;
+        if(quarantine())return;
         // the shadow book is evidence for the live fleet, so it is gated exactly as the fleet is
         const g = cfg.paper.trendGate;
         let trendReason:string|null=null;
@@ -553,12 +674,12 @@ export class ShadowRunner {
         // decision 112: the market and regime gates refuse a shadow entry exactly as they refuse a live one
         const fkey = `${s.id}|${r.symbol}|${r.tf}`;
         const refusal = shadowRefusal({ regime: cfg.risk?.regime, scannerId: s.id, symbol: r.symbol, at: now, price: ev.price && ev.price > 0 ? ev.price : refPrice, atr, bars, market: this.deps.marketVerdict?.(r.symbol) });
-        this.deps.compare?.({scannerId:s.id,scannerName:s.name,symbol:r.symbol,tf:r.tf,event:ev,bars,market,at:now,refPrice,refusal:trendReason??refusal?.reason});
-        if(r.id<0)continue;
+
+        if(r.id<0)return;
         if(trendReason||refusal)this.deps.paper.recordGatedEntry(ev,{scannerId:s.id,scannerName:s.name,symbol:r.symbol,tf:r.tf,
           market,atr,refPrice,at:now,signalId:null,exitMode,signalBar:lastBar},trendReason??refusal!.reason,'admission');
-        if(trendReason){this.stats.refused++;this.note(fkey,'regime',now,trendReason);continue;}
-        if (refusal) { this.stats.refused++; this.note(fkey, refusal.kind, now, refusal.reason); continue; }
+        if(trendReason){this.stats.refused++;this.note(fkey,'regime',now,trendReason);return;}
+        if (refusal) { this.stats.refused++; this.note(fkey, refusal.kind, now, refusal.reason); return; }
         // decision 108: the same entry-time features and probability a live entry gets, so the shadow book can
         // compare saved predictions; chronological receipts are still required for prospective evidence.
         let features: Features | undefined; let mlProb: number | null = null;let predictionId:string|undefined;
@@ -578,13 +699,13 @@ export class ShadowRunner {
         this.note(fkey, kind, now, `${d.action}${d.reason ? ':'+d.reason : ''}`);
         if (kind === 'pending' && d.pendingId !== undefined) this.pendingFunnel.set(d.pendingId, { key: fkey, at: now });
       } else if (ev.kind === 'exit') {
-        this.deps.compare?.({scannerId:s.id,scannerName:s.name,symbol:r.symbol,tf:r.tf,event:ev,bars,market,at:now,refPrice:this.deps.paper.mark(r.symbol)??lastBar.close});
-        if(r.id<0)continue;
+
+        if(r.id<0)return;
         const held=this.deps.paper.findOpen(s.id,r.symbol,r.tf);
-        if(held&&!sameExitSource(held.policy,sourceHash(s.patched),policyReading(cfg.scanners[s.id])))continue;
-        this.deps.paper.onScriptExit(s.id, r.symbol, r.tf, ev.exitType ?? 'close', ev.price, now, exitMode, ev.side);
+        if(held&&!sameExitSource(held.policy,delivery.sourceHash,delivery.reading as ReturnType<typeof policyReading>))return;
+        this.deps.paper.onScriptExit(s.id, r.symbol, r.tf, ev.exitType ?? 'close', ev.price, now, exitMode, ev.side,delivery.target,{barTime:ev.barTime,label:ev.label,source:ev.source,...(ev.authorEntryAt!==undefined?{authorEntryAt:ev.authorEntryAt}:{})});
       }
-    }
-    this.deps.store.noteShadowScan?.(r,lastBar.time,'scanned',quarantine()?`exit-only: scanner quarantined: ${quarantine()}`:null,quarantine()?0:events.filter(e=>e.kind==='entry').length);
+
   }
+
 }

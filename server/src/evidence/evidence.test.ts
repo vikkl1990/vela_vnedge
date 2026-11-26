@@ -125,6 +125,7 @@ for(const maker of [false,true])test(`unfilled ${maker?'maker':'latency'} entrie
 });
 
 test('real shadow dispatch holds legacy-only copy evidence, records regime gates and copies after compatible closes',async t=>{
+  const clock=Math.floor(Date.now()/900000)*900000+1000;t.mock.timers.enable({apis:['Date'],now:clock});
   const {db,cfg,paper,store,add}=fixture(t);cfg.incubator.enabled=true;
   cfg.incubator.mirror={enabled:true,minTrades:5,minNetR:0,minTurnoverUsd:0};
   cfg.risk.regime={enabled:true,minAtrPct:.3,minEr:1,noWeekend:false,exempt:[]};
@@ -136,7 +137,7 @@ test('real shadow dispatch holds legacy-only copy evidence, records regime gates
   const forwarded:string[]=[];
   const runner=new ShadowRunner({store,cfgRef:()=>cfg,paper:shadow,candles:{get:()=>bars},
     registry:{get:()=>({id:'s',name:'s',status:'ok',patched:'alert("x")'})},
-    pool:{run:async()=>({ok:true,alerts:[{type:'alert',time:last,barIndex:79,message:'🟢 LONG | Price: 100'}],shapes:[],labels:[],plots:[],ms:1})},
+    pool:{run:async()=>({ok:true,alerts:[{type:'alert',time:bars.at(-1)!.time,barIndex:79,message:'🟢 LONG | Price: 100'}],shapes:[],labels:[],plots:[],ms:1})},
     marketInfo:async()=>({tickSize:.01,contractValue:1}),mirror:async()=>{forwarded.push('entry');}} as any) as any;
   t.after(()=>runner.stop());
   await runner.run(pair,Date.now(),false,Date.now());
@@ -147,8 +148,10 @@ test('real shadow dispatch holds legacy-only copy evidence, records regime gates
   for(let i=0;i<5;i++)add({policy_id:paper.policyForCell(cell).id});
   // The compatible policy is current, including the regime used above.
   saveTradePolicy(db,paper.policyForCell(cell));
+  t.mock.timers.tick(900000);for(const b of bars)b.time+=900000;
   runner.seen.clear();runner.marks={window:()=>({since:0,tailBars:3}),advance:()=>{}};
   await runner.run(pair,Date.now(),false,Date.now());
   assert.equal(forwarded.length,1,'compatible record unlocks copying without weakening thresholds');
-  rows=gatedSignalPage(db,new URLSearchParams('since=0')).rows;assert.equal(rows.length,2,'repeated observation stays idempotent');
+  rows=gatedSignalPage(db,new URLSearchParams('since=0')).rows;assert.equal(rows.length,3,'the fresh bar has its own admission refusal');
+  await runner.run(pair,Date.now(),false,Date.now());assert.equal(forwarded.length,1);assert.equal(gatedSignalPage(db,new URLSearchParams('since=0')).rows.length,3,'a repeated observation cannot execute again');
 });

@@ -13,7 +13,7 @@ import type { PaperEngine, MarketInfo } from './engine.ts';
 import { lastAtr } from '../data/indicators.ts';
 import { planSnapshot, planScannerId, planEvents, takeProfitLabel, type ExecutionPlanSnapshot } from './executionPlans.ts';
 
-type Observation={scannerId:string;scannerName:string;symbol:string;tf:string;event:ScanEvent;bars:Bar[];market:MarketInfo;at:number;refPrice:number;refusal?:string|null};
+type Observation={scannerId:string;scannerName:string;symbol:string;tf:string;event:ScanEvent;bars:Bar[];market:MarketInfo;at:number;refPrice:number;refusal?:string|null;recovery?:boolean};
 export type ComparisonScan=Omit<Observation,'event'|'refusal'> & {result:WorkerResult;patched:string;variantOf?:string;since:number;newLabelKeys:Set<string>;refusal:(event:ScanEvent)=>string|null|undefined};
 export type SourceScan=Omit<Observation,'event'|'refusal'> & {events:ScanEvent[];drops:Record<string,number>};
 
@@ -177,12 +177,21 @@ export class PlanComparisons {
     // Reading arms can take opposite sides of the same raw marker; the marker still pairs.
     const eventKey=JSON.stringify([input.scannerId,input.symbol,input.tf,ev.barTime,p.readingOverride?ev.source:ev.side,ev.label]);
     const added=this.db.run("INSERT OR IGNORE INTO execution_plan_events(at,plan_id,scanner_id,source_event,action) VALUES(?,?,?,?,'processing')",input.at,p.id,scannerId,eventKey);
-    if(!added.changes)return;
-    const id=Number(added.lastInsertRowid);
+    let id=Number(added.lastInsertRowid);
+    if(!added.changes){
+      const previous=this.db.get<{id:number;action:string}>('SELECT id,action FROM execution_plan_events WHERE plan_id=? AND source_event=?',p.id,eventKey)!;
+      if(!input.recovery||!['processing','error','interrupted'].includes(previous.action))return;
+      const position=this.db.get<{id:number;status:string}>(`SELECT id,status FROM positions WHERE bt=2 AND (json_extract(fills,'$.features.plan_event_id')=? OR json_extract(fills,'$.limitEntry.features.plan_event_id')=?) LIMIT 1`,previous.id,previous.id);
+      if(position){this.db.run('UPDATE execution_plan_events SET action=?,position_id=? WHERE id=?',position.status==='pending'?'pending':'opened',position.id,previous.id);return;}
+      id=previous.id;this.db.run("UPDATE execution_plan_events SET action='processing',reason=NULL WHERE id=?",id);
+    }
     const occupied=[...this.paper.openPositions(),...this.paper.pendingEntries()].some(x=>x.executionPlan?.id===p.id&&x.scannerId!==scannerId);
     if(input.refusal||occupied){this.db.run("UPDATE execution_plan_events SET action='rejected',reason=? WHERE id=?",input.refusal??'previous plan version still holds an order or position',id);return;}
     try{
-      const d=this.paper.onEntry(ev,{scannerId,scannerName:`${input.scannerName} · ${p.label??p.variant} v${p.revision}`,symbol:p.symbol,tf:p.tf,
+      const limit=p.paper.limitEntry;
+      const resting=!!(limit?.enabled&&limit.tfs.includes(p.tf)&&limit.books.includes('shadow')&&!this.paper.findOpen(scannerId,p.symbol,p.tf)&&(lastAtr(input.bars,14)??0)>0&&(this.paper.limitEntryAllowed?.()??true));
+      const event=input.recovery&&!resting?{...ev,price:input.refPrice}:ev;
+      const d=this.paper.onEntry(event,{scannerId,scannerName:`${input.scannerName} · ${p.label??p.variant} v${p.revision}`,symbol:p.symbol,tf:p.tf,
         market:input.market,at:input.at,refPrice:input.refPrice,atr:lastAtr(input.bars,14),signalBar:input.bars.at(-1),exitMode:p.exitMode,signalId:null,executionPlan:p,features:{plan_event_id:id}});
       this.db.run('UPDATE execution_plan_events SET action=?,reason=?,position_id=? WHERE id=?',d.action,d.reason??null,d.position?.id??d.pendingId??null,id);
     }catch(error){this.db.run("UPDATE execution_plan_events SET action='error',reason='admission failed; inspect service log' WHERE id=?",id);throw error;}

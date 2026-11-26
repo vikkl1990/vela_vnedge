@@ -142,11 +142,14 @@ test('daily summary goes out once per day at the configured hour; trade notifica
   assert.equal(f.sent.filter(t => /daily summary/.test(t)).length, 1);
   const text = f.sent.find(t => /daily summary/.test(t))!;
   assert.match(text, /Equity 100,000/); assert.match(text, /2 trades, 1 wins \(50%\), pnl \+30/); assert.match(text, /Top scanners: A \+50 \(1\) · B -20 \(1\)/);
+  const insert=(symbol:string,side:string,pnl:number,reason:string)=>{const id=f.db.run("INSERT INTO positions(status,scanner_id,scanner_name,symbol,tf,side,qty,qty_open,contract_value,entry_price,entry_at,risk_amount) VALUES('open','a','A',?,'5m',?,1,1,1,100,1,?)",symbol,side,pnl>0?pnl/1.5:1).lastInsertRowid;f.db.run("UPDATE positions SET status='closed',exit_at=2,realized_pnl=?,exit_reason=? WHERE id=?",pnl,reason,id);};
+  insert('BTCUSD','long',12.5,'tp3');
   f.paper.emit('trade', { side: 'long', symbol: 'BTCUSD', tf: '5m', exitReason: 'tp3', pnl: 12.5, rMultiple: 1.5, scannerName: 'A' });
   await new Promise(r => setImmediate(r));
   assert.ok(f.sent.some(t => /🟢 LONG BTCUSD 5m closed \(tp3\) pnl \+12\.5 1\.50R — A/.test(t)));
   f.cfg.alerts.onTrade = false;
   const before = f.sent.length;
+  insert('ETHUSD','short',-3,'sl');
   f.paper.emit('trade', { side: 'short', symbol: 'ETHUSD', tf: '5m', exitReason: 'sl', pnl: -3, scannerName: 'B' });
   await new Promise(r => setImmediate(r));
   assert.equal(f.sent.length, before);

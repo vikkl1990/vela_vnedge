@@ -1,3 +1,4 @@
+import type {AdmissionProof} from './readiness.ts';
 /**
  * Exchange executor: mirrors the paper account to Delta Exchange India (demo host unless production
  * is double-opted-in, see client.ts). Decision 46 made the exchange the authority on what filled:
@@ -50,6 +51,15 @@ export interface ExecutorOptions { now?: () => number; reconcileSec?: number; sw
 type Confirmation = { status: 'filled' | 'unfilled' | 'unknown'; filledSize: number; avgPrice: number | null; fee: number | null; order?: ExchangeOrder | null };
 
 export class ExchangeExecutor {
+  admission?: (position:Position)=>AdmissionProof|string;
+  private entryProof(id:number){
+    if(this.transport.host!=='production'||this.transport.dryRun)return null;
+    const p=this.paper.position(id);if(!p)return 'production entry missing';
+    const proof=this.admission?.(p)??'production readiness check unavailable';
+    if(typeof proof==='string')return proof;
+    if(proof.evaluatedAt>this.now()||proof.validUntil<=this.now()||!proof.identity)return 'production readiness approval expired';
+    return proof;
+  }
   readonly transport: ExchangeTransport;
   readonly ledger: OrderLedger;
   readonly outbox: ExecutionOutbox;
@@ -92,6 +102,7 @@ export class ExchangeExecutor {
     paper.fillMode = 'mirrored';
     paper.executionIntent = (id, o) => {
       if(o.reason==='funding')return;
+      if(o.reason==='entry'&&!this.adopting.has(o.positionId)){const proof=this.entryProof(o.positionId);if(typeof proof==='string')throw Error(proof);}
       if (!this.adopting.has(o.positionId)) {this.outbox.record(id, o);this.accounting.register(id);}
       else if(this.adoptingLedger!==undefined){this.ledger.link(this.adoptingLedger,id);this.accounting.register(id);}
     };
@@ -292,6 +303,7 @@ export class ExchangeExecutor {
   }
 
   private async enter(o: { symbol: string; side: string; qty: number; positionId: number }, product_id: number, clientOrderId?: string) {
+    const before=this.entryProof(o.positionId);if(typeof before==='string'){this.adopt(o.positionId,()=>this.paper.voidPosition(o.positionId,before));return;}
     // decision 165: the exchange trades at the leverage the paper position was sized and its liquidation checked at
     const lev = await this.ensureLeverage(o.positionId, o.symbol, product_id);
     if (lev !== null) { this.adopt(o.positionId, () => this.paper.voidPosition(o.positionId, `exchange-leverage: ${lev}`)); return; }
@@ -302,6 +314,8 @@ export class ExchangeExecutor {
     if(command && this.now()-command.createdAt>(this.cfgRef().execution.entryCommandMaxAgeSec??60)*1000) {
       this.adopt(o.positionId,()=>this.paper.voidPosition(o.positionId,'exchange-command-expired'));return;
     }
+    const proof=this.entryProof(o.positionId);if(typeof proof==='string'){this.adopt(o.positionId,()=>this.paper.voidPosition(o.positionId,proof));return;}
+    if(proof)this.paper.store.run('INSERT INTO decision_trace(at,book,position_id,scanner_id,symbol,tf,stage,snapshot) VALUES(?,?,?,?,?,?,?,?)',this.now(),0,source.id,source.scannerId,source.symbol,source.tf,'production-admission',JSON.stringify({...proof,policyId:source.policy?.id}));
     const payload: OrderPayload = { product_id, size: Math.max(1, Math.round(o.qty)), side: o.side as 'buy' | 'sell', order_type: 'market_order', reduce_only: false, client_order_id: clientOrderId ?? cid(o.positionId, 'entry'), purpose: 'entry' };
     const sent = await this.send(payload, o.positionId, o.symbol);
     if (!sent.ok && sent.row.state === 'rejected') { this.adopt(o.positionId, () => this.paper.voidPosition(o.positionId, `exchange-rejected: ${sent.error}`)); return; }

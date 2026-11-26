@@ -1,3 +1,6 @@
+import {JournalConsumer} from '../research/journalConsumer.ts';
+import {fitModels} from './fit.ts';
+import {runResearchTask} from '../research/tasks.ts';
 /**
  * Trade-learning service: stores samples (backtest + live), trains per-scanner and global
  * models, scores new entries, and produces improvement insights.
@@ -6,11 +9,10 @@ import { SIMULATION_VERSION } from '../paper/version.ts';
 import type { Db } from '../db.ts';
 import { logger } from '../log.ts';
 import { computeFeatures, FEATURE_LABELS, FEATURE_NAMES, featureVector, type Features, type FeatureInputs } from './features.ts';
-import { deriveRules, predict, trainLogReg, type LogRegModel, type Rule, type Sample } from './model.ts';
+import { predict, type LogRegModel, type Rule, type Sample } from './model.ts';
 import {PredictionEvidence,type ModelEvidence,type PredictionContext} from './predictionEvidence.ts';
 
 const log = logger.scoped('ml');
-const MIN_SCANNER_SAMPLES = 40;
 const TRAINING_VERSION = 3;
 /** Live feature vectors kept for drift monitoring. */
 const DRIFT_WINDOW = 200;
@@ -45,10 +47,13 @@ export class MlService {
   private snapshot: MlSnapshot | null = null;
   private names: () => Record<string, string>;
   private trainTimer: ReturnType<typeof setTimeout> | null = null;
+  private recoveryTimer:ReturnType<typeof setImmediate>|null=null;
+  private closeConsumer:JournalConsumer;
   private liveFeatures: Array<{ at: number; f: Features }> = [];
 
   constructor(db: Db, names: () => Record<string, string>) {
     this.db = db; this.names = names;
+    this.closeConsumer=new JournalConsumer(db,'ml-closes-v1',true,true);
     this.predictionEvidence=new PredictionEvidence(db);
     db.db.exec(`CREATE TABLE IF NOT EXISTS ml_samples (
       id INTEGER PRIMARY KEY AUTOINCREMENT, scanner_id TEXT NOT NULL, symbol TEXT NOT NULL, tf TEXT NOT NULL, at INTEGER NOT NULL,
@@ -83,6 +88,19 @@ export class MlService {
     if (this.globalModel && this.globalModel.weights.length !== FEATURE_NAMES.length) { log.info(`feature set moved (${this.globalModel.weights.length} → ${FEATURE_NAMES.length}); retraining`); this.scheduleTrain(); }
   }
 
+  recoverClosedSamples(limit=50){
+    const n=this.closeConsumer.consume((event,p)=>{
+      if(event.book!==0||event.stage!=='closed'||!p||p.status!=='closed'||!(p.exit_at>=p.entry_at))return;
+      let saved;try{saved=JSON.parse(p.fills);}catch{this.db.kvSet('ml.recovery.lastMalformedEvent',event.id);return;}
+      const features=Array.isArray(saved)?undefined:saved.features;
+      if(!features)return;
+      const pnl=p.realized_pnl-p.fees;
+      this.addLiveSample(p.scanner_id,p.symbol,p.tf,p.entry_at,features,pnl>0,p.risk_amount>0?pnl/p.risk_amount:0,pnl,p.exit_reason??'',p.exit_at);
+    },limit);
+    if(n===limit&&!this.recoveryTimer&&!this.stopped)this.recoveryTimer=setImmediate(()=>{this.recoveryTimer=null;try{this.recoverClosedSamples(limit);}catch(e){log.warn('learning journal recovery pending');}});
+    return n;
+  }
+
   features(inp: FeatureInputs): Features { return computeFeatures(inp); }
 
   /** Replace the backtest samples of one scanner×symbol×tf with a fresh set. */
@@ -95,14 +113,14 @@ export class MlService {
   }
 
   addLiveSample(scannerId: string, symbol: string, tf: string, at: number, features: Features, win: boolean, r: number, pnl: number, exitReason: string, resolvedAt = Date.now()) {
-    this.db.run('INSERT OR IGNORE INTO ml_samples(scanner_id, symbol, tf, at, features, win, r, pnl, exit_reason, bt, resolved_at) VALUES (?,?,?,?,?,?,?,?,?,0,?)', scannerId, symbol, tf, at, JSON.stringify(features), win ? 1 : 0, r, pnl, exitReason, resolvedAt);
-    this.scheduleTrain();
+    const r0=this.db.run('INSERT OR IGNORE INTO ml_samples(scanner_id, symbol, tf, at, features, win, r, pnl, exit_reason, bt, resolved_at) VALUES (?,?,?,?,?,?,?,?,?,0,?)', scannerId, symbol, tf, at, JSON.stringify(features), win ? 1 : 0, r, pnl, exitReason, resolvedAt);
+    if(r0.changes)this.scheduleTrain();
   }
 
   /** Throttled: train at most once per 2 minutes while samples keep arriving (never starves during warm-up). */
   private scheduleTrain() {
     if (this.trainTimer) return;
-    this.trainTimer = setTimeout(() => { this.trainTimer = null; try { this.train(); } catch (e: any) { log.error(`train failed: ${e?.message ?? e}`); } }, 120_000);
+    this.trainTimer = setTimeout(() => { this.trainTimer = null; void this.trainAsync().catch(e=>log.error(`train failed: ${e?.message ?? e}`)); }, 120_000);
     this.trainTimer.unref();
   }
 
@@ -128,44 +146,37 @@ export class MlService {
     this.modelEvidence=null;
     const ex = this.excluded();
     const all = this.samples(undefined, 100_000).filter(s => !ex.has(s.scannerId) && s.resolvedAt != null && Number.isFinite(s.resolvedAt) && s.resolvedAt >= s.at && s.resolvedAt<=t0);
-    const names = this.names();
-    const byScanner = new Map<string, Sample[]>();
-    for (const s of all) { const l = byScanner.get(s.scannerId) ?? []; l.push(s); byScanner.set(s.scannerId, l); }
-    const timeframeModels: NonNullable<MlSnapshot['timeframeModels']> = [];
-    this.globalModel = trainLogReg(all);
-    this.timeframeModels.clear();
-    for (const tf of new Set(all.map(s => s.tf))) {
-      const model = trainLogReg(all.filter(s => s.tf === tf));
-      if (model) { this.timeframeModels.set(tf, model); timeframeModels.push({ scannerId: null, tf, model: model.metrics }); }
-    }
-    const gRules = deriveRules(all, { minN: 50 });
-    const scanners: ScannerInsight[] = [];
-    this.models.clear();
-    for (const [id, list] of byScanner) {
-      const m = list.length >= MIN_SCANNER_SAMPLES ? trainLogReg(list) : null;
-      if (m) this.models.set(id, m);
-      for (const tf of new Set(list.map(s => s.tf))) {
-        const rows = list.filter(s => s.tf === tf);
-        const cell = rows.length >= MIN_SCANNER_SAMPLES ? trainLogReg(rows) : null;
-        if (cell) { this.models.set(JSON.stringify([id, tf]), cell); timeframeModels.push({ scannerId: id, tf, model: cell.metrics }); }
-      }
-      const { baseline, rules } = deriveRules(list);
-      scanners.push({ scannerId: id, scannerName: names[id] ?? id, samples: list.length, liveSamples: list.filter(s => !s.bt).length, baseline, model: m?.metrics ?? null, calibration: m?.calibration ?? null, importance: m?.importance.slice(0, 8) ?? [], rules });
-    }
-    scanners.sort((a, b) => b.samples - a.samples);
-    const resetAt = this.db.kvGet<number>('paper.resetAt') ?? 0;
-    this.snapshot = {
-      timeframeModels, eligibility: { stored: this.count().total, eligible: all.length, excluded: this.count().total - all.length },
-      trainedAt: Date.now(), samples: all.length, liveSamples: all.filter(s => !s.bt).length, liveSinceReset: all.filter(s => !s.bt && s.at >= resetAt).length, scannersWithModel: scanners.filter(s => s.model !== null).length,
-      global: this.globalModel ? { model: this.globalModel.metrics, calibration: this.globalModel.calibration, importance: this.globalModel.importance, rules: gRules.rules, baseline: gRules.baseline } : null,
-      scanners,
-    };
-    const bundle={version:TRAINING_VERSION,timeframeModels:Object.fromEntries(this.timeframeModels),global:this.globalModel,models:Object.fromEntries(this.models),snapshot:this.snapshot};
-    this.modelEvidence=this.predictionEvidence.saveModel(bundle,this.snapshot.trainedAt!,all.reduce((v,s)=>Math.max(v,s.resolvedAt!),0));
-    this.db.kvSet('ml.model', {...bundle,evidence:this.modelEvidence});
-    log.info(`trained on ${all.length} samples (${this.models.size} scanner models, global AUC ${this.globalModel ? this.globalModel.metrics.auc.toFixed(2) : '-'}) in ${Date.now() - t0}ms`);
+    return this.install(fitModels(all,this.names(),this.count().total,this.db.kvGet<number>('paper.resetAt')??0));
+  }
+
+  private install(result:ReturnType<typeof fitModels>):MlSnapshot {
+    const {bundle,maxResolvedAt}=result;
+    const evidence=this.db.transaction(()=>{const e=this.predictionEvidence.saveModel(bundle,bundle.snapshot.trainedAt!,maxResolvedAt);this.db.kvSet('ml.model',{...bundle,evidence:e});return e;});
+    this.globalModel=bundle.global;this.models=new Map(Object.entries(bundle.models));
+    this.timeframeModels=new Map(Object.entries(bundle.timeframeModels));
+    this.snapshot=bundle.snapshot;this.modelEvidence=evidence;
     return this.snapshot;
   }
+
+  private training:Promise<MlSnapshot>|null=null;
+  private stopped=false;
+  /** Scheduled/API fits read the file and train in a worker, preserving the last complete model. */
+  trainAsync():Promise<MlSnapshot> {
+    if(this.stopped)return Promise.reject(Error('learning stopped'));
+    if(!this.training){
+      const excluded=[...this.excluded()];
+      this.training=runResearchTask<ReturnType<typeof fitModels>>('ml',{
+        file:this.db.file,names:this.names(),excluded,at:Date.now(),
+        ...(this.db.file===':memory:'?{samples:this.samples(undefined,100_000),stored:this.count().total,resetAt:this.db.kvGet<number>('paper.resetAt')??0}:{})
+      }).then(result=>{
+        if(this.stopped)throw Error('learning stopped');
+        if(JSON.stringify([...this.excluded()].sort())!==JSON.stringify(excluded.sort()))throw Error('learning exclusions changed during fit');
+        return this.install(result);
+      }).finally(()=>{this.training=null;});
+    }
+    return this.training;
+  }
+  async stop(){this.stopped=true;if(this.recoveryTimer)clearImmediate(this.recoveryTimer);this.recoveryTimer=null;if(this.trainTimer)clearTimeout(this.trainTimer);this.trainTimer=null;await this.training?.catch(()=>{});}
 
   /**
    * Calibrated P(win) for a live entry; scanner model when available, else global; null when

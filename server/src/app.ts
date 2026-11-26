@@ -1,3 +1,7 @@
+import {SubscriptionScope} from './subscriptions.ts';
+import type {GoLiveVerdict} from './analytics/golive.ts';
+import {ProductionReadiness} from './execution/readiness.ts';
+import {startResearchTasks,stopResearchTasks,runResearchTask} from './research/tasks.ts';
 import {mapForView} from './api/cooperativeView.ts';
 import { RuntimeState } from './runtime.ts';
 import {candleReplayBlock} from './paper/basket.ts';
@@ -93,6 +97,37 @@ export interface AppDeps {
 
 /** Composition root: wires feed → candles → scanners → paper engine, plus the optional testnet mirror. */
 export class App {
+  private subscriptions=new SubscriptionScope();
+  private productionReadiness=new ProductionReadiness();
+  private productionReadinessTimer:ReturnType<typeof setInterval>|null=null;
+  private readinessGeneration=0;
+  private refreshingReadiness:Promise<void>|null=null;
+  private refreshProductionReadiness():Promise<void>{
+    if(this.quiesced||this.executor?.transport.host!=='production'||this.executor.transport.dryRun)return Promise.resolve();
+    if(this.refreshingReadiness)return this.refreshingReadiness;
+    const generation=this.readinessGeneration,cfg=structuredClone(this.config.get()),sources=this.readinessSources();
+    const identity=this.productionReadiness.identity(cfg,sources),since=Date.now()-30*86400000;
+    const ids=currentPolicyEvidence(this.db,this.paper).ids;
+    const trades=this.paper.trades({limit:5000}).filter(t=>ids.has(t.id)&&Number.isFinite(t.exitAt)&&t.exitAt!>=since);
+    const rs=[...trades].sort((a,b)=>a.exitAt!-b.exitAt!).map(t=>Number.isFinite(t.rMultiple)?t.rMultiple!:0);
+    const returns=cfg.paper.sizingMode==='margin'?this.equityReturnsPct(new Set(trades.map(t=>t.id))):null;
+    const span=trades.length>1?(Math.max(...trades.map(t=>t.exitAt!))-Math.min(...trades.map(t=>t.entryAt)))/86400000:1;
+    const input={rs,equityPcts:returns,lbPct90:returns&&returns.length>=10?band(returns).lb:null,
+      tradesPerDay:trades.length/Math.max(1,span),riskPct:this.realisedRiskPct(new Set(trades.map(t=>t.id)))??cfg.paper.riskPerTradePct,
+      dailyLossPct:cfg.risk.maxDailyLossPct,maxLossPct:cfg.risk.maxWeeklyLossPct||30,drawdownAlertPct:cfg.alerts.drawdownPct,
+      lb90:rs.length>=10?band(rs).lb:null,haltsInWindow:this.db.get<{n:number}>('SELECT count(*) n FROM risk_halts WHERE at>=?',since)?.n??0,alertsConfigured:this.ops.alerts.configured};
+    this.refreshingReadiness=runResearchTask<GoLiveVerdict>('readiness',input).then(v=>{
+      if(!this.quiesced&&generation===this.readinessGeneration&&identity===this.productionReadiness.identity(this.config.get(),this.readinessSources()))this.productionReadiness.observe(v.ok,cfg,sources);
+    }).catch(()=>{this.productionReadiness.invalidate();}).finally(()=>{this.refreshingReadiness=null;});
+    return this.refreshingReadiness;
+  }
+  private readinessSources(){return Object.fromEntries(this.registry.all().filter(s=>this.config.get().scanners[s.id]?.enabled).map(s=>[s.id,this.sourceHashFor(s.id)]));}
+  private quiesced=false;
+  quiesce(){
+    if(this.quiesced)return;this.quiesced=true;
+    if(this.productionReadinessTimer)clearInterval(this.productionReadinessTimer);this.productionReadinessTimer=null;
+    this.scanners.stop();this.boundExits.stop();this.incubator.stop();this.pairAgents.stop();this.validation.stop();this.screenQueue.stop();
+  }
   readonly startedAt = Date.now();
   readonly config = new ConfigStore();
   readonly db = new Db();
@@ -159,17 +194,21 @@ export class App {
   readonly planComparisons: PlanComparisons;
   readonly entryDepth: EntryDepthGate;
   constructor(deps: AppDeps = {}) {
+    startResearchTasks();
     const cfg = () => this.config.get();
     this.rest = deps.rest ?? new DeltaRest();
     this.feed = deps.feed ?? new DeltaFeed();
+    this.subscriptions.watch(this.feed);
     // A recorded/synthetic feed must never silently start a real research socket in tests.
     this.advisoryFeedFactory=deps.advisoryFeedFactory??(deps.feed?()=>{const f=new DeltaFeed();f.start=()=>{};return f;}:undefined);
     this.registry = deps.registry ?? new ScannerRegistry();
     this.profiles = new ProfileStore(this.db);
     this.candles = new CandleStore(this.rest, this.feed, cfg().historyBars + 50);
+    this.subscriptions.watch(this.candles);
     const workers = new WorkerTracker();
     this.pool = new PinePool(Number(process.env.VNEDGE_WORKERS) || undefined, undefined, workers.factory);
     this.paper = new PaperEngine(this.db, cfg);
+    this.subscriptions.watch(this.paper);
     this.paper.atrFor = (symbol, tf) => lastAtr(this.candles.get(symbol, tf, { closedOnly: true, limit: 60 }), 14);
     // Shadow pairs are judged in R, so the shadow book sizes against a purse no pair can exhaust
     // and has no position cap: a shadow trade is never skipped because another one holds margin.
@@ -180,6 +219,7 @@ export class App {
       return shadowCfg!;
     };
     this.shadow = new PaperEngine(this.db, shadowRef, { book: 2 });
+    this.subscriptions.watch(this.shadow);
     this.shadow.atrFor = this.paper.atrFor;
     // a scanner's own exit rules reach both books the same way (decision 38)
     // decision 113: a scanner on exit mode `script` trades its own exits; the bot's targets and trail are off for it
@@ -246,7 +286,9 @@ export class App {
       compareSourceScan: input=>this.planComparisons.observeSourceScan(input),
       store: this.incubatorStore, cfgRef: cfg, candles: this.candles, pool: this.pool, registry: this.registry, paper: this.shadow, marketInfo: s => this.scanners.marketInfo(s), ml: this.ml,
       marketVerdict: s => { const v = this.marketGate?.verdict(s); return v ? { allowed: v.allowed, reasons: v.reasons } : null; },
-      mirror: (s, symbol, tf, ev, bars, market, exitMode, lastBar) => this.scanners.ingestEvent(s, symbol, tf, ev, bars, market, exitMode, lastBar),
+      accountTargets:(id,symbol,tf,side)=>({targetPositionId:this.paper.openPositions().find(p=>p.scannerId===id&&p.symbol===symbol&&p.tf===tf&&(!side||side===p.side))?.id??null,
+        targetPendingIds:this.paper.pendingEntries().filter(p=>p.scannerId===id&&p.symbol===symbol&&p.tf===tf&&(!side||side===p.side)).map(p=>p.id)}),
+      mirror: (s,symbol,tf,ev,bars,market,exitMode,lastBar,targets) => this.scanners.ingestEvent(s,symbol,tf,ev,bars,market,exitMode,lastBar,targets),
       subscribe: symbols => { this.feed.subscribe('v2/ticker', symbols); subscribeRealtime(this); },
       accountHolds: (scannerId, symbol, tf) => this.paper.openPositions().some(p => p.scannerId === scannerId && p.symbol === symbol && p.tf === tf),
       accountFocus: () => {
@@ -303,13 +345,15 @@ export class App {
     this.risk = new RiskManager({ db: this.db, paper: this.paper, candles: this.candles, cfgRef: cfg, marketGate: this.marketGate });
     this.paper.risk = this.risk;
     this.executor = createExecutor(this.paper, cfg);
+    this.paper.on('trade',()=>{this.readinessGeneration++;this.productionReadiness.invalidate();void this.refreshProductionReadiness();});
+    if(this.executor)this.executor.admission=p=>this.ops.alerts.configured?this.productionReadiness.check(cfg(),this.readinessSources(),p.policy,this.paper.policyForCell(p)):'production alert channel unavailable';
     this.tapeAudit = new TapeAudit(this.db, [{ engine: this.paper, book: 0 }, { engine: this.shadow, book: 2 }]);
     wireRealtime(this);
     // flow intelligence from public data, once an hour (decision 101)
     this.context = new ContextCollector({ db: this.db, rest: this.rest, symbols: () => [...new Set([...this.resolvedSymbols, ...this.incubator.symbols()])] });
     this.entryState = new EntryStateRecorder({ db: this.db, enricher: this.enricher, candles: this.candles, context: () => this.context.latest().global });
     attachEntryState([this.paper, this.shadow], this.entryState);
-    this.ops = new OpsService({ cfg, onConfigChange: l => this.config.onChange(l), db: this.db, dataDir: DATA_DIR, feed: this.feed, pool: this.pool, paper: this.paper, marks: this.marks, candles: this.candles, scanners: this.scanners, workers, transport: deps.alertTransport, peakEquity: () => this.risk.peakEquity(),
+    this.ops = new OpsService({ quiesce:()=>this.quiesce(),cfg, onConfigChange: l => this.config.onChange(l), db: this.db, dataDir: DATA_DIR, feed: this.feed, pool: this.pool, paper: this.paper, marks: this.marks, candles: this.candles, scanners: this.scanners, workers, transport: deps.alertTransport, peakEquity: () => this.risk.peakEquity(),
       telegramTarget:()=>this.telegram?this.telegram.deliveryTarget():telegramFromEnv(cfg().alerts.telegram) });
     this.telegram=new TelegramControl({db:this.db,dataDir:DATA_DIR,actions:telegramActions(this),alerts:()=>this.ops.alerts,manageDelivery:!deps.alertTransport,
       fallbackTarget:()=>telegramFromEnv(cfg().alerts.telegram),ownerActive:id=>{try{return !!this.db.get("SELECT 1 FROM users WHERE id=? AND role='admin' AND disabled=0",id);}catch{return false;}}});
@@ -352,6 +396,7 @@ export class App {
     this.paper.on('trade',()=>this.evidenceReview.noteEvidence());
     this.shadow.on('trade',()=>this.evidenceReview.noteEvidence());
     this.validation=createValidation(this);
+    this.subscriptions.seal();
   }
 
   /** Resolve the configured universe to concrete Delta symbols. */
@@ -392,6 +437,9 @@ export class App {
   }
 
   async start(): Promise<void> {
+    if(this.executor?.transport.host==='production'&&!this.executor.transport.dryRun){
+      await this.refreshProductionReadiness();this.productionReadinessTimer=setInterval(()=>void this.refreshProductionReadiness(),30_000);this.productionReadinessTimer.unref();
+    }
     this.startExecutionLoops();
     this.tapeAudit.start();
     this.context.start();
@@ -849,7 +897,7 @@ export class App {
   }
 
   /** What the journal teaches, in R, for the live book and the shadow book (decision 63). */
-  policyHealth(){return {...policyHealth(this.db,this.paper,this.shadow),allocation:this.scanners.entryCoordinator.status(),boundExits:this.boundExits.status()};}
+  policyHealth(){return {...policyHealth(this.db,this.paper,this.shadow),allocation:this.scanners.entryCoordinator.status(),boundExits:this.boundExits.status(),shadowDelivery:this.incubator.receiptStatus};}
 
   learning() {
     const toLearn = (book: number) => (t: any) => ({ scannerId: t.scannerId, scannerName: t.scannerName, symbol: t.symbol, tf: t.tf, side: t.side, entryAt: t.entryAt, exitAt: t.exitAt, pnl: t.pnl, fees: t.fees, rMultiple: t.rMultiple, exitReason: t.exitReason ?? null, peakR: t.peakR ?? null, riskAmount: t.riskAmount, configFp: t.configFp ?? null, features: this.featuresOf(book, t) });
@@ -1141,6 +1189,11 @@ export class App {
   }
 
   async stop() {
+    this.quiesce();
+    await this.ops.monitor.stop();
+    await stopResearchTasks();
+    await this.ml.stop();
+    await this.refreshingReadiness;
     this.tapeAudit.stop();
     this.context.stop();
     await this.telegram.stop();
@@ -1157,7 +1210,9 @@ export class App {
     if (this.huntTimer) clearInterval(this.huntTimer);
     this.feed.stop();
     await this.pool.stop();
+    await Promise.all([this.scanners.drain(),this.incubator.drain(),this.validation.service.drain()]);
     await auditStopped;
+    this.subscriptions.detach();
   }
 }
 

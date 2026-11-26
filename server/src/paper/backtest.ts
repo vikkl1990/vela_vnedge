@@ -1,3 +1,4 @@
+import type {ResearchProvenance} from '../validation/provenance.ts';
 import {candleReplayBlock} from './basket.ts';
 import {nativeGeometryError} from '../scanners/plotLifecycle.ts';
 import {quoteMakerCell,passiveMakerPrice,tradedVolume,makerTapeCell} from './makerPricing.ts';
@@ -102,6 +103,7 @@ export interface BacktestInput {
 }
 
 export interface BacktestResult {
+  provenance?:ResearchProvenance;
   version: number;
   scriptStopAmendments?: 'after-close-v1';
   at: number; bars: number; from: number; to: number; signals: number; entries: number;

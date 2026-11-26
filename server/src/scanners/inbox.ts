@@ -1,3 +1,4 @@
+export interface MirroredReceipt {targetPositionId:number|null;targetPendingIds:number[];receivedAt?:number;recovered?:boolean}
 import { createHash } from 'node:crypto';
 import type { Db, SignalRow } from '../db.ts';
 import type { Bar } from '../data/candleStore.ts';

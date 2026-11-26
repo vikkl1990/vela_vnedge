@@ -1,3 +1,4 @@
+import {researchProvenance} from '../validation/provenance.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
@@ -14,16 +15,17 @@ function build(opts: { tfs?: string[] } = {}) {
   cfg.incubator.enabled=false;
   cfg.symbols = ['BTCUSD', 'ETHUSD', 'SOLUSD']; cfg.timeframes = opts.tfs ?? ['15m'];
   cfg.scanners.s = { enabled: true, symbols: [...cfg.symbols], timeframes: null, exitMode: 'both' };
-  const bt = (trades: number, pnl: number) => ({ version: SIMULATION_VERSION, at: Date.now(), trades: [], stats: { trades, pnl, grossProfit: pnl > 0 ? pnl : 0, grossLoss: pnl < 0 ? -pnl : 0 } });
+  const bt = (trades: number, pnl: number,symbol:string,tf:string) => ({ provenance:researchProvenance(cfg,'test-source','s',symbol,tf,{tickSize:.01,contractValue:1},[]),version: SIMULATION_VERSION, at: Date.now(), trades: [], stats: { trades, pnl, grossProfit: pnl > 0 ? pnl : 0, grossLoss: pnl < 0 ? -pnl : 0 } });
   // in-sample: BTC good, ETH good, SOL bad (all tfs)
   for (const tf of cfg.timeframes) {
-    db.run('INSERT INTO backtests(scanner_id, symbol, tf, at, bars, result) VALUES (?,?,?,?,?,?)', 's', 'BTCUSD', tf, 1, 1, JSON.stringify(bt(10, 500)));
-    db.run('INSERT INTO backtests(scanner_id, symbol, tf, at, bars, result) VALUES (?,?,?,?,?,?)', 's', 'ETHUSD', tf, 1, 1, JSON.stringify(bt(8, 200)));
-    db.run('INSERT INTO backtests(scanner_id, symbol, tf, at, bars, result) VALUES (?,?,?,?,?,?)', 's', 'SOLUSD', tf, 1, 1, JSON.stringify(bt(9, -300)));
+    db.run('INSERT INTO backtests(scanner_id, symbol, tf, at, bars, result) VALUES (?,?,?,?,?,?)', 's', 'BTCUSD', tf, 1, 1, JSON.stringify(bt(10,500,'BTCUSD',tf)));
+    db.run('INSERT INTO backtests(scanner_id, symbol, tf, at, bars, result) VALUES (?,?,?,?,?,?)', 's', 'ETHUSD', tf, 1, 1, JSON.stringify(bt(8,200,'ETHUSD',tf)));
+    db.run('INSERT INTO backtests(scanner_id, symbol, tf, at, bars, result) VALUES (?,?,?,?,?,?)', 's', 'SOLUSD', tf, 1, 1, JSON.stringify(bt(9,-300,'SOLUSD',tf)));
   }
   const store = { setScanner: (id: string, patch: any) => { cfg.scanners[id] = { ...cfg.scanners[id], ...patch }; return cfg.scanners[id]; } };
   const engine = new ScannerEngine({ db, cfgRef: () => cfg, paper: new PaperEngine(db, () => cfg), candles: Object.assign(new EventEmitter(), { get: () => [] }) as any, pool: { stats: { queued: 0 }, run: async () => ({}) } as any,
-    registry: { all: () => [{ id: 's', name: 'S', status: 'ok', patched: '' }], get: () => undefined } as any, rest: {} as any, cfgStore: store });
+    registry: { all: () => [{ id: 's', name: 'S', status: 'ok', patched: 'test-source' }], get: () => ({id:'s',name:'S',status:'ok',patched:'test-source'}) } as any, rest: {} as any, cfgStore: store });
+  for(const symbol of cfg.symbols)(engine as any).markets.set(symbol,{tickSize:.01,contractValue:1});
   return { db, cfg, engine };
 }
 
@@ -110,7 +112,7 @@ test('multi-timeframe: every (symbol, tf) pair is evaluated and both lists are t
 test('a scanner with no backtest yet is skipped, not disabled (enable → refresh race)', t => {
   const { db, cfg, engine } = build(); t.after(() => db.db.close());
   cfg.scanners.fresh = { enabled: true, symbols: ['BTCUSD'], timeframes: ['15m'], exitMode: 'both' };
-  (engine as any).registry = { all: () => [{ id: 'fresh', name: 'Fresh', status: 'ok', patched: '' }], get: () => undefined };
+  (engine as any).registry = { all: () => [{ id: 'fresh', name: 'Fresh', status: 'ok', patched: 'test-source' }], get: () => ({id:'s',name:'S',status:'ok',patched:'test-source'}) };
   const [r] = engine.autoTune({ minTrades: 3, minProfitFactor: 1 });
   assert.equal(r.skipped, true);
   assert.equal(r.disabled, false);
