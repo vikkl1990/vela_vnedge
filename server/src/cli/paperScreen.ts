@@ -4,7 +4,8 @@
  * (decisions 85 and 195: same reading, rules and extraction as ValidationService.runPair).
  *
  *   node src/cli/paperScreen.ts SYMBOLS TF BARS OUT.jsonl [WORKERS]
- *   (env LIMIT=n screens the first n scanners; IDS=a,b only the listed ones)
+ *   (env LIMIT=n screens the first n scanners; IDS=a,b only the listed ones; POLICY_SET=live the configured
+ *    rules with and without the trend gate; INVERT=1 adds each policy on the inverted reading as `<policy>_inv`)
  *
  * Results are appended per cell, so an interrupted run resumes where it stopped. Concurrency is
  * bounded: holding every job's bars at once is what exhausted the server's heap at warm-up.
@@ -40,12 +41,18 @@ const tfMs = (TF_SECONDS[tf] ?? 0) * 1000;
  * (minimum stop distance, in round trips of fees) and/or stop closing on an opposite signal. Chosen on
  * a BTC 15m sample where tight-stop entries and one-bar reversals produced most of the losses.
  */
-const POLICIES: Record<string, Partial<typeof cfg.paper>> = {
+const POLICIES: Record<string, Partial<typeof cfg.paper>> = process.env.POLICY_SET === 'live' ? {
+  // POLICY_SET=live: the account's own rules as configured, with and without its trend gate
+  current: {},
+  noTrendGate: { trendGate: { enabled: false, emaLen: 200, tf: '', mode: 'follow' } },
+} : {
   current: {},
   cost8x: { minRiskFeeRatio: 8, minRiskFeeRatioBySymbol: undefined },
   cost12x: { minRiskFeeRatio: 12, minRiskFeeRatioBySymbol: undefined },
   cost12x_noRev: { minRiskFeeRatio: 12, minRiskFeeRatioBySymbol: undefined, allowReversal: false },
 };
+/** INVERT=1: every policy is also run on the inverted reading (`<policy>_inv`), so a scanner whose signals work faded shows up too. */
+const WITH_INVERT = process.env.INVERT === '1';
 
 const done = new Set<string>();
 if (fs.existsSync(out)) for (const line of fs.readFileSync(out, 'utf8').split('\n')) { try { const r = JSON.parse(line); done.add(`${r.scannerId}|${r.symbol}`); } catch { /* partial line */ } }
@@ -85,14 +92,17 @@ async function screen(s: ReturnType<ScannerRegistry['runnable']>[number], symbol
     const READ = readingOf(sc, s.id, tfMs, s.patched, s.variantOf);
     const derived = applyRules({ scannerId: s.id, alerts: res.alerts, shapes: res.shapes, labels: res.labels, plots: res.plots, rule, bars: m.bars, mode: 'backtest', ...READ.rule });
     const events = extractEvents(res.alerts, res.shapes, { barMs: tfMs, drawn: res.labels, scannerId: s.id, derived, ...READ.extract });
+    row.reader = READ.extract.reader ?? 1;
     row.entries = events.filter(e => e.kind === 'entry').length;
     if (!row.entries) { row.silent = true; return row; }
+    const inverted = WITH_INVERT ? extractEvents(res.alerts, res.shapes, { barMs: tfMs, drawn: res.labels, scannerId: s.id, derived, ...READ.extract, invert: !READ.extract.invert }) : null;
     const t0 = m.bars[0].time, span = m.bars.at(-1).time - t0, trainEnd = t0 + span * 0.7, mid = t0 + span * 0.35;
     // every policy is backtested on the same events: one script run, several paper rules
     row.policies = {};
-    for (const [name, over] of Object.entries(POLICIES)) {
+    const runs = Object.entries(POLICIES).flatMap(([name, over]) => [[name, over, events] as const, ...(inverted ? [[`${name}_inv`, over, inverted] as const] : [])]);
+    for (const [name, over, evs] of runs) {
       const pcfg = { ...cfg, paper: { ...cfg.paper, ...over } };
-      const bt = runBacktest({ scannerId: s.id, scannerName: s.name, symbol, tf, bars: m.bars, events: structuredClone(events),
+      const bt = runBacktest({ scannerId: s.id, scannerName: s.name, symbol, tf, bars: m.bars, events: structuredClone(evs),
         ...backtestPolicy(pcfg, s.id, tf, 'account', { executor: false, productFees: m.info.productFees }), exitMode: sc.exitMode, contractValue: m.info.contractValue, tickSize: m.info.tickSize });
       const all = stats(bt.trades), seg = [stats(bt.trades.filter(t => t.entryAt < mid)), stats(bt.trades.filter(t => t.entryAt >= mid && t.entryAt < trainEnd)), stats(bt.trades.filter(t => t.entryAt >= trainEnd))];
       row.policies[name] = { trades: all.trades, pnl: all.pnl, pf: all.pf, avgR: all.avgR, maxDd: bt.stats.maxDrawdownPct, early: seg[0], middle: seg[1], holdout: seg[2],
