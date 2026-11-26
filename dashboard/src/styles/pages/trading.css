@@ -1,0 +1,87 @@
+/* Trading overview (pages/Trading.tsx): the landing page for the account as it trades now. */
+.trading {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* entry signal funnel: one row per rule that decided entries */
+.trading .funnel {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.trading .funnel-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 160px) 1fr 56px 44px;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+}
+.trading .funnel-label {
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.trading .funnel-track {
+  height: 10px;
+  border-radius: 5px;
+  background: var(--surface-3);
+  overflow: hidden;
+}
+.trading .funnel-bar {
+  display: block;
+  height: 100%;
+  border-radius: 5px;
+  min-width: 2px;
+}
+.trading .tone-bg-gain { background: var(--gain); }
+.trading .tone-bg-loss { background: var(--loss); }
+.trading .tone-bg-warn { background: var(--warn); }
+.trading .tone-bg-accent { background: var(--accent-2); }
+.trading .tone-bg-muted { background: var(--muted-2); }
+.trading .funnel-n,
+.trading .funnel-pct {
+  text-align: right;
+}
+
+/* rules in force: a two-column definition list */
+.trading .rules {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+}
+.trading .rules-row {
+  display: grid;
+  grid-template-columns: 96px 1fr;
+  gap: 12px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: 13px;
+}
+.trading .rules-row:last-child {
+  border-bottom: 0;
+}
+.trading .rules dt {
+  color: var(--muted);
+}
+.trading .rules dd {
+  margin: 0;
+  color: var(--text);
+}
+
+@media (max-width: 640px) {
+  .trading .funnel-row {
+    grid-template-columns: 110px 1fr 44px;
+  }
+  .trading .funnel-pct {
+    display: none;
+  }
+  .trading .rules-row {
+    grid-template-columns: 84px 1fr;
+  }
+}

@@ -306,6 +306,8 @@ export const api = {
   positionPath: (id: number) => get<{ position: PathLevels; path: PathPoint[] }>(`/positions/${id}/path`),
   orders: (limit = 200) => get<Order[]>(`/orders${qs({ limit })}`),
   stats: () => get<Stats>('/stats'),
+  tradingOverview: (days = 7) =>
+    get<import('./tradingOverview').TradingOverview>(`/trading/overview${qs({ days })}`),
   equity: (scanner?: string, limit = 2000) => get<EquityPoint[]>(`/equity${qs({ scanner, limit })}`),
   resetPaper: () => post<unknown>('/paper/reset'),
 

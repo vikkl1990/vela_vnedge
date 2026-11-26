@@ -29,6 +29,7 @@ test('the navigation keeps the three groups and every page that existed before t
   const routes = new Set(all.map((n) => n.to))
   for (const r of [
     '/',
+    '/workspace',
     '/overview',
     '/strategies',
     '/lab',
@@ -68,8 +69,9 @@ test('Users is hidden from anyone who is not an administrator', () => {
 })
 
 test('route titles come from the navigation, scanner pages from the scanner', () => {
-  assert.deepEqual(routeMeta('/'), { title: 'Workspace', section: 'Work' })
-  assert.deepEqual(routeMeta('/overview'), { title: 'Home', section: 'Work' })
+  assert.deepEqual(routeMeta('/'), { title: 'Trading', section: 'Work' })
+  assert.deepEqual(routeMeta('/workspace'), { title: 'Workspace', section: 'Work' })
+  assert.deepEqual(routeMeta('/overview'), { title: 'Books', section: 'Lab' })
   assert.deepEqual(routeMeta('/live'), { title: 'Live control', section: 'Control' })
   assert.deepEqual(routeMeta('/settings'), { title: 'Settings', section: 'Control' })
   assert.deepEqual(routeMeta('/profile'), { title: 'Profile', section: 'Account' })

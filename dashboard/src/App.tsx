@@ -4,10 +4,10 @@ import { AuthGate, useAuth } from './auth/AuthGate'
 import { Layout } from './components/Layout'
 import { BookProvider } from './lib/bookScope'
 import { canonicalPath, HUB_ROUTES } from './lib/routeHubs'
-import { Terminal } from './pages/Terminal'
+import { Trading } from './pages/Trading'
 
 /**
- * Every page except the landing one (the trading workspace) loads on first visit, so the first paint ships the shell and the workspace instead of
+ * Every page except the landing one (the trading overview) loads on first visit, so the first paint ships the shell and the overview instead of
  * the chart engine, the Pine runtime and twenty pages nobody opened. The Layout wraps the outlet in <Suspense>.
  */
 function page<M extends Record<string, unknown>>(load: () => Promise<M>, name: keyof M & string) {
@@ -21,6 +21,7 @@ const Users = pageDefault(() => import('./pages/Users'))
 const Incubator = pageDefault(() => import('./pages/Incubator'))
 const Radar = pageDefault(() => import('./pages/Radar'))
 const Overview = page(() => import('./pages/Overview'), 'Overview')
+const Terminal = page(() => import('./pages/Terminal'), 'Terminal')
 const Strategies = page(() => import('./pages/Strategies'), 'Strategies')
 const Lab = page(() => import('./pages/Lab'), 'Lab')
 const Live = page(() => import('./pages/Live'), 'Live')
@@ -49,7 +50,8 @@ export default function App() {
         <AuthGate>
           <Routes>
             <Route element={<Layout />}>
-              <Route index element={<Terminal />} />
+              <Route index element={<Trading />} />
+              <Route path="workspace" element={<Terminal />} />
               <Route path="overview" element={<Overview />} />
               <Route path="strategies" element={<Strategies />} />
               <Route path="lab" element={<Lab />} />

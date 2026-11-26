@@ -78,7 +78,7 @@ test('net close estimate, active stop and coverage render without trading on des
   if (info.project.name === 'desktop') await page.setViewportSize({ width: 2000, height: 1000 })
   await page.route('**/api/positions', (r) => r.fulfill({ json: [p] }))
   await page.route('**/api/positions/health', (r) => r.fulfill({ json: { at: Date.now(), positions: [h] } }))
-  await page.goto('/')
+  await page.goto('/workspace')
   const cell = page.locator('[data-testid="position-health-4242"]:visible')
   await expect(cell).toContainText('13.21')
   await expect(page.getByText('Profit-level stop · before fees').filter({ visible: true })).toBeVisible()
@@ -105,7 +105,7 @@ test('stale or unavailable depth is never presented as current profit', async ({
       json: { at: Date.now(), positions: [{ ...h, closeNow: { ...h.closeNow, validForMs: 0 } }] },
     }),
   )
-  await page.goto('/')
+  await page.goto('/workspace')
   const cell = page.locator('[data-testid="position-health-4242"]:visible')
   await expect(cell).toContainText('Last estimate · stale')
   await page.route('**/api/positions/health', (r) =>
@@ -147,7 +147,7 @@ test('partial exit exposure cannot display a previous full-size estimate', async
   }
   await page.route('**/api/positions', (r) => r.fulfill({ json: [remaining] }))
   await page.route('**/api/positions/health', (r) => r.fulfill({ json: { at: Date.now(), positions: [h] } }))
-  await page.goto('/')
+  await page.goto('/workspace')
   const cell = page.locator('[data-testid="position-health-4242"]:visible')
   await expect(cell).toContainText('Unavailable')
   await expect(cell).not.toContainText('13.21')

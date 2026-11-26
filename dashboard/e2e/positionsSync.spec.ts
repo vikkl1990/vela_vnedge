@@ -43,7 +43,7 @@ test('a close event before the full list loads must not claim there are no posit
     await ready
     await route.fulfill({ json: [position] })
   })
-  await page.goto('/')
+  await page.goto('/workspace')
   await expect.poll(() => requested).toBe(true)
   await page.evaluate(() =>
     window.dispatchEvent(
@@ -71,7 +71,7 @@ test('a failed refresh retains held trades but marks the list unverified', async
   await page.route('**/api/positions', (route) =>
     route.fulfill(fail ? { status: 503, json: { error: 'Temporary disconnect' } } : { json: [position] }),
   )
-  await page.goto('/')
+  await page.goto('/workspace')
   await expect(page.locator('time[datetime="2026-11-15T08:02:00.000Z"]:visible').first()).toBeVisible()
   fail = true
   await page.getByRole('button', { name: 'Refresh positions', exact: true }).click()
@@ -98,7 +98,7 @@ test('a live stop update keeps the saved copy origin and historical size visible
     if (holdRefresh) await refresh
     await route.fulfill({ json: [{ ...position, fleetSource: 'copy', entrySizeScale: 1 / 3 }] })
   })
-  await page.goto('/')
+  await page.goto('/workspace')
   const label = page.getByText('Copy ⅓', { exact: true }).filter({ visible: true })
   await expect(label).toBeVisible()
   // The stream-open resync can arrive after first render. Hold subsequent HTTP

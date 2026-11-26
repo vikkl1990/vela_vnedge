@@ -24,7 +24,7 @@ test('Terminal shows removed count limits without implying margin and risk are d
       },
     }),
   )
-  await page.goto('/')
+  await page.goto('/workspace')
   const strip = page.locator('.terminal-account-strip')
   await expect(strip).toContainText('no count cap')
   await expect(strip).toContainText('Shared account; margin and risk checks apply')

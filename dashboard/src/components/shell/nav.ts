@@ -28,8 +28,9 @@ export type NavItem = ModelItem & { icon: (p: { size?: number }) => ReactElement
 export type NavGroup = Omit<ModelGroup, 'items'> & { items: NavItem[] }
 
 const ICONS: Record<string, NavItem['icon']> = {
-  '/': IconCandles,
-  '/overview': IconActivity,
+  '/': IconActivity,
+  '/workspace': IconCandles,
+  '/overview': IconGrid,
   '/strategies': IconTarget,
   '/lab': IconFlask,
   '/live': IconShield,

@@ -15,8 +15,9 @@ export type NavItem = {
 export type NavGroup = { label: string; items: NavItem[] }
 
 /**
- * The pages in four groups, named for how the product is used: Work (what is happening now), Markets (what the
- * scanners see), Lab (building and judging strategies) and Control (what stands between a setup and real money).
+ * The pages in four groups, named for how the product is used: Work (the account as it trades now), Markets (what the
+ * scanners see), Lab (building and judging strategies, including the shadow and incubator books) and Control (what
+ * stands between a setup and real money).
  * Profile and Users live in the account menu, not the sidebar.
  */
 export const GROUPS: NavGroup[] = [
@@ -24,33 +25,19 @@ export const GROUPS: NavGroup[] = [
     label: 'Work',
     items: [
       {
-        to: '/overview',
-        label: 'Home',
+        to: '/',
+        label: 'Trading',
+        end: true,
         key: 'v',
-        keywords: 'overview operations books account equity risk needs you dashboard',
-        blurb: 'Four books, one view',
+        keywords: 'home overview account equity funnel signals rules performance live backtest dashboard',
+        blurb: 'Results, how each signal was decided, and the rules in force',
       },
       {
-        to: '/',
+        to: '/workspace',
         label: 'Workspace',
-        end: true,
         key: 'o',
         keywords: 'terminal chart market canvas',
-        blurb: 'Markets, decisions and execution policy in one view',
-      },
-      {
-        to: '/strategies',
-        label: 'Strategies',
-        key: 'q',
-        keywords: 'ladder books backtest shadow paper live scripts',
-        blurb: 'Every script and how far it has climbed',
-      },
-      {
-        to: '/decisions',
-        label: 'Decisions',
-        key: 'd',
-        keywords: 'proposals approve queue',
-        blurb: 'Proposals waiting for a yes or no',
+        blurb: 'Markets, chart and positions in one view',
       },
       {
         to: '/trades',
@@ -97,6 +84,27 @@ export const GROUPS: NavGroup[] = [
   {
     label: 'Lab',
     items: [
+      {
+        to: '/strategies',
+        label: 'Strategies',
+        key: 'q',
+        keywords: 'ladder books backtest shadow paper live scripts',
+        blurb: 'Every script and how far it has climbed',
+      },
+      {
+        to: '/decisions',
+        label: 'Decisions',
+        key: 'd',
+        keywords: 'proposals approve queue',
+        blurb: 'Incubator proposals waiting for a yes or no',
+      },
+      {
+        to: '/overview',
+        label: 'Books',
+        key: 'z',
+        keywords: 'overview operations books shadow incubator ml needs you',
+        blurb: 'The account, shadow and research books side by side',
+      },
       {
         to: '/lab',
         label: 'Lab',
@@ -206,10 +214,10 @@ export const ACCOUNT_PAGES: NavItem[] = [
 
 /** The four views an operator checks from a phone; a fifth button opens the full menu. */
 export const PHONE_TABS: Array<{ to: string; label: string; end?: boolean }> = [
-  { to: '/overview', label: 'Home' },
-  { to: '/strategies', label: 'Strategies' },
+  { to: '/', label: 'Trading', end: true },
+  { to: '/signals', label: 'Signals' },
   { to: '/trades', label: 'Trades' },
-  { to: '/lab', label: 'Lab' },
+  { to: '/analytics', label: 'Performance' },
 ]
 
 export function visibleGroups(isAdmin: boolean): NavGroup[] {

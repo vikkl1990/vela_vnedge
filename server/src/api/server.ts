@@ -24,6 +24,7 @@ import { logger } from '../log.ts';
 import { AuthStore, can, type User } from '../auth/store.ts';
 import { authRoutes, cookieHeader, createAuth, isSecureRequest, parseCookies, permissionFor, SESSION_COOKIE } from '../auth/routes.ts';
 import { signalActivity } from './uiMetrics.ts';
+import { tradingOverview } from './tradingOverview.ts';
 import { positionView } from '../paper/engine.ts';
 import { LibraryService } from '../library/library.ts';
 import { EXTENSIONS } from './extensions.ts';
@@ -503,6 +504,14 @@ export class ApiServer {
     this.add('GET', '/api/journal/:id', (_r, _s, p, url) => journal.detail(journalFilter(url.searchParams).book, Number(p.id)));
     this.add('GET', '/api/orders', (_r, _s, _p, url) => a.paper.orders(Number(url.searchParams.get('limit') ?? 200)));
     this.add('GET', '/api/stats', () => a.paper.stats());
+    this.add('GET', '/api/trading/overview', (_r, _s, _p, url) => {
+      const days = Number(url.searchParams.get('days') ?? 7);
+      if (!(Number.isFinite(days) && days > 0 && days <= 365)) throw new HttpError(400, 'days must be between 0 and 365');
+      const now = Date.now();
+      return tradingOverview({ db: a.db, cfg: a.config.get(), closed: a.paper.closedPositions(), open: a.paper.openPositions(), stats: a.paper.stats(),
+        pairsFor: id => a.scanners.pairsFor(id), backtest: (id, symbol, tf) => a.scanners.getBacktest(id, symbol, tf), scannerName: id => a.registry.get(id)?.name ?? id },
+        { since: now - days * 86_400_000, now });
+    });
     this.add('GET', '/api/equity', (_r, _s, _p, url) => a.paper.equityCurve(url.searchParams.get('scanner'), Number(url.searchParams.get('limit') ?? 2000)));
     this.add('GET', '/api/backtest', (_r, _s, _p, url) => {
       const id = url.searchParams.get('scanner') ?? ''; const symbol = url.searchParams.get('symbol') ?? a.scanners.symbolsFor(id)[0]; const tf = url.searchParams.get('tf') ?? a.scanners.timeframesFor(id)[0];

@@ -15,7 +15,7 @@ test('all legacy routes keep their identity inside hubs, including scanner detai
   assert.equal(canonicalPath('/scanners/abc'), '/strategies/scanners/abc')
   assert.equal(legacyPath('/strategies/scanners/abc'), '/scanners/abc')
   assert.equal(canonicalPath('/scanners-other'), '/scanners-other')
-  assert.equal(GROUPS.flatMap((g) => g.items).filter((i) => !HUB_ROUTES[i.to]).length, 12)
+  assert.equal(GROUPS.flatMap((g) => g.items).filter((i) => !HUB_ROUTES[i.to]).length, 13)
   assert.equal(bookControlsForPath('/strategies/scanners/abc').mlLens, true)
   assert.equal(bookControlsForPath('/strategies/scanners').scope, false)
 })
