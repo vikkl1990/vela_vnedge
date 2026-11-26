@@ -4,6 +4,7 @@
  * (decisions 85 and 195: same reading, rules and extraction as ValidationService.runPair).
  *
  *   node src/cli/paperScreen.ts SYMBOLS TF BARS OUT.jsonl [WORKERS]
+ *   (env LIMIT=n screens the first n scanners; IDS=a,b only the listed ones)
  *
  * Results are appended per cell, so an interrupted run resumes where it stopped. Concurrency is
  * bounded: holding every job's bars at once is what exhausted the server's heap at warm-up.
@@ -59,7 +60,8 @@ for (const symbol of symbols) {
 }
 
 const limit = Number(process.env.LIMIT ?? 0);   // LIMIT=n: a quick trial on the first n scanners
-const scanners = registry.runnable().filter(s => !candleReplayBlock(s.id)).slice(0, limit > 0 ? limit : undefined);
+const ids = process.env.IDS ? new Set(process.env.IDS.split(',')) : null;   // IDS=a,b: screen only these scanners
+const scanners = registry.runnable().filter(s => !candleReplayBlock(s.id) && (!ids || ids.has(s.id))).slice(0, limit > 0 ? limit : undefined);
 const jobs = symbols.flatMap(symbol => scanners.map(s => ({ s, symbol }))).filter(j => !done.has(`${j.s.id}|${j.symbol}`));
 console.log(`${scanners.length} scanners × ${symbols.length} markets; ${done.size} cells already screened, ${jobs.length} to go, ${workers} workers`);
 
