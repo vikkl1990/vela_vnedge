@@ -1,3 +1,4 @@
+import {sourceReader,PRECISION_NATIVE,sourcePinError} from './sourceReaders.ts';
 import {plotLifecycle,ML_RSI_NATIVE,TREND_CONTINUATION,STEALTH_NATIVE} from './plotLifecycle.ts';
 import {upstreamLifecycle,BAR_BALANCE_V1} from './upstreamLifecycle.ts';
 import {createHash} from 'node:crypto';
@@ -41,6 +42,11 @@ export function scannerContract(s:LoadedScanner, sc:Partial<ScannerConfig>, plan
   const plotNative=plotLifecycle(s.id)&&reader===2&&s.patches.includes('native-lifecycle-observations-v1')&&!sc.invert;
   let adapter=reader===1?'Legacy reader':`Reader ${reader}`;
   if(plan?.basket){adapter='RSI basket adapter';capabilities.push('Up to three entries within one $150 basket','Shared stop and target','Durable partial exits');}
+  else if(sourceReader(s.id)&&reader===2&&!sourcePinError(s.id,s.source)){
+    adapter=s.id===PRECISION_NATIVE?'Precision v2.3 native batch':'IndicatorNeo v4 native bracket';
+    capabilities.push('Source-pinned confirmed entries with native stop/target geometry',s.id===PRECISION_NATIVE?'Trade-bound full closes and causal step-stop amendments; targets are milestones':'Exact key=value alert fields; one native target');
+    gaps.push('Experimental shadow only; prospective profitability and paper evidence are not established.');
+  }
   else if(markitNative){
     adapter='MarkitTick native bracket v1';
     capabilities.push('Confirmed JSON entry with validated source stop and one target','Source changes require reader revalidation');

@@ -1,3 +1,4 @@
+import {sourceReader,readSourceAlerts} from './sourceReaders.ts';
 /**
  * Turns raw PineTS output (alert messages, plotshape hits) into normalised trading events.
  *
@@ -37,6 +38,8 @@ export interface ScanEvent {
   barIndex: number;
   /** A strategy() exit that leaves part of the strategy's position open. Consumers that cannot replicate a partial close must not read it as a full one. */
   partial?: boolean;
+  /** Source trade entry-close time, scoped to versioned author lifecycle readers. */
+  authorEntryAt?: number;
 }
 
 /**
@@ -408,6 +411,7 @@ export function declaredChannels(source: string): Set<'alert' | 'alertcondition'
 
 /** Merge alert-derived and shape-derived events per bar; alerts win over shapes on the same bar/side. */
 export function extractEvents(alerts: WorkerAlert[], shapes: WorkerShape[], opts: ExtractOptions = {}): ScanEvent[] {
+  if(sourceReader(opts.scannerId))return readSourceAlerts(alerts,opts);
   if(opts.scannerId && MARKITTICK_NATIVE[opts.scannerId])return readMarkitTick(alerts,opts);
   // These versioned profiles read only causal source exports; legacy alerts cannot leak entries or exits.
   if(plotLifecycle(opts.scannerId)){

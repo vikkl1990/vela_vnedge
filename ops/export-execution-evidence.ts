@@ -3,7 +3,7 @@
 import {DatabaseSync} from 'node:sqlite';
 import fs from 'node:fs';
 import path from 'node:path';
-import {execFileSync} from 'node:child_process';
+import {execFileSync,spawnSync} from 'node:child_process';
 import {pathToFileURL} from 'node:url';
 import {exportExecutionEvidence,snapshotHash} from '../server/src/research/executionEvidence.ts';
 export function exportArgs(args:string[]){
@@ -13,10 +13,15 @@ export function exportArgs(args:string[]){
  const time=(s:string)=>{if(!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(s)||!Number.isFinite(Date.parse(s)))throw Error('Use an explicit UTC ISO timestamp');return Date.parse(s);};
  return {db:path.resolve(options['--db']),out:path.resolve(options['--out']),from:time(options['--from']),asOf:time(options['--as-of'])};
 }
+export function checkoutDirty(cwd:string|URL=new URL('..',import.meta.url)){
+ const r=spawnSync('git',['diff','--quiet','HEAD'],{cwd,stdio:['ignore','ignore','pipe'],encoding:'utf8'});
+ if(r.error||r.status!==0&&r.status!==1)throw Error('Cannot verify exporter checkout state');
+ return r.status===1;
+}
 export function main(args=process.argv.slice(2)){
  const a=exportArgs(args);if(fs.existsSync(a.out))throw Error('Output exists; choose a new immutable snapshot filename');
  const commit=execFileSync('git',['rev-parse','HEAD'],{cwd:new URL('..',import.meta.url),encoding:'utf8'}).trim();
- const dirty=execFileSync('git',['diff','--binary','HEAD'],{cwd:new URL('..',import.meta.url),encoding:'utf8'});
+ const dirty=checkoutDirty();
  const db=new DatabaseSync(a.db,{readOnly:true});
  try{
   const data=exportExecutionEvidence(db,{from:a.from,asOf:a.asOf,repositoryCommit:commit});

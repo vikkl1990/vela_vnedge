@@ -9,7 +9,7 @@ export function invalidatesSetup(exit: ExitType): boolean {
   return ['close', 'flip', 'sl', 'be'].includes(exit);
 }
 
-export type SetupExitEvent = Pick<ScanEvent, 'barTime' | 'source' | 'label'>;
+export type SetupExitEvent = Pick<ScanEvent, 'barTime' | 'source' | 'label' | 'authorEntryAt'>;
 
 export function initSetupLifecycle(db: Db): void {
   db.run(`CREATE TABLE IF NOT EXISTS paper_setup_exits (

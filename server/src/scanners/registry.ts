@@ -1,3 +1,4 @@
+import {sourcePinError} from './sourceReaders.ts';
 import fs from 'node:fs';
 import path from 'node:path';
 import { DATA_DIR, PINE_DIR, SCRIPTS_DIR } from '../config.ts';
@@ -125,7 +126,7 @@ export class ScannerRegistry {
       if(observationPatch)applied.unshift(observationPatch);
       let { status, reason } = reviewedStatus(m, report[m.id]);
       if(observationError){status='incompatible';reason=observationError;}
-      const nativeSourceError=markitTickSourceError(m.id,source);
+      const nativeSourceError=markitTickSourceError(m.id,source)??sourcePinError(m.id,source);
       if(nativeSourceError){status='incompatible';reason=nativeSourceError;}
       let patched = compatible;
       try { patched = pineLibraries().pin(compatible); pineLibraries().resolver(patched); }

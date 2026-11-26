@@ -1,0 +1,189 @@
+// ╔══════════════════════════════════════════════════════════════════════╗
+// ║ Copyright © 2026 Eranga Gallage (neo_gallage). All rights reserved.  ║
+// ║                                                                      ║
+// ║ This work is authored and maintained by Eranga Gallage under the     ║
+// ║ trademark “neo_gallage”.                                             ║
+// ║ This copyright notice and header must not be altered, removed, or    ║
+// ║ obscured.                                                            ║
+// ╚══════════════════════════════════════════════════════════════════════╝
+//
+//                                                            ████  ████                             
+//                                                           ▒▒███ ▒▒███                             
+//  ████████    ██████   ██████             ███████  ██████   ▒███  ▒███   ██████    ███████  ██████ 
+// ▒▒███▒▒███  ███▒▒███ ███▒▒███           ███▒▒███ ▒▒▒▒▒███  ▒███  ▒███  ▒▒▒▒▒███  ███▒▒███ ███▒▒███
+//  ▒███ ▒███ ▒███████ ▒███ ▒███          ▒███ ▒███  ███████  ▒███  ▒███   ███████ ▒███ ▒███▒███████ 
+//  ▒███ ▒███ ▒███▒▒▒  ▒███ ▒███          ▒███ ▒███ ███▒▒███  ▒███  ▒███  ███▒▒███ ▒███ ▒███▒███▒▒▒  
+//  ████ █████▒▒██████ ▒▒██████  █████████▒▒███████▒▒████████ █████ █████▒▒████████▒▒███████▒▒██████ 
+// ▒▒▒▒ ▒▒▒▒▒  ▒▒▒▒▒▒   ▒▒▒▒▒▒  ▒▒▒▒▒▒▒▒▒  ▒▒▒▒▒███ ▒▒▒▒▒▒▒▒ ▒▒▒▒▒ ▒▒▒▒▒  ▒▒▒▒▒▒▒▒  ▒▒▒▒▒███ ▒▒▒▒▒▒  
+//                                         ███ ▒███                                 ███ ▒███         
+//                                        ▒▒██████                                 ▒▒██████          
+//                                         ▒▒▒▒▒▒                                   ▒▒▒▒▒▒                 
+//
+
+
+//@version=6
+indicator(title = "IndicatorNeo_Support_Resistance_Alerts", overlay = true, max_lines_count = 100, max_labels_count = 100)
+
+//--- Indicator operation and behavior:
+//--- 1. The indicator identifies support and resistance from confirmed pivot lows
+//---    and pivot highs. The number of bars on each side of a pivot is controlled
+//---    by inp_pivot_length. A pivot is only available after the right-side bars
+//---    have closed, so levels are intentionally confirmed with a delay.
+//--- 2. A newly detected pivot becomes a level only when it is sufficiently far
+//---    from the latest opposing level. This prevents closely spaced pivots from
+//---    continuously replacing one another and reduces visual noise.
+//--- 3. When inp_distance_type is "Percentage", the candidate level must differ
+//---    from the opposing level by at least inp_min_distance_pct percent. When
+//---    it is "ATR_Multiplier", the required price distance is calculated as
+//---    ta.atr(14) multiplied by inp_atr_multiplier.
+//--- 4. The latest accepted support and resistance levels are stored persistently
+//---    and can be displayed as horizontal lines when inp_show_levels is enabled.
+//---    Each new accepted level replaces the previous line of the same type and
+//---    extends the line to the right.
+//--- 5. A long signal occurs only when the confirmed closing price crosses above
+//---    the latest resistance level. A short signal occurs only when the confirmed
+//---    closing price crosses below the latest support level. Signal markers can
+//---    be enabled or disabled with inp_show_signals.
+//--- 6. Risk levels are calculated from the signal close using the ATR distance
+//---    ta.atr(14) * inp_atr_multiplier. For long signals, the stop is below the
+//---    entry and the target is above it. For short signals, the stop is above the
+//---    entry and the target is below it. inp_stop_multiplier and
+//---    inp_target_multiplier independently scale those two distances.
+//--- 7. On a confirmed signal, the alert() message is emitted once per bar close
+//---    using the following machine-readable format. The market value comes from
+//---    syminfo.ticker and the ref value identifies this indicator:
+//---    market=<ticker> | signal=long | entry=<price> | stop=<price> | target=<price> | ref=Support_Resistance_Alerts[neo_gallage]
+//---    market=<ticker> | signal=short | entry=<price> | stop=<price> | target=<price> | ref=Support_Resistance_Alerts[neo_gallage]
+//--- 8. This indicator detects and reports breakout events; it does not place,
+//---    manage, or close broker orders. Stops and targets are informational values
+//---    included in the alert message for downstream handling or automation.
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//--- Reusable support/resistance algorithm
+
+/// @function Finds filtered pivot levels and close breakouts. Call on every chart bar.
+/// @param _src_high High series used for pivot highs and ATR.
+/// @param _src_low Low series used for pivot lows and ATR.
+/// @param _src_close Close series used for breakouts and previous-close ATR gaps.
+/// @param _pivot_length Positive number of bars on each side of a pivot.
+/// @param _use_atr True uses ATR distance; false preserves the indicator's signed opposing-level percentage formula.
+/// @param _atr_length Positive Wilder ATR lookback period.
+/// @param _param ATR multiplier or minimum percentage, selected by _use_atr.
+/// @returns [buy, sell, resistance, support, resistance_updated, support_updated]. Caller confirms entries.
+/// Update flags include accepted equal-price pivots so their lines are still replaced.
+f_algo_sure_signal(float _src_high, float _src_low, float _src_close, int _pivot_length, bool _use_atr, simple int _atr_length, float _param) =>
+    var float var_support = na
+    var float var_resistance = na
+
+    sr_pivot_low = ta.pivotlow(_src_low, _pivot_length, _pivot_length)
+    sr_pivot_high = ta.pivothigh(_src_high, _pivot_length, _pivot_length)
+    float sr_true_range = na(_src_close[1]) ? _src_high - _src_low : math.max(_src_high - _src_low, math.max(math.abs(_src_high - _src_close[1]), math.abs(_src_low - _src_close[1])))
+    float sr_atr = ta.rma(sr_true_range, _atr_length)
+    bool sr_support_updated = false
+    bool sr_resistance_updated = false
+
+    if not na(sr_pivot_low)
+        sr_candidate = sr_pivot_low
+        sr_distance = math.abs(sr_candidate - var_resistance)
+        sr_far_enough = na(var_resistance) or (not _use_atr ? sr_distance / var_resistance * 100 >= _param : sr_distance >= sr_atr * _param)
+        if sr_far_enough
+            var_support := sr_candidate
+            sr_support_updated := true
+
+    if not na(sr_pivot_high)
+        sr_candidate = sr_pivot_high
+        sr_distance = math.abs(sr_candidate - var_support)
+        sr_far_enough = na(var_support) or (not _use_atr ? sr_distance / var_support * 100 >= _param : sr_distance >= sr_atr * _param)
+        if sr_far_enough
+            var_resistance := sr_candidate
+            sr_resistance_updated := true
+
+    //--- Calculate crossings every bar; confirmation belongs to the caller.
+    bool sr_crossover = ta.crossover(_src_close, var_resistance)
+    bool sr_crossunder = ta.crossunder(_src_close, var_support)
+    bool sr_long_signal = not na(var_resistance) and sr_crossover
+    bool sr_short_signal = not na(var_support) and sr_crossunder
+    [sr_long_signal, sr_short_signal, var_resistance, var_support, sr_resistance_updated, sr_support_updated]
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+inp_pivot_length = input.int(5, "Pivot Length", minval = 1, inline = "inline_1")
+inp_distance_type = input.string("Percentage", "Distance Type", options = ["Percentage", "ATR_Multiplier"], inline = "inline_2")
+inp_min_distance_pct = input.float(0.2, "Minimum Level Distance - Percentage(%)", minval = 0.0001, step = 0.1, inline = "inline_3")
+inp_atr_multiplier = input.float(2.0, "Minimum Level Distance - ATR Multiplier", minval = 0.0, step = 0.1, inline = "inline_4")
+inp_show_levels = input.bool(true, "Show Support/Resistance Levels", inline = "inline_5")
+inp_show_signals = input.bool(true, "Show Entry Signals", inline = "inline_6")
+inp_stop_multiplier = input.float(1.0, "Stop Multiplier", minval = 0.0, step = 0.1, inline = "inline_7")
+inp_target_multiplier = input.float(1.0, "Target Multiplier", minval = 0.0, step = 0.1, inline = "inline_8")
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//--- Entry conditions
+
+//--- Evaluate every bar to maintain pivot history and independent level state for this call site.
+[sr_long_signal, sr_short_signal, var_resistance, var_support, sr_resistance_updated, sr_support_updated] = f_algo_sure_signal(high, low, close, inp_pivot_length, 
+                                                             inp_distance_type == "ATR_Multiplier", 14, inp_distance_type == "ATR_Multiplier" ? inp_atr_multiplier : inp_min_distance_pct)
+
+//--- Confirm raw entries before plotting or alerting; levels update independently of confirmation.
+bool sr_confirmed = barstate.isconfirmed
+sr_long_signal := sr_long_signal and sr_confirmed
+sr_short_signal := sr_short_signal and sr_confirmed
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//--- Support/resistance lines
+
+var int var_support_bar = na
+var int var_resistance_bar = na
+var line var_support_line = na
+var line var_resistance_line = na
+
+if sr_support_updated
+    var_support_bar := bar_index - inp_pivot_length
+    if inp_show_levels
+        line.delete(var_support_line)
+        var_support_line := line.new(var_support_bar, var_support, bar_index, var_support, extend = extend.right, color = color.lime, width = 2)
+
+if sr_resistance_updated
+    var_resistance_bar := bar_index - inp_pivot_length
+    if inp_show_levels
+        line.delete(var_resistance_line)
+        var_resistance_line := line.new(var_resistance_bar, var_resistance, bar_index, var_resistance, extend = extend.right, color = color.red, width = 2)
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//--- Stop loss and take profit use the configured ATR distance from the signal close.
+sr_atr = ta.atr(14)
+sr_atr_distance = sr_atr * inp_atr_multiplier
+sr_stop_distance = sr_atr_distance * inp_stop_multiplier
+sr_target_distance = sr_atr_distance * inp_target_multiplier
+sr_long_stop = sr_long_signal ? close - sr_stop_distance : na
+sr_long_target = sr_long_signal ? close + sr_target_distance : na
+sr_short_stop = sr_short_signal ? close + sr_stop_distance : na
+sr_short_target = sr_short_signal ? close - sr_target_distance : na
+
+plotshape(inp_show_signals and sr_long_signal, title = "Long entry", style = shape.labelup, location = location.belowbar, color = color.lime, text = "LONG", textcolor = color.black, size = size.tiny)
+plotshape(inp_show_signals and sr_short_signal, title = "Short entry", style = shape.labeldown, location = location.abovebar, color = color.red, text = "SHORT", textcolor = color.white, size = size.tiny)
+
+sr_alert_separator = " | "
+sr_alert_market = "market=" + syminfo.ticker
+sr_alert_entry = "entry=" + str.tostring(close, format.mintick)
+sr_alert_ref = "ref=Support_Resistance_Alerts[neo_gallage]"
+
+if sr_long_signal
+    sr_alert_stop = "stop=" + str.tostring(sr_long_stop, format.mintick)
+    sr_alert_target = "target=" + str.tostring(sr_long_target, format.mintick)
+    alert(sr_alert_market + sr_alert_separator + "signal=long" + sr_alert_separator + sr_alert_entry + sr_alert_separator + sr_alert_stop + sr_alert_separator + sr_alert_target + sr_alert_separator + sr_alert_ref, alert.freq_once_per_bar_close)
+if sr_short_signal
+    sr_alert_stop = "stop=" + str.tostring(sr_short_stop, format.mintick)
+    sr_alert_target = "target=" + str.tostring(sr_short_target, format.mintick)
+    alert(sr_alert_market + sr_alert_separator + "signal=short" + sr_alert_separator + sr_alert_entry + sr_alert_separator + sr_alert_stop + sr_alert_separator + sr_alert_target + sr_alert_separator + sr_alert_ref, alert.freq_once_per_bar_close)
+
+//--- alertcondition() requires a constant message string. TradingView placeholders
+//--- and hidden plots are used here so its messages contain the same live market,
+//--- entry, stop, target, and reference values as the alert() messages above.
+plot(sr_long_stop, "Long Stop", display = display.none)
+plot(sr_long_target, "Long Target", display = display.none)
+plot(sr_short_stop, "Short Stop", display = display.none)
+plot(sr_short_target, "Short Target", display = display.none)
+
+alertcondition(sr_long_signal, "Long entry", "market={{ticker}} | signal=long | entry={{close}} | stop={{plot(\"Long Stop\")}} | target={{plot(\"Long Target\")}} | ref=Support_Resistance_Alerts[neo_gallage]")
+alertcondition(sr_short_signal, "Short entry", "market={{ticker}} | signal=short | entry={{close}} | stop={{plot(\"Short Stop\")}} | target={{plot(\"Short Target\")}} | ref=Support_Resistance_Alerts[neo_gallage]")
+

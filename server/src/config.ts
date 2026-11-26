@@ -1,3 +1,4 @@
+import {sourceReaderConfigError} from './scanners/sourceReaders.ts';
 import {candleReplayBlock} from './paper/basket.ts';
 import {readerContractError,labelStyleContractError,type LabelStyleSides} from './scanners/readerFixes.ts';
 import {willyNativeReady} from './scanners/willyContracts.ts';
@@ -1292,6 +1293,7 @@ export function validateExtendedConfig(c: AppConfig): string[] {
     if (sc?.reader != null && ![1, 2, 3].includes(sc.reader as number)) errs.push(`scanners.${id}.reader must be 1, 2 or 3`);
     if(sc?.reader===3&&!willyNativeReady(id))errs.push(`scanners.${id}: reader 3 requires a validated Willy adapter or non-trading role`);
     if(sc?.reader===3&&(sc.invert||sc.rule))errs.push(`scanners.${id}: native reader cannot invert or substitute a derived rule`);
+    const sourceError=sourceReaderConfigError(id,sc);if(sourceError)errs.push(`scanners.${id}: ${sourceError}`);
     const readerError=readerContractError(id,sc?.reader,sc?.sides);if(readerError)errs.push(`scanners.${id}: ${readerError}`);
     const styleError=labelStyleContractError(sc?.reader,sc?.labelStyles);if(styleError)errs.push(`scanners.${id}: ${styleError}`);
     if (sc?.timezone != null) { try { new Intl.DateTimeFormat('en-US', { timeZone: sc.timezone }); } catch { errs.push(`scanners.${id}.timezone is not an IANA timezone`); } }

@@ -1,3 +1,4 @@
+import {sourceReader,PRECISION_NATIVE} from '../scanners/sourceReaders.ts';
 import {twoBarFailure} from './failedTradeExit.ts';
 import {SETUP_LIFECYCLE,initSetupLifecycle,claimSetupExit,invalidatesSetup,type SetupExitEvent} from './setupLifecycle.ts';
 import {nativeGeometryError} from '../scanners/plotLifecycle.ts';
@@ -697,6 +698,7 @@ export class PaperEngine extends EventEmitter {
   }
 
   onEntry(ev: ScanEvent, ctx: EntryContext): EntryDecision {
+    if(sourceReader(ctx.executionPlan?.sourceScannerId??ctx.scannerId)&&(!ctx.executionPlan||this.book!==2||this.cfgRef().execution.mode!=='paper'||this.executionIntent||!this.causalExits))return {action:'rejected',reason:'updated native profile requires tested causal shadow execution'};
     if(ctx.scannerId===SOL_MAKER_FILTER_OFF&&!ctx.executionPlan)return {action:'rejected',reason:'SOL trend-filter variant requires an isolated research plan'};
     if(ctx.scannerId===BASKET_SCANNER&&!ctx.executionPlan?.basket)return {action:'rejected',reason:'basket scanner requires an isolated execution plan'};
     if(ctx.executionPlan?.basket){
@@ -716,7 +718,8 @@ export class PaperEngine extends EventEmitter {
     if(ctx.executionPlan?.setupLifecycle&&!this.setupLifecycle(ctx))return {action:'rejected',reason:'setup lifecycle requires the causal paper shadow adapter and pinned source'};
     if(ctx.executionPlan?.setupLifecycle){
       if(!Number.isFinite(ev.barTime)||ev.barTime<=0||!(ctx.tf in TF_SECONDS)||ev.barTime+TF_SECONDS[ctx.tf]*1000>ctx.at)return {action:'rejected',reason:'setup lifecycle requires a confirmed source bar'};
-      ctx={...ctx,features:{...ctx.features,setup_source_bar:ev.barTime}};
+      if(ctx.executionPlan.sourceScannerId===PRECISION_NATIVE&&ev.authorEntryAt!==ev.barTime+TF_SECONDS[ctx.tf]*1000)return {action:'rejected',reason:'Precision entry requires its source trade identity'};
+      ctx={...ctx,features:{...ctx.features,setup_source_bar:ev.barTime,...(ev.authorEntryAt!==undefined?{setup_author_entry_at:ev.authorEntryAt}:{})}};
     }
     if(!ctx.executionPlan&&!ctx.policy)ctx={...ctx,policy:this.policyForCell(ctx)};
     if(ctx.policy){saveTradePolicy(this.db,ctx.policy);const source=this.sourceCodeFor?.(ctx.scannerId);
@@ -1578,10 +1581,10 @@ export class PaperEngine extends EventEmitter {
       (!event||!Number.isFinite(bound.features?.setup_source_bar)||event.barTime<=bound.features!.setup_source_bar))return undefined;
     if(lifecycle&&invalidatesSetup(exitType)){
       const matching=pending.filter(pe=>this.setupLifecycle(pe)&&(!targets||targets.pendingIds.includes(pe.id))&&
-        (!side||pe.side===side)&&at>=pe.at&&!!event&&!!pe.observation&&event.barTime>pe.observation.event.barTime);
+        (!side||pe.side===side)&&(pe.features?.setup_author_entry_at===undefined||pe.features.setup_author_entry_at===event?.authorEntryAt)&&at>=pe.at&&!!event&&!!pe.observation&&event.barTime>pe.observation.event.barTime);
       // Events from the entry bar were evaluated before this paper trade existed.
       // They close the previous author trade, never the later paper entry on that bar.
-      const held=bound&&this.setupLifecycle(bound)&&(!targets||targets.positionId===bound.id)&&(!side||side===bound.side)&&
+      const held=bound&&this.setupLifecycle(bound)&&(!targets||targets.positionId===bound.id)&&(!side||side===bound.side)&&(bound.features?.setup_author_entry_at===undefined||bound.features.setup_author_entry_at===event?.authorEntryAt)&&
         !!event&&Number.isFinite(bound.features?.setup_source_bar)&&event.barTime>bound.features!.setup_source_bar?bound:undefined;
       if(!held&&!matching.length)return undefined;
       if(!claimSetupExit(this.db,{book:this.book,scannerId,symbol,tf,at,exitType,side,event,positionId:held?.id??null,pendingIds:matching.map(pe=>pe.id)}))return undefined;
@@ -1590,6 +1593,7 @@ export class PaperEngine extends EventEmitter {
       if(!held)return undefined;
     }
     if (exitType === 'stop_update') {
+      if(bound?.features?.setup_author_entry_at!==undefined&&bound.features.setup_author_entry_at!==event?.authorEntryAt)return undefined;
       if (!bound || (targets && bound.id !== targets.positionId) || (side && side !== bound.side) ||
           typeof price !== 'number' || !(price > 0) || !Number.isFinite(price) || !Number.isFinite(at) || at < bound.entryAt) return undefined;
       // A stop notification neither cancels an unfilled setup nor books a close.
