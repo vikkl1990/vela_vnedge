@@ -8,6 +8,7 @@ import { EquityChart } from '../components/charts'
 import { DataTable, type Column } from '../components/DataTable'
 import { Callout, Pill, QueryState, RouteHeader, Section, Stat, StatGrid, ToggleGroup } from '../components/kit'
 import { PaperPositions } from '../components/PaperPositions'
+import { EdgeWatchPanel } from '../components/EdgeWatchPanel'
 import { fmtInt, fmtMoney, fmtNum, fmtPct, fmtPnl, fmtProfitFactor, fmtR, pnlClass } from '../lib/format'
 import '../styles/pages/trading.css'
 
@@ -63,6 +64,7 @@ export function Trading() {
               <Rules o={o} />
             </div>
             <Scanners o={o} />
+            <EdgeWatchPanel />
             <Section
               variant="panel"
               title={`Open positions (${o.account.openPositions})`}

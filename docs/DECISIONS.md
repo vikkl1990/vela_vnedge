@@ -8625,3 +8625,25 @@ about a second slower than the machine sends them.
 margin, applied after receipt as before, for entries and exits alike. Positions keep the latency bound when they were
 opened; new positions use 400 ms. Decision 234's rule that only a fresh post-arrival depth report books an exit stands.
 Re-measure if the bot moves to another machine or network.
+
+## 336. Phase 1 edge watch and the candle archive (28 November 2026)
+
+**Why.** The live scanners were chosen on backtests (+0.07 to +0.27R a trade with the spread paid) that the live record
+had not yet confirmed, and Delta serves only a few weeks of 1m/5m history, so no 5m result could be tested on more than
+~40 days. Two things only time can produce: a live record judged against what was promised, and history.
+
+**What.**
+- **Verdicts** (hourly, `ops/edgeWatch.ts`, `analytics/edgeVerdict.ts`): each live (scanner, timeframe) against an
+  explicit baseline — the pooled mean and spread of R a trade in its own spread-charged backtest, and the time from which
+  live trades count (set with `cli/edgeBaseline.ts`; 28 November: BOS 5m +0.071R, RSI Volume Ladder 5m +0.116R, Trend
+  Pulse 5m +0.220R, BOS 1h +0.272R, BOS 4h +0.185R). States: collecting (<10 trades), in line, watch (below the
+  baseline at p < 0.20), paused (20+ trades, below at p < 0.05 and losing, or −10R in total), confirmed (30+ trades and
+  a live probabilistic Sharpe of 95%+). A paused cell is refused by the risk gate in the account and an alert says why;
+  the operator resumes it, and it pauses again only on five or more further trades.
+- **Parity** (daily): every live cell's backtest re-run and its last 24 h of trades matched with the account's; each
+  unmatched backtest trade carries what the live engine did with that signal, and an alert fires when trades were
+  missed without a portfolio reason (burst, cooldown, caps).
+- **Archive** (every 6 h, `data/candleArchive.ts`): closed 1m and 5m candles of every followed market in
+  `data/archive.db`, back-filled 30 days (1m) and 60 days (5m) on first sight, never pruned.
+- The Trading page shows the verdicts, pauses with Resume, the last parity check and archive coverage
+  (`GET /api/edge-watch`, `POST /api/edge-watch/run`, `POST /api/edge-watch/resume`).

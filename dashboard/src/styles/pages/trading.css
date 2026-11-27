@@ -85,3 +85,14 @@
     grid-template-columns: 84px 1fr;
   }
 }
+
+/* edge watch (decision 336) */
+.edge-watch { display: flex; flex-direction: column; }
+.edge-table { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
+.edge-table th, .edge-table td { padding: 7px 12px; border-bottom: 1px solid var(--border-subtle); text-align: left; white-space: nowrap; }
+.edge-table th { font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted-2); font-weight: 600; }
+.edge-table .num { text-align: right; }
+.edge-table td:first-child { text-transform: capitalize; }
+.edge-foot { display: flex; flex-wrap: wrap; gap: 6px 24px; padding: 10px 12px; font-size: 12px; color: var(--muted); }
+.edge-foot b { color: var(--text); font-weight: 600; }
+@media (max-width: 720px) { .edge-table th:nth-child(5), .edge-table td:nth-child(5) { display: none; } }

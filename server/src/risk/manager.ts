@@ -47,6 +47,8 @@ export interface RiskDeps {
   now?: () => number;
   /** Markets-today verdicts (decision 56); null means no market opinion is applied. */
   marketGate?: { verdict(symbol: string): { allowed: boolean; reasons: string[] } | null } | null;
+  /** Decision 336: the edge watch's pause of a (scanner, timeframe) in the account; null = trading. */
+  paused?: (scannerId: string, tf: string) => string | null;
 }
 
 export function utcDayStart(t: number): number { return Math.floor(t / DAY_MS) * DAY_MS; }
@@ -195,6 +197,8 @@ export class RiskManager extends EventEmitter implements RiskGate {
     const reject = (reason: string) => { this.record(req, reason); return { reject: reason, leverageMult: 1 }; };
     if (this.st.manualHalt) return reject(`manual halt (${this.st.manualHalt.reason})`);
     if (!c?.enabled) return { leverageMult: 1 };
+    const edgePause = this.deps.paused?.(req.scannerId, req.tf);
+    if (edgePause) return reject(`paused by edge watch: ${edgePause}`);
     if (this.st.day.tripped) return reject(`daily loss limit ${c.maxDailyLossPct}% hit (${this.st.day.trippedPnlPct?.toFixed(2)}%)`);
     if (this.st.week.tripped) return reject(`weekly loss limit ${c.maxWeeklyLossPct}% hit (${this.st.week.trippedPnlPct?.toFixed(2)}%)`);
     const open = this.paper.openPositions().filter(p => p.id !== req.replacing), pending = this.paper.pendingEntries();

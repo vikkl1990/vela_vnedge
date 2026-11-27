@@ -75,6 +75,8 @@ import { FeatureEnricher } from './ml/enrich.ts';
 import { attachEntryState, EntryStateRecorder } from './ml/entryState.ts';
 import { theCall, yardstick, type YardTrade } from './ml/yardstick.ts';
 import { OpsService } from './ops/service.ts';
+import { EdgeWatch } from './ops/edgeWatch.ts';
+import { CandleArchive } from './data/candleArchive.ts';
 import { WorkerTracker } from './ops/workers.ts';
 import {telegramFromEnv} from './ops/alerts.ts';
 import {TelegramControl} from './telegram/control.ts';
@@ -90,6 +92,8 @@ export interface AppDeps {
   registry?: ScannerRegistry;
   /** Replaces the Telegram transport for alerts. */
   alertTransport?: (text: string) => Promise<void>;
+  /** Candle archive file (decision 336); null turns it off. Default data/archive.db, in memory beside an in-memory database. */
+  archive?: string | null;
 }
 
 /** Composition root: wires feed → candles → scanners → paper engine, plus the optional testnet mirror. */
@@ -145,6 +149,9 @@ export class App {
   readonly risk: RiskManager;
   readonly executor: ExchangeExecutor | null = null;
   readonly ops: OpsService;
+  /** Phase 1 verdicts and parity, and the candle archive (decision 336). */
+  readonly edgeWatch: EdgeWatch;
+  readonly archive: CandleArchive | null;
   readonly telegram:TelegramControl;
   /** Decision 174: screens on demand, one at a time, never over the nightly. */
   readonly screenQueue: ScreenQueue;
@@ -303,7 +310,7 @@ export class App {
         {bidSize:q.bidSize,askSize:q.askSize,bookAt:q.exchangeAt});}});
     wireEntryDepth(this.paper,this.shadow,this.entryDepth);
     for(const book of [this.paper,this.shadow])book.alignmentBars=(symbol,tf)=>this.candles.get(symbol,tf,{closedOnly:true});
-    this.risk = new RiskManager({ db: this.db, paper: this.paper, candles: this.candles, cfgRef: cfg, marketGate: this.marketGate });
+    this.risk = new RiskManager({ db: this.db, paper: this.paper, candles: this.candles, cfgRef: cfg, marketGate: this.marketGate, paused: (scannerId, tf) => this.edgeWatch?.pauseReason(scannerId, tf) ?? null });
     this.paper.risk = this.risk;
     this.executor = createExecutor(this.paper, cfg);
     this.tapeAudit = new TapeAudit(this.db, [{ engine: this.paper, book: 0 }, { engine: this.shadow, book: 2 }]);
@@ -312,6 +319,13 @@ export class App {
     this.context = new ContextCollector({ db: this.db, rest: this.rest, symbols: () => [...new Set([...this.resolvedSymbols, ...this.incubator.symbols()])] });
     this.entryState = new EntryStateRecorder({ db: this.db, enricher: this.enricher, candles: this.candles, context: () => this.context.latest().global });
     attachEntryState([this.paper, this.shadow], this.entryState);
+    // decision 336: candle archive in its own file (an in-memory database under tests), and the phase 1 edge watch
+    this.archive = deps.archive === null ? null : new CandleArchive(deps.archive ?? (this.db.file === ':memory:' ? ':memory:' : path.join(DATA_DIR, 'archive.db')), { fetch: (symbol, tf, a, b) => this.rest.candles(symbol, tf, a, b, 12_000), pauseMs: 150 });
+    this.edgeWatch = new EdgeWatch({ db: this.db, cfgRef: cfg, account: this.paper,
+      cells: () => this.registry.all().filter(s => cfg().scanners[s.id]?.enabled && this.scanners.isActive(s)).flatMap(s => this.scanners.pairsFor(s.id).map(p => ({ scannerId: s.id, ...p }))),
+      backtestNow: (id, symbol, tf) => this.scanners.runBacktestNow(id, symbol, tf),
+      notify: text => { void this.ops.alerts.notify(text); }, archive: this.archive,
+      symbols: () => [...new Set([...this.resolvedSymbols, ...this.paper.openPositions().map(p => p.symbol)])] });
     this.ops = new OpsService({ cfg, onConfigChange: l => this.config.onChange(l), db: this.db, dataDir: DATA_DIR, feed: this.feed, pool: this.pool, paper: this.paper, marks: this.marks, candles: this.candles, scanners: this.scanners, workers, transport: deps.alertTransport, peakEquity: () => this.risk.peakEquity(),
       telegramTarget:()=>this.telegram?this.telegram.deliveryTarget():telegramFromEnv(cfg().alerts.telegram) });
     this.telegram=new TelegramControl({db:this.db,dataDir:DATA_DIR,actions:telegramActions(this),alerts:()=>this.ops.alerts,manageDelivery:!deps.alertTransport,
@@ -438,6 +452,7 @@ export class App {
     }, 60_000);
     this.huntTimer.unref?.();
     this.ops.start();
+    this.edgeWatch.start();
     this.telegram.start();
     this.screenQueue.start();
     this.pairAgents.start();
@@ -1160,6 +1175,7 @@ export class App {
   }
 
   async stop() {
+    this.edgeWatch?.stop();
     this.tapeAudit.stop();
     this.context.stop();
     await this.telegram.stop();

@@ -308,6 +308,9 @@ export const api = {
   stats: () => get<Stats>('/stats'),
   tradingOverview: (days = 7) =>
     get<import('./tradingOverview').TradingOverview>(`/trading/overview${qs({ days })}`),
+  edgeWatch: () => get<import('./edgeWatch').EdgeWatchView>('/edge-watch'),
+  edgeWatchRun: (job: 'verdict' | 'parity' | 'archive') => post<unknown>('/edge-watch/run', { job }),
+  edgeWatchResume: (key: string) => post<import('./edgeWatch').EdgeWatchView>('/edge-watch/resume', { key }),
   equity: (scanner?: string, limit = 2000) => get<EquityPoint[]>(`/equity${qs({ scanner, limit })}`),
   resetPaper: () => post<unknown>('/paper/reset'),
 

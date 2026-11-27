@@ -12,6 +12,20 @@ export const riskRoutes: Extension = (add, app) => {
   add('GET', '/api/evidence-quality', () => app.db.all("SELECT f.*,p.scanner_id,p.symbol,p.tf,p.bt FROM evidence_flags f JOIN positions p ON p.id=f.position_id AND p.entry_at=f.entry_at ORDER BY checked_at DESC"));
   add('GET', '/api/entry-depth', () => app.entryDepth.stats);
   add('GET', '/api/risk', () => app.risk.state());
+  // decision 336: phase 1 verdicts, parity and the candle archive
+  add('GET', '/api/edge-watch', () => app.edgeWatch.view());
+  add('POST', '/api/edge-watch/run', async (_p, _u, body) => {
+    const job = String(body?.job ?? '');
+    if (job === 'verdict') return app.edgeWatch.runVerdict();
+    if (job === 'parity') return app.edgeWatch.runParity();
+    if (job === 'archive') return app.edgeWatch.runArchive();
+    throw Object.assign(new Error('job must be verdict | parity | archive'), { status: 400 });
+  });
+  add('POST', '/api/edge-watch/resume', (_p, _u, body) => {
+    const key = String(body?.key ?? '');
+    if (!app.edgeWatch.resume(key)) throw Object.assign(new Error(`${key || '(no key)'} is not paused`), { status: 400 });
+    return app.edgeWatch.view();
+  });
   add('POST', '/api/risk/reset', () => { app.risk.reset(); return app.risk.state(); });
   add('POST', '/api/risk/kill', (_p, _u, body) => { app.risk.kill(String(body?.reason ?? 'manual'), body?.closeAll === true); return app.risk.state(); });
 
