@@ -234,6 +234,18 @@ export class ScannerEngine extends EventEmitter {
     return m;
   }
 
+  /** Same current-research checks, with execution callbacks served between batches. */
+  async backtestsByScannerView():Promise<Map<string,BacktestResult[]>>{
+    const m=new Map<string,BacktestResult[]>();
+    let deadline=performance.now()+10;
+    for(const [key,value]of this.backtests){
+      const [id,symbol,tf]=key.split(':');
+      if(this.getBacktest(id,symbol,tf)){const list=m.get(id)??[];list.push(value);m.set(id,list);}
+      if(performance.now()>=deadline){await new Promise<void>(resolve=>setImmediate(resolve));deadline=performance.now()+10;}
+    }
+    return m;
+  }
+
   /** Newest run per scanner id, grouped in one pass. */
   lastRunByScanner(): Map<string, RunInfo> {
     const m = new Map<string, RunInfo>();

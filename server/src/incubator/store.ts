@@ -5,7 +5,7 @@ import type {TradePolicy} from '../paper/tradePolicy.ts';
 import {enrollRestoration,restorationAssessment} from '../evidence/restoration.ts';
 import type {AppConfig} from '../config.ts';
 import {mirrorRefusal,pairStats} from './gate.ts';
-import {qualifiedEvidence,readEvidence,evidenceCoverage} from '../evidence/trades.ts';
+import {qualifiedEvidence,assessQualifiedEvidence,readEvidence,evidenceCoverage} from '../evidence/trades.ts';
 import {withoutCachedBookVeto} from '../risk/marketGate.ts';
 /**
  * Incubator state: which stage each scanner/market pair is in, and an audit trail of every move.
@@ -368,10 +368,14 @@ export class IncubatorStore {
   /** Read-only explanation of the exact sample used by copying. Stage age and raw
    * journal history cannot silently remove/add closes to this displayed sample. */
   copyReadiness(cell:{scannerId:string;symbol:string;tf:string},mirror:AppConfig['incubator']['mirror'],turnover:number|null,at=Date.now()) {
+    return this.copyAssessment(cell,mirror,turnover,at).paperCopy;
+  }
+  /** UI callers can display restoration and copying from the same fresh sample. */
+  copyAssessment(cell:{scannerId:string;symbol:string;tf:string},mirror:AppConfig['incubator']['mirror'],turnover:number|null,at=Date.now()) {
     const policy=this.policyFor?.(cell);
-    const trades=qualifiedEvidence(this.db,cell,policy,{at});
-    const restoration=this.restoration(cell,at);
-    const available=restoration&&!restoration.passed?readEvidence(this.db,cell,policy,{at}):trades;
+    const assessment=assessQualifiedEvidence(this.db,cell,policy,{at});
+    const trades=assessment.qualified,restoration=assessment.assessment;
+    const available=restoration&&!restoration.passed?assessment.exact:trades;
     const count=(basis:string,rows=trades)=>rows.filter(t=>(t.basis??'exact')===basis).length;
     const since=trades.length?Math.min(...trades.map(t=>t.entryAt)):at;
     const evidence={at,minTrades:mirror?.minTrades??0,minNetR:mirror?.minNetR??null,
@@ -383,7 +387,7 @@ export class IncubatorStore {
     const reason=quarantine?`scanner quarantined: ${quarantine}`
       :restoration&&!restoration.passed?`restored cell in forward shadow evaluation: ${restoration.reasons.join('; ')}`
       :marketMissing??mirrorRefusal(mirror,trades,turnover);
-    return {eligible:reason===null,reason,evidence};
+    return {restoration,paperCopy:{eligible:reason===null,reason,evidence}};
   }
   policyEvidence(cell:{scannerId:string;symbol:string;tf:string},at=Date.now()) {
     if(!this.policyFor)return {mode:'unconfigured' as const};

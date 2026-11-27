@@ -37,6 +37,7 @@ import {telegramRoutes} from '../telegram/routes.ts';
 import { Journal, journalFilter } from '../analytics/journal.ts';
 import { entryOrigin, entryOriginSql, paperFleet } from '../analytics/paperFleet.ts';
 import { configView, configPatch } from './configView.ts';
+import {singleFlightView} from './cooperativeView.ts';
 
 const log = logger.scoped('api');
 
@@ -249,7 +250,7 @@ export class ApiServer {
     const a = this.app;
     this.add('GET', '/api/health', (req, res) => {
       const health = a.health();
-      json(res, health.status === 'ok' ? 200 : 503, health, req);
+      return json(res, health.status === 'ok' ? 200 : 503, health, req);
     });
     for (const method of ['GET', 'HEAD']) this.add(method, '/api/metrics', (req, res, _p, url) => {
       const asJson = url.searchParams.get('format') === 'json';
@@ -314,7 +315,8 @@ export class ApiServer {
     // markets today: which pairs the fleet may trade now, and why not (decision 56)
     this.add('GET', '/api/markets/today', () => a.marketGate.today);
     this.add('POST', '/api/markets/today/refresh', async () => { const own = [...new Set([...a.resolvedSymbols, ...a.incubator.symbols()])]; return a.marketGate.refresh(await a.marketGate.universe(own), undefined, own); });
-    this.add('GET', '/api/scanners', (_r, _s, _p, url) => (url.searchParams.get('view') === 'lite' ? a.scannerIndex() : a.scannerViews()));
+    const scannerReport=singleFlightView(()=>a.scannerViews());
+    this.add('GET', '/api/scanners', (_r, _s, _p, url) => (url.searchParams.get('view') === 'lite' ? a.scannerIndex() : scannerReport()));
     const contracts = new ContractRegistry();
     const contributions = new ContributionService(a,contracts);
     const readiness = new ReadinessService(a,contracts);
@@ -552,7 +554,8 @@ export class ApiServer {
     this.add('GET', '/api/ml/samples', (_r, _s, _p, url) => a.ml.samples(url.searchParams.get('scanner') ?? undefined, Number(url.searchParams.get('limit') ?? 500)));
     // Fill quality: what the cost assumption was worth against the book actually quoted.
     // incubator: reading is open to every account; deciding needs trade access (default-deny POST)
-    this.add('GET', '/api/incubator', () => a.incubatorView());
+    const incubatorReport=singleFlightView(()=>a.incubatorView());
+    this.add('GET', '/api/incubator', () => incubatorReport());
     // decision 194: one strategy under several ids, and shadow pairs that trade the same moves
     this.add('GET', '/api/incubator/overlap', (_r, _s, _p, url) => overlapClusters(a.db, { since: Date.now() - Math.min(180, Math.max(1, Number(url.searchParams.get('days') ?? 30))) * 86_400_000 }));
     // decision 197: the early profit lock, measured on the books' own trades while it stays off
@@ -606,16 +609,20 @@ function compressible(req: http.IncomingMessage | undefined, bytes: number): boo
   return /\bgzip\b/i.test(String(req.headers['accept-encoding'] ?? ''));
 }
 
-function json(res: http.ServerResponse, status: number, data: unknown, req?: http.IncomingMessage) {
+export function json(res: http.ServerResponse, status: number, data: unknown, req?: http.IncomingMessage) {
   const body = Buffer.from(JSON.stringify(data, (_k, v) => (typeof v === 'number' && !Number.isFinite(v) ? null : v)));
   const head: Record<string, string> = { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', Vary: 'Accept-Encoding' };
   if (compressible(req, body.length)) {
-    let gz: Buffer;
-    try { gz = zlib.gzipSync(body); } catch { res.writeHead(status, head); res.end(body); return; }
-    head['Content-Encoding'] = 'gzip';
-    res.writeHead(status, head);
-    res.end(gz);
-    return;
+    // Compression of multi-megabyte reports must not block price/exit callbacks.
+    return new Promise<void>(resolve=>{
+      zlib.gzip(body,(error,gz)=>{
+        try{
+          if(res.destroyed||res.writableEnded)return;
+          if(!error)head['Content-Encoding']='gzip';
+          res.writeHead(status,head);res.end(error?body:gz);
+        }catch{res.destroy();}finally{resolve();}
+      });
+    });
   }
   res.writeHead(status, head);
   res.end(body);

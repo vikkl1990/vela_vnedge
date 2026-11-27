@@ -8629,3 +8629,13 @@ Unheld scanners already in quarantine cannot collect shadow evidence. Apply the 
 Reuse the same held-exposure exceptions at dispatch and execution: account positions, shadow positions, pending orders including plan-source aliases, and rotation holds remain schedulable. Keep the execution-time and post-worker quarantine checks so a change while waiting cannot open a new quarantined entry or lose a held exit. A cleared quarantine can be considered again while the close remains fresh. Quarantine flags, readings, policy identities, evidence requirements, worker reservations, signal-age limits and financial risk settings do not change.
 
 Regression tests cover early classification without Pine execution, release/retry after clearing quarantine, the original deadline for runnable work, and account/shadow/pending/plan/rotation exposure preservation. These diagnostics never create trades or qualification samples.
+
+## 341 — Faster read-only reports without changing admission (2026-11-27)
+
+The Hyderabad UI audit measured cold Scanners/Incubator/Readiness responses at 5.2/9.3/4.0 seconds. The scanner summary decoded every field of 242,521 historical profile probes, including label payloads, merely to show kind/date/timeframe counts. Read only those four columns, preserving the original first-row equal-rank tie break. The retained snapshot produces identical summaries in about 0.22 seconds versus 2.04 seconds. Readiness loads profiles only for its allocated market/timeframe cells and computes each reading signature once per timeframe.
+
+Reuse one fresh evidence assessment for the Incubator's restoration and copy explanation, rather than independently validating the same sample up to three times. Exact/full-fee/replayed eligibility, restoration holds, quarantines, thresholds and accounting remain unchanged. No qualification result is retained across decisions. Concurrent requests may share an in-flight read-only report; a later request always builds again. Current backtest checks and scanner row assembly yield between batches, and gzip runs outside the execution event loop. Health responses still preserve their explicit status and body while compression completes.
+
+New-page navigation starts at its heading. Query-only filters, hashes and back/forward navigation retain their existing behavior. No scanner activation, financial policy, margin, fee model, evidence identity, paper/live mode or historical trade is changed.
+
+The full 09:30 IST scan observation found 87 research expiries despite successful paper scans/fills. This report work does not by itself certify full-burst research capacity or improve trading profitability. Capacity and earlier-exit comparisons require separate measured acceptance.

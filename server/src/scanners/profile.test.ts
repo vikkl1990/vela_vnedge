@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {Db} from '../db.ts';
-import {observeHistoricalRun, profileSignature, ProfileStore} from './profile.ts';
+import {observeHistoricalRun, profileSignature, ProfileStore, summarizeKind} from './profile.ts';
 import {sourceFacts} from './sourceFacts.ts';
 import type {WorkerResult} from '../pine/worker.ts';
 
@@ -29,4 +29,31 @@ test('source inventory ignores comments and strings, preserves conditions and li
   const facts=sourceFacts('// alertcondition(fake)\nindicator("plotshape(fake)")\nx=input.int(3)\nalertcondition(ta.crossover(close, ta.sma(close, x)),\n title="Buy Signal", message="go")\nrequest.security(syminfo.tickerid, "1D", close[1], lookahead=barmerge.lookahead_on)');
   assert.equal(facts.calls.length,1);assert.equal(facts.calls[0].line,4);assert.equal(facts.calls[0].title,'"Buy Signal"');
   assert.equal(facts.calls[0].condition,'ta.crossover(close, ta.sma(close, x))');assert.equal(facts.inputs,1);assert.equal(facts.dependencies.length,1);assert.equal(facts.cautions.length,2);
+});
+
+test('light summaries preserve ranking, equal-rank insertion order and timeframe counts',()=>{
+ const db=new Db(':memory:');try{
+  const store=new ProfileStore(db),base=observeHistoricalRun(s,undefined,'ETHUSD','15m',[],res,'test',123).profile;
+  for(const row of [
+   {...base,scannerId:'a',market:'ZECUSD',kind:'levels' as const},
+   {...base,scannerId:'a',market:'BTCUSD',tf:'1h',kind:'exits' as const,at:456},
+   {...base,scannerId:'b',market:'ZECUSD',kind:'exits' as const},
+   {...base,scannerId:'b',market:'BTCUSD',kind:'levels' as const},
+   {...base,scannerId:'c',kind:'silent' as const},
+   {...base,scannerId:'c',market:'SOLUSD',kind:'plan' as const},
+  ])store.save(row);
+  const all=store.all(),expected=new Map();for(const id of ['a','b','c']){const rows=all.filter(r=>r.scannerId===id);expected.set(id,{kind:summarizeKind(rows),at:Math.max(...rows.map(r=>r.at)),tfs:new Set(rows.map(r=>r.tf)).size});}
+  assert.deepEqual(store.summaries(),expected);
+  assert.equal(store.summaries().get('a')!.kind,'levels');assert.equal(store.summaries().get('b')!.kind,'exits');
+ }finally{db.db.close();}
+});
+
+test('allocated profile queries retain complete rows and exclude other markets and timeframes',()=>{
+ const db=new Db(':memory:');try{
+  const store=new ProfileStore(db),base=observeHistoricalRun(s,undefined,'ETHUSD','15m',[],res,'test',123).profile;
+  for(const market of ['ETHUSD','SOLUSD','BTCUSD'])for(const tf of ['15m','1h'])store.save({...base,market,tf,labelTexts:['retained label']});
+  const cells=[{symbol:'ETHUSD',tf:'15m'},{symbol:'SOLUSD',tf:'1h'},{symbol:'ETHUSD',tf:'15m'}];
+  assert.deepEqual(store.forCells(s.id,cells),store.forScanner(s.id).filter(r=>cells.some(c=>c.symbol===r.market&&c.tf===r.tf)));
+  assert.deepEqual(store.forCells(s.id,[]),[]);assert.deepEqual(store.forCells('missing',cells),[]);
+ }finally{db.db.close();}
 });
