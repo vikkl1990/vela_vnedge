@@ -26,6 +26,7 @@ import { runBacktest } from '../paper/backtest.ts';
 import { backtestPolicy } from '../paper/policy.ts';
 import { candleReplayBlock } from '../paper/basket.ts';
 import { ConfigStore, TF_SECONDS, type ScannerConfig } from '../config.ts';
+import { momentsOf } from '../validation/overfit.ts';
 
 const [symArg, tf = '15m', barsArg = '4000', out = 'paper-screen.jsonl', workersArg] = process.argv.slice(2);
 if (!symArg) { console.error('usage: paperScreen.ts SYMBOLS TF BARS OUT.jsonl [WORKERS]'); process.exit(2); }
@@ -66,6 +67,8 @@ const POLICIES: Record<string, Partial<typeof cfg.paper>> = process.env.POLICY_S
 };
 /** INVERT=1: every policy is also run on the inverted reading (`<policy>_inv`), so a scanner whose signals work faded shows up too. */
 const WITH_INVERT = process.env.INVERT === '1';
+/** Time blocks per cell for the PBO check (screenVerdict.ts); even, as CSCV splits them in halves. */
+const BLOCKS = 10;
 
 const done = new Set<string>();
 if (fs.existsSync(out)) for (const line of fs.readFileSync(out, 'utf8').split('\n')) { try { const r = JSON.parse(line); done.add(`${r.scannerId}|${r.symbol}`); } catch { /* partial line */ } }
@@ -125,7 +128,10 @@ async function screen(s: ReturnType<ScannerRegistry['runnable']>[number], symbol
         ...backtestPolicy(pcfg, s.id, tf, 'account', { executor: false, productFees: m.info.productFees }), exitMode: sc.exitMode, contractValue: m.info.contractValue, tickSize: m.info.tickSize, ...(spreads[symbol] ? { spreadPct: spreads[symbol] } : {}) });
       const all = stats(bt.trades), seg = [stats(bt.trades.filter(t => t.entryAt < mid)), stats(bt.trades.filter(t => t.entryAt >= mid && t.entryAt < trainEnd)), stats(bt.trades.filter(t => t.entryAt >= trainEnd))];
       row.policies[name] = { trades: all.trades, pnl: all.pnl, pf: all.pf, avgR: all.avgR, maxDd: bt.stats.maxDrawdownPct, early: seg[0], middle: seg[1], holdout: seg[2],
-        pass: all.trades >= 20 && all.pf >= 1.2 && seg.every(x => x.pnl > 0) && seg[2].trades >= 5 };
+        pass: all.trades >= 20 && all.pf >= 1.2 && seg.every(x => x.pnl > 0) && seg[2].trades >= 5,
+        // for screenVerdict's selection-bias checks: R by tenth of the window (PBO) and the per-trade R moments (Deflated Sharpe)
+        blocks: Array.from({ length: BLOCKS }, (_, b) => bt.trades.filter(t => Math.min(BLOCKS - 1, Math.floor((t.entryAt - t0) / span * BLOCKS)) === b).reduce((a, t) => a + (t.rMultiple ?? 0), 0)),
+        moments: momentsOf(bt.trades.map(t => t.rMultiple ?? 0)) };
     }
     // the current policy stays at the top level for existing readers
     Object.assign(row, row.policies.current);
