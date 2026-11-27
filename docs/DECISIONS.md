@@ -8608,3 +8608,20 @@ the decision's stop and targets, so that drift put the first target at 0.58R and
 **What.** `paper.maxFillDriftR` (default 0.3, 0 = off): when a deferred market fill would land more than that many R
 of the decision against the trade, it is cancelled (`fillDriftR` in `paper/logic.ts`; resting maker limits and baskets
 are exempt, a better price is never refused). On the live record it would have cancelled #42 only.
+
+## 335. Paper reaction latency set to what this machine measures: 1,500 → 400 ms (28 November 2026)
+
+**Why.** Splitting the slippage of the 35 live stop and break-even exits since 26 November (paper_exit_intents and
+their reports): 1.02R came from the gap (the trigger print already past the level, unavoidable with any order type)
+and 1.59R from the 1.5–2.8 s between the trigger print and the booked fill, the bound `latencyMs` of decision 234
+plus the depth read. The four worst exits (0.26–0.50R past their level) were almost all that wait. In production the
+executor sends market orders only (`execution/client.ts`), so a client-side exit is the real path; the question is how
+long it really takes from this machine. Measured on 28 November: the Delta India trade feed arrives 290 ms after the
+exchange stamp at the median (510 ms p90, 700 ms p99, clock checked within 20 ms of three HTTPS time sources), and an
+uncached order-book request round-trips in 131 ms (344 ms p90). The bound 1,500 ms *after* receipt modelled exits
+about a second slower than the machine sends them.
+
+**What.** `paper.latencyMs` 400 in the VM config (backup `config.json.before-latency`): a full p90 round trip with
+margin, applied after receipt as before, for entries and exits alike. Positions keep the latency bound when they were
+opened; new positions use 400 ms. Decision 234's rule that only a fresh post-arrival depth report books an exit stands.
+Re-measure if the bot moves to another machine or network.
