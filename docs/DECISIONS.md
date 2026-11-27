@@ -8639,3 +8639,9 @@ Reuse one fresh evidence assessment for the Incubator's restoration and copy exp
 New-page navigation starts at its heading. Query-only filters, hashes and back/forward navigation retain their existing behavior. No scanner activation, financial policy, margin, fee model, evidence identity, paper/live mode or historical trade is changed.
 
 The full 09:30 IST scan observation found 87 research expiries despite successful paper scans/fills. This report work does not by itself certify full-burst research capacity or improve trading profitability. Capacity and earlier-exit comparisons require separate measured acceptance.
+
+## 342 — Opaque sticky surfaces for reliable journal scrolling (2026-11-27)
+
+The live Chrome journal displayed blank painted regions while its DOM still contained correctly sized rows. Reproduced on a 1,512 × 801 viewport after scrolling the page about 950 pixels. Sticky header cells each used a backdrop blur, and the sticky application bar used another filter. Replace those persistent filtered surfaces with opaque theme colors. Remove the main area's unintended vertical scrollport: CSS computes `overflow-y: visible` as `auto` when paired with `overflow-x: auto`; `clip` keeps page scrolling with the window while tables retain their own horizontal scroll.
+
+Regression coverage loads 50 journal rows on desktop and paged cards on phones, checks the scroll ownership, unfiltered sticky surfaces, viewport bounds and visible rows after scrolling, and saves a scrolled screenshot. Verify the deployed journal visually in the affected Chrome session. No API, data, financial calculation, admission rule, mode, risk cap or evidence identity changes. Deploy dashboard assets without restarting the engine.
