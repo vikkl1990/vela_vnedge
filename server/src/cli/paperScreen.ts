@@ -54,6 +54,11 @@ const POLICIES: Record<string, Partial<typeof cfg.paper>> = process.env.POLICY_S
   widen12: { widenStopToFee: true, minRiskFeeRatio: 12 },
   widen8: { widenStopToFee: true, minRiskFeeRatio: 8 },
   fall3atr: { fallbackAtrSl: 3 },
+} : process.env.POLICY_SET === 'maker' ? {
+  // POLICY_SET=maker: the configured rules, and resting maker-limit entries on this timeframe at 0 / 0.1 / 0.25 ATR
+  // back from the signal price (2 bars to fill), so the entry pays the maker fee and the cost rule admits more
+  current: {},
+  ...Object.fromEntries([0, 0.1, 0.25].map(a => [`maker${a}`, { limitEntry: { ...cfg.paper.limitEntry!, enabled: true, tfs: [...new Set([...(cfg.paper.limitEntry?.tfs ?? []), tf])], atrByTf: { ...(cfg.paper.limitEntry?.atrByTf ?? {}), [tf]: a }, bars: 2, books: ['account', 'shadow'] as Array<'account' | 'shadow'> } }])),
 } : process.env.POLICY_SET === 'gate' ? {
   // POLICY_SET=gate: the configured rules with the EMA200 follow gate on every timeframe (`current`, as the
   // reader-4 screen ran it) and off (`noTrendGate`), whatever timeframes the live gate now covers
