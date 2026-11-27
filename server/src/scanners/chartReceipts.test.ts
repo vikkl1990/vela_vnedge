@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {Db} from '../db.ts';
-import {recordChartReceipt,chartReceipt,chartReadingHash} from './chartReceipts.ts';
+import {recordChartReceipt,chartReceipt,chartReadingHash,chartWindow} from './chartReceipts.ts';
 import {compareChart,type ChartObservation} from '../../../shared/chartVerification.ts';
 import {DEFAULT_CONFIG} from '../config.ts';
 import {resolveTradePolicy} from '../paper/tradePolicy.ts';
@@ -70,4 +70,20 @@ test('chart reading identity follows interpretation changes while allocations re
  assert.equal(chartReadingHash('s',{reader:2,sides:{Buy:'long'},enabled:true,symbols:['ETHUSD']}),initial);
  assert.notEqual(chartReadingHash('s',{reader:2,sides:{Buy:'short'}}),initial);
  assert.notEqual(chartReadingHash('other',{reader:2,sides:{Buy:'long'}}),initial);
+});
+
+
+test('chart windows retain exactly the scanner inputs without refetch, mutation or fabricated restart recovery',t=>{
+ const db=new Db(':memory:');t.after(()=>db.db.close());const bars=[{time:T,open:99,high:101,low:98,close:100,volume:10}];
+ const result={id:1,ok:true,ms:1,bars:1,lastBarTime:T,warnings:0,alerts:[],labels:[],plots:[],shapes:[]};
+ recordChartReceipt(db,'s','SOLUSD','15m','source',{},bars,result,[]);
+ bars[0].close=999;
+ const window=chartWindow(db,'s','SOLUSD','15m',T)!;assert.equal(window.bars[0].close,100);
+ window.bars[0].close=888;assert.equal(chartWindow(db,'s','SOLUSD','15m',T)!.bars[0].close,100);
+ assert.equal(chartWindow(db,'s','SOLUSD','15m',T-900000),null);
+ const cold=new Db(':memory:');t.after(()=>cold.db.close());
+ const receipt=chartReceipt(db,'s','SOLUSD','15m')!;
+ chartReceipt(cold,'s','SOLUSD','15m');cold.run('INSERT INTO chart_signal_receipts VALUES(?,?,?,?,?)','s','SOLUSD','15m',T,JSON.stringify(receipt));
+ assert.equal(chartWindow(cold,'s','SOLUSD','15m',T),null);
+ assert.equal(db.get<any>('SELECT count(*) n FROM positions')!.n,0);
 });

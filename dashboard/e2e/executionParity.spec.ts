@@ -68,6 +68,9 @@ test('closed-bar chart checks expose agreement, differences and input context wi
   await page.route('**/api/candles?**', (r) =>
     r.fulfill({ json: new URL(r.request().url()).searchParams.has('from') ? bars.slice(0, 199) : bars }),
   )
+  await page.route('**/api/scanners/*/chart-window?**', (r) =>
+    r.fulfill({ json: { bars: bars.slice(0, 199) } }),
+  )
   await page.route('**/api/scanners/*/chart-receipt?**', (r) => r.fulfill({ json: receipt }))
   await page.goto('/chart?symbol=ETHUSD&tf=15m&add=scanner-0')
   const panel = page.getByRole('region', { name: 'Chart versus bot signal checks' })

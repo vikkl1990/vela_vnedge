@@ -140,6 +140,10 @@ const put = <T>(path: string, body: unknown) =>
 const del = <T>(path: string) => request<T>(path, { method: 'DELETE' })
 
 export const api = {
+  chartWindow: (id: string, symbol: string, tf: string, barTime: number) =>
+    get<{ bars: Candle[] } | null>(
+      `/scanners/${encodeURIComponent(id)}/chart-window${qs({ symbol, tf, barTime })}`,
+    ),
   chartReceipt: (id: string, symbol: string, tf: string) =>
     get<SignalReceipt | null>(`/scanners/${encodeURIComponent(id)}/chart-receipt${qs({ symbol, tf })}`),
   fillComparison: (id: number) => get<FillComparison>(`/positions/${id}/fill-comparison`),

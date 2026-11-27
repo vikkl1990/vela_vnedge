@@ -371,12 +371,9 @@ export function VelaChart({
                 let loading = verificationHistory.get(windowKey)
                 if (!loading) {
                   if (verificationHistory.size >= 4) verificationHistory.clear()
-                  loading = api.candles({
-                    symbol: market.symbol,
-                    tf: market.tf,
-                    from: receipt.historyFrom,
-                    to: time,
-                    limit: receipt.bars,
+                  loading = api.chartWindow(script.id, market.symbol, market.tf, time).then((window) => {
+                    if (!window) throw new Error('Captured scanner inputs unavailable; wait for a fresh scan')
+                    return window.bars
                   })
                   verificationHistory.set(windowKey, loading)
                   void loading.catch(() => verificationHistory.delete(windowKey))

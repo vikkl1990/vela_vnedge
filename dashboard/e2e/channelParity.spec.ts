@@ -66,6 +66,7 @@ test('installed bridge matches real server alerts, conditions, label stamps and 
     await page.route('**/api/candles?**', (r) =>
       r.fulfill({ json: new URL(r.request().url()).searchParams.has('from') ? closed : bars }),
     )
+    await page.route('**/api/scanners/*/chart-window?**', (r) => r.fulfill({ json: { bars: closed } }))
     await page.route('**/api/scanners/*/chart-receipt?**', (r) => r.fulfill({ json: receipt }))
     await page.goto('/chart?symbol=ETHUSD&tf=15m&add=scanner-0')
     const panel = page.getByRole('region', { name: 'Chart versus bot signal checks' })
