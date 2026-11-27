@@ -368,19 +368,26 @@ export class ShadowRunner {
     // Rank across symbols in the shared mirror queue, not just within this
     // symbol's callback. Research positions still precede ordinary research.
     const mirrorRanks = new Map<PairRow, number>();
-    const urgent:PairRow[]=[];
+    const urgent:PairRow[]=[],runnable:PairRow[]=[];
     let deadline=performance.now()+10;
     for(const r of due){
       if(this.stopped){for(const cell of due)this.releaseScheduled(cell,barAt);return;}
-      const held=holds(r),canCopy=mirror&&await this.qualifyCopy(()=>copyable(r));
-      if(held||canCopy){mirrorRanks.set(r,this.deps.accountHolds?.(r.scannerId,r.symbol,r.tf)?3:canCopy?2:1);urgent.push(r);}
+      const refusal=this.quarantineRefusal(r);
+      if(refusal){
+        this.deps.store.noteShadowScan?.(r,barAt-TF_SECONDS[r.tf]*1000,'unavailable',refusal);
+        this.releaseScheduled(r,barAt);
+      }else{
+        runnable.push(r);
+        const held=holds(r),canCopy=mirror&&await this.qualifyCopy(()=>copyable(r));
+        if(held||canCopy){mirrorRanks.set(r,this.deps.accountHolds?.(r.scannerId,r.symbol,r.tf)?3:canCopy?2:1);urgent.push(r);}
+      }
       // Qualification still happens on the same rules, then again at entry.
       // Only ranking is cooperative: never block quote/exit timers for the universe.
       if(r!==due.at(-1)&&performance.now()>=deadline){await new Promise<void>(resolve=>setImmediate(resolve));deadline=performance.now()+10;}
     }
     if(this.stopped){for(const cell of due)this.releaseScheduled(cell,barAt);return;}
     urgent.sort((a,b)=>rank(a)-rank(b));
-    const later = due.filter(r => !urgent.includes(r));
+    const later = runnable.filter(r => !urgent.includes(r));
     const launch = (rows: PairRow[], live: boolean) => {
       if (!rows.length) return;
       if (!live) {
@@ -438,18 +445,25 @@ export class ShadowRunner {
     if (keys.length > 60) delete this.stats.lastErrors[keys.sort((a, b) => this.stats.lastErrors[a].at - this.stats.lastErrors[b].at)[0]];
   }
 
+  /** Unheld quarantined cells cannot collect evidence. Keep them out of the queue,
+   * while retaining account/shadow positions, resting orders and rotation holds. */
+  private quarantineRefusal(r:PairRow):string|null {
+    const reason=this.deps.store.quarantineReason?.(r.scannerId)??null;
+    if(!reason)return null;
+    const held=this.deps.store.rotationHolds?.(r)
+      || this.deps.accountHolds?.(r.scannerId,r.symbol,r.tf)
+      || [...(this.deps.paper.openPositions?.()??[]),...(this.deps.paper.pendingEntries?.()??[])]
+        .some(p=>(p.executionPlan?.sourceScannerId??p.scannerId)===r.scannerId&&p.symbol===r.symbol&&p.tf===r.tf);
+    return held?null:`scanner quarantined: ${reason}`;
+  }
+
   private async run(rAtStart: PairRow, barAt = Date.now(), live = false, seenAt = Date.now(), rank?:number,releaseCompute?:()=>void): Promise<void> {
     let r = rAtStart;
     const s = this.deps.registry.get(r.scannerId);
     if (!s || s.status !== 'ok') {this.deps.store.noteShadowScan?.(r,barAt-TF_SECONDS[r.tf]*1000,'unavailable','scanner unavailable');return;}
     const quarantine = () => this.deps.store.quarantineReason?.(r.scannerId) ?? null;
-    if (quarantine()) {
-      const held = this.deps.store.rotationHolds?.(r)
-        || this.deps.accountHolds?.(r.scannerId,r.symbol,r.tf)
-        || [...(this.deps.paper.openPositions?.() ?? []), ...(this.deps.paper.pendingEntries?.() ?? [])]
-          .some(p => (p.executionPlan?.sourceScannerId ?? p.scannerId) === r.scannerId && p.symbol === r.symbol && p.tf === r.tf);
-      if (!held) {this.deps.store.noteShadowScan?.(r,barAt-TF_SECONDS[r.tf]*1000,'unavailable',`scanner quarantined: ${quarantine()}`);return;}
-    }
+    const refusal=this.quarantineRefusal(r);
+    if(refusal){this.deps.store.noteShadowScan?.(r,barAt-TF_SECONDS[r.tf]*1000,'unavailable',refusal);return;}
     const cfg = this.deps.cfgRef();
     const scannerCfgAtStart = JSON.stringify(cfg.scanners[s.id] ?? null);
     const bars = this.deps.candles.get(r.symbol, r.tf, { closedOnly: true, limit: cfg.historyBars });
