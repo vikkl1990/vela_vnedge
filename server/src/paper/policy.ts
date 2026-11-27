@@ -63,6 +63,7 @@ export function backtestPolicy(cfg: AppConfig, scannerId: string, tf: string, bo
     scannerExit: scannerExitPolicy(cfg, scannerId, opts.now),
     scannerExitResolved: true as const,
     trendGate: sc.trendGate,
+    trendGateTfs: sc.trendGateTfs,
     entry: entryPolicy(cfg, tf, book, {...opts,scannerId}),
     chopGate: cfg.risk.regime?.enabled && (cfg.risk.regime.minEr ?? 0) > 0 ? { minEr: cfg.risk.regime.minEr! } : undefined,
   };

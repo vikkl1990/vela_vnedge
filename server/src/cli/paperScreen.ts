@@ -45,6 +45,11 @@ const POLICIES: Record<string, Partial<typeof cfg.paper>> = process.env.POLICY_S
   // POLICY_SET=live: the account's own rules as configured, with and without its trend gate
   current: {},
   noTrendGate: { trendGate: { enabled: false, emaLen: 200, tf: '', mode: 'follow' } },
+} : process.env.POLICY_SET === 'gate' ? {
+  // POLICY_SET=gate: the configured rules with the EMA200 follow gate on every timeframe (`current`, as the
+  // reader-4 screen ran it) and off (`noTrendGate`), whatever timeframes the live gate now covers
+  current: { trendGate: { enabled: true, emaLen: 200, tf: '', mode: 'follow' } },
+  noTrendGate: { trendGate: { enabled: false, emaLen: 200, tf: '', mode: 'follow' } },
 } : {
   current: {},
   cost8x: { minRiskFeeRatio: 8, minRiskFeeRatioBySymbol: undefined },

@@ -506,7 +506,7 @@ export class ShadowRunner {
         since:win.since,newLabelKeys,bars,market,at,refPrice,refusal:ev=>{
           if(ev.kind==='entry' && quarantine())return `scanner quarantined: ${quarantine()}`;
           const g=cfg.paper.trendGate;
-          if(trendGateApplies(g,r.tf)&&g&&ev.side){const tf=g.tf&&g.tf!==r.tf?g.tf:r.tf;
+          if(trendGateApplies(g,r.tf,cfg.scanners[s.id]?.trendGateTfs)&&g&&ev.side){const tf=g.tf&&g.tf!==r.tf?g.tf:r.tf;
             const reason=trendGateReason(ev.side,trendNow(this.deps.candles.get(r.symbol,tf,{closedOnly:true,limit:g.emaLen*4}).map(b=>b.close),g.emaLen),cfg.scanners[s.id]?.trendGate??g.mode);
             if(reason)return reason;
           }
@@ -594,7 +594,7 @@ export class ShadowRunner {
         // the shadow book is evidence for the live fleet, so it is gated exactly as the fleet is
         const g = cfg.paper.trendGate;
         let trendReason:string|null=null;
-        if (g && trendGateApplies(g, r.tf)) {
+        if (g && trendGateApplies(g, r.tf, cfg.scanners[s.id]?.trendGateTfs)) {
           const mode = cfg.scanners[s.id]?.trendGate ?? g.mode;
           const trendTf = g.tf && g.tf !== r.tf ? g.tf : r.tf;
           const closes = this.deps.candles.get(r.symbol, trendTf, { closedOnly: true, limit: g.emaLen * 4 }).map(b => b.close);

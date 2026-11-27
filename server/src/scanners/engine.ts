@@ -647,8 +647,9 @@ export class ScannerEngine extends EventEmitter {
   trendGateBlock(scannerId: string, symbol: string, tf: string, side: 'long' | 'short'): string | null {
     const cfg = this.cfgRef();
     const g = cfg.paper.trendGate;
-    if (!g || !trendGateApplies(g, tf)) return null;
-    const mode = this.scannerConfig(scannerId).trendGate ?? g.mode;
+    const sc = this.scannerConfig(scannerId);
+    if (!g || !trendGateApplies(g, tf, sc.trendGateTfs)) return null;
+    const mode = sc.trendGate ?? g.mode;
     if (mode === 'off') return null;
     const trendTf = g.tf && g.tf !== tf ? g.tf : tf;
     const closes = this.candles.get(symbol, trendTf, { closedOnly: true, limit: g.emaLen * 4 }).map(b => b.close);

@@ -747,9 +747,13 @@ export function higherTrend(bars: Array<{ time: number; close: number }>, tfMs: 
 }
 
 /** The trend right now from a series of closes; undefined when there is not enough history to judge. */
-/** Whether the trend gate covers signals on this timeframe: on, and either no `tfs` list or one that names it. */
-export function trendGateApplies(g: { enabled: boolean; tfs?: string[] } | undefined, tf: string): boolean {
-  return !!g?.enabled && (!g.tfs?.length || g.tfs.includes(tf));
+/**
+ * Whether the trend gate covers signals on this timeframe: on, and either no `tfs` list or one that names it.
+ * A scanner's own `trendGateTfs` list, when given, replaces the account's list for that scanner.
+ */
+export function trendGateApplies(g: { enabled: boolean; tfs?: string[] } | undefined, tf: string, scannerTfs?: string[]): boolean {
+  const tfs = scannerTfs ?? g?.tfs;
+  return !!g?.enabled && (!tfs?.length || tfs.includes(tf));
 }
 
 export function trendNow(closes: number[], len: number): 1 | -1 | undefined {

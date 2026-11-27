@@ -50,6 +50,8 @@ export interface BacktestInput {
   maintenanceMarginPct?: number; maxLeverage?: number;
   /** This scanner's trend-gate mode; defaults to `cfg.trendGate.mode` when the gate is on. */
   trendGate?: TrendGateMode;
+  /** This scanner's gated timeframes, replacing `cfg.trendGate.tfs` (see trendGateApplies). */
+  trendGateTfs?: string[];
   /** Whipsaw gate under measurement (decision 66): refuse an entry when the entry timeframe's Kaufman efficiency ratio over `len` bars is under `minEr`, or its choppiness index over 14 bars is over `maxChop`. */
   chopGate?: { minEr?: number; maxChop?: number; len?: number };
   /** This scanner's own exit rules, applied over the market's and the fleet's. */
@@ -164,7 +166,7 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
 
   // the trend every bar sees, on its own timeframe or a higher one, never reading an unclosed bar
   const gate = cfg.trendGate;
-  const gateMode: TrendGateMode = trendGateApplies(gate, inp.tf) ? (inp.trendGate ?? gate!.mode) : 'off';
+  const gateMode: TrendGateMode = trendGateApplies(gate, inp.tf, inp.trendGateTfs) ? (inp.trendGate ?? gate!.mode) : 'off';
   const gateTrend: Array<1 | -1 | undefined> = gateMode === 'off' ? []
     : gate!.tf && gate!.tf !== inp.tf
       ? higherTrend(bars, TF_SECONDS[inp.tf] * 1000, TF_SECONDS[gate!.tf] * 1000, gate!.emaLen)
