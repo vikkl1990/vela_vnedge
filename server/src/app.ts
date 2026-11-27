@@ -153,6 +153,7 @@ export class App {
   readonly runtime = new RuntimeState();
   lastError: string | null = null;
   private marketCache: { at: number; list: any[] } | null = null;
+  private marketRefresh: Promise<any[]> | null = null;
   /** Symbols actually scanned after resolving the universe (list / top N / all). */
   resolvedSymbols: string[] = [];
 
@@ -420,6 +421,8 @@ export class App {
     // positions already open at a restart have no record yet: take it from the bars closed at their entry, once the series are loaded
     this.entryStateTimer = setTimeout(() => { for (const engine of [this.paper, this.shadow]) for (const p of engine.openPositions()) this.entryState.record(engine.book, p); }, 5 * 60_000).unref?.();
     // the movers strip needs a reading each minute whether or not a dashboard is open, so a pump is on the strip from its first minutes
+    // the market list is sampled every minute (and once now), so a page read never waits on Delta's ticker sweep
+    this.markets().catch(e => log.warn(`market list warm-up failed: ${e?.message ?? e}`));
     this.moverTimer = setInterval(() => { this.markets().catch(e => log.warn(`movers sample failed: ${e?.message ?? e}`)); }, 60_000);
     this.moverTimer.unref?.();
     // Closed trades and the clock drive evidence reviews independently of screening.
@@ -633,10 +636,22 @@ export class App {
     return { at: now, windows: [...MOVER_WINDOWS_MIN], historyMinutes: this.movers.historyMinutes(now), rows: this.movers.movers(now, limit).map(r => ({ ...r, group: classOf(r.symbol).group, sector: classOf(r.symbol).sector })) };
   }
 
+  /**
+   * Every perpetual with its last price, 24h change and turnover. Served from memory: a list older than 30 s is
+   * returned as it is while one refresh runs behind it (the page polls, so the next read has it), and only the
+   * very first call waits on Delta. Delta's ticker sweep takes seconds; no page should wait on it.
+   */
   async markets() {
-    if (this.marketCache && Date.now() - this.marketCache.at < 30_000) return this.marketCache.list;
+    const cached = this.marketCache;
+    if (cached && Date.now() - cached.at < 30_000) return cached.list;
+    const refresh = this.marketRefresh ??= this.refreshMarkets().finally(() => { this.marketRefresh = null; });
+    if (cached) { refresh.catch(e => log.warn(`market list refresh failed: ${String(e)}`)); return cached.list; }
+    return refresh;
+  }
+
+  private async refreshMarkets() {
     const sampledAt = Date.now();
-    const [tickers] = await Promise.all([this.rest.tickers(),this.rest.products()]);
+    const tickers = await this.rest.tickers();
     if (this.marketCache && this.marketCache.at > sampledAt) return this.marketCache.list;
     const list = tickers.filter(t => t.contract_type === 'perpetual_futures' || !t.contract_type).map(t => ({
       symbol: t.symbol, description: t.description ?? t.symbol, tickSize: Number(t.tick_size ?? 0), contractValue: Number(t.contract_value ?? 0), group: classOf(t.symbol).group, sector: classOf(t.symbol).sector,
