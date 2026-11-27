@@ -8656,6 +8656,6 @@ the quoted spread to the round trip it admits against; the engine's per-cell bac
 the ML samples, and parity's reference) charged fees and flat slippage only — the gap decision 335's screens closed with
 `SPREADS`, still open in the server.
 
-**What.** `ScannerEngine.spreadFor` returns the market gate's latest measured spread for the market, and every cached
+**What.** `ScannerEngine.spreadFor` returns the spread of the market's current quote, the same reading the live cost rule admits against (the market gate's list is empty while that gate is off), and every cached
 backtest passes it as `spreadPct` (cost rule and fills). A market the gate has not measured yet (the first minutes after a
 start) is charged as before.

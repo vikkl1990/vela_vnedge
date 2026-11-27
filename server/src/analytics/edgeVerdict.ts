@@ -69,7 +69,7 @@ export function compareParity(bt: ParityTrade[], live: ParityTrade[], signals: P
   return res;
 }
 
-/** A refusal by the account's own portfolio rules: expected, since a backtest trades one market alone. */
+/** A refusal by the account's own portfolio rules (a backtest trades one market alone), or a bar the bot was not running for: expected, not missed. */
 export function isPortfolioRefusal(action: string): boolean {
-  return /^rejected:risk (burst|re-entry cooldown|max \d+ positions|scanner at its|max positions)|^rejected:max open positions|^ignored:already in position|paused by edge watch/.test(action);
+  return /^rejected:risk (burst|re-entry cooldown|max \d+ positions|scanner at its|max positions)|^rejected:max open positions|^ignored:already in position|paused by edge watch|^not running:/.test(action);
 }
