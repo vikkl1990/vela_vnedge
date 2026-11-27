@@ -45,6 +45,14 @@ const POLICIES: Record<string, Partial<typeof cfg.paper>> = process.env.POLICY_S
   // POLICY_SET=live: the account's own rules as configured, with and without its trend gate
   current: {},
   noTrendGate: { trendGate: { enabled: false, emaLen: 200, tf: '', mode: 'follow' } },
+} : process.env.POLICY_SET === 'widen' ? {
+  // POLICY_SET=widen: an ATR-fallback stop that is too tight for the cost rule is widened to the rule's floor
+  // instead of refusing the trade, at the configured ratio and at looser ones
+  current: {},
+  widen16: { widenStopToFee: true },
+  widen12: { widenStopToFee: true, minRiskFeeRatio: 12 },
+  widen8: { widenStopToFee: true, minRiskFeeRatio: 8 },
+  fall3atr: { fallbackAtrSl: 3 },
 } : process.env.POLICY_SET === 'gate' ? {
   // POLICY_SET=gate: the configured rules with the EMA200 follow gate on every timeframe (`current`, as the
   // reader-4 screen ran it) and off (`noTrendGate`), whatever timeframes the live gate now covers
@@ -71,6 +79,12 @@ for (const symbol of symbols) {
   console.log(`${symbol}: ${bars.length} bars from ${new Date(bars[0]?.time).toISOString()}`);
 }
 
+/**
+ * SPREADS=SYM:pct,... charges each market's bid/ask spread (in %) as the live account pays it: in the cost
+ * rule's admission cost and on every fill. Without it a screen charges fees and flat slippage only, which
+ * flatters wide-spread markets against the live engine (it quotes the real book).
+ */
+const spreads: Record<string, number> = Object.fromEntries((process.env.SPREADS ?? '').split(',').filter(Boolean).map(x => { const [s, v] = x.split(':'); return [s, Number(v)]; }));
 const limit = Number(process.env.LIMIT ?? 0);   // LIMIT=n: a quick trial on the first n scanners
 const ids = process.env.IDS ? new Set(process.env.IDS.split(',')) : null;   // IDS=a,b: screen only these scanners
 const scanners = registry.runnable().filter(s => !candleReplayBlock(s.id) && (!ids || ids.has(s.id))).slice(0, limit > 0 ? limit : undefined);
@@ -108,7 +122,7 @@ async function screen(s: ReturnType<ScannerRegistry['runnable']>[number], symbol
     for (const [name, over, evs] of runs) {
       const pcfg = { ...cfg, paper: { ...cfg.paper, ...over } };
       const bt = runBacktest({ scannerId: s.id, scannerName: s.name, symbol, tf, bars: m.bars, events: structuredClone(evs),
-        ...backtestPolicy(pcfg, s.id, tf, 'account', { executor: false, productFees: m.info.productFees }), exitMode: sc.exitMode, contractValue: m.info.contractValue, tickSize: m.info.tickSize });
+        ...backtestPolicy(pcfg, s.id, tf, 'account', { executor: false, productFees: m.info.productFees }), exitMode: sc.exitMode, contractValue: m.info.contractValue, tickSize: m.info.tickSize, ...(spreads[symbol] ? { spreadPct: spreads[symbol] } : {}) });
       const all = stats(bt.trades), seg = [stats(bt.trades.filter(t => t.entryAt < mid)), stats(bt.trades.filter(t => t.entryAt >= mid && t.entryAt < trainEnd)), stats(bt.trades.filter(t => t.entryAt >= trainEnd))];
       row.policies[name] = { trades: all.trades, pnl: all.pnl, pf: all.pf, avgR: all.avgR, maxDd: bt.stats.maxDrawdownPct, early: seg[0], middle: seg[1], holdout: seg[2],
         pass: all.trades >= 20 && all.pf >= 1.2 && seg.every(x => x.pnl > 0) && seg[2].trades >= 5 };
