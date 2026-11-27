@@ -18,6 +18,27 @@ import './styles/pages.css'
 import './terminal.css'
 import './styles/data-views.css'
 
+// A tab opened before a deploy still holds the old index, whose lazy page files the new build has replaced: loading a
+// page then fails on a missing file. Reload once to pick up the current build; the timestamp stops a reload loop
+// if the file is missing for any other reason.
+window.addEventListener('vite:preloadError', (event) => {
+  const key = 'vnedge.preloadReloadAt'
+  let last = 0
+  try {
+    last = Number(sessionStorage.getItem(key) ?? 0)
+  } catch {
+    /* storage unavailable: still reload once per page life below */
+  }
+  if (Date.now() - last < 60_000) return
+  try {
+    sessionStorage.setItem(key, String(Date.now()))
+  } catch {
+    /* ignore */
+  }
+  event.preventDefault()
+  window.location.reload()
+})
+
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {

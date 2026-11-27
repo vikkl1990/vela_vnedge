@@ -46,7 +46,15 @@ for (const file of files) for (const line of fs.readFileSync(file, 'utf8').split
     cands.set(key, c);
   }
 }
-const all = [...cands.values()];
+// Two policies that traded identically (e.g. a gate that does not cover this timeframe) are one candidate, not two
+// trials: keep the first of each scanner's identical records, so neither the luck benchmark nor PBO double-counts.
+const seen = new Set<string>();
+const all = [...cands.values()].filter(c => {
+  const sig = `${c.id}|${c.trades}|${c.moments.s1.toFixed(9)}|${c.moments.s2.toFixed(9)}|${c.blocks.map(b => b.toFixed(6)).join(',')}`;
+  if (seen.has(sig)) return false;
+  seen.add(sig);
+  return true;
+});
 if (!all.length) { console.log(`${rows} rows read; no candidate carries blocks and moments (${skipped} older policy rows skipped). Re-run paperScreen.ts.`); process.exit(0); }
 
 const pf = (c: Cand) => (c.gl > 0 ? c.gp / c.gl : c.gp > 0 ? 99 : 0);

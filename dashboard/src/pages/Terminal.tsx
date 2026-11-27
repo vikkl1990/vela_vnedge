@@ -304,7 +304,7 @@ export function Terminal() {
             <VelaChart
               symbol={symbol}
               tf={frame}
-              height={470}
+              height="100%"
               scripts={scripts}
               marks={marks}
               positionOverlay={overlay}
@@ -354,7 +354,7 @@ export function Terminal() {
               return (
                 <button
                   key={s.id}
-                  className={`scalp-tick ${s.action === 'opened' ? 'opened' : ''}`}
+                  className={`scalp-tick side-${s.side} ${s.action === 'opened' ? 'opened' : ''}`}
                   onClick={() => update({ symbol: s.symbol, tf: s.tf })}
                   title={`${s.scannerName}\n${s.label}\n${s.action}`}
                 >
@@ -376,32 +376,33 @@ export function Terminal() {
             })}
           </div>
         </aside>
+
+        <section className="scalp-panel scalp-dock">
+          <div className="scalp-head">
+            <div className="scalp-seg" role="tablist" aria-label="Dock">
+              <button role="tab" aria-selected={dock === 'positions'} aria-pressed={dock === 'positions'} onClick={() => setDock('positions')}>
+                Positions <small>{positions.data?.length ?? 0}</small>
+              </button>
+              <button role="tab" aria-selected={dock === 'funnel'} aria-pressed={dock === 'funnel'} onClick={() => setDock('funnel')}>
+                Signal funnel · 24h
+              </button>
+              <button role="tab" aria-selected={dock === 'rules'} aria-pressed={dock === 'rules'} onClick={() => setDock('rules')}>
+                Rules in force
+              </button>
+            </div>
+            <div className="scalp-dock-links">
+              <Link to="/trades">Journal ↗</Link>
+              <Link to="/">Trading overview ↗</Link>
+            </div>
+          </div>
+          <div className="scalp-dock-body trading">
+            {dock === 'positions' && <PaperPositions query={positions} compact />}
+            {dock === 'funnel' && (overview.data ? <Funnel o={overview.data} /> : <Loading kind="cards" rows={3} />)}
+            {dock === 'rules' && (overview.data ? <Rules o={overview.data} /> : <Loading kind="cards" rows={3} />)}
+          </div>
+        </section>
       </div>
 
-      <section className="scalp-panel scalp-dock">
-        <div className="scalp-head">
-          <div className="scalp-seg" role="tablist" aria-label="Dock">
-            <button role="tab" aria-selected={dock === 'positions'} aria-pressed={dock === 'positions'} onClick={() => setDock('positions')}>
-              Positions <small>{positions.data?.length ?? 0}</small>
-            </button>
-            <button role="tab" aria-selected={dock === 'funnel'} aria-pressed={dock === 'funnel'} onClick={() => setDock('funnel')}>
-              Signal funnel · 24h
-            </button>
-            <button role="tab" aria-selected={dock === 'rules'} aria-pressed={dock === 'rules'} onClick={() => setDock('rules')}>
-              Rules in force
-            </button>
-          </div>
-          <div className="scalp-dock-links">
-            <Link to="/trades">Journal ↗</Link>
-            <Link to="/">Trading overview ↗</Link>
-          </div>
-        </div>
-        <div className="scalp-dock-body trading">
-          {dock === 'positions' && <PaperPositions query={positions} compact />}
-          {dock === 'funnel' && (overview.data ? <Funnel o={overview.data} /> : <Loading kind="cards" rows={3} />)}
-          {dock === 'rules' && (overview.data ? <Rules o={overview.data} /> : <Loading kind="cards" rows={3} />)}
-        </div>
-      </section>
     </div>
   )
 }
