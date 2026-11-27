@@ -8595,3 +8595,16 @@ Also avoid building SSE statistics, health snapshots and position views when nob
 The operator requested deployment of phase 1 and matched prospective shadow comparisons. `ops/enable-setup-comparisons.ts` prepares independent current/candidate pairs for Strat Trap ETH 15m and Liquidity Trail ATR maker SOL 1h, using the existing reviewed reading templates. The SOL 1h order inherits the current resting-order policy; neither its order duration nor its price is relaxed. Each candidate differs only in `confirmed-exit-v1`. Both arms pay the same full fees and retain the same margin, stop ceiling, exits, source reading and reference purse. These plans cannot auto-promote.
 
 Keep the 135-plan runtime capacity unchanged by retiring both flat GARCH ETH 15m arms and the idle BTC trend-continuation 1h plan, and rotating the flat Strat Trap ETH template into its behavior-identical matched control. The LINK maker experiment opened during preflight and is retained. Activation always refuses open/partial/pending retirement exposure. Recent signal evidence is permitted only for a template reproduced without any behavior change in the new control; the other retired plans require 72 hours without signals. Historical cohorts, fills and research evidence remain in the database. All other configured plans remain unchanged. The migration validates both arms, rejects configuration drift or an edited installation, writes a private atomic backup, and requires the service stopped before applying. Dry-run does not write configuration. No paper, risk, evidence, ML, fee, scanner allocation or live-execution setting is changed.
+
+## 334. Cancel a market fill that ran against the trade before it filled (28 November 2026)
+
+**Why.** An audit of all 51 live paper trades against the 1-minute tape (entries against the signal bar's close; every
+exit fill against its level and against the tape) found the exits faithful: targets fill at their levels, and the
+seven stops that filled 0.18–0.50R past their level were all minutes in which the price ran 0.4–1.2R through the stop,
+filled inside that minute's range. The entries were faithful too (median 20 s after the bar close, 12.7 bps from it),
+except one: EVAA #42 filled 0.42R above its decision price after the 1.5 s latency window. A pending market entry keeps
+the decision's stop and targets, so that drift put the first target at 0.58R and the stop 1.42R away; it lost 1.30R.
+
+**What.** `paper.maxFillDriftR` (default 0.3, 0 = off): when a deferred market fill would land more than that many R
+of the decision against the trade, it is cancelled (`fillDriftR` in `paper/logic.ts`; resting maker limits and baskets
+are exempt, a better price is never refused). On the live record it would have cancelled #42 only.

@@ -15,7 +15,7 @@ import { transientTradingBlock } from '../delta/tradingStatus.ts';
 import type { ExecutionPlanSnapshot } from './executionPlans.ts';
 import {makeTradePolicy,saveTradePolicy,loadTradePolicy,type TradePolicy} from './tradePolicy.ts';
 import {scannerExitPolicy} from './policy.ts';
-import {applyFundingSettlement, restingEntryStop} from './logic.ts';
+import {applyFundingSettlement, fillDriftR, restingEntryStop} from './logic.ts';
 import {recordFillBudget,fillBudget} from './decisionTrace.ts';
 import {depthBookKey} from './depthLiquidity.ts';
 import {depthPlan} from './depthPlan.ts';
@@ -1316,6 +1316,11 @@ export class PaperEngine extends EventEmitter {
       if ('reject' in q) return cancel(`unpriceable: ${q.reject}`);
       context.source = q.quoted ? 'quote' : 'slippage';
       price = q.price; quoted = q.quoted;
+    }
+    // decision 334: a market fill that ran too far against the trade since the decision has lost its reward:risk
+    if (!pe.limit && !pe.executionPlan?.basket && (cfg.maxFillDriftR ?? 0) > 0) {
+      const drift = fillDriftR(pe.side, pe.signalPrice, price, pe.levels.sl);
+      if (drift !== null && drift > cfg.maxFillDriftR!) return cancel(`price ran ${drift.toFixed(2)}R against the entry before the fill (limit ${cfg.maxFillDriftR}R)`);
     }
     // the signal's levels are absolute; the fill price must still sit on the right side of them
     const geometry=pe.executionPlan?.basket?basketLevels(price,pe.market.tickSize,this.findOpen(pe.scannerId,pe.symbol,pe.tf)):{sl:pe.levels.sl,tp:pe.levels.tp};

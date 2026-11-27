@@ -185,6 +185,16 @@ export function resolveLevels(req: EntryRequest, cfg: PaperConfig, tick: number)
 }
 
 /** The cost rule's required stop-to-cost multiple for a market (0 = rule off). */
+/**
+ * How far, in R of the decision, the fill moved against the trade: (fill − decision price) in the trade's direction over
+ * the decision's stop distance. Positive = worse than decided. Null when the decision had no stop distance.
+ */
+export function fillDriftR(side: 'long' | 'short', decisionPrice: number, fillPrice: number, sl: number): number | null {
+  const risk = Math.abs(decisionPrice - sl);
+  if (!(risk > 0) || !Number.isFinite(fillPrice)) return null;
+  return ((fillPrice - decisionPrice) * (side === 'long' ? 1 : -1)) / risk;
+}
+
 export function costRuleRatio(cfg: PaperConfig, symbol?: string): number {
   return (symbol ? cfg.minRiskFeeRatioBySymbol?.[symbol] : undefined) ?? cfg.minRiskFeeRatio ?? 0;
 }

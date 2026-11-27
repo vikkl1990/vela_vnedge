@@ -276,6 +276,12 @@ export interface PaperConfig {
   depthUsdPerBp: number;
   /** Tape mode: a signal's entry fills at the first print after signal time + latencyMs (candles mode fills immediately). */
   latencyMs: number;
+  /**
+   * A market entry is decided at one price and fills after `latencyMs` at another, while its stop and targets stay where
+   * the decision put them. When the price has run this many R against the trade in between, the first target is that
+   * much closer and the stop that much further: cancel the fill instead (0 = off). Decision 334.
+   */
+  maxFillDriftR?: number;
   /** Tape mode: fall back to 1m candles when no print arrived for this long. */
   tapeFallbackMs: number;
   /** Charge Delta funding (rate × notional, sign by side) to open positions at every funding timestamp. */
@@ -721,6 +727,7 @@ export const DEFAULT_CONFIG: AppConfig = {
     limitEntry: { enabled: true, tfs: ['1h', '4h'], atr: 0, atrByTf: { '1h': 0.1 }, bars: 2, books: ['account', 'shadow'] },
     depthUsdPerBp: 0,
     latencyMs: 1500,
+    maxFillDriftR: 0.3,
     tapeFallbackMs: 5000,
     fundingCharges: true,
     fundingGuard: { enabled: false, leadMinutes: 5, maxAgeSec: 120, scalpMaxR: 0.1, swingMaxR: 0.2 },
@@ -830,6 +837,7 @@ export function validateConfig(c: AppConfig): string[] {
   if (!(p.minLeverage >= 1 && p.minLeverage <= p.maxLeverage)) errs.push('paper.minLeverage must be 1..maxLeverage');
   if (!(p.maintenanceMarginPct >= 0 && p.maintenanceMarginPct < 5)) errs.push('paper.maintenanceMarginPct must be 0..5');
   if (!(Number.isFinite(p.minRiskFeeRatio) && p.minRiskFeeRatio >= 0)) errs.push('paper.minRiskFeeRatio must be ≥ 0');
+  if (p.maxFillDriftR !== undefined && !(Number.isFinite(p.maxFillDriftR) && p.maxFillDriftR >= 0)) errs.push('paper.maxFillDriftR must be ≥ 0');
   if (!(Number.isFinite(p.maxStopLossPct) && p.maxStopLossPct >= 0 && p.maxStopLossPct <= 100)) errs.push('paper.maxStopLossPct must be 0..100');
   if (p.makerQuoteCells !== undefined) {
     if (!Array.isArray(p.makerQuoteCells)) errs.push('paper.makerQuoteCells must be an array');

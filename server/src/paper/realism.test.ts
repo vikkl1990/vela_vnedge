@@ -293,7 +293,8 @@ test('pending tape entry rechecks fresh quote and cannot bypass requireQuote', t
 });
 
 test('tape market entry buys current ask and timestamps receipt, then journals tape paths', t => {
-  const { engine, signal, db } = setup(t, { useSpread: true, requireQuote: false });
+  // the ask sits a full R above the decision price to make the quote obvious; the fill-drift guard (decision 334) is off here
+  const { engine, signal, db } = setup(t, { useSpread: true, requireQuote: false, maxFillDriftR: 0 });
   signal('long', 60000);
   engine.quotes = { executable: () => 102 };
   engine.onTrade('BTCUSD', 101, 1, 62000, 63000);
