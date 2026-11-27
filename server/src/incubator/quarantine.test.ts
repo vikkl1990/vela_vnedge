@@ -94,3 +94,46 @@ for(const queued of [false,true])test(`held exits survive quarantine ${queued?'d
  assert.equal(f.runs(),1);assert.deepEqual(f.mirrored,['exit']);assert.deepEqual(f.exits,['exit']);assert.deepEqual(f.comparisons,['exit']);
  assert.equal(f.store.shadowScanActivity(f.row)?.entry_signals,0);
 });
+
+test('unheld quarantine is classified before scarce dispatch slots, and clearing it permits a fresh scan',async t=>{
+ const f=runtime(t,false);f.quarantine();f.cfg.incubator.mirror!.enabled=false;
+ Object.assign(f.runner.deps.pool,{size:8,reserved:2,stats:{queuedLive:1,queuedMirror:0},rssReader:()=>0,memoryGuardBytes:1});
+ f.runner.pairs=[f.row];const before=structuredClone(f.cfg);
+ f.runner.onBarClosed('ETHUSD','15m',NOW);
+ for(let i=0;i<3;i++)await new Promise<void>(r=>setImmediate(r));
+ assert.equal(f.runner.dispatchStats.offered,0,'unrunnable work cannot consume the research queue');
+ assert.equal(f.runner.dispatchStats.pending,0);
+ assert.equal(f.runner.dispatchStats.expired,0);
+ assert.equal(f.store.shadowScanActivity(f.row)?.status,'unavailable');
+ assert.match(f.store.shadowScanActivity(f.row)?.reason??'',/scanner quarantined: confirmed repaint/);
+ assert.equal(f.runner.scheduledBars.has('bad:ETHUSD:15m'),false,'the rejected scheduling claim is released');
+ assert.equal(f.runs(),0);
+ f.db.run("UPDATE script_health SET quarantined=0 WHERE scanner_id='bad'");
+ f.runner.onBarClosed('ETHUSD','15m',NOW);
+ for(let i=0;i<3;i++)await new Promise<void>(r=>setImmediate(r));
+ assert.equal(f.runner.dispatchStats.offered,1,'clearing quarantine is still respected on the current fresh close');
+ assert.equal(f.runner.dispatchStats.pending,1);
+ assert.deepEqual(f.cfg,before);assert.equal(f.db.get<any>('SELECT count(*) n FROM positions')!.n,0);
+ t.mock.timers.tick(300_000);f.runner.dispatch.drain();
+ assert.equal(f.runner.dispatchStats.expired,1,'the original signal-age deadline is unchanged for runnable work');
+});
+
+for(const kind of ['account','shadow-open','shadow-pending','plan-pending','rotation'] as const){
+ test(`quarantine dispatch still preserves ${kind} exposure`,async t=>{
+  const f=runtime(t,kind==='account');f.quarantine();
+  Object.assign(f.runner.deps.pool,{size:8,reserved:2,stats:{queuedLive:1,queuedMirror:0},rssReader:()=>0,memoryGuardBytes:1});
+  const source={scannerId:'bad',symbol:'ETHUSD',tf:'15m'};
+  if(kind==='shadow-open')f.runner.deps.paper.openPositions=()=>[source];
+  if(kind==='shadow-pending')f.runner.deps.paper.pendingEntries=()=>[source];
+  if(kind==='plan-pending')f.runner.deps.paper.pendingEntries=()=>[{...source,scannerId:'plan:experiment',executionPlan:{sourceScannerId:'bad'}}];
+  if(kind==='rotation')f.store.rotationHolds=()=>true;
+  const launched:Array<{id:string;live:boolean}>=[];
+  f.runner.runScheduled=async(r:any,_at:number,live:boolean)=>{launched.push({id:r.scannerId,live});};
+  f.runner.pairs=[f.row];f.runner.onBarClosed('ETHUSD','15m',NOW);
+  for(let i=0;i<3;i++)await new Promise<void>(r=>setImmediate(r));
+  if(kind==='account'||kind==='shadow-open')assert.deepEqual(launched,[{id:'bad',live:true}],'held exits retain the urgent lane');
+  else assert.equal(f.runner.dispatchStats.pending,1,'resting and rotation-held work remains schedulable');
+  assert.notEqual(f.store.shadowScanActivity(f.row)?.status,'unavailable');
+  assert.equal(f.db.get<any>('SELECT count(*) n FROM evidence_restorations')!.n,0);
+ });
+}
