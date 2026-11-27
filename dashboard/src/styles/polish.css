@@ -223,9 +223,8 @@
   border-bottom: 1px solid var(--border);
 }
 thead.sticky th {
-  background: var(--surface-glass);
-  -webkit-backdrop-filter: blur(8px);
-  backdrop-filter: blur(8px);
+  /* Each sticky cell must paint its own opaque surface; blur creates a layer per column. */
+  background: var(--surface-2);
 }
 .table td {
   border-bottom: 1px solid var(--border-subtle);

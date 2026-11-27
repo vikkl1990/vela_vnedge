@@ -16,7 +16,8 @@
 .main {
   flex: 1;
   min-width: 0;
-  overflow-x: auto;
+  /* Clip overflow without creating a second vertical scrollport. Tables own their horizontal scroll. */
+  overflow-x: clip;
   overflow-y: visible;
   padding: 20px 24px 40px;
 }
@@ -302,9 +303,8 @@
   row-gap: 6px;
   padding: 0 24px;
   min-height: var(--topbar-h);
-  background: var(--surface-glass);
-  -webkit-backdrop-filter: blur(14px) saturate(1.2);
-  backdrop-filter: blur(14px) saturate(1.2);
+  /* Opaque sticky chrome avoids repaint gaps over long, horizontally scrolling tables. */
+  background: var(--surface);
   border-bottom: 1px solid var(--border);
 }
 .topbar .topbar-menu {
