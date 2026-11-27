@@ -245,6 +245,7 @@ export class App {
     this.enricher = new FeatureEnricher(this.db, this.candles);
     this.scanners = new ScannerEngine({ registry: this.registry, cfgRef: cfg, candles: this.candles, pool: this.pool, paper: this.paper, db: this.db, rest: this.rest, symbolsRef: () => this.resolvedSymbols, ml: this.ml, cfgStore: this.config });
     this.scanners.executorAttached = () => Boolean(this.executor);
+    this.scanners.spreadFor = symbol => this.marketGate.verdict(symbol)?.spreadPct ?? null;
     this.scanners.copyRecoveryRefusal = cell => copyRecoveryRefusal(this.incubatorStore,cfg().incubator.mirror,cell);
     this.resolvedSymbols = cfg().symbols;
     this.planComparisons = new PlanComparisons(this.db,cfg,this.shadow,id=>this.sourceHashFor(id));

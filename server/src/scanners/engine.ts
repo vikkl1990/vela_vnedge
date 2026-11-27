@@ -90,6 +90,11 @@ interface Overlay { at: number; plots: WorkerResult['plots']; shapes: WorkerResu
 export class ScannerEngine extends EventEmitter {
   /** Decision 191: an exchange-mirrored account enters at market, so its backtests do too. */
   executorAttached?: () => boolean;
+  /**
+   * Decision 337: the market's measured bid/ask spread (%), so the cached backtest charges it in the cost rule and on
+   * fills as the live engine does (null: unknown, charged as before).
+   */
+  spreadFor?: (symbol: string) => number | null;
   /** Recovery must requalify copied entries against the current shared evidence, not the receipt's old approval. */
   copyRecoveryRefusal?: (cell:{scannerId:string;symbol:string;tf:string})=>string|null;
   private registry: ScannerRegistry;
@@ -582,7 +587,8 @@ export class ScannerEngine extends EventEmitter {
         const policy=backtestPolicy(this.cfgRef(),s.id,tf,'account',{executor:this.executorAttached?.(),productFees:market.productFees});
         const selective=selectiveReclaimRule(policy.cfg,{scannerId:s.id,symbol,tf});
         const subBars=selective?await this.history?.getHistory(symbol,'1m',Math.ceil((Date.now()-btBars[0].time)/60_000)):undefined;
-        const bt = runBacktest({ scannerId: s.id, scannerName: s.name, symbol, tf, bars: btBars, subBars, events, ...policy, exitMode, contractValue:market.contractValue, tickSize:market.tickSize });
+        const spread=this.spreadFor?.(symbol);
+        const bt = runBacktest({ scannerId: s.id, scannerName: s.name, symbol, tf, bars: btBars, subBars, events, ...policy, exitMode, contractValue:market.contractValue, tickSize:market.tickSize, ...(spread&&spread>0?{spreadPct:spread}:{}) });
         bt.evidence = cachedEvidence(this.strategyIdentity(s.id, symbol, tf), btBars);
         this.backtests.set(key, bt);
         if (this.ml) this.ml.replaceBacktestSamples(s.id, symbol, tf, bt.trades.filter((t: any) => t.features).map((t: any) => ({ at: t.entryAt, features: t.features, win: t.pnl > 0, r: t.rMultiple ?? 0, pnl: t.pnl, exitReason: String(t.exitReason ?? ''), resolvedAt: t.exitAt ?? null })));

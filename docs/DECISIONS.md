@@ -8647,3 +8647,15 @@ had not yet confirmed, and Delta serves only a few weeks of 1m/5m history, so no
   `data/archive.db`, back-filled 30 days (1m) and 60 days (5m) on first sight, never pruned.
 - The Trading page shows the verdicts, pauses with Resume, the last parity check and archive coverage
   (`GET /api/edge-watch`, `POST /api/edge-watch/run`, `POST /api/edge-watch/resume`).
+
+## 337. The engine's cached backtests charge each market's measured spread (28 November 2026)
+
+**Why.** The first daily parity run (decision 336) matched 16 of 68 backtest trades of the last 24 h; 27 of the misses were
+signals the live cost rule refused as "stop too tight for fees" while the cached backtest took them. The live engine adds
+the quoted spread to the round trip it admits against; the engine's per-cell backtests (the Trading page's "Backtest R",
+the ML samples, and parity's reference) charged fees and flat slippage only — the gap decision 335's screens closed with
+`SPREADS`, still open in the server.
+
+**What.** `ScannerEngine.spreadFor` returns the market gate's latest measured spread for the market, and every cached
+backtest passes it as `spreadPct` (cost rule and fills). A market the gate has not measured yet (the first minutes after a
+start) is charged as before.
