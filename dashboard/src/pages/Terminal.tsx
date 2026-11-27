@@ -1,10 +1,12 @@
-import { useQuery } from '@tanstack/react-query'
+import { useQueries, useQuery } from '@tanstack/react-query'
 import { useMemo, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { api } from '../api/client'
-import { useConfig, useMarkets, usePositions, useRisk, useStats } from '../api/queries'
-import type { Signal } from '../api/types'
-import { MarketCanvas, type CanvasMarker } from '../components/MarketCanvas'
+import { qk, useConfig, useMarkets, usePositions, useRisk, useScannerIndex, useStats } from '../api/queries'
+import type { Config, Signal } from '../api/types'
+import { decisionMarks } from '../chart/decisionMarks'
+import { positionOverlay } from '../chart/positionOverlay'
+import { VelaChart, type ChartScript } from '../chart/VelaChart'
 import { PaperPositions } from '../components/PaperPositions'
 import { ErrorState, Loading, Pill } from '../components/kit'
 import { fmtMoney, fmtPct, fmtPnl, fmtPrice, pnlClass, timeAgo } from '../lib/format'
@@ -25,6 +27,17 @@ import '../styles/pages/scalp.css'
  */
 const FRAMES = ['1m', '5m', '15m', '1h', '4h'] as const
 const short = (sym: string) => sym.replace(/USD$/, '')
+
+/** The (market, timeframe) cells an enabled scanner trades: its explicit pairs, else its markets × timeframes. */
+function scannerCells(cfg: Config): Array<{ id: string; symbol: string; tf: string }> {
+  return Object.entries(cfg.scanners ?? {})
+    .filter(([, s]) => s.enabled)
+    .flatMap(([id, s]) =>
+      s.pairs?.length
+        ? s.pairs.map((p) => ({ id, ...p }))
+        : (s.symbols ?? cfg.symbols).flatMap((symbol) => (s.timeframes ?? cfg.timeframes).map((tf) => ({ id, symbol, tf }))),
+    )
+}
 
 function LivePrice({ symbol, fallback, tickSize }: { symbol: string; fallback?: number; tickSize?: number }) {
   const tick = useLiveTick(symbol, fallback)
@@ -50,10 +63,10 @@ export function Terminal() {
 
   // the markets and timeframes the enabled scanners trade
   const bot = useMemo(() => {
-    const on = Object.values(config.data?.scanners ?? {}).filter((s) => s.enabled)
-    const symbols = [...new Set(on.flatMap((s) => s.symbols ?? config.data?.symbols ?? []))]
-    const tfs = [...new Set(on.flatMap((s) => s.timeframes ?? []))]
-    return { symbols, tfs }
+    const cells = config.data ? scannerCells(config.data) : []
+    const symbols = [...new Set(cells.map((c) => c.symbol))]
+    const tfs = FRAMES.filter((tf) => cells.some((c) => c.tf === tf)) as string[]
+    return { cells, symbols, tfs }
   }, [config.data])
   const symbol = search.get('symbol') || bot.symbols[0] || 'BTCUSD'
   const reqTf = search.get('tf')
@@ -75,13 +88,34 @@ export function Terminal() {
     refetchInterval: 15_000,
     staleTime: 10_000,
   })
-  const candles = useQuery({
-    queryKey: ['scalp-candles', symbol, frame],
-    queryFn: () => api.candles({ symbol, tf: frame, limit: 160 }),
-    refetchInterval: 15_000,
-    staleTime: 10_000,
-    retry: 1,
+  // the scanners that trade this market on this timeframe, drawn on the chart from their own Pine
+  const scanners = useScannerIndex()
+  const cellIds = useMemo(
+    () => [...new Set(bot.cells.filter((c) => c.symbol === symbol && c.tf === frame).map((c) => c.id))],
+    [bot.cells, symbol, frame],
+  )
+  const [hidden, setHidden] = useState<Record<string, boolean>>({})
+  const shownIds = useMemo(() => cellIds.filter((id) => !hidden[id]), [cellIds, hidden])
+  const sources = useQueries({
+    queries: shownIds.map((id) => ({
+      queryKey: qk.scannerSource(id),
+      queryFn: () => api.scannerSource(id),
+      staleTime: 5 * 60_000,
+      retry: 1,
+    })),
   })
+  const scripts = useMemo<ChartScript[]>(() => {
+    const out: ChartScript[] = []
+    shownIds.forEach((id, i) => {
+      const src = sources[i]?.data
+      const sc = (scanners.data ?? []).find((s) => s.id === id)
+      if (src?.patched && sc)
+        out.push({ id, title: sc.name, source: src.patched, overlay: sc.overlay, inputs: src.inputs, sourceHash: src.sourceHash, timezone: src.timezone })
+    })
+    return out
+  }, [shownIds, sources, scanners.data])
+  const [scriptErrors, setScriptErrors] = useState<Record<string, string>>({})
+  const nameOf = (id: string) => (scanners.data ?? []).find((s) => s.id === id)?.name ?? id
   const overview = useQuery({
     queryKey: ['trading-overview', '1'],
     queryFn: () => api.tradingOverview(1),
@@ -100,14 +134,9 @@ export function Terminal() {
     .map((sym) => ({ sym, m: markets.data?.find((x) => x.symbol === sym) }))
     .filter((r) => !filter || r.sym.toLowerCase().includes(filter.toLowerCase()))
   const selected = markets.data?.find((m) => m.symbol === symbol)
-  const markers: CanvasMarker[] = (chartSignals.data ?? [])
-    .filter((s) => s.side === 'long' || s.side === 'short')
-    .map((s) => ({
-      time: s.barTime,
-      side: s.side as 'long' | 'short',
-      opened: s.action === 'opened' || s.action === 'reversed',
-      title: `${s.scannerName}: ${s.side} ${s.label} → ${gateOf(s.action).label}`,
-    }))
+  const marks = useMemo(() => decisionMarks(chartSignals.data ?? []), [chartSignals.data])
+  const openHere = (positions.data ?? []).find((p) => p.symbol === symbol && p.tf === frame)
+  const overlay = useMemo(() => (openHere ? positionOverlay(openHere, openHere.peakR ?? null) : null), [openHere])
   const tapeRows = (tape.data ?? []).filter((s) => tapeOnly === 'all' || s.action === 'opened')
   const capital = useMemo(() => openCapital(positions.data ?? []), [positions.data])
   const st = stats.data
@@ -254,32 +283,51 @@ export function Terminal() {
               </Link>
             </div>
           </div>
-          <div className="scalp-canvas">
-            {candles.isLoading && !candles.data ? (
-              <Loading kind="chart" height={420} />
-            ) : candles.isError ? (
-              <ErrorState error={candles.error} onRetry={() => candles.refetch()} />
+          <div className="scalp-scripts" role="group" aria-label="Scanner overlays">
+            {cellIds.length ? (
+              cellIds.map((id) => (
+                <button
+                  key={id}
+                  aria-pressed={!hidden[id]}
+                  onClick={() => setHidden((h) => ({ ...h, [id]: !h[id] }))}
+                  title={scriptErrors[id] ? `Script error: ${scriptErrors[id]}` : hidden[id] ? 'Show its Pine on the chart' : 'Hide its Pine'}
+                  className={scriptErrors[id] ? 'err' : ''}
+                >
+                  <i className={`scalp-dot ${hidden[id] ? 'off' : 'on'}`} aria-hidden /> {nameOf(id)}
+                </button>
+              ))
             ) : (
-              <MarketCanvas
-                bars={candles.data ?? []}
-                positions={(positions.data ?? []).filter((p) => p.symbol === symbol && p.tf === frame)}
-                symbol={symbol}
-                tickSize={selected?.tickSize}
-                markers={markers}
-                height={470}
-                candles={140}
-              />
+              <small>No scanner trades {short(symbol)} on {frame}; the chart shows price and journal marks only.</small>
             )}
+          </div>
+          <div className="scalp-canvas">
+            <VelaChart
+              symbol={symbol}
+              tf={frame}
+              height={470}
+              scripts={scripts}
+              marks={marks}
+              positionOverlay={overlay}
+              tickSize={selected?.tickSize}
+              onScriptError={(id, err) => setScriptErrors((e) => ({ ...e, [id]: err.message }))}
+              onScriptReady={(id) =>
+                setScriptErrors((e) => {
+                  if (!(id in e)) return e
+                  const n = { ...e }
+                  delete n[id]
+                  return n
+                })
+              }
+            />
           </div>
           <div className="scalp-legend">
             <span>
-              <i className="lg lg-long" /> long signal
+              <i className="lg lg-mark-e" /> E = opened a trade
             </span>
             <span>
-              <i className="lg lg-short" /> short signal
+              <i className="lg lg-mark-x" /> × = refused by a rule
             </span>
-            <span>filled = opened · hollow = refused by a rule</span>
-            <span>dashed = open trade's entry, stop and targets</span>
+            <span>click a mark for the decision · lines = open trade's entry, stop and targets</span>
           </div>
         </section>
 

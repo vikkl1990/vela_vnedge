@@ -262,6 +262,37 @@
 .lg { width: 0; height: 0; border-left: 5px solid transparent; border-right: 5px solid transparent; display: inline-block; }
 .lg-long { border-bottom: 8px solid var(--gain); }
 .lg-short { border-top: 8px solid var(--loss); }
+/* journal mark glyphs as Vela draws them (decisionMarks colours) */
+.lg-mark-e, .lg-mark-x { width: 10px; height: 10px; border: 0; border-radius: 50%; }
+.lg-mark-e { background: #3fb950; }
+.lg-mark-x { background: #e5484d; }
+
+/* scanner Pine overlays on the chart */
+.scalp-scripts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 12px 6px;
+  font-size: 11.5px;
+  color: var(--muted-2);
+}
+.scalp-scripts button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--border-subtle);
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  padding: 3px 9px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+.scalp-scripts button[aria-pressed='true'] { color: var(--text); border-color: var(--border-strong); background: var(--surface-3); }
+.scalp-scripts button.err { border-color: var(--loss); }
+.scalp-scripts .scalp-dot { width: 6px; height: 6px; box-shadow: none; }
+.scalp-scripts .scalp-dot.off { background: var(--muted-2); }
+.scalp-canvas > * { flex: 1; min-height: 0; }
 
 /* ---- signal tape ---- */
 .scalp-tick {

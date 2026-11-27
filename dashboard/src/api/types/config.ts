@@ -126,6 +126,8 @@ export interface ScannerConfig {
   symbols: string[] | null
   timeframes: string[] | null
   exitMode: ExitMode
+  /** Explicit (market, timeframe) cells; when set they replace symbols × timeframes. */
+  pairs?: Array<{ symbol: string; tf: string }> | null
 }
 
 export interface Config {
