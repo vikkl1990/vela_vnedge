@@ -1,3 +1,4 @@
+import { signalSymbolInfo, signalMetadataText } from '../../shared/signalMetadata'
 import { createHash } from 'node:crypto'
 import { chartHistoryText } from '../../shared/chartVerification'
 import type { Vela } from '@luxalgo/vela'
@@ -30,6 +31,7 @@ test('closed-bar chart checks expose agreement, differences and input context wi
     barTime: T + 198 * M,
     at: Date.now(),
     sourceHash: 'parity',
+    readingHash: 'reading-v1',
     inputs: {},
     timezone: 'UTC',
     historyFrom: T,
@@ -44,6 +46,8 @@ test('closed-bar chart checks expose agreement, differences and input context wi
       'Buyplotshape#1': { kind: 'shape', value: 0 },
     },
     signals: [{ kind: 'entry', side: 'long', label: 'Buy', source: 'shape' }],
+    signalMetadata: signalMetadataText(signalSymbolInfo('ETHUSD', 0.01, 'UTC')),
+    channels: { alerts: [], labels: [], labelsVerified: true, truncated: false },
     signalCoverage: 'shape',
     truncated: false,
   }
@@ -54,21 +58,26 @@ test('closed-bar chart checks expose agreement, differences and input context wi
         id: 'scanner-0',
         name: 'Signal parity',
         sourceHash: 'parity',
+        readingHash: 'reading-v1',
         patched: source,
         inputs: {},
         timezone: 'UTC',
       },
     }),
   )
-  await page.route('**/api/candles?**', (r) => r.fulfill({ json: bars }))
+  await page.route('**/api/candles?**', (r) =>
+    r.fulfill({ json: new URL(r.request().url()).searchParams.has('from') ? bars.slice(0, 199) : bars }),
+  )
   await page.route('**/api/scanners/*/chart-receipt?**', (r) => r.fulfill({ json: receipt }))
   await page.goto('/chart?symbol=ETHUSD&tf=15m&add=scanner-0')
   const panel = page.getByRole('region', { name: 'Chart versus bot signal checks' })
-  await expect(panel).toContainText('Shape outputs agree; bot signals shown', { timeout: 30000 })
+  await expect(panel).toContainText('Closed-bar plots, alerts and labels agree; bot signals shown', {
+    timeout: 30000,
+  })
   await expect(panel).toContainText('entry long · Buy')
   receipt.outputs.Value.value = 9
   await page.reload()
-  await expect(panel).toContainText('Closed-bar outputs differ', { timeout: 30000 })
+  await expect(panel).toContainText('Closed-bar signal outputs differ', { timeout: 30000 })
   await expect(panel).toContainText('Value')
   receipt.outputs.Value.value = 7
   receipt.historyHash = 'different'

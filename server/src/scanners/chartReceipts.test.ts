@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {Db} from '../db.ts';
-import {recordChartReceipt,chartReceipt} from './chartReceipts.ts';
+import {recordChartReceipt,chartReceipt,chartReadingHash} from './chartReceipts.ts';
 import {compareChart,type ChartObservation} from '../../../shared/chartVerification.ts';
 import {DEFAULT_CONFIG} from '../config.ts';
 import {resolveTradePolicy} from '../paper/tradePolicy.ts';
@@ -44,4 +44,30 @@ test('new lifecycle identities affect only partial targets or enabled early/stal
   assert.equal(p.causalLifecycleVersion,1);assert.notEqual(p.strategyId,original.strategyId);assert.deepEqual(p.risk,original.risk);
  }
  assert.equal(resolveTradePolicy(cfg,cell,'hash').id,original.id);
+});
+
+test('closed alert and label receipts detect missing, extra and changed outputs without creating trades',t=>{
+ const db=new Db(':memory:');t.after(()=>db.db.close());const bars=[{time:T,open:99,high:101,low:98,close:100,volume:10}];
+ const alerts=[{barIndex:0,time:T,type:'alertcondition' as const,title:'Long',message:'confirmed'}];
+ const labels=[{time:T,y:101,text:'Buy',style:'label_up',createdAt:T}];
+ const result={id:1,ok:true,ms:1,bars:1,lastBarTime:T,warnings:0,alerts,labels,plots:[],shapes:[],signalMetadata:'metadata-v1'};
+ recordChartReceipt(db,'s','SOLUSD','15m','alertcondition(true)\nlabel.new(0,close)',{},bars,result,[]);
+ const receipt=chartReceipt(db,'s','SOLUSD','15m')!;
+ const o:ChartObservation={scannerId:'s',symbol:'SOLUSD',tf:'15m',barTime:T,sourceHash:receipt.sourceHash,inputs:{},historyFrom:T,historyHash:receipt.historyHash,historyBars:1,inputsChanged:false,timezone:'UTC',values:{},complete:true,readingHash:receipt.readingHash,signalMetadata:receipt.signalMetadata,channels:structuredClone(receipt.channels)};
+ assert.equal(compareChart(o,receipt).status,'Closed-bar plots, alerts and labels agree; bot signals shown');
+ assert.equal(compareChart({...o,signalMetadata:'other'},receipt).comparable,false);
+ assert.ok(compareChart({...o,channels:{...o.channels!,alerts:[]}},receipt).differences.includes('alert payloads'));
+ assert.ok(compareChart({...o,channels:{...o.channels!,labels:[]}},receipt).differences.includes('label state'));
+ for(const patch of [{truncated:true},{unavailable:'Verification unavailable'},{labelsVerified:false}])assert.equal(compareChart({...o,channels:{...o.channels!,...patch}},receipt).comparable,false);
+ assert.equal(compareChart(o,{...receipt,channels:undefined}).comparable,false);
+ assert.equal(db.get<any>('SELECT count(*) n FROM positions')!.n,0);
+ assert.equal(db.get<any>('SELECT count(*) n FROM signals')!.n,0);
+});
+
+
+test('chart reading identity follows interpretation changes while allocations retain their identity',()=>{
+ const initial=chartReadingHash('s',{reader:2,sides:{Buy:'long'}});
+ assert.equal(chartReadingHash('s',{reader:2,sides:{Buy:'long'},enabled:true,symbols:['ETHUSD']}),initial);
+ assert.notEqual(chartReadingHash('s',{reader:2,sides:{Buy:'short'}}),initial);
+ assert.notEqual(chartReadingHash('other',{reader:2,sides:{Buy:'long'}}),initial);
 });

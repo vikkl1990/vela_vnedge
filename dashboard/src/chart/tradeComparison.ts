@@ -22,7 +22,12 @@ export interface AuthorLedger {
 }
 
 export const scriptContextKey = (script: ChartScript) =>
-  JSON.stringify([script.sourceHash ?? script.source, script.inputs ?? {}, script.timezone ?? 'UTC'])
+  JSON.stringify([
+    script.sourceHash ?? script.source,
+    script.inputs ?? {},
+    script.timezone ?? 'UTC',
+    script.readingHash ?? null,
+  ])
 
 /** Exclude forming-bar fills. A closing fill on the forming bar leaves a settled entry open. */
 export function settledTrades(trades: readonly StrategyTrade[], through: number) {

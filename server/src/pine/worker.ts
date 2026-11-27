@@ -3,6 +3,7 @@
  * compact, serialisable digest (alerts, shape hits, labels, plot tails). Runs isolated so a
  * runaway script cannot block the event loop of the main process.
  */
+import {signalMetadataText} from '../../../shared/signalMetadata.ts';
 import { parentPort, workerData } from 'node:worker_threads';
 import { ledgerAlerts } from './strategyLedger.ts';
 import { pineLibraries } from './libraries.ts';
@@ -56,6 +57,7 @@ export interface WorkerResult {
   overlay?: boolean;
   warnings: number;
   dataWarnings?: string[];
+  signalMetadata?: string;
   alerts: WorkerAlert[];
   shapes: WorkerShape[];
   labels: WorkerLabel[];
@@ -172,7 +174,7 @@ async function runJob(job: WorkerJob): Promise<WorkerResult> {
     }
 
     const ledger = job.ledger && ctx.strategy ? ledgerTrades(ctx.strategy) : undefined;
-    return { ...base, ok: true, ms: Date.now() - t0, title: ctx.indicator?.title, overlay: ctx.indicator?.overlay, warnings: (ctx.warnings ?? []).length, alerts, shapes, labels, plots, ...(ledger ? { ledger } : {}) };
+    return { ...base, signalMetadata:signalMetadataText(await provider.getSymbolInfo(job.symbol)), ok: true, ms: Date.now() - t0, title: ctx.indicator?.title, overlay: ctx.indicator?.overlay, warnings: (ctx.warnings ?? []).length, alerts, shapes, labels, plots, ...(ledger ? { ledger } : {}) };
   } catch (e: any) {
     return { ...base, ok: false, ms: Date.now() - t0, error: String(e?.message ?? e).slice(0, 500) };
   }

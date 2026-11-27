@@ -46,10 +46,11 @@ export function SignalChecks({ observations }: { observations: ChartObservation[
     >
       <h3>Chart versus bot · closed-bar checks</h3>
       <p className="small muted">
-        Advisory only. Compares named plots and shapes with the existing server scan, using source, inputs,
-        timezone and a hash of the primary closed candles. Different candle histories are not reader
-        mismatches. Alert-only, label and strategy-ledger channels are not fully exposed by this check and
-        remain unverified. No evidence or admission settings change.
+        Advisory only. The installed chart engine verifies plots, alert payloads and label state over the
+        server scan’s closed-candle window in its worker, independently of the displayed chart’s zoom. Source,
+        inputs, timezone, signal-unit metadata and candle history must match the server scan. Bot entries and
+        exits below are the server reader’s decisions, not new trades. Mixed drawing labels, secondary-series
+        data and strategy-ledger exits remain unverified. No promotion evidence or admission settings change.
       </p>
       {!observations.length ? (
         <p>Select a scanner and wait for a complete chart run. Forming-bar ticks are excluded.</p>

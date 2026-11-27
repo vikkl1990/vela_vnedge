@@ -179,6 +179,7 @@ export interface ScannerUpdate {
 }
 
 export interface ScannerSource {
+  readingHash?: string
   inputs?: Record<string, number | string | boolean>
   timezone?: string
   sourceHash?: string | null

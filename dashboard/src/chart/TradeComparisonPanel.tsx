@@ -49,6 +49,10 @@ export function TradeComparisonPanel({
             {utc(l.through)} · {l.complete ? 'history loaded' : 'history still loading'}
             {l.inputsChanged ? ' · chart inputs differ from bot configuration' : ''}
           </p>
+          <p className="small muted">
+            Delta author previews use the bot’s signal-unit profile (point value 1 and fractional minimum
+            size). Exchange contract quantities and account risk are calculated separately.
+          </p>
           {l.error ? (
             <p role="alert">Author ledger unavailable: {l.error}</p>
           ) : !l.complete ? (
