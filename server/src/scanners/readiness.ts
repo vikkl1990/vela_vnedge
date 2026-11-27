@@ -70,9 +70,14 @@ export class ReadinessService {
       if(cs.some(c=>!(c.tf in TF_SECONDS)))reasons.push('Unsupported timeframe');
       if(planError)reasons.push(planError);
       // Research profiles must match their effective reading, never the source scanner's other reading.
-      if(!profiles.has(id))profiles.set(id,a.profiles.forScanner(id));
-      const ps=profiles.get(id)!.filter(x=>cs.some(c=>c.symbol===x.market&&c.tf===x.tf));
-      const matching=ps.filter(x=>x.signature===profileSignature(s,sc,x.tf)&&x.kind!=='broken').length;
+      const profileKey=JSON.stringify([id,cs.map(c=>[c.symbol,c.tf])]);
+      if(!profiles.has(profileKey))profiles.set(profileKey,a.profiles.forCells?a.profiles.forCells(id,cs):a.profiles.forScanner(id));
+      const ps=profiles.get(profileKey)!.filter(x=>cs.some(c=>c.symbol===x.market&&c.tf===x.tf));
+      const signatures=new Map<string,string>();
+      const matching=ps.filter(x=>{
+        if(!signatures.has(x.tf))signatures.set(x.tf,profileSignature(s,sc,x.tf));
+        return x.signature===signatures.get(x.tf)&&x.kind!=='broken';
+      }).length;
       const runtime=reasons.length?'held':!cs.length?'unallocated':cs.some(c=>c.state==='running')?'scanning':cs.some(c=>c.state==='scanned')?'collecting':'waiting';
       rows.push({key:p?`plan:${p.id}`:id,scannerId:id,name:p?`${s.name} · ${p.id}`:s.name,author:s.author,planId:p?.id??null,enabled:Boolean(sc.enabled),contract:d.summary,cells:cs,runtime,runtimeReasons:reasons,
         profiles:{matching,other:ps.length-matching},activity:p?empty('Current research cohort only; excluded from promotion.'):activity(id),

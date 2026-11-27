@@ -93,25 +93,26 @@ rather than a Cartesian product of passing symbols and timeframes.
 
 These changes remove confirmed conflicts, but are not a production-readiness certification:
 
-1. Extend durable event recovery to the shadow scheduler and post-commit consumers. The account
-   receipt/decision boundary now recovers without duplicate paper fills. Observer delivery to
-   learning, risk close bookkeeping and alerts still needs durable recovery: a kill after
-   commit can miss a callback. Exchange commands now have a transactional execution outbox
-   and order-ledger recovery; extend those existing mechanisms rather than duplicating them.
-   Recover the remaining consumers from the committed journal with independent cursors,
-   and reconcile exchange state before any live replay. Pending
-   market/tape entries retain their existing cancel-on-restart policy; maker limits reload.
-2. Key cached backtests/walk-forward evidence by source hash, inputs, signal reader, policy,
-   cost model and market-data window. Current simulation-version checks do not capture all
-   configuration changes. Promotion must cite the exact evidence version it used.
-3. Run ML fitting and large replays outside the market-data event loop. Measure close-to-scan,
-   signal-to-decision, queue age and feed lag under full research load; reserve execution capacity.
-   Pine workers alone do not isolate all synchronous post-processing/training.
-4. Unify execution scheduling for identical source/input/cell requests, then fan out the same
-   event to separately versioned books. Preserve held-position exits during any migration.
-5. Complete component lifecycle ownership: stop intake before draining work, cancel/await
-   research jobs, detach listeners and stop all timers. Validation now has an owned stop path;
-   the whole application's shutdown/restart-in-one-process contract is not yet complete.
+As of 27 November (decision 339 / PR #118), durable ordinary-shadow ingress,
+independent ML/alert cursors, research-cache experiment binding, off-loop fitting/replay,
+awaited shutdown ownership and version-bound future-production entry checks are delivered.
+Risk-close recovery and executed-trade evidence compatibility already existed and remain intact.
+Telegram acknowledgement ambiguity can still duplicate a notification; it cannot duplicate a trade.
+
+Remaining work:
+
+1. Certify exchange acceptance/reconnect/restart/partial-fill/cancellation paths end to end.
+   Existing outbox/ledger machinery remains the authority. No real-order certification or
+   live activation is implied by paper recovery tests.
+2. Reconstruct the remaining runtime admission inputs, and preserve exact version-bound
+   evidence when comparing candle execution with causal tick/depth execution.
+3. Complete isolation of reporting, synchronous SQLite work and other main-process costs.
+   Reserved Pine capacity and the bounded research CPU lane do not provide complete
+   process/database isolation. Measure execution delays under full simultaneous research load.
+4. Consolidate identical source/input/cell scheduling and fan out separately versioned book
+   decisions without dropping held-position exits.
+5. Prove scanner-specific entry/exit improvements prospectively before adopting them in paper.
+   Early net-profit protection and other experimental outcomes remain outside promotion evidence.
 
 ```
 Delta Exchange India ──REST (history, products, tickers)──┐

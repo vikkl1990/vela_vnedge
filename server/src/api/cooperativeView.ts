@@ -9,3 +9,15 @@ export async function mapForView<T,R>(rows:readonly T[],read:(row:T)=>R,
  }
  return out;
 }
+
+/** Share only an in-flight report. A completed result is never reused as fresh data. */
+export function singleFlightView<T>(read:()=>T|Promise<T>):()=>Promise<T>{
+ let pending:Promise<T>|null=null;
+ return()=>{
+  if(pending)return pending;
+  const task=Promise.resolve().then(read);pending=task;
+  const clear=()=>{if(pending===task)pending=null;};
+  void task.then(clear,clear);
+  return task;
+ };
+}

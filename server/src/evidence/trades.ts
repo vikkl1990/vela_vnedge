@@ -55,18 +55,25 @@ export function readEvidence(db: Db, cell: EvidenceCell, policy: TradePolicy | u
  * Audit/replay uses readEvidence explicitly and cannot alter this runtime boundary. */
 export function qualifiedEvidence(db:Db,cell:EvidenceCell,policy:TradePolicy|undefined,
   options:{book?:number;at?:number;limit?:number}={}) : EvidenceTrade[] {
+  return assessQualifiedEvidence(db,cell,policy,options).qualified;
+}
+
+/** One fresh assessment, shared by read-only explanations that also need the
+ * restoration and available sample. No result is cached across decisions. */
+export function assessQualifiedEvidence(db:Db,cell:EvidenceCell,policy:TradePolicy|undefined,
+  options:{book?:number;at?:number;limit?:number}={}) {
   const at=options.at??Date.now(),book=options.book??2;
-  if(!policy || book!==2)return readEvidence(db,cell,policy,options);
+  if(!policy || book!==2){const exact=readEvidence(db,cell,policy,options);return {exact,assessment:null,qualified:exact};}
   const exact=readEvidence(db,cell,policy,{book,at});
   const assessment=restorationAssessment(db,cell,policy,exact,at);
-  if(assessment&&!assessment.passed)return [];
+  if(assessment&&!assessment.passed)return {exact,assessment,qualified:[] as EvidenceTrade[]};
   // Exact evidence was fully validated above, synchronously. Reading it again
   // repeats complete-cohort replay validation without adding any new evidence.
   if(!assessment?.passed){
     const limit=options.limit;
-    return limit===undefined?exact:Number.isInteger(limit)&&limit>0?exact.slice(-limit):[];
+    return {exact,assessment,qualified:limit===undefined?exact:Number.isInteger(limit)&&limit>0?exact.slice(-limit):[]};
   }
-  return readEvidence(db,cell,policy,{...options,at,compatibility:'full-fee'});
+  return {exact,assessment,qualified:readEvidence(db,cell,policy,{...options,at,compatibility:'full-fee'})};
 }
 
 export interface EvidenceCoverage { total:number; matching:number; changed:number; legacy:number; quarantined:number; excluded:number }

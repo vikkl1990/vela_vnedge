@@ -692,13 +692,14 @@ export class App {
   }
 
   /** Pre-grouped lookups so building the whole scanner list is linear rather than quadratic. */
-  private scannerViewIndex() {
+  private async scannerViewIndex() {
     const week=this.weekFunnelByScanner(),pairs=this.incubatorStore.list();
+    const backtests=await this.scanners.backtestsByScannerView();
     return {
       closed: this.paper.closedByScanner(),
       open: this.paper.openCountByScanner(),
       signals: this.db.countSignalsByScanner(),
-      backtests: this.scanners.backtestsByScanner(),
+      backtests,
       lastRun: this.scanners.lastRunByScanner(),
       profiles: this.profiles.summaries(),
       books: this.scannerBooks(pairs),
@@ -733,7 +734,7 @@ export class App {
     return out;
   }
 
-  scannerView(id: string, idx?: ReturnType<App['scannerViewIndex']>) {
+  scannerView(id: string, idx?: Awaited<ReturnType<App['scannerViewIndex']>>) {
     const s = this.registry.get(id);
     if (!s) return null;
     const c = this.scanners.scannerConfig(id);
@@ -762,7 +763,7 @@ export class App {
     };
   }
 
-  scannerViews() { const idx = this.scannerViewIndex(); return this.registry.all().map(s => this.scannerView(s.id, idx)); }
+  async scannerViews() { const idx = await this.scannerViewIndex(); return mapForView(this.registry.all(),s => this.scannerView(s.id, idx)); }
 
   /**
    * Run one script on a market across timeframes and record what it produced. Background priority:
@@ -1101,9 +1102,10 @@ export class App {
       const judged = r.stage !== 'candidate' && r.stage !== 'retired';
       const key = `${r.scannerId}|${r.symbol}|${r.tf}`;
       const trades = judged ? this.incubatorStore.trades(r.scannerId, r.symbol, r.tf, book) : [];
-      const restoration=this.incubatorStore.restoration(r,now);
-      const paperCopy = r.stage === 'shadow' || r.stage === 'proposed'
-        ? this.incubatorStore.copyReadiness(r,cfg.incubator.mirror,markets.get(r.symbol)?.turnoverUsd??null,now) : null;
+      const assessment = r.stage === 'shadow' || r.stage === 'proposed'
+        ? this.incubatorStore.copyAssessment(r,cfg.incubator.mirror,markets.get(r.symbol)?.turnoverUsd??null,now) : null;
+      const restoration=assessment?assessment.restoration:this.incubatorStore.restoration(r,now);
+      const paperCopy=assessment?.paperCopy??null;
       return {
         ...r, rotationUntil: r.stage === 'candidate' ? rotation.paused[r.id]?.until ?? null : null, proposedAt: proposedAt.get(r.id) ?? null, scannerName: names.get(r.scannerId) ?? r.scannerId,
         restoration,

@@ -92,14 +92,32 @@ export class ProfileStore {
 
   forScanner(scannerId: string): ProfileRow[] { return this.db.all<any>('SELECT * FROM script_profile WHERE scanner_id=? ORDER BY market, tf', scannerId).map(fromRow); }
 
+  /** Read only the allocated cells needed by a report, not every historical probe. */
+  forCells(scannerId:string,cells:ReadonlyArray<{symbol:string;tf:string}>):ProfileRow[]{
+    const unique=[...new Map(cells.map(c=>[JSON.stringify([c.symbol,c.tf]),c])).values()];
+    const rows:ProfileRow[]=[];
+    for(let i=0;i<unique.length;i+=200){
+      const chunk=unique.slice(i,i+200);
+      rows.push(...this.db.all<any>(`SELECT * FROM script_profile WHERE scanner_id=? AND (market,tf) IN (VALUES ${chunk.map(()=>'(?,?)').join(',')})`,scannerId,...chunk.flatMap(c=>[c.symbol,c.tf])).map(fromRow));
+    }
+    return rows.sort((a,b)=>a.market.localeCompare(b.market)||a.tf.localeCompare(b.tf));
+  }
+
   all(): ProfileRow[] { return this.db.all<any>('SELECT * FROM script_profile').map(fromRow); }
 
   /** Every scanner's summary kind and the time of its latest profile, in one query for the list view. */
   summaries(): Map<string, { kind: ProfileKind; at: number; tfs: number }> {
     const out = new Map<string, { kind: ProfileKind; at: number; tfs: number }>();
-    const by = new Map<string, ProfileRow[]>();
-    for (const r of this.db.all<any>('SELECT * FROM script_profile').map(fromRow)) { const l = by.get(r.scannerId) ?? []; l.push(r); by.set(r.scannerId, l); }
-    for (const [id, rows] of by) out.set(id, { kind: summarizeKind(rows)!, at: Math.max(...rows.map(r => r.at)), tfs: new Set(rows.map(r => r.tf)).size });
+    // Label text and probe payloads are irrelevant to this summary. Preserve the
+    // old first-observed tie break (notably exits vs levels) using the rowid.
+    const tfs=new Map<string,Set<string>>();
+    for(const r of this.db.all<{scanner_id:string;kind:ProfileKind;at:number;tf:string}>('SELECT scanner_id,kind,at,tf FROM script_profile ORDER BY rowid')){
+      let summary=out.get(r.scanner_id);
+      if(!summary){summary={kind:r.kind,at:r.at,tfs:0};out.set(r.scanner_id,summary);tfs.set(r.scanner_id,new Set());}
+      if(RANK[r.kind]>RANK[summary.kind])summary.kind=r.kind;
+      summary.at=Math.max(summary.at,r.at);tfs.get(r.scanner_id)!.add(r.tf);
+    }
+    for(const [id,summary]of out)summary.tfs=tfs.get(id)!.size;
     return out;
   }
 }

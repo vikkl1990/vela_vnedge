@@ -2,6 +2,7 @@ import { lazy, type ComponentType, type ReactNode } from 'react'
 import { BrowserRouter, Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import { AuthGate, useAuth } from './auth/AuthGate'
 import { Layout } from './components/Layout'
+import { RouteScroll } from './components/RouteScroll'
 import { BookProvider } from './lib/bookScope'
 import { canonicalPath, HUB_ROUTES } from './lib/routeHubs'
 import { Terminal } from './pages/Terminal'
@@ -45,6 +46,7 @@ const TradeMonitor = page(() => import('./pages/TradeMonitor'), 'TradeMonitor')
 export default function App() {
   return (
     <BrowserRouter>
+      <RouteScroll />
       <BookProvider>
         <AuthGate>
           <Routes>

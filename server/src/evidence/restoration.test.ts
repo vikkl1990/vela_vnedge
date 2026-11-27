@@ -282,3 +282,19 @@ test('copy display separates held forward evidence, restored fees and incompatib
  f.setPolicy(resolveTradePolicy(f.cfg,cell,'changed source'));
  assert.equal(f.store.copyReadiness(cell,mirror,1e8,at).evidence.stats.trades,0);
 });
+
+test('combined report assessment is fresh, coherent and does not enroll or change evidence',t=>{
+ const f=setup(t),at=T+15*DAY;f.enroll();f.forward(5);
+ const before=f.db.get<any>('SELECT total_changes() n').n;
+ let policyReads=0;const policyFor=f.store.policyFor!;f.store.policyFor=c=>{policyReads++;return policyFor(c);};
+ const held=f.store.copyAssessment(cell,f.cfg.incubator.mirror,1e8,at);
+ assert.equal(policyReads,1,'one policy identity for restoration and copying');
+ assert.deepEqual(held.restoration,f.store.restoration(cell,at));
+ assert.equal(held.paperCopy.evidence.available,5);assert.equal(held.paperCopy.evidence.stats.trades,0);
+ assert.equal(f.db.get<any>('SELECT total_changes() n').n,before);
+ f.forward(25);
+ const passed=f.store.copyAssessment(cell,f.cfg.incubator.mirror,1e8,at);
+ assert.equal(passed.paperCopy.evidence.stats.trades,qualifiedEvidence(f.db,cell,f.policy,{at}).length);
+ assert.equal(passed.paperCopy.evidence.stats.trades,35);
+ assert.equal(passed.paperCopy.eligible,true);
+});
