@@ -1,3 +1,5 @@
+import { useHotkeys } from '../lib/hotkeys'
+import { journalStep } from '../lib/journalStep'
 import { useSearchParams } from 'react-router-dom'
 import type { JournalQuery, JournalRow } from '../api/journal'
 import { useJournal, useMarkets, useScannerIndex } from '../api/queries'
@@ -103,11 +105,33 @@ export function TradeJournal({
   }
   const selected = Number(params.get('trade')),
     id = Number.isSafeInteger(selected) && selected > 0 ? selected : null
-  const show = (r: JournalRow) => {
+  const openTrade = (tradeId: number) => {
     const next = new URLSearchParams(params)
-    next.set('trade', String(r.id))
+    next.set('trade', String(tradeId))
     setParams(next)
   }
+  const show = (r: JournalRow) => openTrade(r.id)
+  // j and k step down and up the trades on this page while a trade is open, the way a reviewer reads a list
+  const step = journalStep(
+    (q.data?.rows ?? []).map((r) => r.id),
+    id,
+  )
+  useHotkeys(
+    id === null
+      ? []
+      : [
+          {
+            keys: 'j',
+            label: 'Next trade in the journal',
+            run: () => step.next !== null && openTrade(step.next),
+          },
+          {
+            keys: 'k',
+            label: 'Previous trade in the journal',
+            run: () => step.prev !== null && openTrade(step.prev),
+          },
+        ],
+  )
   const classOf = useClassOf()
   // the market list narrows to the chosen asset class or sector, so "Meme" offers only meme coins
   const symbols = [
@@ -684,6 +708,8 @@ export function TradeJournal({
             <JournalDetailPanel
               book={book}
               id={id}
+              step={step}
+              onStep={openTrade}
               onClose={() => {
                 const next = new URLSearchParams(params)
                 next.delete('trade')

@@ -1,3 +1,4 @@
+import type { JournalStep } from '../lib/journalStep'
 import { useEffect, useRef } from 'react'
 import { Link } from 'react-router-dom'
 import { useJournalDetail } from '../api/queries'
@@ -5,7 +6,20 @@ import { fmtR, fmtRecordedMoney as money, fmtRecordedPrice as price } from '../l
 import { Callout, Pill, Pnl, QueryState, Section, Time } from './kit'
 import { SourceTag } from './SourceTag'
 
-export function JournalDetailPanel({ book, id, onClose }: { book: string; id: number; onClose: () => void }) {
+export function JournalDetailPanel({
+  book,
+  id,
+  onClose,
+  step,
+  onStep,
+}: {
+  book: string
+  id: number
+  onClose: () => void
+  /** Where this trade sits among the trades on the page, and a way to move along them (j and k). */
+  step?: JournalStep
+  onStep?: (to: number) => void
+}) {
   const q = useJournalDetail(book, id)
   const ref = useRef<HTMLElement>(null)
   useEffect(() => {
@@ -24,9 +38,38 @@ export function JournalDetailPanel({ book, id, onClose }: { book: string; id: nu
         variant="panel"
         title={`Trade #${id} · ${book} journal`}
         actions={
-          <button className="btn btn-sm" onClick={onClose}>
-            Close detail
-          </button>
+          <div className="page-actions">
+            {step && onStep && (
+              <>
+                <span className="muted small" aria-live="polite">
+                  {step.position === null
+                    ? `not on this page`
+                    : `${step.position} of ${step.total} on this page`}
+                </span>
+                <button
+                  className="btn btn-sm"
+                  disabled={step.prev === null}
+                  onClick={() => step.prev !== null && onStep(step.prev)}
+                  title="Previous trade in the list (k)"
+                  aria-keyshortcuts="k"
+                >
+                  ↑ Previous
+                </button>
+                <button
+                  className="btn btn-sm"
+                  disabled={step.next === null}
+                  onClick={() => step.next !== null && onStep(step.next)}
+                  title="Next trade in the list (j)"
+                  aria-keyshortcuts="j"
+                >
+                  Next ↓
+                </button>
+              </>
+            )}
+            <button className="btn btn-sm" onClick={onClose}>
+              Close detail
+            </button>
+          </div>
         }
       >
         <QueryState {...q} data={q.data} onRetry={() => q.refetch()}>
