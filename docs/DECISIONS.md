@@ -8659,3 +8659,18 @@ the ML samples, and parity's reference) charged fees and flat slippage only — 
 **What.** `ScannerEngine.spreadFor` returns the spread of the market's current quote, the same reading the live cost rule admits against (the market gate's list is empty while that gate is off), and every cached
 backtest passes it as `spreadPct` (cost rule and fills). A market the gate has not measured yet (the first minutes after a
 start) is charged as before.
+
+## 338. Scalp and swing cells from the style study; a reading per timeframe (28 November 2026)
+
+**Why.** The style study (`data/reports/style-study-20261128.json`: 14 scanners × 21 markets × 5m/15m on 60 days of the
+candle archive, 1h on ~167 days, 4h on ~500 days, spread paid, follow/fade × gate on/off, and every entry one bar late)
+found the 5m ranking stable across time (PBO 1%), 15m and 1h weak (31%, 26%) and 4h noise (74%). On 5m the edge is
+mostly in fading the scripts' own breakout signals, held 15–55 minutes; on 1h two scanners hold under the EMA200 gate,
+held 9–16 hours. No cell clears a Deflated Sharpe of 95% against the 220 combinations tried; the five taken rest on
+breadth across markets, a probabilistic Sharpe of 95%+ and an earlier independent out-of-sample pass for the 5m three.
+
+**What.** Enabled at the operator's request, on the account's 21 markets, each with an edge-watch baseline from the study:
+Breakout Retest Signals 5m (fade, +0.188R), ATR Trailing Stop with EMA Trend Filter 5m (fade, +0.207R), Predictive
+Monte Carlo 5m (fade, +0.169R) and 1h (follow + gate, +0.205R), 8AM 1H Range & Breaks 1h (fade + gate, +0.167R).
+A scanner can now fade one timeframe and follow another: `scanners.<id>.invertTfs` names the faded timeframes and replaces
+`invert` (`invertOn` in `scanners/reading.ts`; part of the strategy identity). Backup `config.json.before-five`.

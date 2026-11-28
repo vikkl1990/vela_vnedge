@@ -356,6 +356,8 @@ export interface ScannerConfig {
   trendGate?: TrendGateMode;
   /** The timeframes the trend gate covers for this scanner, replacing `paper.trendGate.tfs` (the gate must still be enabled). */
   trendGateTfs?: string[];
+  /** Decision 338: the timeframes whose signals are faded, replacing `invert` (e.g. fade 5m, follow 1h). */
+  invertTfs?: string[];
   /**
    * This scanner's own exit rules. A breakout scanner that runs and a mean-reversion scanner that
    * takes a quick 1R do not want the same trail or the same target ladder; where they differ, the
@@ -1309,6 +1311,8 @@ export function validateExtendedConfig(c: AppConfig): string[] {
     const readerError=readerContractError(id,sc?.reader,sc?.sides);if(readerError)errs.push(`scanners.${id}: ${readerError}`);
     const styleError=labelStyleContractError(sc?.reader,sc?.labelStyles);if(styleError)errs.push(`scanners.${id}: ${styleError}`);
     if (sc?.trendGateTfs != null && (!Array.isArray(sc.trendGateTfs) || sc.trendGateTfs.some(tf => !(tf in TF_SECONDS)))) errs.push(`scanners.${id}.trendGateTfs must list known timeframes`);
+    if (sc?.invertTfs != null && (!Array.isArray(sc.invertTfs) || sc.invertTfs.some(tf => !(tf in TF_SECONDS)))) errs.push(`scanners.${id}.invertTfs must list known timeframes`);
+    if (sc?.invertTfs?.length && sc.reader === 3) errs.push(`scanners.${id}: native reader cannot invert`);
     if (sc?.timezone != null) { try { new Intl.DateTimeFormat('en-US', { timeZone: sc.timezone }); } catch { errs.push(`scanners.${id}.timezone is not an IANA timezone`); } }
     if (sc?.inputs != null && (typeof sc.inputs !== 'object' || Array.isArray(sc.inputs) || Object.values(sc.inputs).some(x => !['number', 'string', 'boolean'].includes(typeof x)))) errs.push(`scanners.${id}.inputs must map names to number|string|boolean`);
   }

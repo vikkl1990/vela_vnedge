@@ -125,3 +125,16 @@ test('opted-in label closes pass entry-channel filters while timestamp-less labe
  assert.deepEqual(extractEvents([],[],{...v1,sources:['shape'],drawn}),[]);
  assert.deepEqual(extractEvents([],[],{...v2,drawn:[{...drawn[0],createdAt:undefined}]}),[]);
 });
+
+test('invertTfs fades the named timeframes only and replaces invert (decision 338)', async () => {
+  const { invertOn } = await import('./reading.ts');
+  const { DEFAULT_CONFIG, validateConfig } = await import('../config.ts');
+  const sc = { invert: true, invertTfs: ['5m'] } as any;
+  assert.equal(invertOn(sc, 300_000), true, '5m faded');
+  assert.equal(invertOn(sc, 3_600_000), false, '1h followed despite invert: true');
+  assert.equal(invertOn({ invert: true } as any, 3_600_000), true, 'without a list, invert applies everywhere');
+  assert.equal(invertOn(sc, undefined), true, 'no bar size: falls back to invert');
+  const cfg = structuredClone(DEFAULT_CONFIG);
+  cfg.scanners.x = { enabled: false, symbols: null, timeframes: null, exitMode: 'both', invertTfs: ['7m'] } as any;
+  assert.ok(validateConfig(cfg).includes('scanners.x.invertTfs must list known timeframes'));
+});
