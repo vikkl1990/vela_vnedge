@@ -572,6 +572,17 @@ export function modelTrail(pos: Position, bar: { close: number }, m: TrailModel)
 }
 
 /** A stop-market cannot fill at its trigger when the first known price is already worse. */
+/**
+ * Decision 339: a bar shows that a stop was crossed but not how far the price ran past it before the exit printed. Live
+ * stops (gap past the level plus the run during the reaction latency) averaged 0.07 ATR beyond their level; `stopSlipAtr`
+ * charges that much ATR on a stop filled from a bar (0 = the level, as before). Tape fills are priced by the tape.
+ */
+export function stopRunaway(side: Side, price: number, cfg: Pick<PaperConfig, 'stopSlipAtr'>, atr?: number): number {
+  const k = cfg.stopSlipAtr ?? 0;
+  if (!(k > 0) || !(atr !== undefined && atr > 0)) return price;
+  return side === 'long' ? price - k * atr : price + k * atr;
+}
+
 export function stopMarketReference(side: Side, stop: number, open?: number): number {
   if (open === undefined || !Number.isFinite(open) || open <= 0) return stop;
   return side === 'long' ? Math.min(stop, open) : Math.max(stop, open);
@@ -598,7 +609,7 @@ export function applyBar(pos: Position, bar: PriceBar, cfg: PaperConfig, atrNow?
     && (long ? bar.open <= stopLevel : bar.open >= stopLevel);
   if (stopHit && stopLevel !== null && (stoppedAtOpen || (cfg.barOrder ?? 'stop-first') === 'stop-first')) {
     const reason = stopReason(pos);
-    fills.push(fillExit(pos, stopMarketReference(pos.side, stopLevel, bar.open), pos.qtyOpen, reason, at, cfg, true));
+    fills.push(fillExit(pos, stopRunaway(pos.side, stopMarketReference(pos.side, stopLevel, bar.open), cfg, atrNow), pos.qtyOpen, reason, at, cfg, true));
     return fills;
   }
   // 2. take-profits in order
@@ -617,7 +628,7 @@ export function applyBar(pos: Position, bar: PriceBar, cfg: PaperConfig, atrNow?
   // stop as those targets left it, since a filled TP1 may have moved it to break even.
   if (stopHit && pos.status === 'open' && (cfg.barOrder ?? 'stop-first') === 'target-first' && pos.sl !== null
       && (long ? bar.low <= pos.sl : bar.high >= pos.sl)) {
-    fills.push(fillExit(pos, pos.sl, pos.qtyOpen, stopReason(pos), at, cfg, true));
+    fills.push(fillExit(pos, stopRunaway(pos.side, pos.sl, cfg, atrNow), pos.qtyOpen, stopReason(pos), at, cfg, true));
     return fills;
   }
   // 3. trail LAST: this bar's exits were checked against the stop as it stood when the bar

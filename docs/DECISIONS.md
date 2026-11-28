@@ -8674,3 +8674,16 @@ Breakout Retest Signals 5m (fade, +0.188R), ATR Trailing Stop with EMA Trend Fil
 Monte Carlo 5m (fade, +0.169R) and 1h (follow + gate, +0.205R), 8AM 1H Range & Breaks 1h (fade + gate, +0.167R).
 A scanner can now fade one timeframe and follow another: `scanners.<id>.invertTfs` names the faded timeframes and replaces
 `invert` (`invertOn` in `scanners/reading.ts`; part of the strategy identity). Backup `config.json.before-five`.
+
+## 339. Backtests charge the run past a stop: 0.07 ATR (28 November 2026)
+
+**Why.** 43 live stop and break-even exits filled on average 0.051 ATR past their level at the first print (the gap)
+plus 0.067 ATR more during the 1.5 s reaction; at the measured 400 ms (decision 335) that is 0.018 ATR, 0.07 ATR in all
+(median 0.04, p90 0.16; thin markets 0.09–0.12, liquid ones 0.01–0.04). A backtest filled a bar stop at its level (or at
+a gapped open) plus 2 bps, so every stop-out in research was about 0.05R cheaper than live — most on the thin, volatile
+markets research favoured.
+
+**What.** `paper.stopSlipAtr` (0..1, default 0; 0.07 in the account config, backup `config.json.before-stopslip`):
+`stopRunaway` moves a stop or break-even fill taken from a bar that many ATR past its reference, in every backtest
+(cached cells, screens, parity) and the candle fallback. Tape-priced live exits are unchanged. `POLICY_SET=slip`
+compares with and without it.

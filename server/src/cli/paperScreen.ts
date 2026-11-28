@@ -56,6 +56,10 @@ const POLICIES: Record<string, Partial<typeof cfg.paper>> = process.env.POLICY_S
   widen12: { widenStopToFee: true, minRiskFeeRatio: 12 },
   widen8: { widenStopToFee: true, minRiskFeeRatio: 8 },
   fall3atr: { fallbackAtrSl: 3 },
+} : process.env.POLICY_SET === 'slip' ? {
+  // POLICY_SET=slip: the configured rules with and without the bar-stop runaway charge (decision 339)
+  current: {},
+  noSlip: { stopSlipAtr: 0 },
 } : process.env.POLICY_SET === 'maker' ? {
   // POLICY_SET=maker: the configured rules, and resting maker-limit entries on this timeframe at 0 / 0.1 / 0.25 ATR
   // back from the signal price (2 bars to fill), so the entry pays the maker fee and the cost rule admits more

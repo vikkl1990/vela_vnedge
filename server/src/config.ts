@@ -282,6 +282,8 @@ export interface PaperConfig {
    * much closer and the stop that much further: cancel the fill instead (0 = off). Decision 334.
    */
   maxFillDriftR?: number;
+  /** Decision 339: ATR charged past the level on a stop filled from a bar (backtests and the candle fallback); 0 = at the level. */
+  stopSlipAtr?: number;
   /** Tape mode: fall back to 1m candles when no print arrived for this long. */
   tapeFallbackMs: number;
   /** Charge Delta funding (rate × notional, sign by side) to open positions at every funding timestamp. */
@@ -840,6 +842,7 @@ export function validateConfig(c: AppConfig): string[] {
   if (!(p.maintenanceMarginPct >= 0 && p.maintenanceMarginPct < 5)) errs.push('paper.maintenanceMarginPct must be 0..5');
   if (!(Number.isFinite(p.minRiskFeeRatio) && p.minRiskFeeRatio >= 0)) errs.push('paper.minRiskFeeRatio must be ≥ 0');
   if (p.maxFillDriftR !== undefined && !(Number.isFinite(p.maxFillDriftR) && p.maxFillDriftR >= 0)) errs.push('paper.maxFillDriftR must be ≥ 0');
+  if (p.stopSlipAtr !== undefined && !(Number.isFinite(p.stopSlipAtr) && p.stopSlipAtr >= 0 && p.stopSlipAtr <= 1)) errs.push('paper.stopSlipAtr must be 0..1');
   if (!(Number.isFinite(p.maxStopLossPct) && p.maxStopLossPct >= 0 && p.maxStopLossPct <= 100)) errs.push('paper.maxStopLossPct must be 0..100');
   if (p.makerQuoteCells !== undefined) {
     if (!Array.isArray(p.makerQuoteCells)) errs.push('paper.makerQuoteCells must be an array');
