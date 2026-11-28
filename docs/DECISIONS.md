@@ -8705,3 +8705,17 @@ four or more same-side positions earned more (+0.144R) than the rest (+0.123R). 
 **What.** Account config only (backup `config.json.before-phase3`): BOS Adaptive keeps its 1h and 4h pairs on the seven
 large coins; Predictive Monte Carlo trades 1h only (its `invertTfs` removed). Open positions of the dropped cells run
 to their own exits.
+
+## 341. The server runs above normal priority (28 November 2026)
+
+**Why.** Windows starts a scheduled task below normal priority. With research at idle priority and another desktop app
+using about a third of the six cores at normal priority, the bot got what was left: every 5m bar's scan finished 36–42 s
+after the close (11:40–13:00 UTC today). The scanners use little CPU (about 2%) but need it the moment a bar closes, and
+RSI Volume Ladder keeps a tenth of its edge one bar late.
+
+**What.** `server/src/index.ts` raises its own priority to above normal at start (normal if refused; `VNEDGE_PRIORITY=keep`
+leaves it). With the two cells of decision 340 gone, the last scan of a bar now finishes about 9 s after the close, runs
+average 0.24–0.33 s (against 0.45–0.72 s), and the warm-up takes 40 s instead of 3 min.
+
+The library re-screen (436 scanners × 10 markets, 60 days), read at 2,565 of 4,360 cells: PBO 68% and no candidate clears
+a Deflated Sharpe of 95%; every top candidate traded on a single market. Final verdict when the screen completes.
