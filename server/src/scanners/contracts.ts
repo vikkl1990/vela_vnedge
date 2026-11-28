@@ -1,3 +1,4 @@
+import {ENTRY_CONTRACTS,contractRuntimeHash} from './entryContracts.ts';
 import {sourceReader,PRECISION_NATIVE,sourcePinError} from './sourceReaders.ts';
 import {plotLifecycle,ML_RSI_NATIVE,TREND_CONTINUATION,STEALTH_NATIVE} from './plotLifecycle.ts';
 import {upstreamLifecycle,BAR_BALANCE_V1} from './upstreamLifecycle.ts';
@@ -36,12 +37,19 @@ export function scannerContract(s:LoadedScanner, sc:Partial<ScannerConfig>, plan
   if(review.unavailableReason)gaps.push(review.unavailableReason);
   if(review.sourceStatus!=='matches')gaps.push(review.sourceStatus==='changed'?'Installed source differs from the reviewed source.':'No source-matched review.');
   if(review.descriptionStatus!=='reviewed')gaps.push(`Author publication: ${review.descriptionStatus}.`);
-  const entryOff=Array.isArray(sc.sources)&&sc.sources.length===0;
+  const entryOff=sc.signalContract==='market-regime-context-v1'||Array.isArray(sc.sources)&&sc.sources.length===0;
   const native=willyContract(s.id),nativeReader=reader===3&&willyNativeReady(s.id)&&!sc.invert;
   const markitNative=reader===2&&Boolean(MARKITTICK_NATIVE[s.id])&&!sc.invert&&!markitTickSourceError(s.id,s.source);
   const plotNative=plotLifecycle(s.id)&&reader===2&&s.patches.includes('native-lifecycle-observations-v1')&&!sc.invert;
   let adapter=reader===1?'Legacy reader':`Reader ${reader}`;
-  if(plan?.basket){adapter='RSI basket adapter';capabilities.push('Up to three entries within one $150 basket','Shared stop and target','Durable partial exits');}
+  if(sc.signalContract){
+    adapter=sc.signalContract;
+    const pin=ENTRY_CONTRACTS[sc.signalContract];
+    if(!pin||pin.scannerId!==s.id||pin.runtime!==contractRuntimeHash(s.patched))gaps.push('Experimental contract source mismatch; no events will be admitted.');
+    capabilities.push(sc.signalContract==='market-regime-context-v1'?'Regime notifications are context only; zero autonomous entries':sc.signalContract==='smart-money-retests-v1'?'Dynamic OB/FVG retests only; author grade toggles retained; BOS drawings and moving OTE context excluded':'Exact classifier Long/Short only; Supertrend flips are context');
+    gaps.push('Experimental reading only; current account exits retained; no new promotion eligibility.');
+  }
+  else if(plan?.basket){adapter='RSI basket adapter';capabilities.push('Up to three entries within one $150 basket','Shared stop and target','Durable partial exits');}
   else if(sourceReader(s.id)&&reader===2&&!sourcePinError(s.id,s.source)){
     adapter=s.id===PRECISION_NATIVE?'Precision v2.3 native batch':'IndicatorNeo v4 native bracket';
     capabilities.push('Source-pinned confirmed entries with native stop/target geometry',s.id===PRECISION_NATIVE?'Trade-bound full closes and causal step-stop amendments; targets are milestones':'Exact key=value alert fields; one native target');

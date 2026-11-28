@@ -1,3 +1,4 @@
+import {entryContractError} from '../scanners/entryContracts.ts';
 import {sourceReader,PRECISION_NATIVE,FISHER_UPDATED,NEO_NATIVE} from '../scanners/sourceReaders.ts';
 import {lifecycleIdentity} from './lifecycleIdentity.ts';
 import {SETUP_LIFECYCLE} from './setupLifecycle.ts';
@@ -23,9 +24,9 @@ import { exitConfigFor } from './logic.ts';
 import { scannerExitPolicy, entryPolicy, ownExitsOverride } from './policy.ts';
 import { adaptPlan } from './planStudy.ts';
 
-// Bounded research capacity: 135 retained studies plus four source-reader arms.
+// Bounded research capacity: 139 retained studies plus six isolated contract-reading arms.
 // This does not change account positions, allocation or risk limits.
-export const MAX_RESEARCH_PLANS = 139;
+export const MAX_RESEARCH_PLANS = 145;
 /** Explicit TP experiment; original stop and sizing stay fixed. Trail changes are opt-in and labeled. */
 export interface TakeProfitPlan {
   mode: 'native' | 'r';
@@ -42,7 +43,7 @@ export interface ProfitCapturePlan {
 }
 export interface PlanComparison { group: string; role: 'control' | 'candidate'; kind?: 'exit-policy' | 'two-bar' | 'profit-floor' | 'maker-fill' | 'setup-lifecycle' | 'source-update' }
 /** Interpretation only: changing Pine inputs or trading rules requires a different experiment. */
-export type ReadingOverride = {version:number} & Pick<Partial<ScannerConfig>,'reader'|'sources'|'labels'|'sides'|'labelStyles'|'invert'|'edge'>;
+export type ReadingOverride = {version:number} & Pick<Partial<ScannerConfig>,'reader'|'sources'|'labels'|'sides'|'labelStyles'|'invert'|'edge'|'signalContract'>;
 export interface ExecutionPlan {
   /** Explicit author exits cancel setups and remain independent of replacement admission. */
   setupLifecycle?: typeof SETUP_LIFECYCLE;
@@ -215,9 +216,11 @@ export function validateExecutionPlans(plans: ExecutionPlan[] | undefined, tfs: 
     if(p.scannerId===BASKET_SCANNER&&!p.basket)errors.push(`executionPlans.${p.id}: basket source requires its execution adapter`);
     if(p.readingOverride!==undefined){
       const r=p.readingOverride;
-      if(!r||!Number.isInteger(r.version)||r.version<1||Object.keys(r).some(k=>!['version','reader','sources','labels','sides','labelStyles','invert','edge'].includes(k))||p.variant!=='current')errors.push(`executionPlans.${p.id}: invalid reading version or override`);
+      if(!r||!Number.isInteger(r.version)||r.version<1||Object.keys(r).some(k=>!['version','reader','sources','labels','sides','labelStyles','invert','edge','signalContract'].includes(k))||p.variant!=='current')errors.push(`executionPlans.${p.id}: invalid reading version or override`);
       if(r?.reader===3&&!willyNativeReady(p.scannerId))errors.push(`executionPlans.${p.id}: reader 3 requires a validated Willy adapter or non-trading role`);
       if(r?.reader===3&&r.invert)errors.push(`executionPlans.${p.id}: native reader cannot invert its contract`);
+      const contractError=entryContractError(p.scannerId,{...cfg?.scanners[p.scannerId],...r});if(contractError)errors.push(`executionPlans.${p.id}: ${contractError}`);
+      if(r?.signalContract&&(!p.comparison||p.setupLifecycle||p.exitPolicy||p.makerFill||p.trailing||p.takeProfit||p.profitFloor||p.failedTradeExit||p.maxHoldMinutes!==undefined))errors.push(`executionPlans.${p.id}: signal contract comparison must retain current exits and execution`);
       const readerError=readerContractError(p.scannerId,r?.reader,r?.sides);if(readerError)errors.push(`executionPlans.${p.id}: ${readerError}`);
       const styleError=labelStyleContractError(r?.reader,r?.labelStyles);if(styleError)errors.push(`executionPlans.${p.id}: ${styleError}`);
       if(r?.reader!==undefined&&![1,2,3].includes(r.reader))errors.push(`executionPlans.${p.id}: invalid reader`);
@@ -294,6 +297,11 @@ export function validateExecutionPlans(plans: ExecutionPlan[] | undefined, tfs: 
       const a=pair.find(p=>p.comparison?.role==='control'),b=pair.find(p=>p.comparison?.role==='candidate');
       const normalized=(p:ExecutionPlan|undefined)=>p?Object.fromEntries(Object.entries(p).filter(([k])=>!['id','label','scannerId','comparison'].includes(k))):null;
       if(pair.length!==2||a?.scannerId!=='fisher-transform-of-williams-r-divergence'||b?.scannerId!==FISHER_UPDATED||pair.some(p=>p.comparison?.kind!=='source-update')||stable(normalized(a))!==stable(normalized(b)))errors.push(`executionPlans comparison ${group}: Fisher source arms must retain identical policy and reading`);
+    }
+    if(pair.some(p=>p.readingOverride?.signalContract)){
+      const a=pair.find(p=>p.comparison?.role==='control'),b=pair.find(p=>p.comparison?.role==='candidate');
+      const identity=(p:ExecutionPlan|undefined)=>p?Object.fromEntries(Object.entries(p).filter(([k])=>!['id','label','readingOverride','comparison'].includes(k))):null;
+      if(pair.length!==2||!a||!b||a.readingOverride?.signalContract||!b.readingOverride?.signalContract||stable(identity(a))!==stable(identity(b)))errors.push(`executionPlans comparison ${group}: contract arms must differ only in reading`);
     }
     const comparable=(p:ExecutionPlan)=>[p.comparison?.kind==='source-update'?'fisher-source':p.scannerId,p.symbol,p.tf,p.variant,p.referenceEquity,p.maxStopLossPct,p.maxHoldMinutes,p.enabled,p.takeProfit];
     if(pair.length!==2||new Set(pair.map(p=>p.comparison!.role)).size!==2||stable(comparable(pair[0]))!==stable(comparable(pair[1])))errors.push(`executionPlans comparison ${group}: control and candidate must share source, entry/target policy, sizing and enabled state`);

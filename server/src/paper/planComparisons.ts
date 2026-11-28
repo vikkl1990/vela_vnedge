@@ -29,7 +29,7 @@ function matchedReadingKey(raw:string):string {
   const title=label.replace(/^[🟢🔴]\s*/u,'').trim().toLowerCase();
   let match:RegExpMatchArray|null=null,kind='';
   if(scanner==='machine-learning-rsi-ai-classification-ranking-zeiierman'){
-    match=channel==='alertcondition'?title.match(/^(long|short) signal$/):
+    match=channel==='alertcondition'?title.match(/^(long|short)(?: signal)?$/):
       channel==='alert'||channel==='shape'?title.match(/^(long|short)$/):null;
     kind='classifier-entry';
   }else if(scanner==='supertrend-cluster-zeiierman'){
@@ -247,6 +247,12 @@ export class PlanComparisons {
           let k:any;try{k=JSON.parse(e.source_event);}catch{return e.source_event;}
           const side=e.side??(typeof k?.[5]==='string'?(/long|bull|buy|cross up/i.test(k[5])?'long':/short|bear|sell|cross down/i.test(k[5])?'short':null):null);
           return side&&Array.isArray(k)&&k.length===6?JSON.stringify(['fisher-source',k[1],k[2],k[3],side]):e.source_event;
+        }
+        if(group.startsWith('contract-smart-money-')){
+          let k:any;try{k=JSON.parse(e.source_event);}catch{return e.source_event;}
+          const title=Array.isArray(k)&&typeof k[5]==='string'?k[5].trim():'';
+          const m=title.match(/^(🟢|🔴)\s+[ABC]-OB Retest$/i),n=title.match(/^(Long|Short|Bullish|Bearish) OB Retest$/i);
+          if(Array.isArray(k)&&k.length===6&&(m||n))return JSON.stringify([k[0],k[1],k[2],k[3],'ob-retest',m?(m[1]==='🟢'?'long':'short'):/^(long|bullish)$/i.test(n![1])?'long':'short']);
         }
         return p.readingOverride?matchedReadingKey(e.source_event):e.source_event;
       };

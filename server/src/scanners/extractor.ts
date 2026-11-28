@@ -1,3 +1,4 @@
+import {readEntryContract,type SignalContract} from './entryContracts.ts';
 import {sourceReader,readSourceAlerts} from './sourceReaders.ts';
 /**
  * Turns raw PineTS output (alert messages, plotshape hits) into normalised trading events.
@@ -398,6 +399,8 @@ export interface ExtractOptions {
   declared?: ReadonlySet<'alert' | 'alertcondition' | 'shape'>;
   /** Decision 241: the reader revision the scanner's reading opts into (2: reversal sides, closing and failure titles, "Dn"). */
   reader?: number;
+  signalContract?: SignalContract;
+  contractSourceHash?: string;
 }
 
 /** Decision 195: the entry channels a Pine source declares, read from the source text once. */
@@ -411,6 +414,7 @@ export function declaredChannels(source: string): Set<'alert' | 'alertcondition'
 
 /** Merge alert-derived and shape-derived events per bar; alerts win over shapes on the same bar/side. */
 export function extractEvents(alerts: WorkerAlert[], shapes: WorkerShape[], opts: ExtractOptions = {}): ScanEvent[] {
+  if(opts.signalContract)return readEntryContract(alerts,shapes,opts);
   if(sourceReader(opts.scannerId))return readSourceAlerts(alerts,opts);
   if(opts.scannerId && MARKITTICK_NATIVE[opts.scannerId])return readMarkitTick(alerts,opts);
   // These versioned profiles read only causal source exports; legacy alerts cannot leak entries or exits.

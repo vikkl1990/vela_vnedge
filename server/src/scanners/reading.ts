@@ -1,3 +1,4 @@
+import {contractRuntimeHash} from './entryContracts.ts';
 /**
  * Decision 195: how a scanner's outputs are read, in one place. Each caller used to assemble the reading options by
  * hand — channels, edge, label allow-list, inversion — and they drifted: the account's live path left out the bar
@@ -11,7 +12,7 @@ import type { RuleContext } from './rules.ts';
 const declaredCache = new Map<string, { src: string; set: ReturnType<typeof declaredChannels> }>();
 
 export function readingOf(sc: Partial<ScannerConfig> | undefined, scannerId: string, barMs: number | undefined, patched?: string, variantOf?: string): {
-  extract: Pick<ExtractOptions, 'scannerId' | 'barMs' | 'sources' | 'edge' | 'labels' | 'invert' | 'sides' | 'labelStyles' | 'declared' | 'reader'>;
+  extract: Pick<ExtractOptions, 'scannerId' | 'barMs' | 'sources' | 'edge' | 'labels' | 'invert' | 'sides' | 'labelStyles' | 'declared' | 'reader' | 'signalContract' | 'contractSourceHash'>;
   rule: Pick<RuleContext, 'rule' | 'inputs' | 'pin' | 'ruleFor'>;
 } {
   let declared: ReturnType<typeof declaredChannels> | undefined;
@@ -21,7 +22,7 @@ export function readingOf(sc: Partial<ScannerConfig> | undefined, scannerId: str
     else { declared = declaredChannels(patched); declaredCache.set(scannerId, { src: patched, set: declared }); }
   }
   return {
-    extract: { scannerId, barMs: barMs && barMs > 0 ? barMs : undefined, sources: sc?.sources, edge: sc?.edge, labels: sc?.labels, invert: sc?.invert, sides: sc?.sides, labelStyles: sc?.labelStyles, declared, reader: sc?.reader },
+    extract: { scannerId, barMs: barMs && barMs > 0 ? barMs : undefined, sources: sc?.sources, edge: sc?.edge, labels: sc?.labels, invert: sc?.invert, sides: sc?.sides, labelStyles: sc?.labelStyles, declared, reader: sc?.reader, ...(sc?.signalContract?{signalContract:sc.signalContract,contractSourceHash:patched?contractRuntimeHash(patched):undefined}:{}) },
     rule: { rule: sc?.rule ?? null, inputs: sc?.inputs, pin: sc?.rulePin ?? null, ruleFor: variantOf },
   };
 }
