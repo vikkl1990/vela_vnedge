@@ -25,8 +25,10 @@ import { readingOf } from '../scanners/reading.ts';
 import { runBacktest } from '../paper/backtest.ts';
 import { backtestPolicy } from '../paper/policy.ts';
 import { candleReplayBlock } from '../paper/basket.ts';
-import { ConfigStore, TF_SECONDS, type ScannerConfig } from '../config.ts';
+import { ConfigStore, DATA_DIR, TF_SECONDS, type ScannerConfig } from '../config.ts';
 import { momentsOf } from '../validation/overfit.ts';
+import { DatabaseSync } from 'node:sqlite';
+import path from 'node:path';
 
 const [symArg, tf = '15m', barsArg = '4000', out = 'paper-screen.jsonl', workersArg] = process.argv.slice(2);
 if (!symArg) { console.error('usage: paperScreen.ts SYMBOLS TF BARS OUT.jsonl [WORKERS]'); process.exit(2); }
@@ -72,17 +74,37 @@ const POLICIES: Record<string, Partial<typeof cfg.paper>> = process.env.POLICY_S
 };
 /** INVERT=1: every policy is also run on the inverted reading (`<policy>_inv`), so a scanner whose signals work faded shows up too. */
 const WITH_INVERT = process.env.INVERT === '1';
+const WITH_LATE = process.env.LATE === '1';
 /** Time blocks per cell for the PBO check (screenVerdict.ts); even, as CSCV splits them in halves. */
 const BLOCKS = 10;
 
 const done = new Set<string>();
 if (fs.existsSync(out)) for (const line of fs.readFileSync(out, 'utf8').split('\n')) { try { const r = JSON.parse(line); done.add(`${r.scannerId}|${r.symbol}`); } catch { /* partial line */ } }
 
+const FROM_ARCHIVE = process.env.ARCHIVE === '1';
+/** 5m archive bars aggregated to `tf` (5m, 15m, 1h, 4h…): a bucket is kept only when all its 5m bars are there. */
+function archiveBars(symbol: string, tf: string, limit: number) {
+  const db = new DatabaseSync(path.join(DATA_DIR, 'archive.db'), { readOnly: true });
+  const five = db.prepare("SELECT time, open, high, low, close, volume FROM candles WHERE symbol=? AND tf='5m' ORDER BY time").all(symbol) as any[];
+  db.close();
+  const step = (TF_SECONDS[tf] ?? 300) * 1000, per = step / 300_000;
+  if (!(per >= 1 && Number.isInteger(per))) throw new Error(`ARCHIVE needs a multiple of 5m, not ${tf}`);
+  const out: any[] = [];
+  let cur: any = null, n = 0;
+  for (const b of five) {
+    const t = Math.floor(b.time / step) * step;
+    if (!cur || cur.time !== t) { if (cur && n === per) out.push(cur); cur = { time: t, open: b.open, high: b.high, low: b.low, close: b.close, volume: b.volume }; n = 1; continue; }
+    cur.high = Math.max(cur.high, b.high); cur.low = Math.min(cur.low, b.low); cur.close = b.close; cur.volume += b.volume; n++;
+  }
+  if (cur && n === per) out.push(cur);
+  return out.slice(-limit);
+}
 const markets: Record<string, { info: ReturnType<typeof marketSpec>; bars: any[] }> = {};
 for (const symbol of symbols) {
   const info = marketSpec(await rest.product(symbol));
-  const candles = await rest.recentCandles(symbol, tf, Number(barsArg), TF_SECONDS[tf]);
-  const bars = candles.slice(0, -1).map((c: any) => ({ time: c.time * 1000, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume }));
+  // ARCHIVE=1: the closed 5m bars of data/archive.db (decision 336), aggregated to `tf` (a multiple of 5m), newest BARS of them
+  const bars = FROM_ARCHIVE ? archiveBars(symbol, tf, Number(barsArg))
+    : (await rest.recentCandles(symbol, tf, Number(barsArg), TF_SECONDS[tf])).slice(0, -1).map((c: any) => ({ time: c.time * 1000, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume }));
   markets[symbol] = { info, bars };
   console.log(`${symbol}: ${bars.length} bars from ${new Date(bars[0]?.time).toISOString()}`);
 }
@@ -99,6 +121,7 @@ const scanners = registry.runnable().filter(s => !candleReplayBlock(s.id) && (!i
 const jobs = symbols.flatMap(symbol => scanners.map(s => ({ s, symbol }))).filter(j => !done.has(`${j.s.id}|${j.symbol}`));
 console.log(`${scanners.length} scanners × ${symbols.length} markets; ${done.size} cells already screened, ${jobs.length} to go, ${workers} workers`);
 
+const median = (xs: number[]) => { if (!xs.length) return null; const s = [...xs].sort((a, b) => a - b); return s[Math.floor(s.length / 2)]; };
 const stats = (ts: any[]) => {
   let pnl = 0, gp = 0, gl = 0, r = 0;
   for (const t of ts) { pnl += t.pnl; if (t.pnl > 0) gp += t.pnl; else gl -= t.pnl; r += t.rMultiple ?? 0; }
@@ -126,7 +149,10 @@ async function screen(s: ReturnType<ScannerRegistry['runnable']>[number], symbol
     const t0 = m.bars[0].time, span = m.bars.at(-1).time - t0, trainEnd = t0 + span * 0.7, mid = t0 + span * 0.35;
     // every policy is backtested on the same events: one script run, several paper rules
     row.policies = {};
-    const runs = Object.entries(POLICIES).flatMap(([name, over]) => [[name, over, events] as const, ...(inverted ? [[`${name}_inv`, over, inverted] as const] : [])]);
+    const late = (evs: typeof events) => evs.map(e => e.kind === 'entry' ? { ...e, barTime: e.barTime + tfMs, barIndex: e.barIndex + 1, price: undefined as any } : e).filter(e => e.barIndex < m.bars.length);
+    const base = Object.entries(POLICIES).flatMap(([name, over]) => [[name, over, events] as const, ...(inverted ? [[`${name}_inv`, over, inverted] as const] : [])]);
+    // LATE=1: every policy again with each entry taken one bar later — how fast the edge decays with entry delay
+    const runs = WITH_LATE ? base.flatMap(r => [r, [`${r[0]}_late`, r[1], late(r[2])] as const]) : base;
     for (const [name, over, evs] of runs) {
       const pcfg = { ...cfg, paper: { ...cfg.paper, ...over } };
       const bt = runBacktest({ scannerId: s.id, scannerName: s.name, symbol, tf, bars: m.bars, events: structuredClone(evs),
@@ -136,7 +162,11 @@ async function screen(s: ReturnType<ScannerRegistry['runnable']>[number], symbol
         pass: all.trades >= 20 && all.pf >= 1.2 && seg.every(x => x.pnl > 0) && seg[2].trades >= 5,
         // for screenVerdict's selection-bias checks: R by tenth of the window (PBO) and the per-trade R moments (Deflated Sharpe)
         blocks: Array.from({ length: BLOCKS }, (_, b) => bt.trades.filter(t => Math.min(BLOCKS - 1, Math.floor((t.entryAt - t0) / span * BLOCKS)) === b).reduce((a, t) => a + (t.rMultiple ?? 0), 0)),
-        moments: momentsOf(bt.trades.map(t => t.rMultiple ?? 0)) };
+        moments: momentsOf(bt.trades.map(t => t.rMultiple ?? 0)),
+        // style: how long trades are held and how soon they reach their best price (minutes, medians)
+        holdMin: median(bt.trades.filter(t => t.exitAt).map(t => (t.exitAt! - t.entryAt) / 60_000)),
+        peakMin: median(bt.trades.filter(t => t.peakAt).map(t => (t.peakAt! - t.entryAt) / 60_000)),
+        winRate: bt.trades.length ? bt.trades.filter(t => t.pnl > 0).length / bt.trades.length : 0 };
     }
     // the current policy stays at the top level for existing readers
     Object.assign(row, row.policies.current);
