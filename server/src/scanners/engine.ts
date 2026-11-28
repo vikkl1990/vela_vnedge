@@ -815,8 +815,15 @@ export class ScannerEngine extends EventEmitter {
     } else if (ev.kind === 'exit') {
       const held=this.paper.findOpen(s.id,symbol,tf);
       if(held&&!sameExitSource(held.policy,s.patched?sourceHash(s.patched):null,policyReading(this.cfgRef().scanners[s.id])))return {action:'ignored:bound scanner exit handled separately',positionId:held.id};
+      const before=held?.qtyOpen;
       const pos = this.paper.onScriptExit(s.id, symbol, tf, ev.exitType ?? 'close', ev.price, now, exitMode, ev.side, {positionId:delivery.targetPositionId,pendingIds:delivery.targetPendingIds});
-      action = pos ? (pos.status === 'closed' ? 'closed' : 'reduced') : 'ignored:no position';
+      // Receipt completion acknowledges the decision, not a fill. Causal exits
+      // retain exposure until a later executable report commits its quantity.
+      action = !pos ? 'ignored:no position' : pos.status === 'closed' ? 'closed'
+        : before !== undefined && pos.qtyOpen < before ? 'reduced'
+        : this.paper.exitExecution.active(pos.id) ? 'exit-requested'
+        : ev.exitType === 'stop_update' ? 'stop-update-requested'
+        : 'ignored:script exit left exposure unchanged';
       positionId = pos?.id ?? null;
     } else {
       action = 'info';

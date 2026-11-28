@@ -178,7 +178,10 @@ export function SignalsTable({
         header: 'Action',
         value: (s) => s.action,
         render: (s) => <ActionPill action={s.action} />,
-        mobileRender: (s) => s.action,
+        mobileRender: (s) => {
+          const outcome = gateOf(s.action)
+          return outcome.key === 'exit-requested' || outcome.key === 'stop-update' ? outcome.label : s.action
+        },
       },
       {
         key: 'msg',

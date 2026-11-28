@@ -67,6 +67,20 @@ export function summarizeOutcomes(rows: Signal[]) {
   }> = [
     ...operationalReasons,
     {
+      key: 'exit-requested',
+      label: 'exit requested',
+      tone: 'accent',
+      hint: 'An exit instruction was accepted. Recorded fills, rather than this receipt, confirm reduced exposure.',
+      test: (a, s) => s.kind === 'exit' && a === 'exit-requested',
+    },
+    {
+      key: 'stop-update',
+      label: 'stop update requested',
+      tone: 'accent',
+      hint: 'A stop amendment was accepted; it is not a position close or partial fill.',
+      test: (a, s) => s.kind === 'exit' && a === 'stop-update-requested',
+    },
+    {
       key: 'opened',
       label: 'opened',
       tone: 'ok',
@@ -204,6 +218,9 @@ export function gateOf(action: string | null | undefined): {
   href?: string
 } {
   const a = String(action ?? '')
+  if (a === 'exit-requested') return { key: 'exit-requested', label: 'exit requested', tone: 'accent' }
+  if (a === 'stop-update-requested')
+    return { key: 'stop-update', label: 'stop update requested', tone: 'accent' }
   const operational = operationalReasons.find((r) => r.test(a))
   if (operational)
     return { key: operational.key, label: operational.label, tone: operational.tone, href: '/gates' }
