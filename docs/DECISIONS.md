@@ -8746,3 +8746,13 @@ delayed fills and stop checks, which share the main thread.
 
 Considered and left: the 1.5 s close grace for markets without a next-bar print. The feed's p99 lag is 0.7 s
 (decision 335), so it could go to about 1 s, but late prints would then be cut from the bar for half a second gained.
+
+## 343. Library re-screen on the candle archive: nothing added (28 November 2026)
+
+**Why.** 436 scanners × 10 markets × 60 days of 5m bars (`data/reports/p2-5m-60d.jsonl`), each with and without the
+trend gate, followed and faded, spread and the stop charge paid: 1,691 candidates, 1,611 with 20+ trades.
+
+**Result.** PBO 64% over 252 splits of 10 time blocks: the in-sample ranking does not carry into the held-out blocks.
+Twelve candidates pass when pooled; none clears a Deflated Sharpe of 95% against the best of 1,691 skill-less tries
+(per-trade Sharpe 0.378). The best, Elliott Wave faded (+0.57R on 34 trades, 3 of 3 markets), reaches 67% — too few
+trades to tell from luck. No scanner is added; the live set stays as decision 340 left it.
