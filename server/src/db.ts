@@ -1,6 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
 import path from 'node:path';
+import { Worker } from 'node:worker_threads';
 import { DATA_DIR } from './config.ts';
 
 export interface SignalRow {
@@ -280,6 +281,38 @@ export class Db {
       CREATE TRIGGER IF NOT EXISTS position_scope_identity AFTER UPDATE OF scanner_id ON positions
       WHEN NEW.evidence_scope IS NULL AND NEW.scanner_id!=''
       BEGIN UPDATE positions SET evidence_scope=${scope('NEW')} WHERE id=NEW.id; END;`);
+  }
+
+  private checkpointer: Worker | null = null;
+  /**
+   * Decision 342: on this machine's hard disk a WAL checkpoint, which SQLite runs inside whichever commit crosses
+   * 1,000 pages, held the main thread ~0.7 s — a signal's receipt, a fill or a stop waited on a disk sync. The server
+   * turns the automatic checkpoint off and checkpoints from a thread with its own connection (PASSIVE: it never
+   * blocks a writer). If that thread dies, the automatic checkpoint comes back.
+   */
+  startBackgroundCheckpoint(everyMs = 30_000) {
+    if (this.file === ':memory:' || this.checkpointer) return;
+    const w = new Worker(`
+      const { parentPort, workerData } = require('node:worker_threads');
+      const { DatabaseSync } = require('node:sqlite');
+      const db = new DatabaseSync(workerData.file);
+      db.exec('PRAGMA busy_timeout = 5000');
+      const tick = () => { try { db.prepare('PRAGMA wal_checkpoint(PASSIVE)').get(); } catch (e) { parentPort.postMessage(String(e && e.message || e)); } };
+      setInterval(tick, workerData.everyMs); tick();
+    `, { eval: true, workerData: { file: this.file, everyMs } });
+    w.unref();
+    this.checkpointer = w;
+    this.db.exec('PRAGMA wal_autocheckpoint = 0');
+    const restore = () => { if (this.checkpointer !== w) return; this.checkpointer = null; try { this.db.exec('PRAGMA wal_autocheckpoint = 1000'); } catch { /* closed */ } };
+    w.on('message', m => { this.noteError(new Error(`background checkpoint: ${m}`)); });
+    w.on('error', e => { this.noteError(e); restore(); });
+    w.on('exit', restore);
+  }
+  stopBackgroundCheckpoint() {
+    const w = this.checkpointer; if (!w) return;
+    this.checkpointer = null;
+    try { this.db.exec('PRAGMA wal_autocheckpoint = 1000'); } catch { /* closed */ }
+    void w.terminate();
   }
 
   run(sql: string, ...params: any[]) { try { return this.db.prepare(sql).run(...params); } catch (e) { this.noteError(e); throw e; } }

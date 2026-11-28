@@ -8719,3 +8719,30 @@ average 0.24–0.33 s (against 0.45–0.72 s), and the warm-up takes 40 s instea
 
 The library re-screen (436 scanners × 10 markets, 60 days), read at 2,565 of 4,360 cells: PBO 68% and no candidate clears
 a Deflated Sharpe of 95%; every top candidate traded on a single market. Final verdict when the screen completes.
+
+## 342. Timing: three main-thread and pool stalls removed (28 November 2026)
+
+**Why.** A CPU profile of the live server across a 5m bar close (inspector attached for 23 s) and a replay of one bar's
+84 live runs on the pool found where the seconds between a bar's close and its last scan went. All three stalls also
+delayed fills and stop checks, which share the main thread.
+
+1. *The raw depth tape.* Every order-book message of every market (~5,700 a minute, 5 MB) went into a ~7-minute ring
+   in the trading database. Its flush every 10 s held the main thread ~2.3 s: a quarter of all time, in which nothing
+   else ran. Its only reader is the offline causal-exit study.
+2. *WAL checkpoints on the hard disk.* The database lives on a laptop hard disk (drive E). SQLite checkpoints inside
+   whichever commit crosses 1,000 pages; that commit (a signal's receipt, here) held the main thread ~0.7 s.
+3. *Worker recycles mid-burst.* Workers recycle after 12 runs and a bar is 84 runs on 6 workers, so every worker
+   restarted inside every bar's burst and the replacements ran cold. One bar's runs: 4.9 s with recycling, 3.0 s
+   without.
+
+**What.**
+1. The raw tape is recorded only with `VNEDGE_DEPTH_TAPE=1` (`execution/wiring.ts`). The verified in-memory books
+   that price fills and the replay-archive capture are unchanged.
+2. `Db.startBackgroundCheckpoint` (`db.ts`): the server turns the automatic checkpoint off and checkpoints from a
+   thread with its own connection every 30 s (PASSIVE, never blocks a writer). If the thread dies, the automatic
+   checkpoint comes back. Research CLIs and tests are unchanged.
+3. `pine/pool.ts`: a worker due for recycling keeps serving while live or mirror jobs wait and recycles when the
+   burst is over; four times the run budget is the hard limit, and the memory guard is unchanged.
+
+Considered and left: the 1.5 s close grace for markets without a next-bar print. The feed's p99 lag is 0.7 s
+(decision 335), so it could go to about 1 s, but late prints would then be cut from the bar for half a second gained.

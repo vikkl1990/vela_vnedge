@@ -118,9 +118,12 @@ export function wireRealtime(app: App): void {
   const funding = app.fundingJournal = new FundingJournal(app.db);
   const audit = app.accountAudit = new AccountAudit(app.db);
   app.accountObserver = new AccountObserver(app.db, app.deltaConnection);
+  // decision 342: the raw tape (every book message of every market, a ~7-minute ring in the trading database) cost the
+  // main thread ~2.3 s every 10 s — scans, fills and stops all waited. Its only reader is the offline causal-exit study,
+  // so it is recorded on request (VNEDGE_DEPTH_TAPE=1); the verified in-memory books the engine prices from are kept.
   const depth = app.depthRecorder = new DepthRecorder(app.db, undefined, symbol => {
     app.feed.unsubscribe('ob_updates', [symbol]); app.feed.subscribe('ob_updates', [symbol]);
-  });
+  }, process.env.VNEDGE_DEPTH_TAPE === '1');
   depth.disconnect();
   const replay=app.replayArchive=new FocusedReplay({dir:path.join(DATA_DIR,'replay')});
   depth.setCapture((symbol,kind,payload,at)=>{

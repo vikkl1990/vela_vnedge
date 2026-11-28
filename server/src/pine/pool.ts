@@ -291,7 +291,11 @@ export class PinePool {
       const p = slot.busy;
       if (p && p.job.id === msg.id) {
         slot.busy = null; slot.runs++; this.completed++; p.resolve(msg);
-        if (slot.runs >= this.maxRuns) { this.recycled++; this.recycleTimes.push(Date.now()); if (this.recycleTimes.length > 1000) this.recycleTimes.splice(0, this.recycleTimes.length - 1000); this.retire(slot, 'recycled'); }
+        // decision 342: a recycle in the middle of a bar's burst costs the burst a worker and a cold JIT (one bar's
+        // scan took 4.9 s against 3.0 s). While live or mirror jobs wait, the worker keeps serving them and recycles
+        // when the burst is over; four times the run budget is the hard limit, and the memory guard stays in force.
+        const burst = this.live.length > 0 || this.mirror.length > 0;
+        if (slot.runs >= this.maxRuns && (!burst || slot.runs >= this.maxRuns * 4)) { this.recycled++; this.recycleTimes.push(Date.now()); if (this.recycleTimes.length > 1000) this.recycleTimes.splice(0, this.recycleTimes.length - 1000); this.retire(slot, 'recycled'); }
         this.pump();
       }
     });

@@ -410,6 +410,7 @@ export class App {
   }
 
   async start(): Promise<void> {
+    this.db.startBackgroundCheckpoint();   // decision 342: disk syncs off the main thread
     this.startExecutionLoops();
     this.tapeAudit.start();
     this.context.start();
@@ -1194,6 +1195,7 @@ export class App {
     this.feed.stop();
     await this.pool.stop();
     await auditStopped;
+    this.db.stopBackgroundCheckpoint();
   }
 }
 

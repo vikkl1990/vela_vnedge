@@ -197,6 +197,32 @@ test('a background job whose deadline passes while queued is dropped unrun', asy
   assert.equal(pool.stats.expiredBackground, 1);
 });
 
+test('a worker due for recycling keeps serving a live burst and recycles when the burst is over (decision 342)', async () => {
+  const workers: FakeWorker[] = [];
+  const pool = new PinePool(1, 100, () => { const w = new FakeWorker(); workers.push(w); return w; }, 2);
+  workers[0].ready();
+  const burst = Array.from({ length: 5 }, (_, i) => pool.run({ ...job, symbol: `S${i}` }, { priority: 'live', rank: 300 }));
+  for (let i = 0; i < 4; i++) { await Promise.resolve(); workers[0].finish(); await burst[i]; }
+  assert.equal(workers[0].terminated, 0, 'four runs against a budget of two, but live jobs were still waiting');
+  await Promise.resolve(); workers[0].finish(); await burst[4];
+  assert.equal(workers[0].terminated, 1, 'recycled once the live queue emptied');
+  assert.equal(workers[0].jobs.length, 5);
+  workers[0].emit('exit', 0);
+  await pool.stop();
+});
+
+test('a live burst cannot postpone a recycle past four times the budget', async () => {
+  const workers: FakeWorker[] = [];
+  const pool = new PinePool(1, 100, () => { const w = new FakeWorker(); workers.push(w); return w; }, 2);
+  workers[0].ready();
+  const burst = Array.from({ length: 10 }, (_, i) => pool.run({ ...job, symbol: `S${i}` }, { priority: 'live', rank: 300 }));
+  for (let i = 0; i < 8; i++) { await Promise.resolve(); workers[0].finish(); await burst[i]; }
+  assert.equal(workers[0].terminated, 1, 'retired at eight runs although two live jobs wait');
+  workers[0].emit('exit', 0); workers[1].ready();
+  for (let i = 8; i < 10; i++) { await Promise.resolve(); workers[1].finish(); await burst[i]; }
+  await pool.stop();
+});
+
 test('a worker is recycled after maxRuns jobs: terminated once, replaced on exit, the next job runs on the replacement', async () => {
   const workers: FakeWorker[] = [];
   const pool = new PinePool(1, 100, () => { const w = new FakeWorker(); workers.push(w); return w; }, 3);
