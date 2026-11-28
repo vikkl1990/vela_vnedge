@@ -68,9 +68,14 @@ export class IntrabarProtectionStudy {
    if(!e||e.at!==p.entryAt||e.qty!==p.qty||e.price!==p.entryPrice||e.source!=='depth'||!e.depth)reason='Entry lacks exact taker depth; maker models remain separate';
    else try{
     const d=JSON.parse(e.depth),maxAge=input.config.quoteMaxAgeMs;
-    const q=priceExit(d,p.side==='long'?'short':'long',input.marketQty!,p.entryAt,maxAge,d.consumedQty??0);
+    // Entry and exit quantities are distinct frozen observations. In a virtual
+    // shadow book, re-sizing the exit reference after the actual entry price is
+    // known can differ by a contract. Replay the entry at its recorded size.
+    const entryQty=d.requestedQty;
+    const validEntry=Number.isSafeInteger(entryQty)&&entryQty>0&&d.side===p.side&&Number.isFinite(d.vwap)&&d.vwap>0;
+    const q=validEntry?priceExit(d,p.side==='long'?'short':'long',entryQty,p.entryAt,maxAge,d.consumedQty??0):null;
     const quote=this.db.get<{bid:number|null;ask:number|null;quote_at:number|null;quote_exchange_at:number|null}>('SELECT bid,ask,quote_at,quote_exchange_at FROM entry_execution WHERE position_id=?',p.id);
-    if(q.error||q.qty!==input.marketQty||q.price===null)reason='Entry depth unavailable under its frozen freshness/size policy';
+    if(!q||q.error||q.qty!==entryQty||q.price===null||Math.abs(q.price-d.vwap)>Math.max(1e-9,d.vwap*1e-9))reason='Entry depth unavailable under its recorded entry quantity and frozen freshness policy';
     else if(!quote||!(quote.bid!>0&&quote.ask!>=quote.bid!)||[quote.quote_at,quote.quote_exchange_at].some(at=>at===null||at>p.entryAt||p.entryAt-at>maxAge))reason='Missing fresh entry quote needed to reproduce the current model';
     else {
      // depthPlan deliberately retains the worse of the executable quote and the

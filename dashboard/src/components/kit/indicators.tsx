@@ -59,17 +59,24 @@ export function SidePill({ side }: { side: Side | null | undefined }) {
 
 export function ActionPill({ action }: { action: string | null | undefined }) {
   if (!action) return <span className="muted">–</span>
+  const instruction = action === 'exit-requested' || action === 'stop-update-requested'
+  const label =
+    action === 'exit-requested'
+      ? 'exit requested'
+      : action === 'stop-update-requested'
+        ? 'stop update requested'
+        : action
   const tone =
     action === 'opened'
       ? 'ok'
-      : action === 'closed' || action === 'reduced'
+      : action === 'closed' || action === 'reduced' || instruction
         ? 'accent'
         : action.startsWith('rejected')
           ? 'danger'
           : 'muted'
   return (
     <Pill tone={tone} title={action}>
-      {action.length > 18 ? `${action.slice(0, 17)}…` : action}
+      {!instruction && label.length > 18 ? `${label.slice(0, 17)}…` : label}
     </Pill>
   )
 }

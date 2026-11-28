@@ -48,6 +48,22 @@ test('exit and information events cannot inflate entry conversion', () => {
   assert.equal(result.opened, 0)
 })
 
+test('accepted exit and stop instructions remain distinct from executed reductions', () => {
+  const result = summarizeOutcomes([
+    signal('exit-requested', 'exit'),
+    signal('stop-update-requested', 'exit'),
+    signal('reduced', 'exit'),
+    signal('closed', 'exit'),
+  ])
+  assert.equal(result.entries, 0)
+  assert.equal(result.opened, 0)
+  assert.equal(result.buckets.find((b) => b.key === 'exit-requested')?.n, 1)
+  assert.equal(result.buckets.find((b) => b.key === 'stop-update')?.n, 1)
+  assert.equal(result.buckets.find((b) => b.key === 'exit')?.n, 2)
+  assert.equal(gateOf('exit-requested').label, 'exit requested')
+  assert.equal(gateOf('stop-update-requested').label, 'stop update requested')
+})
+
 test('data freshness, burst spacing and cooldown never masquerade as late scanners', () => {
   const cases = [
     ['rejected:exchange product status unknown or stale', 'exchange'],

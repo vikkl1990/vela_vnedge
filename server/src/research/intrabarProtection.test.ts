@@ -107,6 +107,37 @@ test('optimistic or undocumented prices and stale/future entry observations rema
  }
 });
 
+test('entry verification uses the captured entry quantity while keeping a distinct frozen exit quantity',async t=>{
+ for(const side of ['long','short'] as const){
+  const x=await fixture(t,side),row=x.db.get<any>('SELECT depth FROM entry_fill_evidence'),d=JSON.parse(row.depth);
+  const levels=side==='long'?d.asks:d.bids,original=levels[0];
+  // The next contract would walk another price level. It belongs to the exit
+  // exposure reference, not to the entry that actually filled.
+  levels.splice(0,levels.length,{price:original.price,size:d.requestedQty},{price:original.price+(side==='long'?.01:-.01),size:1000000});
+  x.db.run('UPDATE entry_fill_evidence SET depth=?',JSON.stringify(d));
+  const before=JSON.stringify(x.p),orders=x.db.all('SELECT * FROM orders'),cfg=JSON.stringify(x.cfg),exitQty=d.requestedQty+1;
+  x.observe(T+100,side==='long'?102:98,{marketQty:exitQty});
+  assert.equal(x.cohort().status,'watching',x.cohort().payload);
+  assert.equal(JSON.parse(x.cohort().payload).marketQty,exitQty,'exit exposure is never rewritten');
+  assert.equal(JSON.stringify(x.p),before);assert.deepEqual(x.db.all('SELECT * FROM orders'),orders);assert.equal(JSON.stringify(x.cfg),cfg);
+  assert.equal(x.cohort().promotion_eligible,0);
+ }
+});
+
+test('missing, malformed or inconsistent entry quantity evidence is never replaced by the exit reference',async t=>{
+ for(const change of ['missing','fractional','zero','wrong-side','wrong-vwap']){
+  const x=await fixture(t),d=JSON.parse(x.db.get<any>('SELECT depth FROM entry_fill_evidence').depth);
+  if(change==='missing')delete d.requestedQty;
+  if(change==='fractional')d.requestedQty=.5;
+  if(change==='zero')d.requestedQty=0;
+  if(change==='wrong-side')d.side='short';
+  if(change==='wrong-vwap')d.vwap+=.01;
+  x.db.run('UPDATE entry_fill_evidence SET depth=?',JSON.stringify(d));
+  x.observe(T+100,102);
+  assert.equal(x.cohort().status,'unverified',change);assert.equal(x.rows().length,0);
+ }
+});
+
 
 test('early net-profit protection works below 0.5R on quiet markets only after sustained fresh executable retreat',async t=>{
  for(const side of ['long','short'] as const){
