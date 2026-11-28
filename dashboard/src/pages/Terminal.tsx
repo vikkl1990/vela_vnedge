@@ -96,10 +96,10 @@ export function Terminal() {
   const [hidden, setHidden] = useState<Record<string, boolean>>({})
   const [scriptErrors, setScriptErrors] = useState<Record<string, string>>({})
   const nameOf = (id: string) => (scanners.data ?? []).find((s) => s.id === id)?.name ?? id
-  // the account's closed trades on this market (every timeframe): trade boxes and the scanner stats read them
+  // the account's closed trades on this market (every timeframe): trade boxes and the scanner stats read them (the journal pages at most 200 rows)
   const journal = useQuery({
     queryKey: ['scalp-journal', symbol],
-    queryFn: () => api.journal({ book: 'paper', symbol, status: 'closed', scope: 'all', history: 'all', dateBy: 'exit', sort: 'newest', limit: 300 }),
+    queryFn: () => api.journal({ book: 'paper', symbol, status: 'closed', scope: 'all', history: 'all', dateBy: 'exit', sort: 'newest', limit: 200 }),
     refetchInterval: 30_000,
     staleTime: 20_000,
   })

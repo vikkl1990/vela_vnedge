@@ -449,3 +449,9 @@
 .scalp-stat dl > div { display: flex; justify-content: space-between; gap: 10px; font-size: 11.5px; }
 .scalp-stat dt { color: var(--muted-2); white-space: nowrap; }
 .scalp-stat dd { margin: 0; text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
+/* four charts need room: on a desktop window the chart row grows so each frame keeps ~250 px (the page scrolls a little
+   on a short laptop screen rather than crushing the frames to slivers) */
+@media (min-width: 1181px) and (min-height: 700px) {
+  .scalp-grid:has(.scalp-frames.n4) { grid-template-rows: minmax(560px, 1fr) clamp(150px, 22vh, 300px); }
+  .scalp-frames.n4 .scalp-frame { min-height: 250px; }
+}
