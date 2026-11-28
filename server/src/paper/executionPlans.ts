@@ -26,7 +26,7 @@ import { adaptPlan } from './planStudy.ts';
 
 // Bounded research capacity: 139 retained studies plus six isolated contract-reading arms.
 // This does not change account positions, allocation or risk limits.
-export const MAX_RESEARCH_PLANS = 145;
+export const MAX_RESEARCH_PLANS = 169;
 /** Explicit TP experiment; original stop and sizing stay fixed. Trail changes are opt-in and labeled. */
 export interface TakeProfitPlan {
   mode: 'native' | 'r';
