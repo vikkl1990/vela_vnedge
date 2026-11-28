@@ -8687,3 +8687,21 @@ markets research favoured.
 `stopRunaway` moves a stop or break-even fill taken from a bar that many ATR past its reference, in every backtest
 (cached cells, screens, parity) and the candle fallback. Tape-priced live exits are unchanged. `POLICY_SET=slip`
 compares with and without it.
+
+## 340. Live cells re-judged with the stop charge; two dropped, no direction cap (28 November 2026)
+
+**Why.** Every live cell re-run with `stopSlipAtr` 0.07 and the paper spread (5m on 60 days of the candle archive, 1h on
+~167 days, 4h on ~500 days). The charge costs 0.015–0.027R a trade everywhere. Two cells do not survive it: Predictive
+Monte Carlo 5m (fade) at −0.026R, PSR 41%, positive on 4 of 9 markets, and BOS Adaptive 5m at +0.038R, PSR 74%,
+positive on 4 of 11 (and on `watch` live). The others hold: Breakout Retest 5m +0.166R, ATR Trailing 5m +0.184R, Trend
+Pulse 5m +0.160R, RSI Volume Ladder 5m +0.132R, 8AM 1h +0.148R, BOS 1h +0.234R and 4h +0.159R (PSR 96–100%), and
+Monte Carlo 1h +0.063R (PSR 73%, kept under edge watch).
+
+A portfolio replay of the 1,737 trades of the ten cells over the common 56 days through the account's rules (8 open,
+2 a market, 4 a scanner, burst, re-entry cooldown) found no cap on same-direction exposure that helps: no cap 123R at a
+14.3R worst drawdown; a cap of 6 / 5 / 4 / 3 gives 119 / 104 / 105 / 100R at the same drawdown. Trades opened beside
+four or more same-side positions earned more (+0.144R) than the rest (+0.123R). No cap was added.
+
+**What.** Account config only (backup `config.json.before-phase3`): BOS Adaptive keeps its 1h and 4h pairs on the seven
+large coins; Predictive Monte Carlo trades 1h only (its `invertTfs` removed). Open positions of the dropped cells run
+to their own exits.
