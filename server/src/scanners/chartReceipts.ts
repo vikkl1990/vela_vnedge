@@ -1,3 +1,5 @@
+import {policyReading,stablePolicy} from '../paper/tradePolicy.ts';
+import {alertKey,labelKey} from '../../../shared/chartChannels.ts';
 import type {Db} from '../db.ts';
 import type {WorkerResult} from '../pine/worker.ts';
 import type {Bar} from '../data/candleStore.ts';
@@ -7,7 +9,9 @@ import type {SignalReceipt} from '../../../shared/chartVerification.ts';
 import {sourceHash} from '../paper/fingerprint.ts';
 import {createHash} from 'node:crypto';
 import {chartHistoryText} from '../../../shared/chartVerification.ts';
+export const chartReadingHash=(id:string,sc:Partial<ScannerConfig>|undefined)=>createHash('sha256').update(stablePolicy([id,policyReading(sc)])).digest('hex');
 const initialized=new WeakSet<Db>();
+const closedInputs=new WeakMap<Db,Map<string,Bar[]>>();
 export function initChartReceipts(db:Db){if(initialized.has(db))return;db.run('CREATE TABLE IF NOT EXISTS chart_signal_receipts(scanner_id TEXT NOT NULL,symbol TEXT NOT NULL,tf TEXT NOT NULL,at INTEGER NOT NULL,payload TEXT NOT NULL,PRIMARY KEY(scanner_id,symbol,tf))');initialized.add(db);}
 /** One bounded latest-bar receipt per cell, from the existing run; never runs Pine or changes admission. */
 export function recordChartReceipt(db:Db,id:string,symbol:string,tf:string,source:string,sc:Partial<ScannerConfig>|undefined,bars:Bar[],res:WorkerResult,events:ScanEvent[]){
@@ -17,10 +21,16 @@ export function recordChartReceipt(db:Db,id:string,symbol:string,tf:string,sourc
   for(const p of [...res.shapes.map(s=>({title:s.key??s.title,kind:'shape' as const,value:s.times.includes(bar.time)?1:0})),...res.plots.map(p=>({title:p.key??p.title,kind:'plot' as const,value:p.data.findLast(v=>v.time===bar.time)?.value??null}))]){
    if(++count>80||p.title.length>160||Object.hasOwn(outputs,p.title)){truncated=true;continue;}outputs[p.title]={kind:p.kind,value:p.value};
   }
+  if(events.filter(e=>e.barTime===bar.time&&e.kind!=='info').length>30)truncated=true;
   const receipt:SignalReceipt={scannerId:id,symbol,tf,barTime:bar.time,at:Date.now(),sourceHash:sourceHash(source),inputs:sc?.inputs??{},timezone:sc?.timezone??'UTC',historyFrom:bars[0].time,bars:bars.length,historyHash:createHash('sha256').update(chartHistoryText(bars,bar.time)).digest('hex'),candle:bar,outputs,
    signals:events.filter(e=>e.barTime===bar.time&&e.kind!=='info').map(e=>({kind:e.kind,side:e.side,label:e.label,source:e.source})).slice(0,30),
+   readingHash:chartReadingHash(id,sc),signalMetadata:res.signalMetadata,channels:{alerts:res.alerts.filter(a=>a.time===bar.time).slice(0,300).map(a=>alertKey(a,bars)).sort(),labels:res.labels.map(l=>labelKey(l,bars)).sort(),labelsVerified:!(/label\.new/.test(source)&&/plot(?:shape|char|arrow)\s*\(/.test(source)),truncated:res.labels.length>=300||res.alerts.filter(a=>a.time===bar.time).length>300},
    signalCoverage:sc?.sources?.length===1&&sc.sources[0]==='shape'&&!declaredChannels(source).has('alert')&&!declaredChannels(source).has('alertcondition')&&!/label\.new/.test(source)&&res.shapes.length>0&&!res.alerts.length&&!res.labels.length&&!sc?.rule&&events.every(e=>e.source==='shape')?'shape':'outputs-only',truncated};
   db.run(`INSERT INTO chart_signal_receipts VALUES(?,?,?,?,?) ON CONFLICT(scanner_id,symbol,tf) DO UPDATE SET at=excluded.at,payload=excluded.payload WHERE json_extract(excluded.payload,'$.barTime')>=json_extract(chart_signal_receipts.payload,'$.barTime')`,id,symbol,tf,receipt.at,JSON.stringify(receipt));
+  if(receipt.historyHash){
+   let inputs=closedInputs.get(db);if(!inputs){inputs=new Map();closedInputs.set(db,inputs);}
+   if(!inputs.has(receipt.historyHash)){inputs.set(receipt.historyHash,bars.map(b=>({...b})));while(inputs.size>128)inputs.delete(inputs.keys().next().value!);}
+  }
   // Expired cells cannot grow this diagnostic table forever; cleanup is amortized.
   if(counts++%500===0)db.run('DELETE FROM chart_signal_receipts WHERE at<?',Date.now()-7*86400000);
  }catch{/* diagnostics must not interrupt scanner decisions */}
@@ -31,3 +41,11 @@ export function chartReceipt(db:Db,id:string,symbol:string,tf:string):SignalRece
 }
 
 export type ChartReceiptArgs=Parameters<typeof recordChartReceipt> extends [Db,...infer Rest]?Rest:never;
+
+/** Exact transient primary inputs used by the recorded run. No REST refetch or invented recovery window. */
+export function chartWindow(db:Db,id:string,symbol:string,tf:string,barTime:number):{bars:Bar[]}|null{
+ const receipt=chartReceipt(db,id,symbol,tf);
+ if(!receipt||receipt.barTime!==barTime||!receipt.historyHash)return null;
+ const bars=closedInputs.get(db)?.get(receipt.historyHash);
+ return bars?{bars:bars.map(b=>({...b}))}:null;
+}

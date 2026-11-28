@@ -216,6 +216,7 @@ export function ChartPage() {
           overlay: sc.overlay,
           inputs: src.inputs,
           sourceHash: src.sourceHash,
+          readingHash: src.readingHash,
           timezone: src.timezone,
         })
     })
@@ -730,7 +731,10 @@ export function ChartPage() {
           (o) =>
             o.symbol === symbol &&
             (view === 'frames' ? frames.includes(o.tf) : o.tf === tf) &&
-            selectedIds.includes(o.scannerId),
+            selectedIds.includes(o.scannerId) &&
+            scripts.some(
+              (s) => s.id === o.scannerId && s.sourceHash === o.sourceHash && s.readingHash === o.readingHash,
+            ),
         )}
       />
       <ScriptReadout

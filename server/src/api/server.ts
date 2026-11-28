@@ -1,5 +1,5 @@
 import {fillComparison} from './fillComparison.ts';
-import {chartReceipt} from '../scanners/chartReceipts.ts';
+import {chartReceipt,chartReadingHash,chartWindow} from '../scanners/chartReceipts.ts';
 import {gatedSignalPage} from '../evidence/gatedSignals.ts';
 import {positionsHealthReader} from './positionsHealth.ts';
 import {paperPositionViews} from './paperPositions.ts';
@@ -398,11 +398,17 @@ export class ApiServer {
       if(!a.registry.get(p.id))throw new HttpError(404,'unknown scanner');
       return chartReceipt(a.db,p.id,url.searchParams.get('symbol')??'',url.searchParams.get('tf')??'');
     });
+    this.add('GET','/api/scanners/:id/chart-window',(_r,_s,p,url)=>{
+      if(!a.registry.get(p.id))throw new HttpError(404,'unknown scanner');
+      const at=Number(url.searchParams.get('barTime'));
+      if(!Number.isSafeInteger(at)||at<=0)throw new HttpError(400,'Invalid closed bar');
+      return chartWindow(a.db,p.id,url.searchParams.get('symbol')??'',url.searchParams.get('tf')??'',at);
+    });
     this.add('GET','/api/positions/:id/fill-comparison',(_r,_s,p)=>{
       const id=Number(p.id);if(!Number.isSafeInteger(id)||id<1)throw new HttpError(400,'Invalid position');
       const result=fillComparison(a.db,id);if(!result)throw new HttpError(404,'No such position');return result;
     });
-    this.add('GET', '/api/scanners/:id/source', (_r, _s, p) => { const s = a.registry.get(p.id); if (!s) throw new HttpError(404, 'unknown scanner'); const read = a.config.get().scanners[p.id]; return { id: s.id, name: s.name, source: s.source, patched: s.patched, patches: s.patches, sourceHash: sourceHash(s.patched), inputs: read?.inputs ?? {}, timezone: read?.timezone ?? 'UTC' }; });
+    this.add('GET', '/api/scanners/:id/source', (_r, _s, p) => { const s = a.registry.get(p.id); if (!s) throw new HttpError(404, 'unknown scanner'); const read = a.config.get().scanners[p.id]; return { id: s.id, name: s.name, source: s.source, patched: s.patched, patches: s.patches, sourceHash: sourceHash(s.patched), readingHash:chartReadingHash(s.id,read), inputs: read?.inputs ?? {}, timezone: read?.timezone ?? 'UTC' }; });
     this.add('GET', '/api/scanners/:id/overlay', (_r, _s, p, url) => {
       const symbol = url.searchParams.get('symbol') ?? a.scanners.symbolsFor(p.id)[0];
       const tf = url.searchParams.get('tf') ?? a.scanners.timeframesFor(p.id)[0];

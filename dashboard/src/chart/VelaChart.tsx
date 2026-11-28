@@ -22,6 +22,7 @@ export interface ChartScript {
   source: string
   overlay?: boolean
   inputs?: Record<string, number | string | boolean>
+  readingHash?: string
   sourceHash?: string | null
   timezone?: string
 }
@@ -149,11 +150,13 @@ export function VelaChart({
     let pineEngine: InstanceType<PineModule['PineWorkerEngine']> | null = null
     let firstBar: (id: string) => number | null = () => null
     let history: ReturnType<typeof withScriptTimezones>['history'] = () => null
+    let verifyClosed: ReturnType<typeof withScriptTimezones>['closedProof'] = async () => null
     let generation = 0
     const latestRuns = new Map<string, { run: ScriptRun; contextKey: string }>()
     const requests = new Map<string, { key: string; serial: number }>()
     let serial = 0
     const signalRequests = new Map<string, number>()
+    const verificationHistory = new Map<string, Promise<Awaited<ReturnType<typeof api.candles>>>>()
     const collect = (run: ScriptRun) => {
       if (!cbRef.current.captureLedger || cancelled) return
       const script = scriptsRef.current.find((s) => `vn:${s.id}` === run.id)
@@ -281,6 +284,7 @@ export function VelaChart({
                 )
                 firstBar = adapter.firstBar
                 history = adapter.history
+                verifyClosed = adapter.closedProof
                 chart.registerEngine('pine', adapter.engine)
                 setPineReady(true)
               })
@@ -293,6 +297,7 @@ export function VelaChart({
           if (import.meta.env.DEV) (window as unknown as { __vnChart?: VelaType }).__vnChart = chart
           const offStart = chart.on('load:start', () => {
             generation++
+            verificationHistory.clear()
             latestRuns.clear()
             requests.clear()
             setLoading(true)
@@ -325,13 +330,63 @@ export function VelaChart({
                 Object.entries(expected).some(
                   ([key, value]) => JSON.stringify(actual[key]) !== JSON.stringify(value),
                 )
-              // One selected context transfer per closed bar, rather than one full
-              // worker transfer per series. Raw plot values also retain boolean shapes.
-              void handle
-                ?.context(['plots'])
-                .then(async (snapshot) => {
-                  const digest = inputHistory
-                    ? await crypto.subtle.digest('SHA-256', new TextEncoder().encode(inputHistory.text))
+              cbRef.current.onSignalCheck?.({
+                scannerId: script.id,
+                symbol: market.symbol,
+                tf: market.tf,
+                barTime: time,
+                sourceHash: script.sourceHash ?? null,
+                readingHash: script.readingHash,
+                inputs: script.inputs ?? {},
+                inputsChanged,
+                timezone: script.timezone ?? 'UTC',
+                historyFrom: firstBar(run.id),
+                complete: run.complete,
+                values: {},
+                channels: {
+                  alerts: [],
+                  labels: [],
+                  labelsVerified: false,
+                  truncated: false,
+                  unavailable: 'Checking closed-bar signal outputs…',
+                },
+              })
+              void (async () => {
+                // Resolve the exact server window independently of chart zoom/backfill.
+                // This is a read-only chart-engine diagnostic, not a journal replay.
+                let receipt = await api.chartReceipt(script.id, market.symbol, market.tf).catch(() => null)
+                for (let attempt = 0; attempt < 5 && receipt?.barTime !== time; attempt++) {
+                  if (cancelled || epoch !== generation || signalRequests.get(run.id) !== ticket) return null
+                  await new Promise((resolve) => setTimeout(resolve, 3000))
+                  receipt = await api.chartReceipt(script.id, market.symbol, market.tf).catch(() => null)
+                }
+                if (!receipt || receipt.barTime !== time || receipt.bars > 4000) return null
+                const windowKey = JSON.stringify([
+                  market.symbol,
+                  market.tf,
+                  receipt.historyFrom,
+                  time,
+                  receipt.bars,
+                ])
+                let loading = verificationHistory.get(windowKey)
+                if (!loading) {
+                  if (verificationHistory.size >= 4) verificationHistory.clear()
+                  loading = api.chartWindow(script.id, market.symbol, market.tf, time).then((window) => {
+                    if (!window) throw new Error('Captured scanner inputs unavailable; wait for a fresh scan')
+                    return window.bars
+                  })
+                  verificationHistory.set(windowKey, loading)
+                  void loading.catch(() => verificationHistory.delete(windowKey))
+                }
+                const bars = await loading
+                return verifyClosed(run.id, time, actual, bars)
+              })()
+                .catch(() => null)
+                .then(async (proof) => {
+                  const snapshot = { plots: proof?.plots ?? {} }
+                  const proofHistory = proof?.history ?? inputHistory
+                  const digest = proofHistory
+                    ? await crypto.subtle.digest('SHA-256', new TextEncoder().encode(proofHistory.text))
                     : null
                   if (
                     cancelled ||
@@ -339,7 +394,7 @@ export function VelaChart({
                     epoch !== generation ||
                     signalRequests.get(run.id) !== ticket ||
                     !scriptsRef.current.some((s) => s.id === script.id && scriptContextKey(s) === context) ||
-                    JSON.stringify(handle.inputValues()) !== JSON.stringify(actual)
+                    JSON.stringify(handle?.inputValues()) !== JSON.stringify(actual)
                   )
                     return
                   const rawValues = Object.entries(snapshot.plots).filter(([key]) => !key.startsWith('__'))
@@ -360,11 +415,20 @@ export function VelaChart({
                     tf: market.tf,
                     barTime: time,
                     sourceHash: script.sourceHash ?? null,
-                    historyFrom: firstBar(run.id),
+                    historyFrom: proof?.history.from ?? firstBar(run.id),
+                    signalMetadata: proof?.signalMetadata,
+                    readingHash: script.readingHash,
+                    channels: proof?.channels ?? {
+                      alerts: [],
+                      labels: [],
+                      labelsVerified: false,
+                      truncated: false,
+                      unavailable: 'Closed-bar verification unavailable; no agreement established',
+                    },
                     historyHash: digest
                       ? Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join('')
                       : undefined,
-                    historyBars: inputHistory?.count,
+                    historyBars: proofHistory?.count,
                     inputs: script.inputs ?? {},
                     inputsChanged,
                     timezone: script.timezone ?? 'UTC',
