@@ -96,6 +96,7 @@ test('the risk gate refuses an account entry of a paused cell and names the reas
   const db = new Db(':memory:');
   const cfg = structuredClone(DEFAULT_CONFIG);
   cfg.risk.enabled = true;
+  cfg.risk.regime.enabled = false;   // the weekend and quiet-market rules would make this test depend on the calendar
   const paper = new PaperEngine(db, () => cfg);
   const paused = new Map([['s|5m', 'live −0.5R a trade against +0.12R']]);
   const risk = new RiskManager({ db, paper, candles: null, cfgRef: () => cfg, paused: (id, tf) => paused.get(`${id}|${tf}`) ?? null });
