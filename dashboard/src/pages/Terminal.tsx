@@ -1,12 +1,13 @@
-import { useQueries, useQuery } from '@tanstack/react-query'
+import { useQuery } from '@tanstack/react-query'
 import { useMemo, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { api } from '../api/client'
-import { qk, useConfig, useMarkets, usePositions, useRisk, useScannerIndex, useStats } from '../api/queries'
+import { useConfig, useMarkets, usePositions, useRisk, useScannerIndex, useStats } from '../api/queries'
 import type { Config, Signal } from '../api/types'
-import { decisionMarks } from '../chart/decisionMarks'
-import { positionOverlay } from '../chart/positionOverlay'
-import { VelaChart, type ChartScript } from '../chart/VelaChart'
+import { useFrameSync } from '../chart/useFrameSync'
+import { viewFrames } from '../lib/viewFrames'
+import { ScannerCellStats } from '../components/ScannerCellStats'
+import { TerminalFrame } from '../components/TerminalFrame'
 import { PaperPositions } from '../components/PaperPositions'
 import { ErrorState, Loading, Pill } from '../components/kit'
 import { fmtMoney, fmtPct, fmtPnl, fmtPrice, pnlClass, timeAgo } from '../lib/format'
@@ -74,19 +75,17 @@ export function Terminal() {
   const [scope, setScope] = useState<'bot' | 'all'>('bot')
   const [filter, setFilter] = useState('')
   const [tapeOnly, setTapeOnly] = useState<'all' | 'opened'>('all')
-  const [dock, setDock] = useState<'positions' | 'funnel' | 'rules'>('positions')
+  const [dock, setDock] = useState<'positions' | 'stats' | 'funnel' | 'rules'>('positions')
+  const reqCharts = Number(search.get('charts'))
+  const charts: 1 | 2 | 4 = reqCharts === 2 || reqCharts === 4 ? reqCharts : 1
+  const frames = viewFrames(frame, charts)
+  const { register } = useFrameSync(frames)
 
   const tape = useQuery({
     queryKey: ['scalp-tape'],
     queryFn: () => api.signals({ kind: 'entry', limit: 150 }),
     refetchInterval: 5_000,
     staleTime: 4_000,
-  })
-  const chartSignals = useQuery({
-    queryKey: ['scalp-chart-signals', symbol, frame],
-    queryFn: () => api.signals({ kind: 'entry', symbol, tf: frame, limit: 300 }),
-    refetchInterval: 15_000,
-    staleTime: 10_000,
   })
   // the scanners that trade this market on this timeframe, drawn on the chart from their own Pine
   const scanners = useScannerIndex()
@@ -95,27 +94,16 @@ export function Terminal() {
     [bot.cells, symbol, frame],
   )
   const [hidden, setHidden] = useState<Record<string, boolean>>({})
-  const shownIds = useMemo(() => cellIds.filter((id) => !hidden[id]), [cellIds, hidden])
-  const sources = useQueries({
-    queries: shownIds.map((id) => ({
-      queryKey: qk.scannerSource(id),
-      queryFn: () => api.scannerSource(id),
-      staleTime: 5 * 60_000,
-      retry: 1,
-    })),
-  })
-  const scripts = useMemo<ChartScript[]>(() => {
-    const out: ChartScript[] = []
-    shownIds.forEach((id, i) => {
-      const src = sources[i]?.data
-      const sc = (scanners.data ?? []).find((s) => s.id === id)
-      if (src?.patched && sc)
-        out.push({ id, title: sc.name, source: src.patched, overlay: sc.overlay, inputs: src.inputs, sourceHash: src.sourceHash, timezone: src.timezone })
-    })
-    return out
-  }, [shownIds, sources, scanners.data])
   const [scriptErrors, setScriptErrors] = useState<Record<string, string>>({})
   const nameOf = (id: string) => (scanners.data ?? []).find((s) => s.id === id)?.name ?? id
+  // the account's closed trades on this market (every timeframe): trade boxes and the scanner stats read them
+  const journal = useQuery({
+    queryKey: ['scalp-journal', symbol],
+    queryFn: () => api.journal({ book: 'paper', symbol, status: 'closed', scope: 'all', history: 'all', dateBy: 'exit', sort: 'newest', limit: 300 }),
+    refetchInterval: 30_000,
+    staleTime: 20_000,
+  })
+  const closed = journal.data?.rows ?? []
   const overview = useQuery({
     queryKey: ['trading-overview', '1'],
     queryFn: () => api.tradingOverview(1),
@@ -134,9 +122,6 @@ export function Terminal() {
     .map((sym) => ({ sym, m: markets.data?.find((x) => x.symbol === sym) }))
     .filter((r) => !filter || r.sym.toLowerCase().includes(filter.toLowerCase()))
   const selected = markets.data?.find((m) => m.symbol === symbol)
-  const marks = useMemo(() => decisionMarks(chartSignals.data ?? []), [chartSignals.data])
-  const openHere = (positions.data ?? []).find((p) => p.symbol === symbol && p.tf === frame)
-  const overlay = useMemo(() => (openHere ? positionOverlay(openHere, openHere.peakR ?? null) : null), [openHere])
   const tapeRows = (tape.data ?? []).filter((s) => tapeOnly === 'all' || s.action === 'opened')
   const capital = useMemo(() => openCapital(positions.data ?? []), [positions.data])
   const st = stats.data
@@ -278,6 +263,13 @@ export function Terminal() {
                   {bot.tfs.includes(tf) && <i className="scalp-dot on" title="The bot trades this timeframe" />}
                 </button>
               ))}
+              <span className="scalp-seg scalp-charts" role="group" aria-label="Charts shown">
+                {([1, 2, 4] as const).map((n) => (
+                  <button key={n} aria-pressed={charts === n} onClick={() => update({ charts: n === 1 ? null : String(n) })} title={n === 1 ? 'One chart' : `${n} timeframes: ${viewFrames(frame, n).join(', ')}`}>
+                    {n === 1 ? '▢' : n === 2 ? '▢▢' : '▦'}
+                  </button>
+                ))}
+              </span>
               <Link className="scalp-link" to={`/chart?symbol=${encodeURIComponent(symbol)}&tf=${encodeURIComponent(frame)}`}>
                 Full chart ↗
               </Link>
@@ -300,25 +292,30 @@ export function Terminal() {
               <small>No scanner trades {short(symbol)} on {frame}; the chart shows price and journal marks only.</small>
             )}
           </div>
-          <div className="scalp-canvas">
-            <VelaChart
-              symbol={symbol}
-              tf={frame}
-              height="100%"
-              scripts={scripts}
-              marks={marks}
-              positionOverlay={overlay}
-              tickSize={selected?.tickSize}
-              onScriptError={(id, err) => setScriptErrors((e) => ({ ...e, [id]: err.message }))}
-              onScriptReady={(id) =>
-                setScriptErrors((e) => {
-                  if (!(id in e)) return e
-                  const n = { ...e }
-                  delete n[id]
-                  return n
-                })
-              }
-            />
+          <div className={`scalp-canvas scalp-frames n${frames.length}`}>
+            {frames.map((tf) => (
+              <TerminalFrame
+                key={tf}
+                symbol={symbol}
+                tf={tf}
+                cells={bot.cells}
+                hidden={hidden}
+                tickSize={selected?.tickSize}
+                closed={closed}
+                positions={positions.data ?? []}
+                tag={frames.length > 1}
+                onChartReady={(c) => register(tf, c)}
+                onScriptError={(id, err) => setScriptErrors((e) => ({ ...e, [id]: err.message }))}
+                onScriptReady={(id) =>
+                  setScriptErrors((e) => {
+                    if (!(id in e)) return e
+                    const n = { ...e }
+                    delete n[id]
+                    return n
+                  })
+                }
+              />
+            ))}
           </div>
           <div className="scalp-legend">
             <span>
@@ -327,7 +324,10 @@ export function Terminal() {
             <span>
               <i className="lg lg-mark-x" /> × = refused by a rule
             </span>
-            <span>click a mark for the decision · lines = open trade's entry, stop and targets</span>
+            <span>
+              <i className="lg lg-box-win" /> <i className="lg lg-box-loss" /> account trades, won / lost · dashed = stop · dotted = targets
+            </span>
+            <span>click a mark for the decision</span>
           </div>
         </section>
 
@@ -383,6 +383,9 @@ export function Terminal() {
               <button role="tab" aria-selected={dock === 'positions'} aria-pressed={dock === 'positions'} onClick={() => setDock('positions')}>
                 Positions <small>{positions.data?.length ?? 0}</small>
               </button>
+              <button role="tab" aria-selected={dock === 'stats'} aria-pressed={dock === 'stats'} onClick={() => setDock('stats')}>
+                Scanner stats
+              </button>
               <button role="tab" aria-selected={dock === 'funnel'} aria-pressed={dock === 'funnel'} onClick={() => setDock('funnel')}>
                 Signal funnel · 24h
               </button>
@@ -397,6 +400,7 @@ export function Terminal() {
           </div>
           <div className="scalp-dock-body trading">
             {dock === 'positions' && <PaperPositions query={positions} compact />}
+            {dock === 'stats' && <ScannerCellStats symbol={symbol} cells={bot.cells} closed={closed} names={nameOf} />}
             {dock === 'funnel' && (overview.data ? <Funnel o={overview.data} /> : <Loading kind="cards" rows={3} />)}
             {dock === 'rules' && (overview.data ? <Rules o={overview.data} /> : <Loading kind="cards" rows={3} />)}
           </div>

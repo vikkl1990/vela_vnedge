@@ -13,6 +13,7 @@ import { withScriptTimezones } from './scriptTimezone'
 import { scriptContextKey, settledTrades, type AuthorLedger } from './tradeComparison'
 import { venueSymbol, type ChartVenue } from './venues'
 import { POSITION_LEVELS, positionLevelsIndicator, type PositionOverlay } from './positionOverlay'
+import { TRADE_BOXES, tradeBoxesIndicator, type TradeBoxesPayload } from './tradeBoxes'
 
 /** Backoff between Pine engine start attempts after a failure; one more failure is final until the next selection. */
 const PINE_RETRY_MS = [2_000, 5_000, 15_000]
@@ -42,6 +43,8 @@ interface Props {
   height?: number | string
   scripts?: ChartScript[]
   positionOverlay?: PositionOverlay | null
+  /** The account's trades on this market and timeframe as boxes (display only). */
+  tradeBoxes?: TradeBoxesPayload | null
   /** Called when a script fails to compile/run (also toasts). */
   onScriptError?: (id: string, err: Error) => void
   onScriptReady?: (id: string) => void
@@ -64,6 +67,7 @@ function loadVela() {
   if (!velaPromise) {
     velaPromise = import('@luxalgo/vela').then((vela) => {
       vela.registerNativeIndicator(positionLevelsIndicator)
+      vela.registerNativeIndicator(tradeBoxesIndicator)
       return vela
     })
     velaPromise.catch(() => {
@@ -84,6 +88,7 @@ export function VelaChart({
   height = 520,
   scripts = [],
   positionOverlay,
+  tradeBoxes,
   onScriptError,
   onScriptReady,
   tickSize,
@@ -107,6 +112,7 @@ export function VelaChart({
   const [pineReady, setPineReady] = useState(false)
   const ensurePineRef = useRef<(() => Promise<void>) | null>(null)
   const positionHandleRef = useRef<{ handle: IndicatorHandle; payload: string } | null>(null)
+  const tradeBoxesRef = useRef<{ handle: IndicatorHandle; payload: string } | null>(null)
   const [loading, setLoading] = useState(true)
   const { theme } = useTheme()
   const marketRef = useRef({ symbol, tf })
@@ -462,6 +468,7 @@ export function VelaChart({
       collectRef.current = null
       ensurePineRef.current = null
       positionHandleRef.current = null
+      tradeBoxesRef.current = null
       cbRef.current.onChartReady?.(null)
       const c = chartRef.current ?? chart
       chartRef.current = null
@@ -545,6 +552,26 @@ export function VelaChart({
       positionHandleRef.current = { handle, payload }
     }
   }, [ready, positionOverlay])
+
+  useEffect(() => {
+    const chart = chartRef.current
+    if (!chart || !ready) return
+    const old = tradeBoxesRef.current
+    if (!tradeBoxes || !tradeBoxes.boxes.length) {
+      old?.handle.remove()
+      tradeBoxesRef.current = null
+      return
+    }
+    const payload = JSON.stringify(tradeBoxes)
+    if (old) {
+      if (old.payload !== payload) {
+        old.handle.setInputs({ trades: payload })
+        old.payload = payload
+      }
+    } else {
+      tradeBoxesRef.current = { handle: chart.addNativeIndicator(TRADE_BOXES, { inputs: { trades: payload } }), payload }
+    }
+  }, [ready, tradeBoxes])
 
   // ---- scripts diff -------------------------------------------------------------
   useEffect(() => {
