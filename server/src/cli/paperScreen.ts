@@ -79,6 +79,7 @@ const POLICIES: Record<string, Partial<typeof cfg.paper>> = process.env.POLICY_S
 /** INVERT=1: every policy is also run on the inverted reading (`<policy>_inv`), so a scanner whose signals work faded shows up too. */
 const WITH_INVERT = process.env.INVERT === '1';
 const WITH_LATE = process.env.LATE === '1';
+const WITH_TRADES = process.env.TRADES === '1';
 /** Time blocks per cell for the PBO check (screenVerdict.ts); even, as CSCV splits them in halves. */
 const BLOCKS = 10;
 
@@ -170,7 +171,9 @@ async function screen(s: ReturnType<ScannerRegistry['runnable']>[number], symbol
         // style: how long trades are held and how soon they reach their best price (minutes, medians)
         holdMin: median(bt.trades.filter(t => t.exitAt).map(t => (t.exitAt! - t.entryAt) / 60_000)),
         peakMin: median(bt.trades.filter(t => t.peakAt).map(t => (t.peakAt! - t.entryAt) / 60_000)),
-        winRate: bt.trades.length ? bt.trades.filter(t => t.pnl > 0).length / bt.trades.length : 0 };
+        winRate: bt.trades.length ? bt.trades.filter(t => t.pnl > 0).length / bt.trades.length : 0,
+        // TRADES=1: every trade as [entryAt, exitAt, side (1 long / -1 short), R] for portfolio studies
+        ...(WITH_TRADES ? { list: bt.trades.map(t => [t.entryAt, t.exitAt ?? t.entryAt, t.side === 'long' ? 1 : -1, +(t.rMultiple ?? 0).toFixed(4)]) } : {}) };
     }
     // the current policy stays at the top level for existing readers
     Object.assign(row, row.policies.current);

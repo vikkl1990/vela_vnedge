@@ -122,8 +122,10 @@ export class EdgeWatch {
           // a backtest trade on a bar the live scanner never ran on (server down, PC asleep, cell not live yet) is an
           // outage, not a disagreement: say so, and keep it out of the missed count
           for (const x of r.backtestOnly) if (x.live === 'no live signal') {
+            // the backtest enters at the close of its signal bar: the live scanner must have run that very bar
+            const signalBar = Math.floor((x.at - 1) / tfMs) * tfMs;
             const ran = this.d.db.get<{ n: number }>('SELECT COUNT(*) n FROM scanner_run_log WHERE scanner_id=? AND symbol=? AND tf=? AND bar_time BETWEEN ? AND ?',
-              c.scannerId, c.symbol, c.tf, x.at - 3 * tfMs, x.at + tfMs)?.n ?? 0;
+              c.scannerId, c.symbol, c.tf, signalBar - tfMs / 2, signalBar + tfMs / 2)?.n ?? 0;
             if (!ran) x.live = 'not running: no live scan of this bar (server down or cell not yet live)';
           }
           missed += r.backtestOnly.filter(x => !isPortfolioRefusal(x.live)).length;
